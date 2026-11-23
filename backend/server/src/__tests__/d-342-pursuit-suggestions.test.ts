@@ -39,8 +39,10 @@ import { createLocalManifestStore } from '../ingredient-authoring/local-manifest
 // Monday 19 October 2026, 06:00 UTC; "tomorrow" is the 20th.
 const NOW = Date.parse('2026-10-19T06:00:00Z');
 const TOMORROW = '2026-10-20';
+/** Every part of the fixture reads this clock; a test that crosses a day moves it. */
+const clock = { at: NOW };
 const cleanups: Array<() => Promise<void> | void> = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
+afterEach(async () => { clock.at = NOW; for (const close of cleanups.splice(0).reverse()) await close(); });
 
 const ownerChat: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner' };
 const runOf = (schedule_id: string): ExecutionSource => ({ channel: 'schedule', actor: 'system', schedule_id, cron: '0 7 * * *',
@@ -53,10 +55,10 @@ const renew: AssetRule = { id: 'renew', title: 'Renew', enabled: true, muted: fa
 const fixture = async () => {
   const db = new Database(':memory:'); db.pragma('foreign_keys=ON'); ensureWorkEntitySchema(db); ensureChatSchema(db);
   const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
-  const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => NOW });
-  const occurrences = createAssetOccurrenceService({ db, work, dispatchers, now: () => NOW, timeZone: () => 'UTC' });
-  const sources = buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [], now: () => NOW, timeZone: () => 'UTC' });
-  const query = createSituationQuery({ now: () => NOW, sources, sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
+  const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => clock.at });
+  const occurrences = createAssetOccurrenceService({ db, work, dispatchers, now: () => clock.at, timeZone: () => 'UTC' });
+  const sources = buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [], now: () => clock.at, timeZone: () => 'UTC' });
+  const query = createSituationQuery({ now: () => clock.at, sources, sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
   // The chat's scheduled prompts, as D-338's test builds them: the Agenda's managed schedule is real.
   const chat = createChatStore(db); const plans = createSqliteChatPlanStore(db);
   const registry: InternalToolRegistry = { list: () => [], listByTier: () => [], getByName: () => null,
@@ -64,14 +66,14 @@ const fixture = async () => {
   const runTurn = async (input: { queue_turn_id?: string }) => ({ turn_id: input.queue_turn_id! });
   const base = createChatOrchestrator({ chatStore: chat, registry, selfSignature: { server_kind: 'recued', version: '1', instance_id: 'd342' } });
   const queue = withQueuedChatTurns({ ...base, runTurn }, { db, store: chat, pollMs: 10 }).turnQueue!;
-  const schedules = createPromptSchedules({ db, store: chat, instanceId: 'd342', now: () => NOW, runTurn, queue,
+  const schedules = createPromptSchedules({ db, store: chat, instanceId: 'd342', now: () => clock.at, runTurn, queue,
     readPlans: (session, turn) => plans.listForTurn(session, turn) });
   const send = vi.fn(async (_message: import('../notification-handler.js').NotificationSendArgs) => ({ delivered_to: ['in_app'] }));
   const scheduled = createScheduledSituations({ db, work, store: createSituationStore(db), query, timeZone: () => 'UTC', isVaultUnlocked: () => true,
-    now: () => NOW, isQuiet: () => false, quietEnd: () => null, send, mailHealth: () => [], summarize: () => Promise.resolve(undefined), prepNotesReady: () => false,
+    now: () => clock.at, isQuiet: () => false, quietEnd: () => null, send, mailHealth: () => [], summarize: () => Promise.resolve(undefined), prepNotesReady: () => false,
     overview: async () => ({ proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true }), promptSchedules: () => schedules });
   // As the composition root wires it (`compose-execution-context.ts`).
-  const access = createSituationAccess({ contracts: createContractStore(db), query, now: () => NOW, isVaultUnlocked: () => true,
+  const access = createSituationAccess({ contracts: createContractStore(db), query, now: () => clock.at, isVaultUnlocked: () => true,
     isPrivate: item => scheduled.isPrivateItem(item), readsPursuits: source => scheduled.readsPursuits(source) });
   scheduled.bindAccess(access);
   cleanups.push(async () => { await scheduled.stop(); queue.close(); db.close(); });
@@ -119,6 +121,15 @@ describe('D-342 §5 — the suggestions read the owner’s pursuits beside the d
     expect(prompt).toContain('which lists the same items my agenda does, and beside them what I am working toward (kind pursuit): give it tomorrow as a date.');
     expect(prompt).toContain('and, where the day has room, a step on one of my pursuits that fits it, from where I am with it');
     expect(prompt).toContain('Leave out a pursuit marked private. Leave out any other item marked private unless a suggestion involves it');
+    // D-343 (2026-11-15) — a time for what has none, in a free stretch of the day.
+    expect(prompt).toContain('Where an item has no time, or for a step on a pursuit, propose one: a time in a free stretch of tomorrow');
+    expect(prompt).toContain('Give each its own time: two in one gap only if both fit in it, one after the other.');
+    expect(prompt).toContain('Never tell me a day is unknown or unrecorded.');
+    expect(prompt).toContain('Name a gap by when the item before it ends ("free from 19:30, after the team review"), not when it starts.');
+    expect(prompt).toContain('not one already past and not over a timed item');
+    // Run ahead of the stream, a time must not come before the message does.
+    expect(agendaSuggestionsPrompt({ enabled: true, time: '07:00', day: 'today', frequency: 'daily', weekday: 1, suggestions: true, head_start: true } as never))
+      .toContain('not before this reaches me (allow 15 minutes from now) and not over a timed item');
   });
 });
 
@@ -154,7 +165,7 @@ describe('D-343 slice 5 (§5) — the suggestions read the days the owner record
   /** The owner's closing records, as `episode.record` writes them once approved. */
   const recordsOf = (f: Awaited<ReturnType<typeof fixture>>) => {
     const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
-    const closing = createClosingRecords({ db: f.db, history, work: f.work, calendars: () => [], timeZone: () => 'UTC', now: () => NOW });
+    const closing = createClosingRecords({ db: f.db, history, work: f.work, calendars: () => [], timeZone: () => 'UTC', now: () => clock.at });
     const record = (pursuit: Asset, day: string, outcome: 'done' | 'skipped') => closing.record({ day,
       records: [{ title: outcome === 'done' ? `Worked on ${pursuit.name}` : `Skipped ${pursuit.name}`, outcome, item: closing.item({ collection: 'asset', id: pursuit.id })! }] })[0]!;
     return { history, record };
@@ -200,5 +211,33 @@ describe('D-343 slice 5 (§5) — the suggestions read the days the owner record
     const prompt = agendaSuggestionsPrompt({ enabled: true, time: '07:00', day: 'tomorrow', frequency: 'daily', weekday: 1, suggestions: true } as never);
     expect(prompt).toContain('a step on one of my pursuits that fits it, from where I am with it and the days this week I recorded doing or skipping it '
       + '(recorded; a day it does not list is unknown, not one I missed).');
+  });
+});
+
+describe('D-343 — the loop across days: a day closed in the chat is what the next morning\'s suggestions read', () => {
+  it('records Monday through the chat\'s own approved episode.record, and Tuesday\'s suggestions read it as done', async () => {
+    const f = await fixture();
+    // Monday 19 October, 21:00 UTC: the owner closes the day in the chat.
+    clock.at = Date.parse('2026-10-19T21:00:00Z');
+    const history = createProactiveHistoryStore(f.db, createProactiveProposalStore(f.db));
+    const closing = createClosingRecords({ db: f.db, history, work: f.work, calendars: () => [], timeZone: () => 'UTC', now: () => clock.at });
+    const handlers = buildChatTier1Handlers({ getClosingRecords: () => closing, now: () => clock.at,
+      getOpAdmissionGate: () => ({ isFrozenByPause: () => false, isOwnerGoverned: () => true, isOpGranted: () => true }) } as unknown as ChatToolHandlerDeps);
+    const approved = { channel: 'internal_function_call', session_id: 'close-1', execution_source: ownerChat, owner_approved: true } as never;
+    const readWednesday = async () => (await f.access.read({ time: '2026-10-21' }, runOf(f.managed.schedule_id), undefined, 'UTC')).clusters.flatMap(cluster => cluster.items);
+    // Before the close, nothing is recorded for the run this week.
+    expect((await readWednesday()).find(item => item.ref.id === f.run.id)).not.toHaveProperty('recorded');
+    const result = await handlers['episode.record']!({ day: '2026-10-19', time_zone: 'UTC', records: [
+      { title: 'Ran 5 km', outcome: 'done', item: { collection: 'asset', id: f.run.id } },
+      { title: 'No Spanish today', outcome: 'skipped', item: { collection: 'asset', id: f.spanish.id } },
+    ] }, approved);
+    expect(result).toMatchObject({ ok: true, result: { recorded: 2, day: '2026-10-19' } });
+    // Tuesday 20 October, 06:00 UTC: the suggestions' run reads Wednesday, and the week behind it.
+    clock.at = Date.parse('2026-10-20T06:00:00Z');
+    const items = await readWednesday();
+    expect(items.find(item => item.ref.id === f.run.id)!.recorded).toEqual({ done: ['Mon 2026-10-19'], skipped: [] });
+    expect(items.find(item => item.ref.id === f.spanish.id)!.recorded).toEqual({ done: [], skipped: ['Mon 2026-10-19'] });
+    // The ended pursuit stays out, record or none.
+    expect(items.some(item => item.ref.id === f.novel.id)).toBe(false);
   });
 });

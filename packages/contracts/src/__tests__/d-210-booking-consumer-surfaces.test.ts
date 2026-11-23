@@ -28,7 +28,8 @@ describe('the model can ask for every work-entity kind', () => {
   it.each(['work.search', 'work.read'] as const)(
     '%s exposes the full kind union, not a copy of it',
     (tool) => {
-      expect([...kindEnumOf(tool)].sort()).toEqual([...WORK_ENTITY_KINDS].sort());
+      // D-407 slice 1 (A3) — and an occasion, which Yours keeps: found and read as the rest are.
+      expect([...kindEnumOf(tool)].sort()).toEqual([...WORK_ENTITY_KINDS, 'occasion'].sort());
     },
   );
 

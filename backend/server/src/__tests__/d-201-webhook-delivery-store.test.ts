@@ -18,6 +18,7 @@ import {
 import {
   createWebhookIngressStore,
   type WebhookIngressStore,
+  WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS,
 } from '../storage/webhook-ingress-store.js';
 import {
   createWebhookOutboxRuntime,
@@ -522,8 +523,10 @@ describe('D-201 Slices 2 / 5B2B durable webhook delivery store', () => {
       maxRejectionSummaries: 2,
     });
     const base = 2_000_000_000_000;
+    // D-201 Slice 10AU (10AS finding 4) — three kinds that are not a refusal
+    // for the signature: one of those is never evicted by these (below).
     for (const [offset, reason, status] of [
-      [10, 'authentication_failed', 401],
+      [10, 'method_not_allowed', 405],
       [20, 'structural_admission_failed', 400],
       [30, 'unsupported_media_type', 415],
     ] as const) {
@@ -547,7 +550,7 @@ describe('D-201 Slices 2 / 5B2B durable webhook delivery store', () => {
       'structural_admission_failed',
       'unsupported_media_type',
     ]));
-    expect(reasons).not.toContain('authentication_failed');
+    expect(reasons).not.toContain('method_not_allowed');
   });
 
   it('does not let an accepted request erase an unrelated registration fault', async () => {
@@ -1370,5 +1373,239 @@ describe('D-201 Slices 2 / 5B2B durable webhook delivery store', () => {
       ]);
     await expect(harness.deliveryStore.readRetainedEventPayload(firstEventId))
       .resolves.toBeNull();
+  });
+});
+
+// D-201 Slice 10AN (the owner's call, 2026-11-20) — a webhook that refuses
+// every message read healthy: nothing counted the refusals but the bounded
+// summaries, which nothing read for health.
+describe('D-201 Slice 10AU — the refusals for the signature, kept apart and trusted only up to now', () => {
+  const MINUTE = 60_000;
+  const start = 2_000_000_000_000;
+  type Reason = Parameters<WebhookDeliveryStore['recordRejectedDelivery']>[0]['reason_code'];
+  const STATUS: Partial<Record<Reason, number>> = {
+    authentication_failed: 401,
+    method_not_allowed: 405,
+    unsupported_media_type: 415,
+    uri_too_long: 414,
+    request_headers_too_large: 431,
+  };
+  const recorder = (harness: Harness) => (at: number, reason: Reason = 'authentication_failed', ingressId = harness.ingressId) => {
+    harness.setNow(at);
+    harness.deliveryStore.recordRejectedDelivery({
+      ingress_id: ingressId,
+      profile_id: 'generic.static-header-token.v1',
+      environment: 'test',
+      received_at: at,
+      reason_code: reason,
+      http_status: STATUS[reason] ?? 400,
+    });
+  };
+  const anotherWebhook = async (harness: Harness): Promise<string> => {
+    const other = harness.ingressStore.create({
+      display_name: 'Another webhook',
+      profile_id: 'generic.static-header-token.v1',
+      environment: 'test',
+      paired_connection_id: null,
+      registration_mode: 'manual',
+      selected_event_types: ['delivery'],
+    });
+    await harness.ingressStore.writeCredentialVersion(other.ingress_id, {
+      header_name: 'x-test-token',
+      header_token: 'another-fixture-token',
+    });
+    harness.db.prepare(`
+      UPDATE webhook_ingresses SET intake_state = 'enabled', registration_state = 'registered', enabled_at = ?
+      WHERE ingress_id = ?
+    `).run(start, other.ingress_id);
+    return other.ingress_id;
+  };
+
+  // 10AS finding 4 — an outsider's other bad requests filled the 500 summaries
+  // and evicted the refusals a run counts from: the webhook read healthy.
+  it('no other kind of bad request evicts them, at the webhook or across the server', async () => {
+    const harness = await makeHarness({
+      rejectionRetentionMs: 24 * 60 * MINUTE,
+      maxRejectionSummariesPerIngress: 2,
+      maxRejectionSummaries: 3,
+    });
+    const record = recorder(harness);
+    const other = await anotherWebhook(harness);
+    record(start);
+    record(start + MINUTE);
+    // Then, minute by minute, every other kind of bad request, at this
+    // webhook's address and at another's: far past both caps.
+    const kinds: Reason[] = ['method_not_allowed', 'unsupported_media_type', 'uri_too_long', 'request_headers_too_large'];
+    for (let minute = 2; minute < 40; minute += 1) {
+      for (const kind of kinds) {
+        record(start + minute * MINUTE, kind);
+        record(start + minute * MINUTE, kind, other);
+      }
+    }
+    // Before 10AU: none left, and the run read nothing.
+    expect(harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, null))
+      .toEqual({ refused: 2, first_at: start });
+    const rows = (ingressId: string) => harness.deliveryStore.listRejectedDeliveriesPage({ ingress_id: ingressId, limit: 50 })
+      .rejections.map((row) => row.reason_code);
+    // The other kinds keep their own caps: two at the webhook, three across.
+    expect(rows(harness.ingressId).filter((reason) => reason === 'authentication_failed')).toHaveLength(2);
+    expect(rows(harness.ingressId).filter((reason) => reason !== 'authentication_failed').length
+      + rows(other).length).toBe(3);
+    // Refusals for the signature evict only their own, the oldest first, and
+    // only at their webhook: another webhook's never count against them.
+    record(start + 40 * MINUTE, 'authentication_failed', other);
+    record(start + 41 * MINUTE, 'authentication_failed', other);
+    record(start + 42 * MINUTE, 'authentication_failed', other);
+    expect(harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, null))
+      .toEqual({ refused: 2, first_at: start });
+    expect(harness.deliveryStore.authenticationRefusalsSince(other, null))
+      .toEqual({ refused: 2, first_at: start + 41 * MINUTE });
+    record(start + 43 * MINUTE);
+    expect(harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, null))
+      .toEqual({ refused: 2, first_at: start + MINUTE });
+  });
+
+  // D-201 Slice 10BB (10AY finding 6) — refusals stamped while the clock ran
+  // ahead were kept as the newest: they filled the cap, were never read, and
+  // every real refusal after the clock was set right was evicted, so a webhook
+  // refusing every message read healthy until they expired.
+  it('refusals stamped ahead go first when the cap is full: the ones a run reads stay', async () => {
+    const harness = await makeHarness({
+      rejectionRetentionMs: 3 * 24 * 60 * MINUTE,
+      maxRejectionSummariesPerIngress: 3,
+    });
+    const record = recorder(harness);
+    const DAY = 24 * 60 * MINUTE;
+    // The clock a day ahead: three refused, filling the cap.
+    record(start + DAY);
+    record(start + DAY + MINUTE);
+    record(start + DAY + 2 * MINUTE);
+    // The clock set right: ten minutes of refusals.
+    for (let minute = 0; minute < 10; minute += 1) record(start + minute * MINUTE);
+    harness.setNow(start + 10 * MINUTE);
+    // Before 10BB: only the three stamped ahead were left, and the run read none.
+    expect(harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, null))
+      .toEqual({ refused: 3, first_at: start + 7 * MINUTE });
+  });
+
+  // 10AS finding 25 — refusals stamped while the clock ran ahead were read:
+  // the webhook stayed degraded, and was set again, while every message
+  // verified.
+  it('reads only what is not ahead of now, and a verified message forgets what was stamped after it', async () => {
+    const harness = await makeHarness({ rejectionRetentionMs: 3 * 24 * 60 * MINUTE });
+    const record = recorder(harness);
+    const since = (at: number | null) => harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, at);
+    const DAY = 24 * 60 * MINUTE;
+    // The clock a day ahead: three refused, a minute apart.
+    record(start + DAY);
+    record(start + DAY + MINUTE);
+    record(start + DAY + 2 * MINUTE);
+    // A malformed one too: not a refusal for the signature, never forgotten.
+    record(start + DAY + 3 * MINUTE, 'method_not_allowed');
+    // The clock set right: none of them is read.
+    harness.setNow(start + 10 * MINUTE);
+    expect(since(null)).toBeNull();
+    expect(since(start)).toBeNull();
+    // A minute whose first refusal is not ahead and whose last is: one, from its
+    // first.
+    record(start + 11 * MINUTE);
+    record(start + 11 * MINUTE + 30_000);
+    harness.setNow(start + 11 * MINUTE + 10_000);
+    expect(since(null)).toEqual({ refused: 1, first_at: start + 11 * MINUTE });
+    expect(since(start + 11 * MINUTE)).toBeNull();
+    harness.setNow(start + 12 * MINUTE);
+    expect(since(null)).toEqual({ refused: 2, first_at: start + 11 * MINUTE });
+    // A verified message: the ones stamped after it, past the tolerance its
+    // time keeps, are forgotten.
+    await harness.deliveryStore.accept(acceptedInput(harness, { receivedAt: start + 12 * MINUTE }));
+    harness.setNow(start + DAY + 10 * MINUTE);
+    // Before 10AU: three, once the clock passed them.
+    expect(since(null)).toEqual({ refused: 2, first_at: start + 11 * MINUTE });
+    expect(harness.deliveryStore.listRejectedDeliveriesPage({ ingress_id: harness.ingressId, limit: 10 })
+      .rejections.map((row) => row.reason_code).sort()).toEqual(['authentication_failed', 'method_not_allowed']);
+  });
+
+  it('a duplicate verified message forgets them too, and the tolerance keeps one stamped within it', async () => {
+    const harness = await makeHarness({ rejectionRetentionMs: 3 * 24 * 60 * MINUTE });
+    const record = recorder(harness);
+    await harness.deliveryStore.accept(acceptedInput(harness, { receivedAt: start }));
+    record(start + 5 * MINUTE + 50_000);
+    record(start + 2 * 60 * MINUTE);
+    harness.setNow(start + 5 * MINUTE);
+    // The same message again: verified, a duplicate.
+    const duplicate = await harness.deliveryStore.accept(acceptedInput(harness, { receivedAt: start + 5 * MINUTE }));
+    expect(duplicate.duplicate_delivery).toBe(true);
+    harness.setNow(start + 3 * 60 * MINUTE);
+    // Within the minute's tolerance: kept. Two hours ahead: forgotten.
+    expect(harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, null))
+      .toEqual({ refused: 1, first_at: start + 5 * MINUTE + 50_000 });
+  });
+});
+
+describe('D-201 Slice 10AN — the messages refused for their signature since the last verified one', () => {
+  it('counts them from the bounded summaries, after the time given, and only for their signature', async () => {
+    const harness = await makeHarness({ rejectionRetentionMs: 60 * 60 * 1000 });
+    const MINUTE = 60_000;
+    const start = 2_000_000_000_000;
+    const record = (at: number, reason: 'authentication_failed' | 'structural_admission_failed' = 'authentication_failed') => {
+      harness.setNow(at);
+      harness.deliveryStore.recordRejectedDelivery({
+        ingress_id: harness.ingressId,
+        profile_id: 'generic.static-header-token.v1',
+        environment: 'test',
+        received_at: at,
+        reason_code: reason,
+        http_status: reason === 'authentication_failed' ? 401 : 400,
+      });
+    };
+    const since = (at: number | null) => harness.deliveryStore.authenticationRefusalsSince(harness.ingressId, at);
+    expect(since(null)).toBeNull();
+    // One a minute, three minutes running, and a malformed one beside them.
+    record(start);
+    record(start + MINUTE);
+    record(start + MINUTE + 1_000, 'structural_admission_failed');
+    record(start + 2 * MINUTE);
+    expect(since(null)).toEqual({ refused: 3, first_at: start });
+    // A message verified between the first and the second.
+    expect(since(start + 30_000)).toEqual({ refused: 2, first_at: start + MINUTE });
+    expect(since(start + 2 * MINUTE)).toBeNull();
+    // A verified message inside a minute: that minute counts once, from its
+    // refusal after it, so "at least" stays true.
+    record(start + 3 * MINUTE);
+    record(start + 3 * MINUTE + 20_000);
+    expect(since(start + 3 * MINUTE + 10_000)).toEqual({ refused: 1, first_at: start + 3 * MINUTE + 20_000 });
+    // D-201 Slice 10AR (10AM's mutation D10) — a minute wholly after it counts
+    // in full, from its first refusal: every row above held one.
+    expect(since(start + 2 * MINUTE + 30_000)).toEqual({ refused: 2, first_at: start + 3 * MINUTE });
+    // Another webhook's are its own.
+    expect(harness.deliveryStore.authenticationRefusalsSince('whi_ffffffffffffffffffffffffffffffff', null)).toBeNull();
+    // Past their retention they are gone.
+    harness.setNow(start + 5 * MINUTE + 60 * 60 * 1000);
+    expect(since(null)).toBeNull();
+  });
+
+  // D-201 Slice 10AR (10AM finding 28) — it only moved forward: one stamped by a
+  // clock that ran ahead hid every refusal after it until the clock caught up.
+  it('D-201 Slice 10AR — a last verified message more than a minute ahead gives way to the next one accepted', async () => {
+    const harness = await makeHarness();
+    const at = 2_000_000_000_000;
+    const lastDelivery = () => harness.ingressStore.get(harness.ingressId)!.last_delivery_at;
+    harness.setNow(at);
+    await harness.deliveryStore.accept(acceptedInput(harness, {
+      deliveryKey: 'ahead', eventKey: 'ahead', receivedAt: at + 60 * 60 * 1000,
+    }));
+    expect(lastDelivery()).toBe(at + 60 * 60 * 1000);
+    await harness.deliveryStore.accept(acceptedInput(harness, {
+      deliveryKey: 'set-right', eventKey: 'set-right', receivedAt: at,
+    }));
+    expect(lastDelivery()).toBe(at);
+    // Nearer than the tolerance: two accepts finishing out of order. Kept.
+    await harness.deliveryStore.accept(acceptedInput(harness, {
+      deliveryKey: 'later', eventKey: 'later', receivedAt: at + WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS,
+    }));
+    await harness.deliveryStore.accept(acceptedInput(harness, {
+      deliveryKey: 'earlier', eventKey: 'earlier', receivedAt: at + 1,
+    }));
+    expect(lastDelivery()).toBe(at + WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { baseline, getTransform, getTransformSchema, held, transitions, window_change, within_distance } from '../index.js';
+import { baseline, getTransform, getTransformSchema, held, transitions, trend, window_change, within_distance } from '../index.js';
+import { TREND_MAX_SAMPLES } from '../series.js';
 import { ctx } from './helpers.js';
 
 const context = ctx();
@@ -7,7 +8,7 @@ const base = { time_field: 'at', state_field: 'state', now: 1000 };
 
 describe('D-325 shared series arithmetic', () => {
   it('is registered for recipes with schemas', () => {
-    for (const name of ['held', 'transitions', 'window_change', 'baseline', 'within_distance']) {
+    for (const name of ['held', 'transitions', 'window_change', 'baseline', 'trend', 'within_distance']) {
       expect(getTransform(name)).toBeTypeOf('function');
       expect(getTransformSchema(name)?.rows).toEqual({ required: true, type: 'array' });
     }
@@ -134,5 +135,88 @@ describe('D-339 baseline: the latest value against its own usual', () => {
     for (const bad of [[], [''], 'metric', [1]]) {
       expect(baseline({ ...args, rows: oura, series_fields: bad }, context)).toEqual([]);
     }
+  });
+});
+
+describe('D-339 trend: which way the window\'s values are going', () => {
+  const DAY = 86_400_000;
+  /** One sample a day, the first on day 0; `now` is the last day. */
+  const days = (values: number[]) => values.map((value, i) => ({ at: i * DAY, value }));
+  /** The window starts on day 0: [now - window_ms, now] holds its ends. */
+  const args = (values: number[]) => ({ time_field: 'at', value_field: 'value', now: (values.length - 1) * DAY,
+    window_ms: (values.length - 1) * DAY, min_count: 7, rows: days(values) });
+  const rising = Array.from({ length: 14 }, (_, i) => 50 + i);
+
+  it('takes the median slope between every two days, so one odd day moves it little', () => {
+    const values = rising.slice(); values[5] = 0; // a night the ring was off
+    const p = args(values);
+    const original = structuredClone(p.rows);
+    const result = trend(p, context) as Record<string, unknown>;
+    expect(result).toMatchObject({ status: 'known', direction: 'rising', count: 14, latest: { value: 63, at: 13 * DAY },
+      evidence: p.rows });
+    expect(result.slope as number).toBeCloseTo(1, 9);
+    expect(result.change as number).toBeCloseTo(13, 9);
+    expect(result.spread as number).toBeCloseTo(0, 9);
+    expect(p.rows).toEqual(original);
+    expect(trend(args(rising.map(value => 100 - value)), context)).toMatchObject({ direction: 'falling' });
+  });
+  it('says steady when the order is chance, or the change is smaller than a day\'s wobble', () => {
+    expect(trend(args([50, 52, 48, 51, 49, 53, 47, 50, 52, 48, 51, 49, 53, 47]), context))
+      .toMatchObject({ status: 'known', direction: 'steady' });
+    // Odd days sit 10 above even ones. A drift of 0.3 a day is consistent (z ≈ 2.6) but its 3.9 across
+    // the fortnight is less than the 5 every day wobbles around the line; at 0.5 a day it is 6.5.
+    const wobble = (drift: number) => rising.map((_, i) => drift * i + (i % 2) * 10);
+    const small = trend(args(wobble(0.3)), context) as Record<string, number>;
+    expect(small).toMatchObject({ direction: 'steady' });
+    expect(small.slope).toBeCloseTo(0.3, 9);
+    expect(small.spread).toBeCloseTo(5, 9);
+    expect(trend(args(wobble(0.5)), context)).toMatchObject({ direction: 'rising' });
+    expect(trend(args(Array(10).fill(42)), context)).toMatchObject({ status: 'known', direction: 'steady', slope: 0, change: 0, spread: 0 });
+    // Four days in a row going up happen by chance one time in 12 (z 1.70); five, one in 60 (z 2.20).
+    expect(trend({ ...args([1, 2, 3, 4]), min_count: 2 }, context)).toMatchObject({ status: 'known', direction: 'steady', change: 3, spread: 0 });
+    expect(trend({ ...args([1, 2, 3, 4, 5]), min_count: 2 }, context)).toMatchObject({ status: 'known', direction: 'rising' });
+  });
+  it('corrects the test for tied values, which whole-number readings have', () => {
+    // Four days at 41 and four at 42: z is 1.86 without the correction and 2.17 with it.
+    const step = trend({ ...args([41, 41, 41, 41, 42, 42, 42, 42]), min_count: 8 }, context) as Record<string, number>;
+    expect(step).toMatchObject({ status: 'known', direction: 'rising' });
+    expect(step.slope).toBeCloseTo(1 / 6, 9);
+  });
+  it('reads only the window, and is unknown with too few or too many samples, still saying how many', () => {
+    const p = args(rising);
+    const outside = [{ at: -DAY, value: 1000 }, { at: 14 * DAY, value: -1000 }];
+    expect(trend({ ...p, rows: [...outside, ...p.rows] }, context)).toMatchObject({ direction: 'rising', count: 14 });
+    expect(trend({ ...p, window_ms: 6 * DAY }, context)).toMatchObject({ status: 'known', count: 7 });
+    expect(trend({ ...p, window_ms: 6 * DAY - 1 }, context)).toEqual({ status: 'unknown', direction: null, slope: null,
+      change: null, spread: null, count: 6, latest: { value: 63, at: 13 * DAY }, evidence: p.rows.slice(8) });
+    const many = Array.from({ length: TREND_MAX_SAMPLES + 1 }, (_, i) => ({ at: i, value: i }));
+    expect(trend({ ...p, rows: many, now: TREND_MAX_SAMPLES, window_ms: 2 * TREND_MAX_SAMPLES }, context))
+      .toMatchObject({ status: 'unknown', direction: null, count: TREND_MAX_SAMPLES + 1 });
+    expect(trend({ ...p, rows: many.slice(1), now: TREND_MAX_SAMPLES, window_ms: 2 * TREND_MAX_SAMPLES }, context))
+      .toMatchObject({ status: 'known', direction: 'rising', count: TREND_MAX_SAMPLES });
+  });
+  it('is unknown when the latest is older than max_age_ms', () => {
+    const p = { ...args(rising), now: 15 * DAY, window_ms: 16 * DAY };
+    expect(trend({ ...p, max_age_ms: 2 * DAY - 1 }, context)).toEqual({ status: 'unknown', direction: null, slope: null,
+      change: null, spread: null, count: null, latest: { value: 63, at: 13 * DAY }, evidence: [p.rows[13]] });
+    expect(trend({ ...p, max_age_ms: 2 * DAY }, context)).toMatchObject({ status: 'known', direction: 'rising' });
+  });
+  it('refuses bad arguments and equal-time conflicts instead of guessing', () => {
+    const p = args(rising);
+    for (const bad of [{ window_ms: 0 }, { min_count: 1 }, { min_count: 7.5 }, { value_field: '' }, { max_age_ms: -1 }, { now: undefined }]) {
+      expect(trend({ ...p, ...bad }, context)).toMatchObject({ status: 'unknown', latest: null, count: null });
+    }
+    expect(trend({ ...p, rows: [...p.rows, { at: 13 * DAY, value: 1 }] }, context)).toMatchObject({ status: 'unknown', latest: null });
+    expect(trend({ ...p, rows: [...p.rows, { ...p.rows[13]! }] }, context)).toMatchObject({ status: 'known', count: 14 });
+  });
+  it('reads each series only against its own history, sorted by its key', () => {
+    const series = (metric: string, values: number[]) => values.map((value, i) => ({ at: i * DAY, metric, value }));
+    const result = trend({ ...args(rising), rows: [...series('weight', rising.map(value => 100 - value)), ...series('hrv_rmssd', rising)],
+      series_fields: ['metric'] }, context);
+    expect(result).toMatchObject([
+      { series: { metric: 'hrv_rmssd' }, status: 'known', direction: 'rising' },
+      { series: { metric: 'weight' }, status: 'known', direction: 'falling' },
+    ]);
+    expect(trend({ ...args(rising), series_fields: ['metric', ''] }, context)).toEqual([]);
   });
 });

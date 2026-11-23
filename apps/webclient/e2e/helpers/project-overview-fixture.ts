@@ -50,7 +50,16 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
     let omitLinkConfirmation = false;
     let holdLinkWrite = false;
     let heldLinkWrite: (() => void) | undefined;
+    let holdTaskWrite = false, loseTaskReply = false, legacyTaskPages = false;
+    let releaseTaskWrite: (() => void) | undefined;
     const controls = { reads, writes,
+      patchTask(id: string, patch: Partial<Extract<WorkEntity, { _kind: 'task' }>>) {
+        entities = entities.map(entity => entity._kind === 'task' && entity.id === id ? { ...entity, ...patch } : entity);
+      },
+      legacyTaskPages(value: boolean) { legacyTaskPages = value; },
+      holdTaskWrite() { holdTaskWrite = true; },
+      releaseTaskWrite() { if (!releaseTaskWrite) throw new Error('No task write is waiting.'); const done = releaseTaskWrite; releaseTaskWrite = undefined; done(); },
+      loseTaskReply() { loseTaskReply = true; },
       holdNextLinkWrite() { holdLinkWrite = true; },
       releaseLinkWrite() { if (!heldLinkWrite) throw new Error('No project link write is waiting.'); const finish = heldLinkWrite; heldLinkWrite = undefined; finish(); },
       confirmLink(id: string) { entities = entities.map(entity => {
@@ -98,27 +107,31 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
           ...(args.kind === 'commitment' ? { counterparty_labels: contactLabels } : {}),
           ...(args.kind === 'project' && args.id === 'other' ? { source_freshness: { source_id: 'remote.project', state: 'stale', last_success_at: now } } : {}) } };
       }
+      if (method === 'work_entity.project.attention') return { error: { code: 'unknown_method', message: 'This older fixture does not support attention.' } };
       if (method === 'work_entity.project.items') {
         const args = raw as WorkEntityProjectItemsRpcRequest;
         reads.push(args);
         if (args.kind === 'note' && noteFailure) return { error: { code: 'unavailable', message: 'Notes read interrupted.' } };
-        const rows = entities.filter(entity => args.kind === 'task' ? entity._kind === 'task' && entity.parent_project_id === args.project_id
+        let rows = entities.filter(entity => args.kind === 'task' ? entity._kind === 'task' && entity.parent_project_id === args.project_id
           : args.kind === 'note' ? entity._kind === 'note' && entity.related_project_ids.includes(args.project_id)
             : entity._kind === 'commitment' && entity.blocks_project_ids.includes(args.project_id)
               && (args.commitment_status === 'all' || entity.lifecycle_state === 'pending'));
+        const totalTasks = rows.length, openTasks = rows.filter(entity => entity._kind === 'task' && !entity.done).length;
+        if (args.kind === 'task' && !legacyTaskPages && args.task_completion && args.task_completion !== 'all')
+          rows = rows.filter(entity => entity._kind === 'task' && entity.done === (args.task_completion === 'completed'));
         rows.sort((a, b) => a._kind === 'commitment' && b._kind === 'commitment'
           ? Number(a.lifecycle_state !== 'pending') - Number(b.lifecycle_state !== 'pending')
             || (a.promised_for_at ?? Infinity) - (b.promised_for_at ?? Infinity) || a.id.localeCompare(b.id)
           : Number(a._kind === 'task' && a.done) - Number(b._kind === 'task' && b.done) || a.id.localeCompare(b.id));
         const offset = args.offset ?? 0, limit = args.limit ?? 10;
         const response = { result: { project_id: args.project_id, kind: args.kind, offset, total: rows.length,
-          ...(args.kind === 'task' ? { open_tasks: rows.filter(entity => entity._kind === 'task' && !entity.done).length } : {}),
+          ...(args.kind === 'task' ? { open_tasks: openTasks, ...(!legacyTaskPages ? { total_tasks: totalTasks, task_completion: args.task_completion ?? 'all' } : {}) } : {}),
           ...(args.kind === 'commitment' ? { commitment_status: args.commitment_status ?? 'open' } : {}),
           items: rows.slice(offset, offset + limit).map(entity => ({ id: entity.id,
             title: entity._kind === 'commitment' ? entity.statement : entity._kind === 'task' || entity._kind === 'note' ? entity.title ?? 'Note' : '',
             excerpt: entity._kind === 'task' || entity._kind === 'note' ? entity.body ?? '' : '', source_id: entity.source_id,
             source_label: 'Recued', updated_at: entity.updated_at, stale: false, pending_write: entity.pending_write !== undefined,
-            ...(entity._kind === 'task' ? { done: entity.done, ...(entity.due_at !== undefined ? { due_at: entity.due_at } : {}) } : {}),
+            ...(entity._kind === 'task' ? { ...(!legacyTaskPages ? { created_at: entity.created_at, source_record_id: entity.source_record_id } : {}), done: entity.done, ...(entity.due_at !== undefined ? { due_at: entity.due_at } : {}) } : {}),
             ...(entity._kind === 'commitment' ? { commitment: { direction: entity.direction, lifecycle_state: entity.lifecycle_state,
               due_status: entity.due_status, ...(entity.promised_for_at !== undefined ? { promised_for_at: entity.promised_for_at } : {}),
               ...(entity.counterparty_contact_id ? { counterparty_label: contactLabels[entity.counterparty_contact_id as keyof typeof contactLabels] } : {}) } } : {}) })) } };
@@ -170,8 +183,10 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
         writes.push({ method, ...args });
         const task = entities.find(entity => entity._kind === 'task' && entity.id === args.id);
         if (!task) throw new Error('Missing fixture task');
+        if (holdTaskWrite) { holdTaskWrite = false; await new Promise<void>(done => { releaseTaskWrite = done; }); }
         const saved = { ...task, done: args.done, updated_at: now + writes.length };
         entities = entities.map(entity => entity === task ? saved : entity);
+        if (loseTaskReply) { loseTaskReply = false; return { error: { code: 'upstream_error', message: 'Task response lost. Check its current status.' } }; }
         return { result: { entity: saved } };
       }
       if (method === 'work_entity.commitment.fulfill' || method === 'work_entity.commitment.cancel') {
@@ -190,6 +205,11 @@ export const installProjectOverviewFixture = async (page: Page, failNotes = fals
 };
 
 declare global { interface Window { __projectOverview: {
+  patchTask(id: string, patch: Partial<Extract<WorkEntity, { _kind: 'task' }>>): void;
+  legacyTaskPages(value: boolean): void;
+  holdTaskWrite(): void;
+  releaseTaskWrite(): void;
+  loseTaskReply(): void;
   reads: WorkEntityProjectItemsRpcRequest[];
   writes: Array<Record<string, unknown>>;
   changeLinks(kind: 'task' | 'note', id: string, projects: string[]): void;

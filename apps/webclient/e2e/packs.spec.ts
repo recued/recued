@@ -68,6 +68,37 @@ const acknowledgeRemoval = async (page: Page, slug: string) => {
   return confirm;
 };
 
+// D-404 slice B2 (D-323's P6) — a pack page opened from a chat answer's install offer offers the way back.
+test('D-404 slice B2 — a pack page opened from a chat answer offers Back to chat; opened from Packs, none', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?packs=installed#packs/installed-mail/return/chat/chat_1/message_9`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const back = page.locator('[data-packs-back-to-chat]');
+  await expect(back).toHaveAttribute('href', '#chat/session/chat_1/answer/message_9');
+  await expect(back).toHaveText('Back to chat');
+  await page.goto(`${HARNESS_URL}?packs=installed#packs/installed-mail`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-recued-packs-detail-tab="use"]').first()).toBeVisible();
+  await expect(page.locator('[data-packs-back-to-chat]')).toHaveCount(0);
+});
+
+test('D-404 slice E — an installed pack with nothing in Yours to work on: Needs attention and its page say so, with Yours\' form', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?packs=installed&pack_things=1#packs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  // The row's badge, and Needs attention once opened (it starts closed).
+  await expect(page.getByText('Needs a thing in Yours', { exact: true }).first()).toBeVisible();
+  const needs = page.locator('[data-recued-packs-needs]');
+  await needs.getByText('Needs attention (1)').click();
+  await expect(needs.getByText('Needs a thing in Yours')).toBeVisible();
+  await page.goto(`${HARNESS_URL}?packs=installed&pack_things=1#packs/installed-mail`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const things = page.locator('[data-recued-packs-things]');
+  await expect(things.getByRole('heading', { name: 'Things in Yours', exact: true })).toBeVisible();
+  await expect(things).toContainText('No Passport or ID card in Yours yet. One of them is enough.');
+  await expect(things.getByRole('link', { name: 'Add an ID card', exact: true })).toHaveAttribute('href', '#yours/new/travel_id_card');
+  await things.getByRole('link', { name: 'Add a Passport', exact: true }).click();
+  await expect(page).toHaveURL(/#yours\/new\/travel_passport$/u);
+});
+
 test('Packs Add preserves a slug while its IME composition is active', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#packs'));
 

@@ -13,33 +13,15 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { serverEntry } from './helpers/server-bundle.js';
 
-const binPath = join(__dirname, '..', '..', 'dist', 'bin.js');
+// Always exercise this checkout's fresh server, not a stale or unbundled dist emit.
+const entry = await serverEntry();
 let tmp: string;
 let dbPath: string;
-
-const runOnce = (args: string[]): SpawnSyncReturns<string> => spawnSync('node', [binPath, '--db', dbPath, ...args], {
-  encoding: 'utf-8',
-  env: { ...process.env, RECUED_SKIP_DB_INIT: '0' },
+const run = (args: string[]): SpawnSyncReturns<string> => spawnSync(process.execPath, [...entry, '--db', dbPath, ...args], {
+  encoding: 'utf-8', env: { ...process.env, RECUED_SKIP_DB_INIT: '0' },
 });
-
-const transientDistImportError = (result: SpawnSyncReturns<string>): boolean =>
-  result.status !== 0
-  && /ERR_MODULE_NOT_FOUND|Cannot find package|Cannot find module|SyntaxError|Unexpected end/i
-    .test(result.stderr);
-
-const sleepSync = (ms: number): void => {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-};
-
-const run = (args: string[]): SpawnSyncReturns<string> => {
-  let result = runOnce(args);
-  for (let attempt = 0; attempt < 5 && transientDistImportError(result); attempt++) {
-    sleepSync(100);
-    result = runOnce(args);
-  }
-  return result;
-};
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'recued-cli-llm-'));
@@ -50,23 +32,7 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-// Skip when the CLI can't run from dist (e.g., workspace not built, or the
-// source-as-main `@recued/*` packages haven't been transpiled so raw `node`
-// can't resolve them). We do a live smoke to detect both. The unit-level
-// coverage of the underlying LLMConfigManager lives in llm-config.test.ts;
-// this file covers the CLI-level parsing only.
-const cliRunnable = (() => {
-  try {
-    require('node:fs').statSync(binPath);
-    const probe = spawnSync('node', [binPath, '--help'], { encoding: 'utf-8', timeout: 5_000 });
-    // Successful help prints to stdout; if the process exploded on import
-    // (e.g., ERR_MODULE_NOT_FOUND from un-transpiled packages), stderr has
-    // the stack and status is non-zero.
-    return probe.status === 0 && !!probe.stdout;
-  } catch { return false; }
-})();
-
-describe.skipIf(!cliRunnable)('recued-server llm CLI', () => {
+describe('recued-server llm CLI', () => {
   it('`set-slot slot_1` persists, `show` redacts the key', () => {
     const set = run([
       'llm', 'set-slot', 'slot_1',

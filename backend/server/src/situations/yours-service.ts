@@ -2,8 +2,10 @@ import { createTripDetailsStore, tripFromSource } from '../storage/trip-details-
 import { createHash } from 'node:crypto';
 import { canonicalRecipeDefinition, canonicalJsonString } from '@recued/recipes';
 import type Database from 'better-sqlite3';
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, assetConditionHolds, normalizeAssetDocumentDetails, isAssetDate, assetDateAt, calendarDayMs, kernelOpForBackingSlug, occasionNextDate, PROACTIVE_PROPOSAL_KINDS, PURSUIT_CLASS_ID, shiftAssetDate, zonedWallClockToEpochMs, type Asset, type AssetCreateInput, type AssetPatch, type AssetRule, type ExecutionSource,
-  type ProactiveProposal, type SituationRef, type YoursAssetSummary, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
+import { OCCASION_TIME, occasionIsPrivate, ASSET_DOCUMENT_DETAILS_ATTRIBUTE, assetConditionHolds, normalizeAssetDocumentDetails, isAssetDate, assetDateAt, calendarDayMs, kernelOpForBackingSlug, occasionNextDate, PROACTIVE_PROPOSAL_KINDS, PURSUIT_CLASS_ID, shiftAssetDate, zonedWallClockToEpochMs, type Asset, type AssetCreateInput, type AssetPatch, type AssetReading, type AssetRule, type ExecutionSource,
+  type ProactiveProposal, type SituationRef, type YoursAssetSummary, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot,
+  BODY_CLASS_ID, WEARABLE_CLASS_ID, BODY_GOAL_SETTING, BODY_RANGES_SETTING, bodyGoalWay, isBodyGoalField, readBodyGoal, readBodyRanges, type BodyGoal, type BodyGoalField,
+  type BodyGoalProgress, type BodyRange } from '@recued/contracts';
 import type { ConnectionRow } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
 import { assetSummaryHistoryFields, type WorkEntityStore } from '../storage/work-entity-store.js';
@@ -18,6 +20,7 @@ import type { MailFactStore } from '../storage/mail-fact-store.js';
 import { LINK_TABLE, type AnnotationStore } from '../storage/annotation-store.js';
 import type { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createAssetClassStore, assetClassPatch } from './asset-classes.js';
+import { typeIdsNamedLike, typesARecipeActsOn } from '../next-steps/thing-steps.js';
 import { assetTypeNeedsHolder } from './asset-types.js';
 import { createAssetIntake } from './asset-intake.js';
 import { createMailProof, MAIL_PROOF_TAG, proofTarget } from './mail-proof.js';
@@ -25,6 +28,10 @@ import type { AssetOccurrenceService } from './asset-occurrence-service.js';
 import { assetOccurrenceClock } from './asset-interval-cycle.js';
 import { assetRenewal } from './asset-rule-timing.js';
 import { summarizeYoursAsset } from './asset-summary.js';
+import { assetReadingTrends } from './asset-reading-trends.js';
+import { assetReadingStaleness, readingDay } from './asset-reading-staleness.js';
+import { bodyGoalProgress } from './body-goals.js';
+import { readingWords } from './values-on-request.js';
 import type { AssetReminderService } from './asset-reminder-service.js';
 import type { EpisodeRuntime } from './episode-runtime.js';
 import { createHouseholdDeliveryStore, telegramHouseholdRoute } from '../storage/household-delivery-store.js';
@@ -38,6 +45,8 @@ import type { ProactiveLearning } from './learning-runtime.js';
 import { ruleNotice } from './rule-titles.js';
 import { assetContextWriters, createAssetFactContextReader } from './asset-fact-context.js';
 import { createAssetWriterSetup, type AssetWriterSetup, type AssetWriterRuntime } from './asset-writer-setup.js';
+import { createBodySummarySetup, type BodySummarySetup } from './body-summary-setup.js';
+import { createWearableCheckSetup, type WearableCheckSetup } from './wearable-check-setup.js';
 import { compareSavedAssetReading } from '../asset-reading-comparison.js';
 
 /** "Never this kind" names what stops, in the owner's words; a mail fact kind as the learner names it. */
@@ -61,6 +70,9 @@ const text = (raw: unknown, field: string): string => {
 };
 export interface YoursServiceDeps {
   db: Database.Database;
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers, shown on a Body's page. Absent ⇒
+   *  the page shows no switch. */
+  bodyNumbers?: () => import('@recued/contracts').BodyNumbersMode;
   work: WorkEntityStore;
   dispatchers: ReturnType<typeof createWorkEntityDispatchers>;
   occurrences: AssetOccurrenceService;
@@ -72,6 +84,11 @@ export interface YoursServiceDeps {
   episodeRuntime?: EpisodeRuntime;
   connections?(): readonly ConnectionRow[];
   homeAssistant?: import('./household-home-assistant.js').HouseholdHomeAssistant;
+  /** D-407 slice 4 — each occasion's own calendar event as last written. Absent: this server writes none, and the
+   *  snapshot does not offer it. */
+  occasionEvents?(): NonNullable<YoursSnapshot['occasion_events']>;
+  /** D-407 slice 5 — the Occasion tick on an event in the owner's calendar (`occasion.adopt_event`, `occasion.release_event`). */
+  occasionEventAdoption?: import('./occasion-event-adoption.js').OccasionEventAdoption;
   learning?: ProactiveLearning;
   sphereSources?(): Array<{ source: string; name: string }>;
   /** The mailboxes whose mail is read for facts, each with its own address:
@@ -80,6 +97,10 @@ export interface YoursServiceDeps {
   isVaultUnlocked?(): boolean;
   now?(): number;
   timeZone?(): string;
+  /** D-339 slice 10 — a reading's days for its page's line, when they live elsewhere than its
+   *  history: a Body reading's in Records (`asset-reading-days.ts`). Undefined for a reading they
+   *  don't, which keeps its history. Absent ⇒ every reading draws its history. */
+  readingDays?(asset: Asset, field: string, limit: number, since: number): ReadonlyArray<AssetReading & { day: string }> | undefined;
   /** D-343 slice 4 (ruling 20) — opens a conversation in the app holding a notice (`chat-notices.ts`
    *  `openNoticeConversation`), for Today's "Close the day". Absent ⇒ Today offers no button. */
   openNoticeConversation?(notice: { title: string; text: string }): Promise<{ session_id: string; message_id: string }>;
@@ -113,6 +134,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
   let recipes: import('../recipe-store.js').RecipeStore | undefined;
   let writers: AssetWriterSetup | undefined;
   let scheduled: import('./scheduled-situations.js').ScheduledSituations | undefined;
+  let emailCloseDay: import('../email-close-day.js').EmailCloseDay | undefined;
   /** D-340 slice 2 — once the streams take over, the Agenda's and Coming up's own settings and Send
    *  now no longer send anything: a client that still offers them is told where they went. */
   const streamsTookOver = (): void => {
@@ -168,8 +190,64 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       source: { kind: 'owner', ref: `owner:${owner.channel === 'user' ? owner.user_id : 'local'}` }, preset_application: true }, now());
     if (JSON.stringify(updated) !== JSON.stringify(current)) deps.dispatchers.ruleAssetWritten(updated, current);
     await deps.occurrences.reconcileAsset(updated.id);
+    // D-339 slice 19 — a Body's type update can add readings: its summary is enrolled again for every one, or its
+    // write is refused whole for a field the binding lacks (slice 14). The update stands whatever happens here;
+    // the Body's page offers Set up the summary while it is not ready.
+    if (updated.class_id === BODY_CLASS_ID) { try { bodySummary()?.ensure(updated); } catch { /* the page offers it */ } }
     return { asset: updated };
   };
+  /** A recipe enrolled as an asset's writer (`binding.save`): the installed version, for these fields. */
+  const enrolWriter = (asset_id: string, recipe_id: string, fields: readonly string[], expected_recipe_hash?: string): { id: string } => {
+    const current = asset(asset_id); const row = recipes?.getStored(recipe_id);
+    if (!['active', 'lent'].includes(current.status) || current.sync_state !== 'live') throw new Error('Choose an active local asset before enrolling its writer');
+    if (!row) throw new Error('Select an installed recipe');
+    const recipe = recipes!.get(recipe_id);
+    if (!recipe || definitionDigest(recipe) !== definitionDigest(JSON.parse(row.recipe_json))) throw new Error('The effective recipe differs from its installed version. Review that version first');
+    if (!observationRecipe(recipe)) throw new Error('This installed recipe has no asset observation write');
+    const recipe_hash = definitionDigest(recipe); const actor_ref = `recipe:${recipe_id}`;
+    if (expected_recipe_hash !== undefined && expected_recipe_hash !== recipe_hash) throw new Error('This recipe changed while you were reviewing it. Refresh and review its current version before enrolling it.');
+    const source_ref = `recipe:${row.publisher_id}/${recipe_id}#${recipe_hash}`;
+    const id = `binding-${createHash('sha256').update(JSON.stringify([current.id, actor_ref, source_ref])).digest('hex')}`;
+    deps.db.transaction(() => {
+      for (const old of deps.work.listAssetObservationBindings(current.id)) if (old.actor_ref === actor_ref && old.id !== id && old.enabled) deps.work.bindAssetObservations({ ...old, enabled: false });
+      deps.work.bindAssetObservations({ id, asset_id: current.id, actor_ref, source_ref, recipe_hash, fields: [...fields], enabled: true });
+    })();
+    return { id };
+  };
+  /** D-339 slice 19 — the Body's summary set up by itself. Needs the dishes, which the composition binds late. */
+  let writerDishes: AssetWriterRuntime['dishes'] | undefined;
+  let writerSchedules: AssetWriterRuntime['schedules'] | undefined;
+  const bodySummary = () => recipes && writerDishes ? createBodySummarySetup({ recipes, dishes: writerDishes, enrol: enrolWriter }) : undefined;
+  /** D-339 slice 20 — a Wearable's sync check, set up by itself once it belongs to a Body (dishes and schedules). */
+  const wearableCheck = () => recipes && writerDishes && writerSchedules ? createWearableCheckSetup({ recipes, dishes: writerDishes,
+    schedules: writerSchedules, enrol: enrolWriter, assetOf: id => deps.work.readAsset(id) ?? undefined }) : undefined;
+  const wearableCheckWords = (done: WearableCheckSetup) => done.dish === 'kept' && done.schedule === 'kept'
+    ? 'Its sync check is already set up.'
+    : 'Its sync check is set up: each day, and after each post or pull, it looks for this device’s newest reading.';
+  /** A Wearable that belongs to a Body: its check, set up; the message to add; undefined for anything else. */
+  const setUpWearableCheck = (current: Asset): string | undefined => {
+    if (current.class_id !== WEARABLE_CLASS_ID || !current.belongs_to) return undefined;
+    try {
+      const done = wearableCheck()?.ensure(current);
+      return done ? wearableCheckWords(done) : undefined;
+    } catch (error) {
+      return `Its sync check could not be set up (${error instanceof Error ? error.message : String(error)}): choose Set up the sync check on its page.`;
+    }
+  };
+  /** D-339 slice 22 — a Wearable whose parent changed: under a Body, its check set up (or kept); under none, or under
+   *  a parent that is not a Body, its check switched off until it has one again. The message to add, if any. */
+  const followWearableBody = (current: Asset): string | undefined => {
+    if (current.class_id !== WEARABLE_CLASS_ID) return undefined;
+    if (current.belongs_to && deps.work.readAsset(current.belongs_to)?.class_id === BODY_CLASS_ID) return setUpWearableCheck(current);
+    try {
+      return wearableCheck()?.pause(current) ? 'Its sync check is off until it belongs to a Body again.' : undefined;
+    } catch (error) {
+      return `Its sync check could not be switched off (${error instanceof Error ? error.message : String(error)}).`;
+    }
+  };
+  const bodySummaryWords = (done: BodySummarySetup) => done.dish === 'kept'
+    ? 'The summary is already set up for this Body.'
+    : 'The summary is set up: it writes this Body’s readings from Records after each post, and after a weight or height you type.';
   const create = async (input: Omit<AssetCreateInput, 'source'>, class_id: string | undefined, owner: ExecutionSource, evidence?: string) => {
     const chosen = class_id ?? input.class_id ?? undefined;
     const preset = chosen ? classes.get(chosen) : null;
@@ -181,6 +259,133 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         class_version: preset.version, class_rule_ids: preset.rules.map(rule => rule.id) }, rules: input.rules ?? structuredClone(preset.rules) } : input;
     return deps.dispatchers.assetCreate({ ...patch, ...ownerArgs(owner),
       ...(evidence ? { source: { kind: 'confirmed_document', ref: evidence } } : {}) });
+  };
+  // D-339 slice 15 (§6; D-342 §17) — body goals. A goal is a pursuit whose `settings.goal` names a Body and
+  // one of its body-composition readings; its progress is that reading, worked out when read.
+  const GOAL_PROPOSAL_CLASS = 'goal-reached';
+  const goalZone = () => deps.timeZone?.() ?? 'UTC';
+  /** D-407 slice 2 (Q2, D-269) — a time of day sent without its zone is on the owner's clock: the server stamps the
+   *  owner's zone, never the zone of whichever browser sent it. */
+  const ownerZoned = <T extends { time?: string; time_zone?: string }>(occasion: T): T =>
+    typeof occasion.time === 'string' && occasion.time_zone === undefined ? { ...occasion, time_zone: goalZone() } : occasion;
+  /** The active pursuits that keep a goal, with it. */
+  const goalPursuits = (): Array<{ pursuit: Asset; goal: BodyGoal }> =>
+    deps.work.listAssets({ asset_class: { id: PURSUIT_CLASS_ID, match: 'only' }, limit: 200 }).flatMap(pursuit => {
+      const goal = pursuit.deleted_at == null && ['active', 'lent'].includes(pursuit.status) ? readBodyGoal(pursuit.settings) : undefined;
+      return goal ? [{ pursuit, goal }] : [];
+    });
+  /** From the Body's days in Records, as its page reads them; else the reading's own history. */
+  const goalProgress = (pursuit: Pick<Asset, 'id' | 'name' | 'dates'>, goal: BodyGoal): BodyGoalProgress => {
+    const body = deps.work.readAsset(goal.asset_id);
+    return bodyGoalProgress(pursuit, goal, body, (field, limit, since) => (body ? deps.readingDays?.(body, field, limit, since) : undefined)
+      ?? deps.work.assetReadingHistory(goal.asset_id, field, limit, since), now(), goalZone());
+  };
+  /** A goal's reading at the start of its name: "Weight", "Body fat". */
+  const goalReadingTitle = (reading: BodyGoalField): string => { const words = readingWords(reading); return words.charAt(0).toUpperCase() + words.slice(1); };
+  const setGoal = async (input: Extract<YoursCommand, { action: 'goal.set' }>, owner: ExecutionSource): Promise<YoursCommandResult> => {
+    const body = asset(text(input.asset_id, 'Body'));
+    if (body.class_id !== BODY_CLASS_ID || !['active', 'lent'].includes(body.status)) throw new Error('A goal is set on a Body.');
+    if (!isBodyGoalField(input.reading)) throw new Error('A goal can be set on weight, body fat, lean body mass, muscle mass or waist.');
+    const words = readingWords(input.reading);
+    const reading = body.readings[input.reading] ?? null;
+    if (!reading || !Number.isFinite(reading.value)) throw new Error(`Set a goal once the Body has a ${words} reading.`);
+    const target = input.target;
+    if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0 || reading.unit === '%' && target >= 100)
+      throw new Error(`Enter the ${words} you are working toward, in ${reading.unit}.`);
+    if (input.target_on != null && !isAssetDate(input.target_on)) throw new Error('Choose a date, or leave it empty.');
+    const why = typeof input.why === 'string' ? input.why.trim() : '';
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    if (name.length > 200) throw new Error('Keep the name under 200 characters.');
+    // One goal a reading: a Body with a weight goal changes that one.
+    const mine = goalPursuits().filter(row => row.goal.asset_id === body.id && row.goal.reading === input.reading);
+    if (input.pursuit_id !== undefined) {
+      const own = mine.find(row => row.pursuit.id === input.pursuit_id);
+      if (!own) throw new Error('This goal has ended or changed. Refresh the page.');
+      // Its start stays: it says which way the goal goes. A Body whose reading is in another unit now starts it there.
+      const goal: BodyGoal = own.goal.unit === reading.unit ? { ...own.goal, target }
+        : { ...own.goal, target, unit: reading.unit, start: reading.value, start_day: readingDay(reading, goalZone()) };
+      if (target === goal.start) throw new Error(`That is where it started. Enter the ${words} you are working toward.`);
+      await update(own.pursuit.id, { settings: { [BODY_GOAL_SETTING]: goal }, ...(name ? { name } : {}),
+        ...(input.target_on !== undefined ? { dates: { target_on: input.target_on } } : {}),
+        ...(input.why !== undefined ? { attributes: { why: why || null } } : {}) }, owner);
+      return { id: own.pursuit.id, message: 'Goal changed.' };
+    }
+    if (mine.length) throw new Error(`${body.name} already has a ${words} goal. Change that one.`);
+    if (target === reading.value) throw new Error(`That is where it is now. Enter the ${words} you are working toward.`);
+    // The start and the unit are the Body's, never the page's.
+    const goal: BodyGoal = { asset_id: body.id, reading: input.reading, target, unit: reading.unit, start: reading.value, start_day: readingDay(reading, goalZone()) };
+    const created = await create({ name: name || `${goalReadingTitle(input.reading)} goal · ${body.name}`,
+      // It takes the Body's privacy (D-342 §17): private in messages, its numbers held from a model's general reads.
+      settings: { [BODY_GOAL_SETTING]: goal, sensitive: body.settings.sensitive === true, values_on_request: body.settings.values_on_request === true },
+      ...(input.target_on ? { dates: { target_on: input.target_on } } : {}), ...(why ? { attributes: { why } } : {}) }, PURSUIT_CLASS_ID, owner);
+    return { id: created.asset.id, message: 'Goal set.' };
+  };
+  /** D-339 slice 16 — the owner's own range for a Body's reading, kept on the Body: not a pursuit, since nothing
+   *  ends. The same bounds again say it is still right (its day is today's); both null remove it. */
+  const setRange = async (input: Extract<YoursCommand, { action: 'range.set' }>, owner: ExecutionSource): Promise<YoursCommandResult> => {
+    const body = asset(text(input.asset_id, 'Body'));
+    if (body.class_id !== BODY_CLASS_ID || !['active', 'lent'].includes(body.status)) throw new Error('A range is set on a Body.');
+    if (!isBodyGoalField(input.reading)) throw new Error('A range can be set on weight, body fat, lean body mass, muscle mass or waist.');
+    const words = readingWords(input.reading);
+    const ranges = readBodyRanges(body.settings);
+    if (input.low == null && input.high == null) {
+      if (!ranges[input.reading]) return { id: body.id, message: 'There was no range to remove.' };
+      const { [input.reading]: _removed, ...rest } = ranges;
+      await update(body.id, { settings: { [BODY_RANGES_SETTING]: rest } }, owner);
+      return { id: body.id, message: 'Range removed.' };
+    }
+    // The unit is the Body's reading's, never the page's.
+    const reading = body.readings[input.reading] ?? null;
+    if (!reading || !Number.isFinite(reading.value)) throw new Error(`Set a range once the Body has a ${words} reading.`);
+    const bound = (value: number | null | undefined, end: string): number | undefined => {
+      if (value == null) return undefined;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || reading.unit === '%' && value >= 100)
+        throw new Error(`Enter the ${end} of your ${words} range, in ${reading.unit}.`);
+      return value;
+    };
+    const low = bound(input.low, 'low end'); const high = bound(input.high, 'high end');
+    if (low !== undefined && high !== undefined && low >= high) throw new Error('Make the low end less than the high end.');
+    const range: BodyRange = { ...(low !== undefined ? { low } : {}), ...(high !== undefined ? { high } : {}), unit: reading.unit,
+      set_on: assetDateAt(now(), goalZone()) };
+    await update(body.id, { settings: { [BODY_RANGES_SETTING]: { ...ranges, [input.reading]: range } } }, owner);
+    return { id: body.id, message: ranges[input.reading] ? 'Range changed.' : 'Range set.' };
+  };
+  const sameGoal = (goal: BodyGoal, payload: Record<string, unknown>): boolean =>
+    payload.reading === goal.reading && payload.target === goal.target && payload.unit === goal.unit;
+  /** "Looks reached" (§6): proposed once the 7-day average is at or past the target, withdrawn when it moves
+   *  off before the owner answers or the goal changes or ends, and not asked again for a target the owner
+   *  answered. No number in it: a proposal is published as a situation, which Today, messages and a model's
+   *  reads can show. */
+  const refreshGoals = () => {
+    let rows: ReturnType<typeof goalPursuits>;
+    try { rows = goalPursuits(); } catch (error) { console.warn('[yours] Goals unavailable', error); return; }
+    const live = new Map<string, { pursuit: Asset; goal: BodyGoal; reached: boolean }>();
+    for (const { pursuit, goal } of rows) {
+      let reached = false;
+      try { reached = goalProgress(pursuit, goal).reached; } catch (error) { console.warn('[yours] Goal progress unavailable', pursuit.id, error); }
+      live.set(pursuit.id, { pursuit, goal, reached });
+    }
+    const open: ProactiveProposal[] = [];
+    for (const proposal of proposals.list({ state: 'proposed', kind: 'goal', limit: 10000 })) {
+      const row = live.get(String(proposal.payload.asset_id));
+      if (!row || !row.reached || !sameGoal(row.goal, proposal.payload)) proposals.outcome(proposal.id, 'retracted', now());
+      else open.push(proposal);
+    }
+    const answered = [...proposals.list({ state: 'dismissed', kind: 'goal', limit: 10000 }), ...proposals.list({ state: 'accepted', kind: 'goal', limit: 10000 })];
+    for (const { pursuit, goal, reached } of live.values()) {
+      if (!reached) continue;
+      const mine = (proposal: ProactiveProposal) => proposal.payload.asset_id === pursuit.id && sameGoal(goal, proposal.payload);
+      if (open.some(mine) || answered.some(mine)) continue;
+      const payload = { asset_id: pursuit.id, reading: goal.reading, target: goal.target, unit: goal.unit, proposal_class: GOAL_PROPOSAL_CLASS };
+      if (!proposals.allows({ kind: 'goal', payload })) continue;
+      // A key a day: one withdrawn today is not offered again today, and one that holds again later is.
+      proposals.ensure({ key: `goal-reached:${pursuit.id}:${goal.reading}:${String(goal.target)}:${goal.unit}:${assetDateAt(now(), goalZone())}`, kind: 'goal',
+        title: `Looks reached · ${pursuit.name}`,
+        explanation: `The ${readingWords(goal.reading)} has averaged at or ${bodyGoalWay(goal) === 'down' ? 'under' : 'over'} your goal over the last week. `
+          + 'Mark it reached, or keep going.',
+        payload, subject: { collection: 'asset', id: pursuit.id },
+        sources: [{ collection: 'asset', id: pursuit.id }, { collection: 'asset', id: goal.asset_id }], confidence: 'high', origin: 'pack' }, now());
+    }
   };
   const refreshQuestions = () => {
     for (const row of rows.all()) {
@@ -437,6 +642,13 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (proposal.state !== 'proposed') return proposal.result;
     const payload = proposal.payload;
     if (proposal.origin === 'intake' && (typeof payload.fact_id !== 'string' || !deps.mailFacts?.getFact(payload.fact_id))) throw new Error('The source was removed; this proposal needs fresh evidence');
+    if (proposal.kind === 'goal') {
+      // D-339 slice 15 — Mark reached ends the pursuit as Reached (D-342 ruling 8), if its goal is still the one proposed.
+      const id = text(payload.asset_id, 'Goal'); const current = asset(id); const goal = readBodyGoal(current.settings);
+      if (!goal || !['active', 'lent'].includes(current.status) || !sameGoal(goal, payload)) throw new Error('This goal has changed or ended. Review it on its page.');
+      await update(id, { status: 'retired', attributes: { ended_as: 'reached' } }, owner);
+      return { collection: 'asset', id };
+    }
     if (proposal.kind === 'asset') {
       const input = record(payload.asset) as Omit<AssetCreateInput, 'source'>;
       if (proposal.lane === 'gift' && !input.holder_contact) throw new Error('Choose the recipient before tracking a gift');
@@ -570,7 +782,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       if (proposal.origin === 'learner' && tripRefs && !deps.learning?.tripEvidenceAllowed(tripRefs)) throw new Error('These trips are no longer on file');
       if (proposal.origin === 'learner' && !tripRefs && !deps.learning?.memoryEvidenceAllowed(episodeIds)) throw new Error('This episode evidence is no longer available');
       return deps.db.transaction(() => {
-        const occasion = history.saveOccasion({ ...input, id: input.id ?? `occasion-${proposal.id}` }, now());
+        const occasion = history.saveOccasion(ownerZoned({ ...input, id: input.id ?? `occasion-${proposal.id}` }), now());
         for (const id of episodeIds) { const episode = history.episode(id); if (episode) history.saveEpisode({ ...episode, occasion_id: occasion.id, storage_reason: 'recurrence' }, now()); }
         const result = { collection: 'occasion', id: occasion.id }; proposals.outcome(proposal.id, 'accepted', now(), result); return result;
       })();
@@ -586,7 +798,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       let current = typeof payload.occasion_id === 'string' ? history.occasion(payload.occasion_id) : null;
       if (typeof payload.occasion_id === 'string' && (!current || learningDigest(current.rules) !== payload.baseline_occasion_hash)) throw new Error('This occasion changed. Review a new standing-task offer.');
       const proposed = record(payload.occasion) as unknown as import('@recued/contracts').OccasionInput;
-      const input = current ?? { ...proposed, id: `occasion-${proposal.id}`, rules: [] };
+      const input = current ?? ownerZoned({ ...proposed, id: `occasion-${proposal.id}`, rules: [] });
       const result = deps.db.transaction(() => {
         current ??= history.saveOccasion(input, now());
         if (!deps.learning?.allowsOccasion(current)) throw new Error('This occasion is excluded from memory suggestions');
@@ -626,7 +838,24 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (!owner || owner.channel !== 'user' || owner.actor !== 'user_self') throw new Error('Yours changes require the owner');
     if (!input || JSON.stringify(input).length > 256000) throw new Error('Invalid or oversized Yours change');
     switch (input.action) {
-      case 'asset.create': { const result = await create(input.input, input.class_id, owner); return { id: result.asset.id, message: 'Asset created.' }; }
+      case 'asset.create': {
+        const result = await create(input.input, input.class_id, owner);
+        // D-339 slice 19 — a Body's summary sets itself up when it is added. The Body stands whatever happens to it.
+        // D-339 slice 20 — a Wearable added under a Body: its sync check sets itself up.
+        const wearableWords = setUpWearableCheck(result.asset);
+        if (wearableWords) return { id: result.asset.id, message: `Wearable added. ${wearableWords}` };
+        if (result.asset.class_id === BODY_CLASS_ID) {
+          try {
+            const done = bodySummary()?.ensure(result.asset);
+            if (done) return { id: result.asset.id, message: `Body added. ${bodySummaryWords(done)}` };
+          } catch (error) {
+            return { id: result.asset.id, message: `Body added. Its summary could not be set up (${error instanceof Error ? error.message : String(error)}): choose Set up the summary on its page.` };
+          }
+        }
+        return { id: result.asset.id, message: 'Asset created.' };
+      }
+      case 'goal.set': return setGoal(input, owner);
+      case 'range.set': return setRange(input, owner);
       case 'asset.update': {
         const previous = asset(input.id);
         if (input.patch.status && ['sold', 'lost', 'retired'].includes(input.patch.status) && input.patch.status !== previous.status && !input.confirm_retirement) throw new Error('Review the parts, contracts and open occurrences before retiring this asset');
@@ -652,7 +881,13 @@ export const createYoursService = (deps: YoursServiceDeps) => {
           ? 'Automatic updates are already active for this field.'
           : 'Automatic updates allowed. Your entry stays until a fresh authorized observation arrives.' };
       }
-      case 'asset.link': await update(input.id, { belongs_to: input.parent_id }, owner); return { message: 'Parent updated.' };
+      case 'asset.link': {
+        await update(input.id, { belongs_to: input.parent_id }, owner);
+        // D-339 slice 20 — a Wearable moved under a Body: its sync check sets itself up. Slice 22: moved out of one,
+        // its check is switched off until it belongs to a Body again.
+        const words = followWearableBody(asset(input.id));
+        return { message: words ? `Parent updated. ${words}` : 'Parent updated.' };
+      }
       case 'asset.same_thing': await sameThing(input.id, input.other_id, input.merge, owner); return { message: input.merge ? 'References now point to the kept asset. Both source records remain in history.' : 'The two source records are linked.' };
       case 'class.save': classes.saveOwner(input.preset, input.create === true); return { id: input.preset.id, message: 'Class saved. Existing assets keep their edited rows.' };
       case 'class.delete': classes.deleteOwner(input.id); return { message: 'Class removed. Existing assets keep their rules.' };
@@ -729,9 +964,49 @@ export const createYoursService = (deps: YoursServiceDeps) => {
           const next = input.occasion.rules.find(value => value.id === rule.id);
           return input.occasion.muted || silencesClock(next);
         })())) throw new Error('Confirm stopping this safety, legal or travel clock');
-        const occasion = history.saveOccasion({ ...input.occasion,
-          ...(previous?.source ? { source_pinned: true, ...(previous.month_day !== input.occasion.month_day ? { source_next_on: undefined } : {}) } : {}) }, now());
-        await deps.reminders?.tick(); return { id: occasion.id, message: occasion.source_next_on !== undefined && !occasion.source ? 'Occasion saved with its one-time clock.' : 'Occasion saved with its annual clock.' };
+        const occasion = history.saveOccasion(ownerZoned({ ...input.occasion,
+          ...(previous?.source ? { source_pinned: true, ...(previous.month_day !== input.occasion.month_day ? { source_next_on: undefined } : {}) } : {}) }), now());
+        await deps.reminders?.tick(); return { id: occasion.id, message: occasion.after_each === true ? 'Occasion saved: after each one, Recued asks when the next is.' : occasion.source_next_on !== undefined && !occasion.source ? 'Occasion saved with its one-time clock.' : 'Occasion saved with its annual clock.' };
+      }
+      // D-407 slice 5 (§4.1, Q4, Q5) — the Occasion tick on an event in the owner's calendar: an occasion wraps it, or it
+      // is the next one of an occasion waiting for its date; on an event held already, its privacy. The event is never
+      // written.
+      case 'occasion.adopt_event': {
+        if (!deps.occasionEventAdoption) throw new Error('This server does not make occasions from calendar events');
+        const held = deps.occasionEventAdoption.block(input.slug, input.source_id)?.owner;
+        const occasion = deps.occasionEventAdoption.adopt(input); await deps.reminders?.tick();
+        const privacy = occasionIsPrivate(occasion) ? 'Private' : 'Shown by name';
+        return { id: occasion.id, message: held ? `${occasion.title} is ${privacy} now.`
+          : input.occasion_id !== undefined ? `This event is ${occasion.title}'s next one, ${privacy}. It stays as it is in your calendar.`
+            : `Occasion made around this event, ${privacy}. It follows the event, which stays as it is in your calendar.` };
+      }
+      case 'occasion.release_event': {
+        if (!deps.occasionEventAdoption) throw new Error('This server does not make occasions from calendar events');
+        const outcome = deps.occasionEventAdoption.release(input); await deps.reminders?.tick();
+        return { message: outcome === 'removed' ? 'The occasion made around this event is removed. The event stays in your calendar.'
+          : outcome === 'waiting' ? 'The event is let go, and its occasion waits for its next date again. The event stays in your calendar.'
+            : 'The event is not an occasion now. It stays in your calendar.' };
+      }
+      // D-407 slice 2 — "When is the next one?": its date sets the next one; `null` ("No next one") ends it, and it
+      // stays a one-time occasion that has happened.
+      case 'occasion.next': {
+        const occasion = history.occasion(input.id);
+        if (!occasion) throw new Error('Occasion not found');
+        if (occasion.after_each !== true) throw new Error('This occasion does not ask for its next date');
+        const { after_each: _after, ...rest } = occasion;
+        if (input.on === null) {
+          history.saveOccasion(rest, now()); await deps.reminders?.tick();
+          return { id: occasion.id, message: 'No next one: it keeps its last date.' };
+        }
+        const today = assetDateAt(now(), goalZone());
+        if (typeof input.on !== 'string' || !isAssetDate(input.on) || input.on < today) throw new Error(`Choose ${today} or a later date`);
+        // Its time of day, on its own zone, else the owner's; `null` makes it a day again.
+        // A day again keeps no alert either: an alert is minutes before a time.
+        const { time: _time, time_zone: _zone, alert_minutes: _alert, ...untimed } = occasion;
+        if (input.time !== undefined && input.time !== null && (typeof input.time !== 'string' || !OCCASION_TIME.test(input.time))) throw new Error('Choose a time as HH:mm');
+        const timed = input.time === undefined ? occasion : input.time === null ? untimed : { ...occasion, time: input.time, time_zone: occasion.time_zone ?? goalZone() };
+        history.saveOccasion({ ...timed, source_next_on: input.on, month_day: input.on.slice(5) }, now()); await deps.reminders?.tick();
+        return { id: occasion.id, message: `Next one saved: ${input.on}${typeof input.time === 'string' ? ` at ${input.time}` : ''}.` };
       }
       case 'occasion.delete':
         if (!input.confirm_floor_delete && history.occasion(input.id)?.rules.some(rule => rule.enabled && rule.consequence === 'floor')) throw new Error('Confirm removing this safety, legal or travel clock');
@@ -779,21 +1054,29 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }
       case 'trip.save': trips.save(input.trip); return { message: 'Trip details saved. Each traveller’s own passport is checked.' };
       case 'binding.save': {
-        const current = asset(input.asset_id); const row = recipes?.getStored(input.recipe_id);
-        if (!['active', 'lent'].includes(current.status) || current.sync_state !== 'live') throw new Error('Choose an active local asset before enrolling its writer');
-        if (!row) throw new Error('Select an installed recipe');
-        const recipe = recipes!.get(input.recipe_id);
-        if (!recipe || definitionDigest(recipe) !== definitionDigest(JSON.parse(row.recipe_json))) throw new Error('The effective recipe differs from its installed version. Review that version first');
-        if (!observationRecipe(recipe)) throw new Error('This installed recipe has no asset observation write');
-        const recipe_hash = definitionDigest(recipe); const actor_ref = `recipe:${input.recipe_id}`;
-        if (input.expected_recipe_hash !== undefined && input.expected_recipe_hash !== recipe_hash) throw new Error('This recipe changed while you were reviewing it. Refresh and review its current version before enrolling it.');
-        const source_ref = `recipe:${row.publisher_id}/${input.recipe_id}#${recipe_hash}`;
-        const id = `binding-${createHash('sha256').update(JSON.stringify([current.id, actor_ref, source_ref])).digest('hex')}`;
-        deps.db.transaction(() => {
-          for (const old of deps.work.listAssetObservationBindings(current.id)) if (old.actor_ref === actor_ref && old.id !== id && old.enabled) deps.work.bindAssetObservations({ ...old, enabled: false });
-          deps.work.bindAssetObservations({ id, asset_id: current.id, actor_ref, source_ref, recipe_hash, fields: input.fields, enabled: true });
-        })();
+        const { id } = enrolWriter(input.asset_id, input.recipe_id, input.fields, input.expected_recipe_hash);
         return { id, message: 'This recipe version can write only the selected readings and conditions. Copy its binding id into the recipe settings.' };
+      }
+      // D-339 slice 20 — "Set up the sync check" on a Wearable's page, the owner's own act.
+      case 'wearable.check.setup': {
+        const current = asset(input.asset_id);
+        if (current.class_id !== WEARABLE_CLASS_ID) throw new Error('Only a Wearable has a sync check to set up');
+        if (!current.belongs_to || deps.work.readAsset(current.belongs_to)?.class_id !== BODY_CLASS_ID) throw new Error('Choose the Body this Wearable belongs to first: its check reads that Body’s readings');
+        const setup = wearableCheck();
+        const done = setup?.ensure(current);
+        if (!done) throw new Error('The sync check can’t be set up here: install Body signals first');
+        return { id: done.binding_id, message: wearableCheckWords(done) };
+      }
+      // D-339 slice 19 — "Set up the summary": a Body added before its summary set itself up, or one whose
+      // summary was enrolled for an older version, the owner's own act as enrolling it by hand was.
+      case 'body.summary.setup': {
+        const current = asset(input.asset_id);
+        if (current.class_id !== BODY_CLASS_ID) throw new Error('Only a Body has a summary to set up');
+        const setup = bodySummary();
+        if (!setup) throw new Error('The summary can’t be set up here: install Body signals first');
+        const done = setup.ensure(current);
+        if (!done) throw new Error('The summary can’t be set up here: install Body signals first');
+        return { id: done.binding_id, message: bodySummaryWords(done) };
       }
       case 'binding.disable': {
         const old = deps.work.listAssetObservationBindings(input.asset_id).find(row => row.id === input.id); if (!old) throw new Error('Binding not found');
@@ -876,6 +1159,17 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         const opened = await deps.openNoticeConversation(notice);
         return { message: 'Your day is ready to close.', conversation: { ...opened, title: notice.title, text: notice.text } };
       }
+      case 'close_day.retry_reply': {
+        if (!emailCloseDay) throw new Error('Email reply recovery is unavailable on this server');
+        const outcome = await emailCloseDay.retry(text(input.id, 'Email reply'));
+        if (outcome === 'unavailable') throw new Error('This email reply is no longer waiting. It will not be repeated.');
+        return { message: outcome === 'pending' ? 'Your reply is saved and waiting to open in Chat. Recued will try again.' : 'Your reply has been handed to Chat.' };
+      }
+      case 'close_day.review_reply': {
+        if (!emailCloseDay) throw new Error('Email reply recovery is unavailable on this server');
+        emailCloseDay.markReviewed(text(input.id, 'Email reply'));
+        return { message: 'Earlier email reply marked reviewed.' };
+      }
       case 'subscriber.reconciled': {
         const receipt = deps.situations.subscriberRun(input.subscriber_id, input.revision);
         if (!receipt || receipt.run_id !== input.run_id || receipt.state === 'completed') throw new Error('This subscriber receipt changed. Refresh before reconciling it.');
@@ -898,6 +1192,17 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         if (input.measures !== undefined) { if (typeof input.measures !== 'boolean') throw new Error('Invalid measures choice');
           if (input.measures && !deps.situations.readSetting('metrics.opt_in', false)) deps.situations.writeSetting('metrics.enabled_at', now());
           deps.situations.writeSetting('metrics.opt_in', input.measures); }
+        // D-407 slice 4 (Q3) — the calendar occasions put their events in, chosen once by the owner; null for none.
+        if (input.occasion_calendar !== undefined) {
+          const choice = input.occasion_calendar;
+          const text = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+          if (!deps.occasionEvents) throw new Error('This server does not write occasions into a calendar');
+          if (choice !== null && (typeof choice !== 'object' || !text(choice.slug, 256) || !text(choice.calendar_id, 4096) || !text(choice.name, 512))) {
+            throw new Error('Choose a calendar for occasions');
+          }
+          deps.situations.writeSetting('occasion_calendar', choice === null ? null : { slug: choice.slug, calendar_id: choice.calendar_id, name: choice.name });
+          await deps.reminders?.tick();
+        }
         return { message: 'Proactive settings saved.' };
       case 'navigation.open': {
         if (!input.ref || !['asset', 'booking', 'calendar', 'mail_fact'].includes(input.ref.collection) || typeof input.ref.id !== 'string' || !input.ref.id || input.ref.id.length > 2000)
@@ -949,7 +1254,10 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     return [...sources.values()];
   };
   const snapshot = async (input: YoursReadRequest = {}): Promise<YoursSnapshot> => {
-    requireOpen(); deps.episodeRuntime?.refreshSuppressed(); deps.learning?.refreshPending(); refreshQuestions(); refreshClassUpdates(); refreshTrips(); await refreshEvidence(); mailProof.scan();
+    // D-339 slice 15 — goals refresh only on a read that shows them (the Pursuits tab, an asset's own page), so
+    // every other read, an attention read above all (D-325), pays for no pursuit scan; the minute's tick does the rest.
+    requireOpen(); deps.episodeRuntime?.refreshSuppressed(); deps.learning?.refreshPending(); refreshQuestions(); refreshClassUpdates();
+    if (input.pursuits === 'only' || input.asset_id) refreshGoals(); refreshTrips(); await refreshEvidence(); mailProof.scan();
     publishProposalEvents(proposals, deps.situations, spheres);
     const limit = input.limit ?? 50; const offset = input.offset ?? 0;
     if (input.contact_id !== undefined && (typeof input.contact_id !== 'string' || !input.contact_id || input.contact_id.length > 2000)) throw new Error('Choose the contact for this history');
@@ -1211,6 +1519,18 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         const sorted = [...seen].sort(); return [id, { last_on: sorted.at(-1)!, days_30: sorted.filter(day => day >= first).length }];
       }));
     }
+    // D-339 slice 15 — the body goals this read shows, each worked out from its Body: the Pursuits tab, a goal's
+    // own page, and a Body's page (the goals on it). A Body that cannot be read leaves them out, not the read.
+    let goal_progress: YoursSnapshot['goal_progress'];
+    try {
+      const shown = (pursuitIds ? assets.filter(row => pursuitIds.includes(row.id)) : []).flatMap(pursuit => {
+        const goal = ['active', 'lent'].includes(pursuit.status) ? readBodyGoal(pursuit.settings) : undefined;
+        return goal ? [{ pursuit, goal }] : [];
+      });
+      const onBody = input.asset_id && assets[0]?.class_id === BODY_CLASS_ID ? goalPursuits().filter(row => row.goal.asset_id === assets[0]!.id) : [];
+      const goals = [...shown, ...onBody];
+      if (goals.length) goal_progress = goals.map(({ pursuit, goal }) => goalProgress(pursuit, goal));
+    } catch (error) { console.warn('[yours] Goal progress unavailable', error); }
     let derived: import('@recued/contracts').EpisodeInput[] | undefined;
     if (input.include_derived && deps.episodeRuntime) {
       const computed = await deps.episodeRuntime.ownerEpisodes(); const kept = new Map<string, import('@recued/contracts').Episode>();
@@ -1264,7 +1584,9 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         'last_time.choice': deps.situations.readSetting('last_time.choice', 'unasked'),
         'metrics.opt_in': deps.situations.readSetting('metrics.opt_in', false),
       };
-      return { digest: values['digest.frequency'], last_time: values['last_time.choice'], measures: values['metrics.opt_in'] };
+      return { digest: values['digest.frequency'], last_time: values['last_time.choice'], measures: values['metrics.opt_in'],
+        // D-407 slice 4 — the calendar occasions put their events in, when this server writes them.
+        ...(deps.occasionEvents ? { occasion_calendar: deps.situations.readSetting<YoursSnapshot['settings']['occasion_calendar']>('occasion_calendar', null) } : {}) };
     };
     // Settings names what reaches the household. A list it cannot read leaves the
     // card without names rather than failing the whole read.
@@ -1274,12 +1596,53 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     // No graph walk, model call, maintained result or extra source query.
     const reading_comparisons = input.asset_id && assets[0] ? { asset_id: assets[0].id, rules: assets[0].rules.flatMap(rule =>
       rule.when.kind === 'objective' ? [{ rule_id: rule.id, comparison: compareSavedAssetReading(assets[0]!.readings[rule.when.field], rule.when, now()) }] : []) } : undefined;
+    // D-339 slice 7b — the open asset's readings over 30 days, for its page's sparklines. A history
+    // that cannot be read leaves the page without them rather than failing the read.
+    let reading_trends: YoursSnapshot['reading_trends'];
+    if (input.include_reading_trends === true && input.asset_id && assets[0]) {
+      const open = assets[0];
+      try {
+        const readings = assetReadingTrends(open, (field, limit, since) => deps.readingDays?.(open, field, limit, since)
+          ?? deps.work.assetReadingHistory(open.id, field, limit, since), now(), deps.timeZone?.() ?? 'UTC');
+        if (readings.length) reading_trends = { asset_id: open.id, readings };
+      } catch (error) { console.warn('[yours] Reading trends unavailable', open.id, error); }
+    }
+    // D-339 slice 12a — on a Body's page, the owner's chats' switch for every Body's numbers. A switch
+    // that cannot be read leaves the page without it rather than failing the read.
+    const bodyNumbersOnPage = (): Pick<YoursSnapshot, 'body_numbers'> => {
+      if (deps.bodyNumbers === undefined) return {};
+      try { return { body_numbers: { chats: deps.bodyNumbers() } }; } catch (error) {
+        console.warn('[yours] Body numbers switch unavailable', error); return {};
+      }
+    };
+    // D-339 slice 14 — on a Body, the readings that have probably changed since they were measured.
+    let reading_staleness: YoursSnapshot['reading_staleness'];
+    if (input.include_reading_trends === true && input.asset_id && assets[0]?.settings.values_on_request === true) {
+      const open = assets[0];
+      try {
+        const readings = assetReadingStaleness(open, (field, limit, since) => deps.readingDays?.(open, field, limit, since)
+          ?? deps.work.assetReadingHistory(open.id, field, limit, since), now(), deps.timeZone?.() ?? 'UTC');
+        if (readings.length) reading_staleness = { asset_id: open.id, readings };
+      } catch (error) { console.warn('[yours] Reading staleness unavailable', open.id, error); }
+    }
+    // D-404 slice E — on a thing's page, the installed recipes that work on things of its type.
+    const opened = input.asset_id ? assets.find(row => row.id === input.asset_id) : undefined;
+    const thingRecipes = opened?.class_id && recipes ? (() => {
+      const all = classes.list(); const named = new Set(typeIdsNamedLike(opened.class_id!, all));
+      return recipes!.listStored().flatMap(row => { const recipe = recipes!.get(row.recipe_id);
+        return recipe && typesARecipeActsOn(recipe, all).some(type => named.has(type.id)) ? [{ id: row.recipe_id, name: recipe.metadata.name }] : []; })
+        .sort((a, b) => a.name.localeCompare(b.name));
+    })() : undefined;
     return { assets, ...(reading_comparisons?.rules.length ? { reading_comparisons } : {}),
+      ...(reading_trends ? { reading_trends } : {}),
+      ...(reading_staleness ? { reading_staleness } : {}),
+      ...(input.asset_id && assets[0]?.class_id === BODY_CLASS_ID ? bodyNumbersOnPage() : {}),
       ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),
       related_assets: [...new Map([...(parent ? [parent] : []), ...descendants, ...linked].map(asset => [asset.id, asset])).values()], total_assets,
       ...(input.asset_filter ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}), classes: classes.list(), proposals: shown,
       ...(input.asset_sphere ? { asset_sphere: input.asset_sphere } : {}), ...(input.pursuits ? { pursuits: input.pursuits } : {}),
       ...(pursuit_activity ? { pursuit_activity } : {}),
+      ...(goal_progress ? { goal_progress } : {}),
       ...(asset_summaries ? { asset_summaries } : {}), total_proposals: proposals.count(), matching_proposals: proposals.count(input.proposal_kind), occurrences,
       household: { telegram: household.telegram(), ...(deps.homeAssistant ? { home_assistant: deps.homeAssistant.read() } : {}),
         ...(sharedAssets ? { shared_assets: sharedAssets } : {}),
@@ -1289,6 +1652,14 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }) },
       ...(deps.mailboxes ? { proof_addresses: proofAddresses(deps.mailboxes(), source => proposals.sourceEnabled(source)) } : {}),
       occasions,
+      // D-407 slice 3 — said so an app offers the Private choice only to a server that reads it.
+      occasion_privacy: true,
+      // D-407 slice 2 — and an occasion that comes back whenever the last one says, with its "When is the next one?".
+      occasion_next: true,
+      // D-407 — and its alert before its time, sent by the occasion's own engine.
+      occasion_alert: true,
+      // D-407 slice 4 — and an occasion's own calendar event, in the calendar chosen once.
+      ...(deps.occasionEvents ? { occasion_calendar_events: true as const, occasion_events: deps.occasionEvents() } : {}),
       episodes,
       ...(deps.episodeRuntime ? { recall_rates: deps.episodeRuntime.rates(), history_receipts: deps.episodeRuntime.receipts(),
         history_evidence: input.trace_id ? [deps.episodeRuntime.trace(input.trace_id)].filter((value): value is NonNullable<typeof value> => !!value) : [],
@@ -1304,6 +1675,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       observation_recipes: recipes?.listStored().flatMap(row => { const recipe = recipes!.get(row.recipe_id);
         return recipe && definitionDigest(recipe) === definitionDigest(JSON.parse(row.recipe_json)) && observationRecipe(recipe)
           ? [{ id: row.recipe_id, name: recipe.metadata.name, publisher: row.publisher_id, hash: definitionDigest(recipe) }] : []; }) ?? [],
+      ...(thingRecipes ? { thing_recipes: thingRecipes } : {}),
       observation_bindings: observationBindings(),
       observation_handoffs: input.asset_id && assets.length ? deps.work.assetObservationHandoffs(input.asset_id) : [],
       phone_ready: reachesPhone(destinations?.destinations),
@@ -1331,15 +1703,22 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       return spheres.resolve(ref);
     },
     deliveryStatus() { requireOpen(); if (!scheduled) throw new Error('Overview service unavailable'); return scheduled.status(); },
-    agendaStatus() { requireOpen(); if (!scheduled) throw new Error('Overview service unavailable'); return scheduled.agendaStatus(); },
+    agendaStatus() {
+      requireOpen(); if (!scheduled) throw new Error('Overview service unavailable');
+      const status = scheduled.agendaStatus();
+      if (status.close_day && emailCloseDay) status.close_day.email_replies = emailCloseDay.pending();
+      return status;
+    },
     async learningStatus(): Promise<import('@recued/contracts').YoursLearningStatus> {
       requireOpen(); if (!deps.episodeRuntime) throw new Error('Last time is unavailable');
       return { last_time: deps.situations.readSetting('last_time.choice', 'unasked'), asked: await deps.episodeRuntime.optInOpen(), classes: deps.episodeRuntime.rates() };
     },
     bindScheduled(service: import('./scheduled-situations.js').ScheduledSituations) { scheduled = service; },
+    bindEmailCloseDay(service: import('../email-close-day.js').EmailCloseDay) { emailCloseDay = service; },
     bindSubscribers(value: NonNullable<typeof subscribers>) { subscribers = value; },
     bindRecipes(value: import('../recipe-store.js').RecipeStore) { recipes = value; },
     bindWriters(runtime: AssetWriterRuntime) {
+      writerDishes = runtime.dishes; writerSchedules = runtime.schedules;
       if (recipes && deps.homeAssistant) writers = createAssetWriterSetup({ ...runtime, db: deps.db, work: deps.work,
         recipes, source: deps.homeAssistant,
         ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}), now });
@@ -1354,7 +1733,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       return deps.homeAssistant.lists(input);
     },
     isHouseholdConnection(name: string): boolean { const row = deps.connections?.().find(row => row.name === name); return !!row && household.isHousehold(row); },
-    async today(input: { now: number; before: number }) { requireOpen(); refreshQuestions(); refreshClassUpdates(); refreshTrips(); await refreshEvidence(); mailProof.scan(); if (!scheduled) throw new Error('Today situations unavailable'); return scheduled.today(input); },
+    async today(input: { now: number; before: number }) { requireOpen(); refreshQuestions(); refreshClassUpdates(); refreshGoals(); refreshTrips(); await refreshEvidence(); mailProof.scan(); if (!scheduled) throw new Error('Today situations unavailable'); return scheduled.today(input); },
     async overview(): Promise<Omit<import('@recued/contracts').ProactiveToday, 'situations' | 'occurrences'>> {
       requireOpen();
       deps.episodeRuntime?.refreshSuppressed();
@@ -1371,7 +1750,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         ...await (async () => { const suggestions = await scheduled?.todaySuggestions(); return suggestions ? { suggestions } : {}; })() };
     },
     bind(block: NotificationBlock) { notifier = block; },
-    async tick() { if (deps.isVaultUnlocked?.() === false) return; await intake.scan(); deps.learning?.refreshPending(); refreshQuestions(); refreshClassUpdates(); refreshTrips(); await refreshEvidence(); mailProof.scan(); publishProposalEvents(proposals, deps.situations, spheres); },
+    async tick() { if (deps.isVaultUnlocked?.() === false) return; await intake.scan(); deps.learning?.refreshPending(); refreshQuestions(); refreshClassUpdates(); refreshGoals(); refreshTrips(); await refreshEvidence(); mailProof.scan(); publishProposalEvents(proposals, deps.situations, spheres); },
     async stop() { await intake.drain(); await writers?.stop(); await Promise.allSettled([...mutations.values()]); },
   };
 };

@@ -18,16 +18,20 @@ import {
   BRIDGE_CLICK_LOAD_MAX_MS,
   BRIDGE_CLICK_SETTLE_MS,
   BRIDGE_CLICK_WAIT_MS,
+  BRIDGE_READ_QUIET_MS,
   BRIDGE_PICK_MAX_MS,
   BRIDGE_WATCH_MAX_MS,
   BRIDGE_WAIT_MAX_MS,
   BRIDGE_SCROLL_TO,
   BRIDGE_FILE_MAX_BYTES,
+  BRIDGE_ROW_CHANGED_DETAIL,
   bridgeElementChangedMessage,
   isPatternWithinGrantedOrigins,
+  isBrowserClickRefusal,
   parseBridgeKey,
   type BridgeAction,
   type BridgeActedOn,
+  type BridgeProtectedKind,
   type BridgeScrollTo,
   type BridgeCommand,
   type BridgeDocumentIdentity,
@@ -45,15 +49,15 @@ import {
 } from '../permissions/site-grants.js';
 import { capturePage, measured, measurePageArea, PAGE_SCREEN_STEP, type PageCaptureChrome } from './page-capture.js';
 import { PAGE_SCROLL_FIRST_MS, PAGE_SCROLL_QUIET_MS, PAGE_SCROLL_SETTLE_MS, scrollTarget, waitForQuiet } from './page-scroll.js';
-import { clickPageElement, fillPageField, readPageField, submitPageForm } from './page-fields.js';
+import { clickPageElement, fillPageField, readNavigationGuard, readPageField, submitPageForm } from './page-fields.js';
 import { pageChallenge } from './page-challenge.js';
 import { pressPageKey } from './page-keys.js';
 import { hoverPageElement } from './page-hover.js';
-import { attachPageFile, fetchFile, fileTooLarge, NO_FILE_ADDRESS, NOT_FILE_FIELD, pageFileAddress, type AttachedFile,
+import { attachPageFile, BLOCKED_DOWNLOAD_MESSAGE, fetchFile, fileTooLarge, NO_FILE_ADDRESS, NOT_FILE_FIELD, pageFileAddress, type AttachedFile,
   type FetchedFile, type PageFileAddress } from './page-files.js';
-import type { PageMove } from './page-tabs.js';
+import { pageIdentity, type PageMove, type PageReadiness } from './page-tabs.js';
 import { SELECTOR_RULES } from '../picker/selector-engine.js';
-import { PAGE_MESSAGE_RULES, pageProblem, prepareStepChecks, type PageMessageRules } from './page-problems.js';
+import { PAGE_MESSAGE_RULES, pageProblem, type PageMessageRules } from './page-problems.js';
 import { findPickOption, notePickLists, PICK_RULES, pickTook, typeWithKeys } from './page-pick.js';
 import { rebindPageRef } from './page-rebind.js';
 import {
@@ -71,11 +75,19 @@ import {
   settleFrames,
   type PageFrame,
 } from './page-inspect.js';
+import { BRIDGE_READ_SETTLE_POLL_MS, pageSettleProbe, readSettleMs, readWaitChangeMs, type PageSettleState } from './page-settle.js';
 import { PAGE_TABLE_LIMITS, readPageTable, tableOutcome } from './page-table.js';
-import { checkPageElement, PAGE_WAIT_POLL_MS, readFailCheck, readWaitRequest, waitCheckOutcome,
+import { checkPageElement, PAGE_WAIT_POLL_MS, readFailCheck, readReadyCheck, readWaitRequest, waitCheckOutcome,
   type PageWaitCheck } from './page-wait.js';
 
+/** Optional qualification/debug observer: fixed phases and elapsed time only. */
+export interface BridgeScriptTiming {
+  phase: 'rebind' | 'describe' | 'write' | 'read' | 'check';
+  duration_ms: number;
+  outcome: 'answered' | 'missing' | 'error';
+}
 export interface BridgeBrowserApi {
+  onScriptTiming?(timing: BridgeScriptTiming): void | Promise<void>;
   executeReviewedDocument?(document: BridgeDocumentIdentity, action: BridgeAction,
     args: Record<string, unknown>): Promise<ActionExecutorOutcome>;
   /** D-335 — run `func` in ONE document: exactly `document_id` when given,
@@ -83,22 +95,25 @@ export interface BridgeBrowserApi {
    *  document. Answers the document Chrome ran it in, with the result
    *  (`executeInChromeDocument` in `page-inspect.ts`). */
   executeInDocument?(target: { tab_id: number; document_id?: string },
-    func: (...args: any[]) => unknown, args: readonly unknown[]): Promise<{ document_id: string; result: unknown; frame_id?: number } | null>;
+    func: (...args: any[]) => unknown, args: readonly unknown[], options?: { immediate?: boolean }): Promise<{ document_id: string; result: unknown; frame_id?: number } | null>;
   /** D-335 slice R — the frames of a tab a script of the Bridge may read, besides its top page
    *  (`listChromeFrames` in `page-inspect.ts`): an inspection names each from another site as a page. */
   listFrames?(tab_id: number): Promise<PageFrame[]>;
   /** D-335 slice C — the open tabs on a site, and a new tab (`page-tabs.ts`,
    *  `chromePageTabs`). */
   /** `blocked` says whether an address is on the owner's list (slice G): such
-   *  a tab is never listed, and an opened page that lands on one is closed. */
+   *  a tab is never listed, and an opened page that lands on one is closed.
+   *  Listing rejects when tab enumeration fails; individual unreadable pages are omitted. */
   listPages?(pattern: string, blocked?: (url: string) => boolean):
     Promise<{ tabs: Array<{ page: string; url: string; title: string }>; truncated: boolean }>;
-  openPage?(url: string, pattern: string, waitMs: number, blocked?: (url: string) => boolean): Promise<ActionExecutorOutcome>;
+  openPage?(url: string, pattern: string, waitMs: number, blocked?: (url: string) => boolean, readiness?: PageReadiness): Promise<ActionExecutorOutcome>;
   /** D-335 slice X — a tab moved to an address, back or reloaded, answered as the page it then shows,
-   *  and a tab closed (`page-tabs.ts`). */
-  movePage?(tab_id: number, move: PageMove, pattern: string, waitMs: number, blocked?: (url: string) => boolean):
+   *  and a tab closed (`page-tabs.ts`). Cancellation stops preflight; requested actions retain
+   *  their completion or uncertainty receipt. */
+  movePage?(tab_id: number, move: PageMove, pattern: string, waitMs: number, blocked?: (url: string) => boolean,
+    readiness?: PageReadiness, cancel?: { readonly signalled: boolean }):
     Promise<ActionExecutorOutcome>;
-  closePage?(tab_id: number): Promise<ActionExecutorOutcome>;
+  closePage?(tab_id: number, cancel?: { readonly signalled: boolean }): Promise<ActionExecutorOutcome>;
   /** 2026-11-04 — the page a tab shows once a click on it has settled (`page-tabs.ts`); with
    *  `checks.challenge` (slice J), and a CAPTCHA it shows that nobody has solved; with
    *  `checks.problems` and `checks.fail` (slice K), an error message the click led to and whether
@@ -106,9 +121,9 @@ export interface BridgeBrowserApi {
    *  soon as it shows. */
   pageAfterClick?(tab_id: number, before: { url: string; page?: string; frame_id?: number }, pattern: string,
     waits: { settleMs: number; loadMs: number }, blocked?: (url: string) => boolean,
-    checks?: { challenge?: boolean; problems?: PageMessageRules; fail?: PageWaitCheck }):
+    checks?: { challenge?: boolean; problems?: PageMessageRules; fail?: PageWaitCheck; ready?: PageWaitCheck; domReady?: boolean }):
     Promise<{ moved: boolean; page?: string; url?: string; title?: string; challenge?: string; problem?: string;
-      failed?: boolean } | undefined>;
+      failed?: boolean; loading?: boolean } | undefined>;
   /** D-335 slice G — the owner's list of sites Recued must never use
    *  (`site-grants.ts`). Every command refuses a page on one before anything
    *  is read or done there; a list that cannot be read refuses every page.
@@ -199,6 +214,8 @@ const actedOn = (found: Record<string, unknown>): BridgeActedOn => ({
   url: String(found.url), title: String(found.title), role: String(found.role), label: String(found.label),
   protected: found.protected === true,
   ...(typeof found.stable_selector === 'string' ? { selector: found.stable_selector } : {}),
+  // D-402 slice G (§3.1) — what a protected field takes, for the record of a job made into a recipe.
+  ...(found.protected === true && typeof found.protected_kind === 'string' ? { protected_kind: found.protected_kind as BridgeProtectedKind } : {}),
 });
 
 /** Translate a shared field function's answer (`page-fields.ts`). It must be
@@ -216,11 +233,22 @@ const fieldOutcome = (
   const unproven = write ? uncertain() : errorOutcome('unknown', `bridge: no readable answer for ${selector}`, selector);
   if (!answer || typeof answer !== 'object' || Array.isArray(answer) || Object.keys(answer).length !== 1) return unproven;
   const reply = answer as { blocked?: unknown; missing?: unknown; stale?: unknown; protected?: unknown;
-    not_applied?: unknown; outputs?: unknown };
+    not_applied?: unknown; uncertain?: unknown; outputs?: unknown; several?: unknown; row_changed?: unknown };
   if (reply.blocked === true) return blocked;
   if (reply.missing === true) return selectorMissing(selector);
+  // D-402 slice G (§4 rule 4) — a selector that names several elements: which one is not said, so none
+  // was written to.
+  if (write && typeof reply.several === 'number') {
+    return errorOutcome('selector_not_found', `“${selector}” names ${String(reply.several)} elements on the page, so nothing was `
+      + `${action === 'fill' ? 'typed' : action === 'press' ? 'pressed' : action === 'submit' ? 'sent' : 'clicked'}: name one of them`, selector);
+  }
+  // D-402 slice G (§4.1) — the row the step named its element by no longer shows what it did: refused
+  // before anything was typed or clicked, which the detail tells the server.
+  if (write && typeof reply.row_changed === 'string') return errorOutcome('selector_not_found', reply.row_changed, BRIDGE_ROW_CHANGED_DETAIL);
   // A ref whose element has gone: nothing was typed or clicked.
   if (reply.stale === true) return errorOutcome('selector_not_found', PAGE_CHANGED, selector);
+  if (write && reply.uncertain === true) return errorOutcome('delivery_uncertain',
+    'The page or navigation link changed during pointer interaction. Inspect the page before repeating the action.', selector);
   if (!write && reply.protected === true) {
     return errorOutcome('field_protected',
       'The Browser Bridge does not read password, hidden, sign-in code or payment card fields.', selector);
@@ -228,6 +256,8 @@ const fieldOutcome = (
   // A write that did not happen, and why: confirmed, not uncertain. A click is
   // refused on an element that is disabled or that something else covers.
   if (write && typeof reply.not_applied === 'string') return errorOutcome('value_not_applied', reply.not_applied, selector);
+  if (action === 'click' && isBrowserClickRefusal(reply.not_applied)) return { status: 'error', error: {
+    code: 'value_not_applied', message: reply.not_applied.message, detail: selector, obstruction: reply.not_applied.obstruction } };
   const outputs = reply.outputs;
   if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs)) return unproven;
   const only = outputs as Record<string, unknown>;
@@ -244,6 +274,66 @@ const fieldOutcome = (
   return proven ? { status: 'ok', outputs: only } : unproven;
 };
 
+/** Only a complete upload answer proves success or that no write happened.
+ *  Validate before reference recovery, which may retry a confirmed stale refusal. */
+const isUploadAnswer = (answer: unknown): answer is AttachedFile => {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return false;
+  const receipt = answer as Record<string, unknown>;
+  const keys = Object.keys(receipt);
+  if (keys.length === 1) {
+    const key = keys[0]!;
+    return ['blocked', 'missing', 'stale'].includes(key) ? receipt[key] === true
+      : ['not_file_field', 'not_applied'].includes(key) && typeof receipt[key] === 'string';
+  }
+  return keys.length === 3 && keys.every(key => ['attached', 'url', 'title'].includes(key))
+    && typeof receipt.attached === 'string' && receipt.attached !== ''
+    && typeof receipt.url === 'string' && typeof receipt.title === 'string';
+};
+
+/** Only a complete target can authorize a fetch or a cross-origin retry. */
+const isPageFileAddress = (answer: unknown): answer is PageFileAddress => {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return false;
+  const receipt = answer as Record<string, unknown>;
+  const keys = Object.keys(receipt);
+  if (keys.length === 1) return ['blocked', 'missing', 'stale', 'no_address'].includes(keys[0]!) && receipt[keys[0]!] === true;
+  if (keys.length !== 4 || !keys.every(key => ['address', 'cross_origin', 'url', 'title'].includes(key))
+    || typeof receipt.address !== 'string' || typeof receipt.url !== 'string' || typeof receipt.title !== 'string'
+    || typeof receipt.cross_origin !== 'boolean') return false;
+  try {
+    const address = new URL(receipt.address);
+    const page = new URL(receipt.url);
+    // The locator returns URL.href and location.href. Keeping their canonical
+    // forms prevents policy checks and page-relative fetch from disagreeing.
+    return ['http:', 'https:'].includes(address.protocol) && ['http:', 'https:'].includes(page.protocol)
+      && address.href === receipt.address && page.href === receipt.url
+      && receipt.cross_origin === (address.origin !== page.origin);
+  } catch { return false; }
+};
+
+/** A download acknowledges one outcome. Accepted bytes must agree with the
+ *  file's size and stay inside this command's budget. */
+const isFetchedFileAnswer = (answer: unknown, most: number): answer is FetchedFile => {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return false;
+  const receipt = answer as Record<string, unknown>;
+  const keys = Object.keys(receipt);
+  if (keys.length === 1 && keys[0] === 'blocked' && receipt.blocked === true) return true;
+  if (keys.length === 1 && keys[0] === 'failed' && typeof receipt.failed === 'string') return true;
+  if ((keys.length === 1 || keys.length === 2 && receipt.at_least === true)
+    && keys.every(key => key === 'too_large' || key === 'at_least')
+    && typeof receipt.too_large === 'number' && Number.isFinite(receipt.too_large) && receipt.too_large > most) return true;
+  const { address, filename, mime_type, size, data } = receipt;
+  if (keys.length !== 5 || !keys.every(key => ['address', 'filename', 'mime_type', 'size', 'data'].includes(key))
+    || typeof address !== 'string' || typeof filename !== 'string' || filename === ''
+    || typeof mime_type !== 'string' || mime_type === '' || typeof size !== 'number'
+    || !Number.isSafeInteger(size) || size < 0 || size > most || typeof data !== 'string'
+    || data.length > Math.ceil(most / 3) * 4 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return false;
+  try {
+    if (!['http:', 'https:'].includes(new URL(address).protocol)) return false;
+  } catch { return false; }
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  return data.length / 4 * 3 - padding === size;
+};
+
 /** `executeInDocument`, with a refused injection read as no answer. */
 /** D-335 slice R — the frame a document is, when a handle named a frame of its tab's page: what a
  *  click there is watched in (`pageAfterClick`). */
@@ -255,17 +345,49 @@ const runInDocument = async (
   target: { tab_id: number; document_id?: string },
   func: (...args: any[]) => unknown,
   args: readonly unknown[],
+  options?: { immediate?: boolean },
 ): Promise<{ document_id: string; result: unknown; frame_id?: number } | null> => {
+  const begun = api.onScriptTiming ? performance.now() : 0;
+  let outcome: BridgeScriptTiming['outcome'] = 'error';
   try {
-    return await api.executeInDocument!(target, func, args);
+    const result = await api.executeInDocument!(target, func, args, ...(options ? [options] : []));
+    outcome = result === null ? 'missing' : 'answered';
+    return result;
   } catch {
     return null;
+  } finally {
+    if (api.onScriptTiming) {
+      const phase: BridgeScriptTiming['phase'] = func === rebindPageRef ? 'rebind'
+        : func === describePageElement ? 'describe'
+          : [clickPageElement, fillPageField, submitPageForm, pressPageKey, attachPageFile, hoverPageElement].some(write => write === func) ? 'write'
+            : [inspectPage, readPageField, readPageTable].some(read => read === func) ? 'read' : 'check';
+      try {
+        const pending = api.onScriptTiming({ phase, duration_ms: Math.max(0, performance.now() - begun), outcome });
+        if (pending) void pending.catch(() => {});
+      } catch { /* Diagnostics cannot fail a browser action. */ }
+    }
   }
 };
 
+/** The identity guard returns one known outcome; a changed target names both states. */
+const isRebindAnswer = (answer: unknown): answer is ReturnType<typeof rebindPageRef> => {
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return false;
+  const receipt = answer as Record<string, unknown>;
+  const keys = Object.keys(receipt);
+  if (keys.length !== 1) return false;
+  const key = keys[0]!;
+  if (['kept', 'rebound', 'stale', 'missing'].includes(key)) return receipt[key] === true;
+  const changed = receipt.changed;
+  if (key !== 'changed' || !changed || typeof changed !== 'object' || Array.isArray(changed)) return false;
+  const detail = changed as Record<string, unknown>;
+  const names = Object.keys(detail);
+  return names.length === 2 && names.every(name => name === 'now' || name === 'was')
+    && typeof detail.now === 'string' && typeof detail.was === 'string';
+};
+
 /** D-335 slice M — before a step by ref: a ref whose element the page rebuilt names the same
- *  control again, when the page shows exactly one (`page-rebind.ts`). Whatever it answers, the
- *  step then reads the ref as it always has, so a ref still gone refuses as before.
+ *  control again, when the page shows exactly one (`page-rebind.ts`). An action requires a valid
+ *  acknowledgement that the ref was kept or rebound; ordinary reads remain best effort.
  *  D-347 follow-up 17 — before a step that acts (`act`), an element still on the page that shows
  *  something else than the page's last read did, with no other showing that, refuses the step: the
  *  answer, saying what it shows now and showed then. */
@@ -277,10 +399,28 @@ const rebindRef = async (
 ): Promise<ActionExecutorOutcome | undefined> => {
   if (ref === undefined) return undefined;
   const ran = await runInDocument(api, target, rebindPageRef, [ref, act]);
-  const changed = (ran?.result as { changed?: { now?: unknown; was?: unknown } } | null | undefined)?.changed;
-  return changed === undefined ? undefined
-    : errorOutcome('selector_not_found', bridgeElementChangedMessage(ref, String(changed.now), String(changed.was)));
+  // A guard that found no document, or another one, is the page-gone case every other step here answers: the
+  // caller lists the tabs for the page's current handle, since inspecting this one can only fail again. It answered
+  // "could not verify… Inspect the page" after a reload (2026-11-19), and the D-335 browser test of a write after a
+  // reload went red. Either way no action runs without a verified acknowledgement.
+  if (!ran || ran.document_id !== target.document_id) {
+    return act ? errorOutcome('selector_not_found', PAGE_GONE) : undefined;
+  }
+  if (!isRebindAnswer(ran.result)) {
+    return act ? errorOutcome('selector_not_found',
+      'The browser could not verify that this is still the inspected element. Inspect the page before trying again.', ref) : undefined;
+  }
+  const answer = ran.result;
+  if ('changed' in answer) {
+    return errorOutcome('selector_not_found', bridgeElementChangedMessage(ref, answer.changed.now, answer.changed.was));
+  }
+  return act && ('stale' in answer || 'missing' in answer) ? errorOutcome('selector_not_found', PAGE_CHANGED) : undefined;
 };
+
+class CancelledReferenceRetry extends Error {}
+class RefusedReferenceRetry extends Error {
+  constructor(readonly outcome: ActionExecutorOutcome) { super(); }
+}
 
 /** D-335 slice X (2026-11-06) — a script that reads or acts on an element by ref, run once more
  *  when the page rebuilt that element after {@link rebindRef} found it there. The page's own tasks
@@ -290,16 +430,30 @@ const rebindRef = async (
  *  in 216 on a page rebuilding its box 4 to 26 ms after focus, with every core busy, and none in
  *  216 since. Each such script answers `stale` before it touches anything, so it runs again once
  *  the ref names the rebuilt control. Once: a page that rebuilt it again by then refuses as
- *  before. */
+ *  before. A retry keeps the initial rebind's action guard, including when the
+ *  script is a preparatory read: a changed-content refusal stops the action. */
 const byRef = async (
   api: BridgeBrowserApi,
   target: { tab_id: number; document_id?: string },
   ref: string | undefined,
+  act: boolean,
+  cancel: { signalled: boolean },
   run: () => Promise<{ document_id: string; result: unknown; frame_id?: number } | null>,
 ): Promise<{ document_id: string; result: unknown; frame_id?: number } | null> => {
   const ran = await run();
-  if (ref === undefined || (ran?.result as { stale?: unknown } | null)?.stale !== true) return ran;
-  await rebindRef(api, target, ref);
+  const answer = ran?.result;
+  // Only the requested document's lone stale refusal proves this attempt did
+  // not act. A mixed reply or another document cannot authorize a retry.
+  if (ref === undefined || ran?.document_id !== target.document_id || !answer
+    || typeof answer !== 'object' || Array.isArray(answer)) return ran;
+  const keys = Object.keys(answer);
+  if (keys.length !== 1 || keys[0] !== 'stale' || (answer as { stale?: unknown }).stale !== true) return ran;
+  // A real completion above remains authoritative even if cancellation arrived
+  // while it was running.
+  if (cancel.signalled) throw new CancelledReferenceRetry();
+  const changed = await rebindRef(api, target, ref, act);
+  if (cancel.signalled) throw new CancelledReferenceRetry();
+  if (changed) throw new RefusedReferenceRetry(changed);
   return run();
 };
 
@@ -371,14 +525,26 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
     cancel: { signalled: boolean },
   ): Promise<ActionExecutorOutcome> => {
     if (cancel.signalled) return cancelled();
+    const navigationGuard = readNavigationGuard(command.args.navigation_guard);
+    if (navigationGuard === null || navigationGuard && (action !== 'click'
+      || !parsePageHandle(command.args.page) || typeof command.args.ref !== 'string')) {
+      return errorOutcome('unknown', 'bridge: a navigation_guard needs a click by page and ref with before_url and after_url');
+    }
     // D-335 slice G — read once per command; a notification acts on no page.
     const blocked = action === 'os_notification' ? [] : await readBlocked();
+    // Cancellation can arrive while the policy is being read, before any page action starts.
+    if (cancel.signalled) return cancelled();
     if (command.reviewed_document) {
       if (!api.executeReviewedDocument) return errorOutcome('tab_navigation_blocked', 'This bridge cannot bind reviewed documents.');
       // The reviewed executor acts only while the document is at this address.
       const refused = siteRefusal(command.reviewed_document.url, blocked);
       if (refused) return refused;
-      return api.executeReviewedDocument(command.reviewed_document, action, command.args);
+      const reviewed = await api.executeReviewedDocument(command.reviewed_document, action, command.args);
+      // D-402 slice G — a protected field's kind only when asked, as on the ordinary path.
+      if (action === 'describe' && reviewed.status === 'ok' && reviewed.outputs && !command.expects_output_keys.includes('protected_kind')) {
+        delete reviewed.outputs.protected_kind;
+      }
+      return reviewed;
     }
     if (action === 'os_notification') {
       const title = stringArg(command.args, 'title') ?? 'Recued';
@@ -396,7 +562,11 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
     if (action === 'list_tabs') {
       if (!api.listPages) return errorOutcome('unknown', 'bridge: this browser cannot list tabs');
       if (blocked === undefined) return unreadableList();
-      return { status: 'ok', outputs: await api.listPages(command.target_domain_pattern, url => isOnBlockedSite(url, blocked)) };
+      try {
+        return { status: 'ok', outputs: await api.listPages(command.target_domain_pattern, url => isOnBlockedSite(url, blocked)) };
+      } catch {
+        return errorOutcome('unknown', 'The Browser Bridge could not list the tabs. Try listing them again.');
+      }
     }
     if (action === 'open_tab') {
       const url = stringArg(command.args, 'url');
@@ -408,7 +578,8 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (refused) return refused;
       // Wait for the page within the command's own budget, leaving time to answer.
       return api.openPage(url, command.target_domain_pattern,
-        Math.max(1_000, Math.min(20_000, command.timeout_ms - 5_000)), landed => isOnBlockedSite(landed, blocked));
+        Math.max(1_000, Math.min(20_000, command.timeout_ms - 5_000)), landed => isOnBlockedSite(landed, blocked),
+        ...(command.args.dom_ready === true ? [{ domReady: true }] : []));
     }
 
     // D-335 slice X — a tab's own navigation, and closing it, by its page handle: the tab is the
@@ -421,22 +592,24 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (cancel.signalled) return cancelled();
       if (action === 'close_tab') {
         if (!api.closePage) return errorOutcome('unknown', 'bridge: this browser cannot close tabs');
-        return api.closePage(handle.tab_id);
+        return api.closePage(handle.tab_id, cancel);
       }
       if (!api.movePage) return errorOutcome('unknown', 'bridge: this browser cannot move tabs');
       const listed = (url: string) => isOnBlockedSite(url, blocked ?? []);
       // Wait for the page within the command's own budget, leaving time to answer.
       const waitMs = Math.max(1_000, Math.min(20_000, command.timeout_ms - 5_000));
+      const readiness = command.args.dom_ready === true ? { domReady: true, previousPage: String(command.args.page) } : undefined;
       if (action === 'navigate') {
         const url = stringArg(command.args, 'url');
         if (url === null) return errorOutcome('unknown', 'bridge: navigate requires a url argument');
         // Before the tab moves: a listed site is never asked for.
         const listedThere = siteRefusal(url, blocked);
         if (listedThere) return listedThere;
-        return api.movePage(handle.tab_id, { to: 'address', url }, command.target_domain_pattern, waitMs, listed);
+        return api.movePage(handle.tab_id, { to: 'address', url }, command.target_domain_pattern, waitMs, listed,
+          readiness, cancel);
       }
       return api.movePage(handle.tab_id, { to: action === 'go_back' ? 'back' : 'reload' }, command.target_domain_pattern,
-        waitMs, listed);
+        waitMs, listed, readiness, cancel);
     }
     // D-335 slice X — pointing at an element, for a menu that opens under the pointer: read as a write
     // by ref is (the element first, then the pointer, at the address just read), and changing nothing.
@@ -450,7 +623,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (refused) return refused;
       const changed = await rebindRef(api, document, request.scope.ref, true);
       if (changed) return changed;
-      const probe = await byRef(api, document, request.scope.ref,
+      const probe = await byRef(api, document, request.scope.ref, true, cancel,
         () => runInDocument(api, document, describePageElement, [request.scope, null, null]));
       if (!probe || probe.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
       const found = describeOutcome(probe.result, document,
@@ -460,7 +633,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (listedHere) return listedHere;
       if (cancel.signalled) return cancelled();
       const url = found.outputs!.url as string;
-      const ran = await byRef(api, document, request.scope.ref, () => runInDocument(api, document, hoverPageElement,
+      const ran = await byRef(api, document, request.scope.ref, true, cancel, () => runInDocument(api, document, hoverPageElement,
         [request.scope.selector ?? '', url, request.scope.ref ?? null]));
       if (!ran || ran.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
       const answer = ran.result as { hovered?: unknown; blocked?: unknown; missing?: unknown; stale?: unknown } | null;
@@ -490,11 +663,13 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (cancel.signalled) return cancelled();
       const changed = ref === null ? undefined : await rebindRef(api, handle, ref, true);
       if (changed) return changed;
-      const located = await byRef(api, handle, ref ?? undefined,
+      const located = await byRef(api, handle, ref ?? undefined, true, cancel,
         () => runInDocument(api, handle, pageFileAddress, [selector, ref, address]));
       if (!located || located.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
-      const where = located.result as PageFileAddress | null;
-      if (where === null || 'blocked' in where) return errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.');
+      const where = located.result;
+      if (!isPageFileAddress(where)) return errorOutcome('unknown',
+        'The browser returned an incomplete or inconsistent download target, so no file was fetched.');
+      if ('blocked' in where) return errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.');
       if ('stale' in where) return errorOutcome('selector_not_found', PAGE_CHANGED);
       if ('missing' in where) return selectorMissing(ref ?? selector!);
       if ('no_address' in where) return errorOutcome('selector_not_found', NO_FILE_ADDRESS);
@@ -505,9 +680,33 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const listedHere = siteRefusal(where.url, blocked) ?? siteRefusal(where.address, blocked);
       if (listedHere) return listedHere;
       if (cancel.signalled) return cancelled();
-      const inPage = await runInDocument(api, handle, fetchFile, [where.address, most]);
+      const sites = blocked ?? [];
+      const inPage = await runInDocument(api, handle, fetchFile, [where.address, most, sites]);
+      if (inPage && inPage.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+      const invalidFile = () => errorOutcome('unknown',
+        'The browser returned an incomplete or inconsistent file result, so no file was accepted.');
       let got = inPage?.result as FetchedFile | null | undefined;
-      if (got === null || got === undefined || ('failed' in got && where.cross_origin)) got = await fetchFile(where.address, most);
+      if (got !== null && got !== undefined && !isFetchedFileAnswer(got, most)) return invalidFile();
+      if (got === null || got === undefined || ('failed' in got && where.cross_origin)) {
+        // A fallback starts a new request; a confirmed page result remains authoritative.
+        if (cancel.signalled) return cancelled();
+        const controller = new AbortController();
+        // The shared cancellation flag has no event hook. Observe it only while
+        // this worker request is active, including waits for headers and body.
+        const observeCancellation = () => { if (cancel.signalled) controller.abort(); };
+        const watch = setInterval(observeCancellation, 50);
+        try {
+          observeCancellation();
+          got = await fetchFile(where.address, most, sites, controller.signal);
+        } finally {
+          clearInterval(watch);
+        }
+        if (!isFetchedFileAnswer(got, most)) return invalidFile();
+        if (controller.signal.aborted && 'failed' in got) return cancelled();
+      }
+      if ('blocked' in got || ('address' in got && isOnBlockedSite(got.address, sites))) {
+        return errorOutcome('tab_navigation_blocked', BLOCKED_DOWNLOAD_MESSAGE);
+      }
       if ('too_large' in got) return errorOutcome('unknown', fileTooLarge(got.too_large, got.at_least === true, most));
       if ('failed' in got) return errorOutcome('unknown', `The file at ${where.address} could not be fetched: ${got.failed}.`);
       return { status: 'ok', outputs: { page: formatPageHandle(handle), url: where.url, title: where.title,
@@ -532,7 +731,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (refused) return refused;
       const changed = await rebindRef(api, document, request.scope.ref, true);
       if (changed) return changed;
-      const probe = await byRef(api, document, request.scope.ref,
+      const probe = await byRef(api, document, request.scope.ref, true, cancel,
         () => runInDocument(api, document, describePageElement, [request.scope, null, null]));
       if (!probe || probe.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
       const found = describeOutcome(probe.result, document,
@@ -541,14 +740,19 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const listedHere = siteRefusal(String(found.outputs!.url), blocked);
       if (listedHere) return listedHere;
       if (cancel.signalled) return cancelled();
-      const ran = await byRef(api, document, request.scope.ref, () => runInDocument(api, document, attachPageFile,
-        [request.scope.selector ?? null, request.scope.ref ?? null, filename, mime_type, data]));
-      if (!ran || ran.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
-      const answer = ran.result as AttachedFile | null;
-      if (answer === null || 'blocked' in answer) return errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.');
+      const url = found.outputs!.url as string;
+      const ran = await byRef(api, document, request.scope.ref, true, cancel, async () => {
+        const reply = await runInDocument(api, document, attachPageFile,
+          [request.scope.selector ?? null, request.scope.ref ?? null, filename, mime_type, data, url]);
+        return reply?.document_id === document.document_id && isUploadAnswer(reply.result) ? reply : null;
+      });
+      if (!ran) return uncertain();
+      const answer = ran.result as AttachedFile;
+      if ('blocked' in answer) return errorOutcome('tab_navigation_blocked', 'The page moved or cannot be automated, so no file was attached.');
       if ('stale' in answer) return errorOutcome('selector_not_found', PAGE_CHANGED);
       if ('missing' in answer) return selectorMissing(request.scope.ref ?? request.scope.selector!);
       if ('not_file_field' in answer) return errorOutcome('selector_not_found', NOT_FILE_FIELD);
+      if ('not_applied' in answer) return errorOutcome('value_not_applied', answer.not_applied);
       return { status: 'ok', outputs: { attached: answer.attached, page: formatPageHandle(document), url: answer.url,
         title: answer.title } };
     }
@@ -575,10 +779,66 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (cancel.signalled) return cancelled();
       if (request.page) await rebindRef(api, { tab_id, document_id: request.page.document_id }, request.scope.ref);
       const read = { tab_id, ...(request.page ? { document_id: request.page.document_id } : {}) };
-      const ran = await byRef(api, read, request.page ? request.scope.ref : undefined, () => runInDocument(api, read,
+      // 2026-11-20 — a read asked to settle first waits for the document named by its handle to stop changing
+      //   (`page-settle.ts`), inside the command's budget, and answers whether it had. A document that has gone is
+      //   the read's own to report.
+      let settled: boolean | undefined;
+      let changed: boolean | undefined;
+      const still = (state: Partial<PageSettleState> | null): boolean => state !== null && typeof state.quiet_ms === 'number'
+        && state.quiet_ms >= BRIDGE_READ_QUIET_MS && state.busy === false && state.animating !== true;
+      // 2026-11-20 (the owner: "go ahead", a wait at the Bridge) — a plain wait of seconds, sent as a read that waits for a
+      //   change (`wait_change_ms`): until the page has changed since the read that left the last mark (a document this
+      //   watch had not seen counts as changed), and then holds still, with no spinner started since that read. The read
+      //   below then leaves the mark the next wait counts from.
+      const changeFor = inspects && request.page ? readWaitChangeMs(command.args.wait_change_ms) : undefined;
+      const settleFor = inspects && request.page && changeFor === undefined ? readSettleMs(command.args.settle_ms) : undefined;
+      if (changeFor !== undefined && request.page) {
+        const budget = Math.max(0, Math.min(changeFor, command.timeout_ms - 2_000));
+        const from = Date.now();
+        let since: number | undefined;
+        changed = false;
+        settled = false;
+        for (;;) {
+          if (cancel.signalled) return cancelled();
+          const probe = await runInDocument(api, read, pageSettleProbe, [false], { immediate: true });
+          if (!probe || probe.document_id !== request.page.document_id) break;
+          const state = probe.result as Partial<PageSettleState> | null;
+          if (state !== null && typeof state.changes === 'number') {
+            since ??= state.fresh === true ? -1 : typeof state.marked === 'number' ? state.marked : state.changes;
+            if (state.changes > since) changed = true;
+            if (changed && still(state) && state.spinning !== true) { settled = true; break; }
+          }
+          const spent = Date.now() - from;
+          if (spent >= budget) break;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(BRIDGE_READ_SETTLE_POLL_MS, budget - spent)));
+        }
+        await runInDocument(api, read, pageSettleProbe, [true], { immediate: true });
+      }
+      if (settleFor !== undefined && request.page) {
+        const budget = Math.max(0, Math.min(settleFor, command.timeout_ms - 2_000));
+        const from = Date.now();
+        for (;;) {
+          if (cancel.signalled) return cancelled();
+          // Each look leaves the mark: the last, just before the read, is what a later wait counts a change from.
+          const probe = await runInDocument(api, read, pageSettleProbe, [true], { immediate: true });
+          if (!probe || probe.document_id !== request.page.document_id) break;
+          if (still(probe.result as Partial<PageSettleState> | null)) {
+            settled = true;
+            break;
+          }
+          const spent = Date.now() - from;
+          if (spent >= budget) { settled = false; break; }
+          await new Promise((resolve) => setTimeout(resolve, Math.min(BRIDGE_READ_SETTLE_POLL_MS, budget - spent)));
+        }
+      }
+      const ran = await byRef(api, read, request.page ? request.scope.ref : undefined, false, cancel, () => runInDocument(api, read,
         inspects ? inspectPage : describePageElement,
-        action === 'reread' ? [request.scope, request.limits, null, PAGE_REREAD_KEPT_GONE]
-          : inspects ? [request.scope, request.limits] : [request.scope]));
+        inspects && command.args.preserve_structure === true
+          ? [request.scope, request.limits, null, action === 'reread' ? PAGE_REREAD_KEPT_GONE : 0, command.args.dom_ready === true, null, true,
+            command.args.structure_scoped === true]
+          : action === 'reread' ? [request.scope, request.limits, null, PAGE_REREAD_KEPT_GONE, ...(command.args.dom_ready === true ? [true] : [])]
+          : inspects ? command.args.dom_ready === true ? [request.scope, request.limits, null, 0, true] : [request.scope, request.limits] : [request.scope],
+        ...(command.args.dom_ready === true ? [{ immediate: true }] : [])));
       // A page handle names a document Chrome no longer has: it navigated,
       // reloaded or closed.
       if (request.page && (!ran || ran.document_id !== request.page.document_id)) {
@@ -596,6 +856,20 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const outcome = (inspects ? inspectOutcome : describeOutcome)(ran.result,
         { tab_id, document_id: ran.document_id },
         { pattern: command.target_domain_pattern, blockedMessage: 'The owner client cannot be automated.' });
+      // New selection evidence is opt-in at the command boundary, so this
+      // Bridge can still answer an older server's closed output contract.
+      if (inspects && outcome.status === 'ok' && outcome.outputs) {
+        for (const key of ['selector_matches', 'selected_index']) {
+          if (!command.expects_output_keys.includes(key)) delete outcome.outputs[key];
+        }
+        if (settled !== undefined && command.expects_output_keys.includes('settled')) outcome.outputs.settled = settled;
+        if (changed !== undefined && command.expects_output_keys.includes('changed')) outcome.outputs.changed = changed;
+      }
+      // D-402 slice G — and a protected field's kind (which `acted_on` carries): a describe answers it
+      // only when asked, or every server's describe of a password field would fail on its keys.
+      if (!inspects && outcome.status === 'ok' && outcome.outputs && !command.expects_output_keys.includes('protected_kind')) {
+        delete outcome.outputs.protected_kind;
+      }
       // Slice R — a handle can name a frame, whose site is its own: the address the document read
       // decides too, and on a listed site nothing it read is answered.
       return outcome.status === 'ok' ? siteRefusal(String(outcome.outputs!.url), blocked) ?? outcome : outcome;
@@ -626,15 +900,29 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const refused = await pageRefusal(document.tab_id, blocked);
       if (refused) return refused;
       const named = request.scope.ref ?? request.scope.selector!;
-      const changed = await rebindRef(api, document, request.scope.ref, true);
+      const changed = navigationGuard ? undefined : await rebindRef(api, document, request.scope.ref, true);
       if (changed) return changed;
       // First the element, read without touching it. A page or an element that
       // has gone is a confirmed failure here: nothing has been typed or clicked.
       // Slice W — and, for a server that keeps the turn's steps, what finds it again another day,
       // worked out before it is acted on, since a click can take it away.
+      if (navigationGuard && !request.scope.ref) {
+        return errorOutcome('unknown', 'bridge: a navigation_guard needs a click by page and ref with before_url and after_url');
+      }
+      const fail = action === 'fill' ? undefined : readFailCheck(command.args.fail);
+      if (fail === null) return errorOutcome('unknown', 'bridge: fail is { selector, text } naming what means the step failed');
+      const readyCheck = readReadyCheck(command.args.ready_check);
+      if (readyCheck === null) return errorOutcome('unknown', 'bridge: ready_check needs selector, until and optional text');
+      const problems = (action === 'click' || action === 'submit' || action === 'press') && command.expects_output_keys.includes('problem');
+      const sendWatch = action === 'click' && typeof command.args.send_watch_ms === 'number'
+        && Number.isFinite(command.args.send_watch_ms)
+        ? Math.max(0, Math.min(BRIDGE_WATCH_MAX_MS, command.args.send_watch_ms)) : undefined;
+      const prepare = problems || sendWatch !== undefined;
+      const combined = prepare && readyCheck === undefined;
       const keeps = command.expects_output_keys.includes(BRIDGE_ACTED_ON_KEY);
-      const probe = await byRef(api, document, request.scope.ref,
-        () => runInDocument(api, document, describePageElement, [request.scope, null, keeps ? SELECTOR_RULES : null]));
+      const probe = await byRef(api, document, navigationGuard ? undefined : request.scope.ref, true, cancel,
+        () => runInDocument(api, document, describePageElement, [request.scope, null, keeps ? SELECTOR_RULES : null,
+          ...(combined ? [PAGE_MESSAGE_RULES] : [])]));
       if (!probe || probe.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
       const found = describeOutcome(probe.result, document,
         { pattern: command.target_domain_pattern, blockedMessage: 'The owner client cannot be automated.' });
@@ -649,43 +937,64 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       // it. ⚠ A refused write is uncertain, not failed: a click that navigates
       // can take the injection's answer with it.
       const url = found.outputs!.url as string;
+      if (navigationGuard && url !== navigationGuard.before_url) return errorOutcome('selector_not_found', PAGE_CHANGED);
       // Chrome passes arguments as JSON: an undefined ref would arrive as null.
       const ref = request.scope.ref === undefined ? [] : [request.scope.ref];
+      // D-402 slice G (§4.1) — the texts the row around the element showed, checked again just before
+      // the click or the typing (`row_checks`).
+      const rowTexts = Array.isArray(command.args.within) && command.args.within.length > 0
+        && command.args.within.every((text: unknown) => typeof text === 'string') ? command.args.within as string[] : null;
+      // 2026-11-21 (D-402, task P) — for an item no list item, table row or row by its role holds, the kind of
+      // card it is (`within_card`, `card_rows`), which the row is found by.
+      const rowCard = rowTexts !== null && typeof command.args.within_card === 'string' ? command.args.within_card : null;
       const selector = request.scope.selector ?? '';
       // Slice K — before a click or a send, what the page says now, so an error message it leads to
       // is told from one already there; and whether a click sends a form, so it is watched as a
       // sent form is. Asked only by a server that wants either.
-      const problems = (action === 'click' || action === 'submit' || action === 'press') && command.expects_output_keys.includes('problem');
-      const sendWatch = action === 'click' && typeof command.args.send_watch_ms === 'number'
-        && Number.isFinite(command.args.send_watch_ms)
-        ? Math.max(0, Math.min(BRIDGE_WATCH_MAX_MS, command.args.send_watch_ms)) : undefined;
-      const fail = action === 'fill' ? undefined : readFailCheck(command.args.fail);
-      if (fail === null) return errorOutcome('unknown', 'bridge: fail is { selector, text } naming what means the step failed');
-      let sends = false;
-      /** A send button on a form the browser will not send, and why: the click sends nothing. */
-      let unsent: string | undefined;
-      if (problems || sendWatch !== undefined) {
-        const prepared = await runInDocument(api, document, prepareStepChecks,
-          [selector, request.scope.ref ?? null, PAGE_MESSAGE_RULES]);
-        const said = prepared !== null && prepared.document_id === document.document_id
-          ? prepared.result as { sends?: unknown; unsent?: unknown } | null : null;
-        sends = said?.sends === true;
-        unsent = action === 'click' && typeof said?.unsent === 'string' ? said.unsent : undefined;
+      let readyAfter: PageWaitCheck | undefined;
+      if (readyCheck && action !== 'fill') {
+        const probe = await runInDocument(api, document, checkPageElement, [readyCheck]);
+        const read = probe?.document_id === document.document_id ? waitCheckOutcome(probe.result) : undefined;
+        // A pre-existing success condition cannot shorten the navigation watch.
+        if (read && !('error' in read) && read.url === url && !read.met) readyAfter = readyCheck;
       }
+      // An explicit readiness probe keeps the old ordering: its read runs
+      // before the error baseline is captured. Ordinary commands fuse both.
+      let preparation = found.outputs!;
+      if (prepare && !combined) {
+        const prepared = await byRef(api, document, navigationGuard ? undefined : request.scope.ref, true, cancel,
+          () => runInDocument(api, document, describePageElement, [request.scope, url, null, PAGE_MESSAGE_RULES]));
+        if (!prepared || prepared.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+        const read = describeOutcome(prepared.result, document,
+          { pattern: command.target_domain_pattern, blockedMessage: 'The owner client cannot be automated.' });
+        if (read.status !== 'ok') return read;
+        preparation = read.outputs!;
+      }
+      if (prepare && (typeof preparation.prepared_sends !== 'boolean'
+        || preparation.prepared_unsent !== undefined && preparation.prepared_sends !== false)) {
+        return errorOutcome('unknown', 'bridge: the action preparation returned no consistent form-send facts');
+      }
+      const sends = preparation.prepared_sends === true;
+      /** A send button on a form the browser will not send, and why: the click sends nothing. */
+      const unsent = action === 'click' && typeof preparation.prepared_unsent === 'string'
+        ? preparation.prepared_unsent : undefined;
       const typesFirst = action === 'submit' && value !== null;
       // D-347 follow-up 18 — a click waits for what covers its element to go (`clickPageElement`), out of the
       // command's budget: what is left of it after the wait is the watch's below.
       const begun = Date.now();
       const clickWait = Math.max(0, Math.min(BRIDGE_CLICK_WAIT_MS, command.timeout_ms - 15_000));
-      const ran = await byRef(api, document, request.scope.ref, () => action === 'click'
-        ? runInDocument(api, document, clickPageElement, [selector, url, request.scope.ref ?? null, clickWait])
+      if (cancel.signalled) return cancelled();
+      const ran = await byRef(api, document, navigationGuard ? undefined : request.scope.ref, true, cancel, () => action === 'click'
+        ? runInDocument(api, document, clickPageElement, [selector, url, request.scope.ref ?? null, clickWait,
+          ...(navigationGuard ? [navigationGuard.after_url] : rowTexts !== null ? [null] : []), ...(rowTexts !== null ? [rowTexts, rowCard] : [])])
         : action === 'press'
           ? runInDocument(api, document, pressPageKey, [selector, url, request.scope.ref ?? null, press])
         : action === 'submit' && !typesFirst
           ? runInDocument(api, document, submitPageForm, [selector, url, request.scope.ref ?? null])
           // Typing, and typing then sending in the same script (slice J).
           : runInDocument(api, document, fillPageField,
-            typesFirst ? [selector, value, url, request.scope.ref ?? null, true] : [selector, value, url, ...ref]));
+            typesFirst ? [selector, value, url, request.scope.ref ?? null, true, ...(rowTexts !== null ? [rowTexts, rowCard] : [])]
+              : rowTexts !== null ? [selector, value, url, request.scope.ref ?? null, null, rowTexts, rowCard] : [selector, value, url, ...ref]));
       if (!ran || ran.document_id !== document.document_id) return uncertain();
       const answered = fieldOutcome(ran.result, named, action, errorOutcome('selector_not_found', PAGE_CHANGED));
       const done = answered.status === 'ok'
@@ -723,6 +1032,8 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
           loadMs: Math.max(0, Math.min(BRIDGE_CLICK_LOAD_MAX_MS, budget - settleMs)),
         }, (address) => isOnBlockedSite(address, list), {
           challenge,
+          ...(command.args.dom_ready === true ? { domReady: true } : {}),
+          ...(readyAfter !== undefined ? { ready: readyAfter } : {}),
           ...(problems ? { problems: PAGE_MESSAGE_RULES } : {}),
           ...(fail !== undefined && command.expects_output_keys.includes('failed') ? { fail } : {}),
         });
@@ -755,7 +1066,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       // The field, read without touching it, as before any write by ref; and (slice W) what finds it
       // again, for a server that keeps the turn's steps.
       const keeps = command.expects_output_keys.includes(BRIDGE_ACTED_ON_KEY);
-      const probe = await byRef(api, document, request.scope.ref,
+      const probe = await byRef(api, document, request.scope.ref, true, cancel,
         () => runInDocument(api, document, describePageElement, [request.scope, null, keeps ? SELECTOR_RULES : null]));
       if (!probe || probe.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
       const found = describeOutcome(probe.result, document,
@@ -766,12 +1077,27 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       if (listedHere) return listedHere;
       if (cancel.signalled) return cancelled();
       const url = found.outputs!.url as string;
-      const ref = request.scope.ref ?? null;
       const selector = request.scope.selector ?? '';
       // What shows near the field before the typing; then the typing, as `fill` types.
-      await runInDocument(api, document, notePickLists, [selector, ref, PICK_RULES]);
-      const typing = await byRef(api, document, ref ?? undefined,
-        () => runInDocument(api, document, fillPageField, [selector, value, url, ...(ref === null ? [] : [ref])]));
+      // The note pins selector-based commands to a ref as well, so recovery can
+      // only follow the same field or a uniquely matching replacement.
+      const noting = await byRef(api, document, request.scope.ref, true, cancel,
+        () => runInDocument(api, document, notePickLists, [selector, request.scope.ref ?? null, PICK_RULES]));
+      if (cancel.signalled) return cancelled();
+      if (!noting || noting.document_id !== document.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+      const note = noting.result && typeof noting.result === 'object' && !Array.isArray(noting.result)
+        ? noting.result as ReturnType<typeof notePickLists> : null;
+      if (note && 'blocked' in note) return errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.');
+      if (note && 'stale' in note) return errorOutcome('selector_not_found', PAGE_CHANGED);
+      if (note && 'missing' in note) return selectorMissing(named);
+      if (note && 'several' in note) return fieldOutcome(note, named, 'fill', errorOutcome('selector_not_found', PAGE_CHANGED));
+      if (!note || !('noted' in note) || note.noted !== true || typeof note.ref !== 'string'
+        || !/^e[1-9]\d{0,8}$/.test(note.ref) || request.scope.ref !== undefined && note.ref !== request.scope.ref) {
+        return errorOutcome('unknown', 'The field could not be bound for picking, so nothing was typed.');
+      }
+      const ref = note.ref;
+      const typing = await byRef(api, document, ref, true, cancel,
+        () => runInDocument(api, document, fillPageField, [selector, value, url, ref]));
       if (!typing || typing.document_id !== document.document_id) return uncertain();
       const typed = fieldOutcome(typing.result, named, 'fill', errorOutcome('selector_not_found', PAGE_CHANGED));
       if (typed.status !== 'ok') return typed;
@@ -788,13 +1114,14 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       let chosen: { found: string; label: string; url: string } | undefined;
       for (;;) {
         if (cancel.signalled) return cancelled();
-        const looked = await runInDocument(api, document, findPickOption, [selector, ref, want, PICK_RULES]);
+        const looked = await byRef(api, document, ref, true, cancel,
+          () => runInDocument(api, document, findPickOption, [selector, ref, want, PICK_RULES]));
         if (!looked || looked.document_id !== document.document_id) {
           return errorOutcome('value_not_applied', `The page moved on once “${value}” was typed, before a suggestion was picked.`);
         }
         const answer = (looked.result ?? {}) as Record<string, unknown>;
         if (answer.blocked === true) return errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.');
-        if (answer.gone === true) {
+        if (answer.gone === true || answer.stale === true) {
           return errorOutcome('value_not_applied', 'The field went from the page once it was typed into, so nothing was picked.');
         }
         if (typeof answer.found === 'string' && typeof answer.label === 'string' && typeof answer.url === 'string') {
@@ -810,8 +1137,21 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         }
         // A picker that searches on keys heard none from the typing: type it again, a key at a time.
         if (seen.no_list === true && !keyed && now - started >= PICK_KEYS_AFTER_MS) {
+          if (cancel.signalled) return cancelled();
           keyed = true;
-          await runInDocument(api, document, typeWithKeys, [selector, ref, value]);
+          const again = await byRef(api, document, ref, true, cancel,
+            () => runInDocument(api, document, typeWithKeys, [selector, ref, value, url]));
+          if (!again || again.document_id !== document.document_id) return uncertain();
+          const retried = again.result && typeof again.result === 'object' && !Array.isArray(again.result)
+            ? again.result as ReturnType<typeof typeWithKeys> : null;
+          if (retried && 'blocked' in retried && retried.blocked === true) {
+            return errorOutcome('tab_navigation_blocked', 'The page moved or cannot be automated, so nothing was typed again.');
+          }
+          if (retried && ('gone' in retried || 'stale' in retried)) {
+            return errorOutcome('value_not_applied', 'The field went from the page once it was typed into, so nothing was picked.');
+          }
+          if (retried && 'not_applied' in retried && typeof retried.not_applied === 'string') return errorOutcome('value_not_applied', retried.not_applied);
+          if (!retried || !('typed' in retried) || retried.typed !== true) return uncertain();
           continue;
         }
         if (seen.no_list !== true && now - steadySince >= PICK_STEADY_MS) break;
@@ -830,6 +1170,10 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
 
       // The click on it, as a person's, by the ref it was given.
       if (cancel.signalled) return cancelled();
+      // A SPA can keep this document while changing its address after typing.
+      if (!isPatternWithinGrantedOrigins(chosen.url, [command.target_domain_pattern])) {
+        return errorOutcome('tab_navigation_blocked', 'The page is no longer at an address this step may use, so no suggestion was clicked.');
+      }
       const pressing = await runInDocument(api, document, clickPageElement, ['', chosen.url, chosen.found]);
       if (!pressing || pressing.document_id !== document.document_id) return uncertain();
       const pressed = fieldOutcome(pressing.result, chosen.label, 'click',
@@ -846,7 +1190,8 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         const after = await api.pageAfterClick(document.tab_id, { url: chosen.url, page: formatPageHandle(document),
           ...frameOf(probe) },
           command.target_domain_pattern, { settleMs, loadMs: Math.max(0, Math.min(BRIDGE_CLICK_LOAD_MAX_MS, left - settleMs)) },
-          (address) => isOnBlockedSite(address, list), { challenge: command.expects_output_keys.includes('challenge') });
+          (address) => isOnBlockedSite(address, list), { challenge: command.expects_output_keys.includes('challenge'),
+            ...(command.args.dom_ready === true ? { domReady: true } : {}) });
         if (after !== undefined) {
           moved = after.moved;
           for (const [key, item] of Object.entries(after)) if (command.expects_output_keys.includes(key)) outputs[key] = item;
@@ -899,13 +1244,53 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         const fail = readFailCheck(command.args.fail);
         if (fail === null) return errorOutcome('unknown', 'bridge: fail is { selector, text } naming what means the step failed');
         const problems = command.args.problems === true;
+        const capture = command.args.capture_read;
+        let captureRequest: ReturnType<typeof readInspectRequest> | undefined;
+        let captureUrl: string | undefined;
+        if (capture !== undefined) {
+          if (!capture || typeof capture !== 'object' || Array.isArray(capture) || request.check.until !== 'shown' || fail || problems
+            || Object.keys(capture).some(key => !['max_chars', 'max_value_chars', 'expected_url'].includes(key))) {
+            return errorOutcome('unknown', 'bridge: capture_read needs a simple shown-element wait and bounded read limits');
+          }
+          const settings = capture as Record<string, unknown>;
+          if (settings.expected_url !== undefined && typeof settings.expected_url !== 'string') return errorOutcome('unknown', 'bridge: expected_url must be text');
+          captureUrl = typeof settings.expected_url === 'string' ? settings.expected_url : undefined;
+          captureRequest = readInspectRequest({ selector: request.check.selector, max_chars: settings.max_chars, max_value_chars: settings.max_value_chars });
+          if ('error' in captureRequest) return errorOutcome('unknown', `bridge: ${captureRequest.error}`);
+        }
         const started = Date.now();
         for (;;) {
           if (cancel.signalled) return cancelled();
-          const ran = await runInDocument(api, handle, checkPageElement, [request.check]);
+          const capturing = captureRequest && !('error' in captureRequest) ? captureRequest : undefined;
+          const ran = capturing
+            ? await runInDocument(api, handle, inspectPage, [capturing.scope, capturing.limits, captureUrl ?? null, 0, true, request.check], { immediate: true })
+            : await runInDocument(api, handle, checkPageElement, [request.check]);
           if (!ran || ran.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
-          const read = waitCheckOutcome(ran.result);
+          let captured: Record<string, unknown> | undefined;
+          let read: ReturnType<typeof waitCheckOutcome>;
+          if (capturing) {
+            if (cancel.signalled) return cancelled();
+            const pending = ran.result && typeof ran.result === 'object' && !Array.isArray(ran.result)
+              ? (ran.result as { waiting?: unknown }).waiting : undefined;
+            if (pending && typeof pending === 'object' && typeof (pending as { url?: unknown }).url === 'string'
+              && typeof (pending as { title?: unknown }).title === 'string') {
+              const waiting = pending as { url: string; title: string };
+              read = { ...waiting, met: false };
+              captureUrl ??= waiting.url;
+            } else {
+              const inspected = inspectOutcome(ran.result, handle, { pattern: command.target_domain_pattern,
+                blockedMessage: 'The document or address changed while waiting for the region.' });
+              if (inspected.status !== 'ok') return inspected;
+              captured = inspected.outputs!;
+              // Cross-origin frame placeholders stay explicitly unreadable in
+              // this region; no new document is followed by the fused read.
+              if (typeof captured.html === 'string') captured = { ...captured,
+                html: settleFrames(captured.html, handle.tab_id, null, () => true) };
+              read = { url: String(captured.url), title: String(captured.title), met: true };
+            }
+          } else read = waitCheckOutcome(ran.result);
           if ('error' in read) return read.error;
+          if (capturing && captureUrl !== undefined && read.url !== captureUrl) return errorOutcome('selector_not_found', PAGE_CHANGED);
           if (!isPatternWithinGrantedOrigins(read.url, [command.target_domain_pattern])) {
             return errorOutcome('tab_navigation_blocked', 'The page is no longer on a site this step may read.');
           }
@@ -914,19 +1299,33 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
           if (listedHere) return listedHere;
           const waited = Date.now() - started;
           const answer = (outcome: Record<string, unknown>): ActionExecutorOutcome => ({ status: 'ok',
-            outputs: { page: formatPageHandle(handle), url: read.url, title: read.title, waited_ms: waited, ...outcome } });
+            outputs: { page: formatPageHandle(handle), url: read.url, title: read.title, waited_ms: waited,
+              ...(read.match_counts && command.expects_output_keys.includes('match_counts') ? { match_counts: read.match_counts } : {}), ...outcome } });
+          if (capturing && request.timeout_ms > 0 && waited > request.timeout_ms) return answer({ found: false });
           // The step's own failure wins over what it waits for, as the server decides it.
           if (fail !== undefined) {
             const failing = await runInDocument(api, handle, checkPageElement, [fail]);
-            const failed = failing && failing.document_id === handle.document_id ? waitCheckOutcome(failing.result) : undefined;
-            if (failed !== undefined && !('error' in failed) && failed.met) return answer({ found: false, failed: true });
+            if (!failing || failing.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+            const failed = waitCheckOutcome(failing.result);
+            if ('error' in failed) return failed.error;
+            if (failed.met) return answer({ found: false, failed: true });
           }
-          if (read.met) return answer({ found: true });
+          if (read.met) return answer({ found: true, ...captured });
           // An error message the page now shows, which Recued recognizes: only while nothing the
           // step waits for has shown.
           if (problems) {
             const said = await runInDocument(api, handle, pageProblem, [PAGE_MESSAGE_RULES]);
             if (said !== null && said.document_id === handle.document_id && typeof said.result === 'string') {
+              // The step's own failure, asked before the message: what shows between the two asks is seen
+              // by the second alone. Asked once more, so a message that is also the step's `fail_when`
+              // reports the step's own failure, with the page's words (`troubleOn` does the same).
+              if (fail !== undefined) {
+                const again = await runInDocument(api, handle, checkPageElement, [fail]);
+                if (!again || again.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+                const failed = waitCheckOutcome(again.result);
+                if ('error' in failed) return failed.error;
+                if (failed.met) return answer({ found: false, failed: true, problem: said.result });
+              }
               return answer({ found: false, problem: said.result });
             }
           }
@@ -948,21 +1347,60 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
         if (screen !== undefined && (!Number.isSafeInteger(screen) || (screen as number) < 1)) {
           return errorOutcome('unknown', 'bridge: screen is a whole number from 1, the top of the page');
         }
+        // Even the first element measurement can scroll. Check this document's
+        // own address first, including when its handle names a frame.
+        if (cancel.signalled) return cancelled();
+        const identified = await runInDocument(api, handle, pageIdentity, []);
+        if (cancel.signalled) return cancelled();
+        if (!identified || identified.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
+        const page = identified.result && typeof identified.result === 'object' && !Array.isArray(identified.result)
+          ? identified.result as Record<string, unknown> : null;
+        const keys = page === null ? [] : Object.keys(page);
+        if (page && keys.length === 1 && page.blocked === true) {
+          return errorOutcome('tab_navigation_blocked', 'The owner client cannot be automated.');
+        }
+        if (!page || keys.length !== 2 || !keys.every(key => key === 'url' || key === 'title')
+          || typeof page.url !== 'string' || typeof page.title !== 'string') {
+          return errorOutcome('unknown', 'No verified page address was returned, so nothing was scrolled.');
+        }
+        const url = page.url;
+        if (!isPatternWithinGrantedOrigins(url, [command.target_domain_pattern])) {
+          return errorOutcome('tab_navigation_blocked', 'The page is no longer on a site this step may read.');
+        }
+        const listedBefore = siteRefusal(url, blocked);
+        if (listedBefore) return listedBefore;
         const measure = async (at: number | null) => {
-          const ran = await byRef(api, handle, request.scope.ref,
-            () => runInDocument(api, handle, measurePageArea, [request.scope, null, at, null, PAGE_SCREEN_STEP, false]));
-          if (!ran || ran.document_id !== handle.document_id) return { error: errorOutcome('selector_not_found', PAGE_GONE) };
-          return measured(ran.result);
+          // An element measurement can scroll into view even without a screen.
+          const mayScroll = at !== null || request.scope.ref !== undefined || request.scope.selector !== undefined;
+          const unreadable = () => ({ error: mayScroll ? uncertain()
+            : errorOutcome('unknown', 'bridge: no readable answer from the page') });
+          const ran = await byRef(api, handle, request.scope.ref, false, cancel,
+            () => runInDocument(api, handle, measurePageArea, [request.scope, url, at, null, PAGE_SCREEN_STEP, false]));
+          if (!ran || ran.document_id !== handle.document_id) {
+            return { error: mayScroll ? uncertain() : errorOutcome('selector_not_found', PAGE_GONE) };
+          }
+          let read: ReturnType<typeof measured>;
+          try { read = measured(ran.result); } catch { return unreadable(); }
+          if ('error' in read && read.error.error?.code === 'unknown') return unreadable();
+          return 'error' in read && read.error.error?.code === 'tab_navigation_blocked'
+            ? { error: errorOutcome('tab_navigation_blocked', 'The page moved or cannot be automated, so no further scrolling was attempted.') } : read;
         };
         const now = await measure(null);
         if ('error' in now) return now.error;
+        if (cancel.signalled) return cancelled();
         const moved = await measure(scrollTarget({ screen: now.screen ?? 1, screens: now.screens ?? 1 },
           to as BridgeScrollTo | undefined, screen as number | undefined));
         if ('error' in moved) return moved.error;
-        await runInDocument(api, handle, waitForQuiet, [PAGE_SCROLL_QUIET_MS, PAGE_SCROLL_SETTLE_MS, PAGE_SCROLL_FIRST_MS]);
-        // As it is now: a feed that loaded more has more screens.
-        const after = await measure(null);
-        const read = 'error' in after ? moved : after;
+        // A confirmed scroll remains authoritative; cancellation stops new work.
+        let read = moved;
+        if (!cancel.signalled) {
+          await runInDocument(api, handle, waitForQuiet, [PAGE_SCROLL_QUIET_MS, PAGE_SCROLL_SETTLE_MS, PAGE_SCROLL_FIRST_MS]);
+          if (!cancel.signalled) {
+            // As it is now: a feed that loaded more has more screens.
+            const after = await measure(null);
+            if (!('error' in after)) read = after;
+          }
+        }
         if (!isPatternWithinGrantedOrigins(read.url, [command.target_domain_pattern])) {
           return errorOutcome('tab_navigation_blocked', 'The page is no longer on a site this step may read.');
         }
@@ -972,7 +1410,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
           screen: read.screen ?? 1, screens: read.screens ?? 1 } };
       }
       if (action === 'read_table') {
-        const ran = await byRef(api, handle, request.scope.ref,
+        const ran = await byRef(api, handle, request.scope.ref, false, cancel,
           () => runInDocument(api, handle, readPageTable, [request.scope, PAGE_TABLE_LIMITS]));
         if (!ran || ran.document_id !== handle.document_id) return errorOutcome('selector_not_found', PAGE_GONE);
         const table = tableOutcome(ran.result, handle, { pattern: command.target_domain_pattern });
@@ -988,7 +1426,7 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
       const list = blocked ?? [];
       return capturePage(api.pageCapture, { page: handle, scope: request.scope, pattern: command.target_domain_pattern,
         blocked: url => isOnBlockedSite(url, list), ...(screen !== undefined ? { screen: screen as number } : {}),
-        screens: command.expects_output_keys.includes('screens') });
+        screens: command.expects_output_keys.includes('screens'), cancel });
     }
 
     const tab = await api.findTabByUrlPattern(command.target_domain_pattern);
@@ -1133,7 +1571,11 @@ export const buildActionExecutor = (api: BridgeBrowserApi): BridgeActionExecutor
 
   return {
     async execute(req: ActionExecutorRequest) {
-      const outcome = await executeOne(req.action, req.command, req.cancel);
+      const outcome = await executeOne(req.action, req.command, req.cancel).catch((error: unknown) => {
+        if (error instanceof CancelledReferenceRetry) return cancelled();
+        if (error instanceof RefusedReferenceRetry) return error.outcome;
+        throw error;
+      });
       if (outcome.status === 'ok' && outcome.outputs) {
         if (!validateOutputKeys(outcome.outputs, req.command.expects_output_keys)) {
           return errorOutcome(

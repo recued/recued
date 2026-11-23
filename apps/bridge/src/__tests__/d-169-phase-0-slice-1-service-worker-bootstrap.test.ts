@@ -130,6 +130,7 @@ const buildCapturedOnMessage = (): CapturedOnMessage => {
 interface CapturedAlarms extends ChromeAlarmsApi {
   created: Array<{ name: string; periodInMinutes: number }>;
   cleared: string[];
+  listeners: Array<(alarm: { name: string }) => void>;
   fire(name: string): void;
 }
 
@@ -138,6 +139,7 @@ const buildCapturedAlarms = (): CapturedAlarms => {
   const obj: CapturedAlarms = {
     created: [],
     cleared: [],
+    listeners: alarmListeners,
     create(name, opts) {
       obj.created.push({ name, periodInMinutes: opts.periodInMinutes });
     },
@@ -147,6 +149,10 @@ const buildCapturedAlarms = (): CapturedAlarms => {
     onAlarm: {
       addListener(handler) {
         alarmListeners.push(handler);
+      },
+      removeListener(handler) {
+        const index = alarmListeners.indexOf(handler);
+        if (index >= 0) alarmListeners.splice(index, 1);
       },
     },
     fire(name) {
@@ -1058,11 +1064,28 @@ describe('D-169 P0 Slice 1 — bootBridgeServiceWorker (paired)', () => {
     expect(observedCancels).toEqual([true]);
   });
 
-  it('stop() closes the WS + removes the keepalive alarm', async () => {
+  it('stop() retires queued keepalive callbacks before closing the WS', async () => {
     const handle = await bootPaired();
-    await handle.stop();
-    expect(factory.transport?.closedWith).toEqual({ code: 1000, reason: 'bridge: shutdown' });
-    expect(alarms.cleared).toContain('recued.bridge.keepalive');
+    const ws = handle.wsClient!;
+    const transport = factory.transport!;
+    const stopWs = ws.stop.bind(ws);
+    const queued = [...alarms.listeners];
+    vi.spyOn(ws, 'stop').mockImplementation(async () => {
+      await stopWs();
+      // These callbacks were queued before removal; a listener detacher cannot recall them.
+      for (const listener of queued) listener({ name: 'recued.bridge.keepalive' });
+      await new Promise(resolve => setImmediate(resolve));
+    });
+    try {
+      await handle.stop();
+      expect(factory.openCalls).toBe(1);
+      expect(ws.isConnected()).toBe(false);
+      expect(transport.closedWith).toEqual({ code: 1000, reason: 'bridge: shutdown' });
+      expect(alarms.cleared).toContain('recued.bridge.keepalive');
+      expect(alarms.listeners).toHaveLength(0);
+    } finally {
+      await stopWs();
+    }
   });
 });
 

@@ -21,6 +21,9 @@
  *  replaced widened the stale window from ≤30s, the old status-tick poll,
  *  to unbounded on a stable connection.) */
 export interface BridgeModeConvergenceOptions {
+  /** A newer invalidation or pairing change retires this sequence, including
+   *  an already-pending refresh or backoff. Omitted by standalone callers. */
+  isCurrent?: () => boolean;
   /** Re-read + apply the authoritative mode for this bridge. Resolves
    *  `true` iff it applied a definitive mode — an unpaired panel has none
    *  to apply, so it too resolves `true` (nothing to converge). Resolves
@@ -51,11 +54,14 @@ export interface BridgeModeConvergenceOptions {
 export const runBridgeModeConvergence = async (
   opts: BridgeModeConvergenceOptions,
 ): Promise<void> => {
-  if (await opts.refresh()) return;
+  const current = opts.isCurrent ?? (() => true);
+  if (!current()) return;
+  if (await opts.refresh() || !current()) return;
   // First re-fetch failed — fail closed NOW, then retry to recover.
   opts.failClosed();
   for (let attempt = 1; attempt < opts.attempts; attempt += 1) {
     await opts.delay(opts.retryMs);
-    if (await opts.refresh()) return;
+    if (!current()) return;
+    if (await opts.refresh() || !current()) return;
   }
 };

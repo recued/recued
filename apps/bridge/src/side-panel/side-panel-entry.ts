@@ -20,19 +20,17 @@
  *   - Periodically call `recued.bridge.inspect` for the diagnostic
  *     section's local counters (idempotency / execution queue / grants).
  *
- *  ⚠️  Tests do NOT import this file — its top-level side effects
- *  reference `chrome.*`. The testable surface lives in `mount.ts` +
- *  `store/local-store.ts` + `views.ts`; this entry is the production
- *  binder. */
+ *  Lifecycle tests drive this production binder with captured chrome.*
+ *  events and replace only DOM mounting. Rendering tests use `mount.ts`
+ *  + `store/local-store.ts` + `views.ts` directly. */
 
 import {
   createSidePanelStore,
-  DEFAULT_BRIDGE_MODE,
   type SidePanelPairState,
   type SidePanelStoreState,
 } from './store/local-store.js';
 import { mountSidePanel } from './mount.js';
-import { runBridgeModeConvergence } from './bridge-mode-convergence.js';
+import { createBridgeModeRefresh } from './bridge-mode-refresh.js';
 import { onLocalStorageChanged, type StorageChangeEvents } from './storage-changes.js';
 import { createDiagnosticRefresh, createDiagnosticRefreshQueue, createPairStateRefresh, diagnosticScopeFromLocal } from './diagnostic-refresh.js';
 import { createDiagnosticSummaryCopy, formatDiagnosticSummary } from './diagnostic-summary.js';
@@ -41,6 +39,7 @@ import { mountBridgePairCodeInputHost } from '../pairing/pair-code-input-host.js
 import { BLOCKED_SITES_KEY } from '../permissions/site-grants.js';
 import { KEEP_SIGNED_IN_KEY, KEEP_SIGNED_IN_STATUS_KEY } from '../keep-signed-in.js';
 import { createSitesControls, type SitesChrome } from './sites.js';
+import { createRuntimeSiteListMutator } from '../site-list-mutations.js';
 import { createDisconnectControls } from './disconnect.js';
 import { createSidePanelFolds } from './folds.js';
 import {
@@ -70,6 +69,9 @@ const WATCHED_FIELDS = [
 /** D-169 P2 brick 3 — picker launch (inject) failure reason → user copy. */
 const LAUNCH_FAIL_MESSAGE: Record<string, string> = {
   picker_unavailable: 'Could not start the picker — the bridge is not ready yet.',
+  bridge_not_paired: 'Pair this bridge before watching an element.',
+  picker_busy: 'The picker is still starting. Try again in a moment.',
+  picker_session_invalid: 'The page or pairing changed. Start the picker again.',
   no_active_tab: 'Open a web page in this window, then try again.',
   unsupported_page: 'The picker runs only on web pages (http / https).',
   inject_failed:
@@ -155,6 +157,18 @@ const main = async (): Promise<void> => {
   }
   const store = createSidePanelStore();
   let diagnosticScope: BridgeIdempotencyScope | null = null;
+  let pairGeneration = 0;
+  let controlInFlight = new Set<string>();
+  // Equality alone cannot distinguish unpair/re-pair with the same identity.
+  // Retire this lifetime at the storage event, before the next read settles.
+  const capturePair = (): (() => boolean) => {
+    const generation = pairGeneration;
+    const scope = diagnosticScope;
+    return () => generation === pairGeneration && store.getState().pair.paired
+      && scope !== null && diagnosticScope !== null
+      && scope.server_public_key === diagnosticScope.server_public_key
+      && scope.token_id === diagnosticScope.token_id;
+  };
   let bridgeVersion: string | undefined;
   try { bridgeVersion = chromeApi.runtime.getManifest?.().version; } catch { /* Unavailable in an invalidated extension context. */ }
   const clipboard = globalThis.navigator?.clipboard;
@@ -168,6 +182,14 @@ const main = async (): Promise<void> => {
   let initialPairReadFailed = false;
   const diagnostics = createDiagnosticRefresh({ store, getScope: () => diagnosticScope,
     inspect: () => chromeApi.runtime.sendMessage({ type: 'recued.bridge.inspect' }) });
+  const bridgeMode = createBridgeModeRefresh({
+    store,
+    getScope: () => diagnosticScope,
+    read: () => chromeApi.runtime.sendMessage({ type: 'recued.bridge.side-panel.fetch-bridge-mode' }),
+    delay: ms => new Promise<void>(resolve => { setTimeout(resolve, ms); }),
+    attempts: 3,
+    retryMs: 2_000,
+  });
   const diagnosticReads = createDiagnosticRefreshQueue({
     store,
     prepare: async () => { if (pairState.needsRefresh()) await pairState.refresh(); },
@@ -197,6 +219,8 @@ const main = async (): Promise<void> => {
     option_id: string,
     note?: string,
   ): Promise<void> => {
+    const currentPair = capturePair();
+    if (!currentPair()) throw new Error('Pair this bridge before answering approvals.');
     const reply = (await chromeApi.runtime.sendMessage({
       type: 'recued.bridge.side-panel.submit-answer',
       ask_id,
@@ -224,6 +248,7 @@ const main = async (): Promise<void> => {
     if (reply.ok === false) {
       throw new Error(reply.error);
     }
+    if (!currentPair()) return;
     // Success — apply the post-seed snapshot so the answered ask drops out
     // of the approvals list immediately (the SW re-seeded history before
     // replying), ahead of the `notification.ask_closed` bus frame.
@@ -241,13 +266,16 @@ const main = async (): Promise<void> => {
    *  to inject the picker into the active tab. The picked element returns
    *  asynchronously as a separate `picker-result` push (handled below); this
    *  only reflects the launch (inject) outcome. */
-  let pickerLaunchInFlight = false;
+  type PickerPush = { launch_id?: unknown; ok?: unknown; created?: unknown; cancelled?: unknown; error?: unknown };
+  let pickerLaunch: { id: string | null; starting: boolean; currentPair(): boolean; queued?: PickerPush } | null = null;
   const launchPicker = async (): Promise<void> => {
     // Rendering the status line replaces this surface's DOM, including its
     // locally-disabled button. Keep the actual launch guard in this stable
     // production closure so a second click cannot inject a duplicate picker.
-    if (pickerLaunchInFlight) return;
-    pickerLaunchInFlight = true;
+    const currentPair = capturePair();
+    if (!currentPair() || pickerLaunch?.starting) return;
+    const launch: NonNullable<typeof pickerLaunch> = { id: null, starting: true, currentPair };
+    pickerLaunch = launch;
     try {
       store.applyElementWatchStatus({
         message: 'Starting the element picker…',
@@ -255,17 +283,23 @@ const main = async (): Promise<void> => {
         webclient_link: false,
       });
       let reply:
-        | { ok: true }
+        | { ok: true; launch_id: string }
         | { ok: false; reason?: string }
         | null;
       try {
         reply = (await chromeApi.runtime.sendMessage({
           type: 'recued.bridge.side-panel.launch-picker',
-        })) as { ok: true } | { ok: false; reason?: string } | null;
+        })) as { ok: true; launch_id: string } | { ok: false; reason?: string } | null;
       } catch {
         reply = null;
       }
-      if (reply !== null && reply !== undefined && reply.ok === true) {
+      if (pickerLaunch !== launch || !currentPair()) return;
+      if (reply?.ok === true && typeof reply.launch_id === 'string' && reply.launch_id) {
+        launch.id = reply.launch_id;
+        if (launch.queued?.launch_id === launch.id) {
+          receivePickerResult(launch.queued);
+          return;
+        }
         store.applyElementWatchStatus({
           message: 'Pick an element on the page, then confirm.',
           tone: 'info',
@@ -277,6 +311,7 @@ const main = async (): Promise<void> => {
         reply !== null && reply !== undefined && reply.ok === false
           ? reply.reason
           : undefined;
+      pickerLaunch = null;
       store.applyElementWatchStatus({
         message:
           (reason !== undefined ? LAUNCH_FAIL_MESSAGE[reason] : undefined) ??
@@ -285,7 +320,7 @@ const main = async (): Promise<void> => {
         webclient_link: false,
       });
     } finally {
-      pickerLaunchInFlight = false;
+      launch.starting = false;
     }
   };
 
@@ -293,11 +328,11 @@ const main = async (): Promise<void> => {
    *  confirms a pick, the SW derives the url + calls
    *  `triggers.createElementWatch`, then pushes the result here). The watch
    *  lands DISARMED — the success line points at the webclient to enable it. */
-  const applyPickerResult = (push: {
-    ok?: unknown;
-    created?: unknown;
-    error?: unknown;
-  }): void => {
+  const applyPickerResult = (push: PickerPush): void => {
+    if (push.cancelled === true) {
+      store.applyElementWatchStatus({ message: 'Picker cancelled.', tone: 'info', webclient_link: false });
+      return;
+    }
     if (push.ok === true) {
       const alreadyExisted = push.created === false;
       store.applyElementWatchStatus({
@@ -313,12 +348,22 @@ const main = async (): Promise<void> => {
     const message =
       error === 'bridge_not_paired'
         ? 'Pair this bridge before creating a watch.'
+        : error === 'picker_session_expired'
+          ? 'The picker expired. Start it again.'
         : error === 'unsupported_page'
           ? 'That page cannot be watched.'
           : error !== ''
             ? 'Could not create the watch: ' + error
             : 'Could not create the watch.';
     store.applyElementWatchStatus({ message, tone: 'danger', webclient_link: false });
+  };
+  const receivePickerResult = (push: PickerPush): void => {
+    const launch = pickerLaunch;
+    if (!launch?.currentPair() || typeof push.launch_id !== 'string') return;
+    if (launch.id === null && launch.starting) { launch.queued = push; return; }
+    if (push.launch_id !== launch.id) return;
+    pickerLaunch = null;
+    applyPickerResult(push);
   };
 
   // Resolve pair identity before the first dynamic paint. The static HTML keeps
@@ -351,7 +396,7 @@ const main = async (): Promise<void> => {
         get: async keys => (await chromeApi.storage.local.get(keys)) as Record<string, unknown>,
         set: items => chromeApi.storage.local.set(items),
       },
-    }, next => store.applySitesState(next))
+    }, next => store.applySitesState(next), createRuntimeSiteListMutator(message => chromeApi.runtime.sendMessage(message)))
     : undefined;
 
   // The Server status section's Disconnect: the worker tells the server and forgets the pairing.
@@ -404,7 +449,11 @@ const main = async (): Promise<void> => {
     initiallyInvalidated: initialPairReadFailed,
     read: () => chromeApi.storage.local.get([...WATCHED_FIELDS]),
     invalidate: () => {
+      pairGeneration++;
+      controlInFlight = new Set();
+      pickerLaunch = null;
       diagnosticScope = null;
+      bridgeMode.invalidate();
       diagnosticCopy.invalidate();
       diagnostics.invalidate();
     },
@@ -427,11 +476,11 @@ const main = async (): Promise<void> => {
       // bridge's cached approval mode. Reset to the fail-closed default
       // so the approvals section can't keep rendering interactive cards
       // using the PRIOR pairing's approval flag. The mode is NOT re-
-      // fetched inline here on purpose: an immediate fetch would race
-      // the SW's own reconnection to the new server (the rpc could
-      // still hit the OLD connection and re-apply a stale mode). The
-      // periodic tick re-fetches once the SW has settled on the new
-      // identity, so the gate stays fail-closed (read-only) in between.
+      // fetched inline for an existing pair: an immediate fetch could
+      // still hit the SW's OLD connection. Its reconnect invalidation
+      // re-fetches after the new connection is ready, keeping the gate
+      // read-only in between. Pending prior-pair reads are also retired
+      // by bridgeMode.invalidate() at the storage identity event above.
       // `reset(nextPair)` above already restores this fail-closed default
       // atomically. A metadata-only update must not erase a live mode.
       //
@@ -486,7 +535,8 @@ const main = async (): Promise<void> => {
    *  shows the connecting state as neutral copy, not an error. */
   let statusGeneration = 0;
   const refreshStatus = async (): Promise<void> => {
-    if (!store.getState().pair.paired) return;
+    const currentPair = capturePair();
+    if (!currentPair()) return;
     // The 30 s tick, the connect push and mount can overlap; only the
     // newest answer applies, so a late "connecting" never replaces a
     // status that arrived after it.
@@ -498,7 +548,7 @@ const main = async (): Promise<void> => {
         | { ok: true; status: import('@recued/contracts').ServerSystemStatus }
         | { ok: false; error: string }
         | null;
-      if (generation !== statusGeneration) return;
+      if (!currentPair() || generation !== statusGeneration) return;
       if (reply === null || reply === undefined) {
         store.applyStatusFrame({
           status: null,
@@ -521,7 +571,7 @@ const main = async (): Promise<void> => {
         error: null,
       });
     } catch (err) {
-      if (generation !== statusGeneration) return;
+      if (!currentPair() || generation !== statusGeneration) return;
       store.applyStatusFrame({
         status: store.getState().status.status,
         fetched_at: store.getState().status.fetched_at,
@@ -537,7 +587,8 @@ const main = async (): Promise<void> => {
    *  the prior items (the next tick recovers) rather than blanking the
    *  lists — they have no user-facing failure surface this slice. */
   const refreshFrames = async (): Promise<void> => {
-    if (!store.getState().pair.paired) return;
+    const currentPair = capturePair();
+    if (!currentPair()) return;
     try {
       const reply = (await chromeApi.runtime.sendMessage({
         type: 'recued.bridge.side-panel.fetch-frames',
@@ -550,7 +601,7 @@ const main = async (): Promise<void> => {
           }
         | { ok: false; error: string }
         | null;
-      if (reply === null || reply === undefined || reply.ok === false) return;
+      if (!currentPair() || reply === null || reply === undefined || reply.ok === false) return;
       store.applyBusFrames(
         {
           recipe_results: reply.recipe_results,
@@ -584,7 +635,8 @@ const main = async (): Promise<void> => {
    *  failure surface). An out-of-order response (a newer refresh started while
    *  this one was in flight) is discarded. */
   const refreshActive = async (notice = ''): Promise<void> => {
-    if (!store.getState().pair.paired) return;
+    const currentPair = capturePair();
+    if (!currentPair()) return;
     const seq = ++activeRefreshSeq;
     try {
       const reply = (await chromeApi.runtime.sendMessage({
@@ -597,7 +649,7 @@ const main = async (): Promise<void> => {
           }
         | { ok: false; error: string }
         | null;
-      if (seq !== activeRefreshSeq) return; // superseded by a newer refresh
+      if (!currentPair() || seq !== activeRefreshSeq) return;
       if (reply === null || reply === undefined || reply.ok === false) {
         const prior = store.getState().active;
         if (notice !== '' || prior.notice !== '') {
@@ -613,7 +665,7 @@ const main = async (): Promise<void> => {
         notice,
       });
     } catch {
-      if (seq !== activeRefreshSeq) return;
+      if (!currentPair() || seq !== activeRefreshSeq) return;
       // Best-effort — keep prior list state on a transient failure.
       const prior = store.getState().active;
       if (notice !== '' || prior.notice !== '') {
@@ -650,12 +702,11 @@ const main = async (): Promise<void> => {
   // D-181 slice 6a (Codex fold) — in-flight control guard. The panel rebuilds
   // its DOM wholesale on every store change, so a per-button `disabled`
   // attribute wouldn't survive a re-render; instead this stable closure-scoped
-  // set bails a duplicate click while the same (action, id) is in flight. Kill
+  // set bails a duplicate click while the same (action, id) is in flight. Each
+  // pairing gets its own set; an old completion cannot release a new guard. Kill
   // is server-idempotent, but the guard also stops a redundant click from
   // racing a misleading `not_found` / `already_terminal` notice in behind a
   // just-succeeded action.
-  const controlInFlight = new Set<string>();
-
   /** D-181 slice 6a — route a kill / cancel / promote from an active-row button
    *  through the SW responder, then re-fetch the active list (carrying any
    *  non-terminal-verdict / error notice). The server re-checks the
@@ -665,9 +716,12 @@ const main = async (): Promise<void> => {
     action: 'kill' | 'cancel' | 'promote',
     id: string,
   ): Promise<void> => {
+    const currentPair = capturePair();
+    if (!currentPair()) return;
+    const inFlight = controlInFlight;
     const inFlightKey = `${action}:${id}`;
-    if (controlInFlight.has(inFlightKey)) return; // ignore a double-click
-    controlInFlight.add(inFlightKey);
+    if (inFlight.has(inFlightKey)) return; // ignore a double-click
+    inFlight.add(inFlightKey);
     const type =
       action === 'kill'
         ? 'recued.bridge.side-panel.execution-kill'
@@ -694,8 +748,9 @@ const main = async (): Promise<void> => {
     } catch (err) {
       notice = `Could not ${action}: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
-      controlInFlight.delete(inFlightKey);
+      inFlight.delete(inFlightKey);
     }
+    if (!currentPair()) return;
     await refreshActive(notice);
   };
 
@@ -707,7 +762,8 @@ const main = async (): Promise<void> => {
    *  shape as `fetch-frames`; best-effort (a failure leaves the lists
    *  empty until the first `refreshFrames` tick). */
   const refreshHistory = async (): Promise<void> => {
-    if (!store.getState().pair.paired) return;
+    const currentPair = capturePair();
+    if (!currentPair()) return;
     try {
       const reply = (await chromeApi.runtime.sendMessage({
         type: 'recued.bridge.side-panel.fetch-history',
@@ -720,7 +776,7 @@ const main = async (): Promise<void> => {
           }
         | { ok: false; error: string }
         | null;
-      if (reply === null || reply === undefined || reply.ok === false) return;
+      if (!currentPair() || reply === null || reply === undefined || reply.ok === false) return;
       store.applyBusFrames(
         {
           recipe_results: reply.recipe_results,
@@ -734,72 +790,6 @@ const main = async (): Promise<void> => {
     }
   };
 
-  /** D-169 P2 Slice 4 — pull THIS bridge's own mode flags via the SW
-   *  `fetch-bridge-mode` responder (→ the self-scoped
-   *  `notifications.my_bridge_mode` rpc, keyed server-side on the
-   *  authenticated client_token_id). Drives `mount`'s approvals
-   *  interactive-vs-read-only gate. Fail-closed by construction: only an
-   *  AFFIRMATIVE server reply updates the gate — `modes: null` (the server
-   *  does not recognise this client as a paired bridge) resolves to
-   *  both-off (read-only), and a transport-level failure (ok:false / no
-   *  reply / throw) leaves the last-known mode untouched to avoid flicker.
-   *  The mount default + the pair-change reset are both-off, so the panel
-   *  starts (and re-pairs) read-only until a successful fetch confirms
-   *  approval mode ON for this bridge. Returns whether it applied an
-   *  authoritative mode — an unpaired panel has none to apply, so resolves
-   *  `true` (nothing to converge); the invalidation path below uses this
-   *  return to drive its retry + fail-closed convergence. */
-  const refreshBridgeMode = async (): Promise<boolean> => {
-    if (!store.getState().pair.paired) return true;
-    try {
-      const reply = (await chromeApi.runtime.sendMessage({
-        type: 'recued.bridge.side-panel.fetch-bridge-mode',
-      })) as
-        | {
-            ok: true;
-            modes: import('@recued/contracts').NotificationBridgeModeRow | null;
-          }
-        | { ok: false; error: string }
-        | null;
-      if (reply !== null && reply !== undefined && reply.ok === true) {
-        // An affirmative reply — including an authoritative `modes: null`
-        // (both-off) — is a definitive answer the gate converges to.
-        store.applyBridgeMode(reply.modes ?? DEFAULT_BRIDGE_MODE);
-        return true;
-      }
-      return false;
-    } catch {
-      // Transient failure — didn't learn the mode (the converge loop
-      // below retries, then fails closed rather than trust the stale one).
-      return false;
-    }
-  };
-
-  // D-169 P2 Slice 4 (live-mode propagation) — converge this bridge's mode
-  // when the SW pushes a `bridge-mode-invalidated` signal (a
-  // `notification.bridge_mode_changed` bus event + every reconnect). The
-  // push is value-less: we re-read our OWN mode via `my_bridge_mode`
-  // (server-authoritative) rather than trust any flags on the wire. If the
-  // first re-fetch fails we FAIL CLOSED to read-only at once (then retry to
-  // recover the true mode) — see `runBridgeModeConvergence` for why a stale
-  // approval-ON gate is unsafe. This replaces the status-tick mode re-poll
-  // below.
-  const BRIDGE_MODE_CONVERGE_ATTEMPTS = 3;
-  const BRIDGE_MODE_CONVERGE_RETRY_MS = 2_000;
-  const convergeBridgeModeAfterInvalidation = (): Promise<void> =>
-    runBridgeModeConvergence({
-      refresh: refreshBridgeMode,
-      failClosed: () => {
-        store.applyBridgeMode(DEFAULT_BRIDGE_MODE);
-      },
-      delay: (ms) =>
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, ms);
-        }),
-      attempts: BRIDGE_MODE_CONVERGE_ATTEMPTS,
-      retryMs: BRIDGE_MODE_CONVERGE_RETRY_MS,
-    });
-
   chromeApi.runtime.onMessage?.addListener((message) => {
     const typed = message as { type?: unknown } | null | undefined;
     if (typed?.type === 'recued.bridge.side-panel.diagnostics-invalidated') {
@@ -809,7 +799,9 @@ const main = async (): Promise<void> => {
       typed &&
       typed.type === 'recued.bridge.side-panel.bridge-mode-invalidated'
     ) {
-      void convergeBridgeModeAfterInvalidation();
+      // The signal carries no mode flags. Fetch our authoritative mode,
+      // fail closed on failure, and retire the preceding refresh sequence.
+      void bridgeMode.converge();
     }
     // The socket just (re)connected: a status read that found it still
     // connecting can get its real answer now, not on the 30 s tick.
@@ -820,16 +812,14 @@ const main = async (): Promise<void> => {
     // D-169 P2 brick 3 — the SW pushes the "Watch this element" create
     // outcome here once the user confirms a pick on the page.
     if (typed && typed.type === 'recued.bridge.side-panel.picker-result') {
-      applyPickerResult(
-        message as { ok?: unknown; created?: unknown; error?: unknown },
-      );
+      receivePickerResult(message as PickerPush);
     }
     return undefined;
   });
 
   // Kick off initial fetches. `refreshHistory` seeds + renders the
   // authoritative recent slice on mount; the 5s `refreshFrames` poll then
-  // carries live bus updates on top. `refreshBridgeMode` resolves the
+  // carries live bus updates on top. `bridgeMode.refresh` resolves the
   // approvals interactive-vs-read-only gate before the user can act.
   // Each one returns at once while the bridge is unpaired; a pair that
   // finishes with the panel open runs them again (the storage listener).
@@ -837,7 +827,7 @@ const main = async (): Promise<void> => {
     void refreshStatus();
     void refreshDiagnostic();
     void refreshHistory();
-    void refreshBridgeMode();
+    void bridgeMode.refresh();
     // D-181 slice 6a — seed the active-executions list on mount; the 5s
     // live-list tick below keeps it fresh.
     void refreshActive();

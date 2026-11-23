@@ -82,6 +82,13 @@ describe('the offers for needed packs', () => {
     expect(await offersOver(SNAPSHOT)(['recued-core.markitdown', 'recued-core.docling'])).toEqual([MARKITDOWN, DOCLING]);
   });
 
+  // D-405 slice 3 — "Not now" on an offer holds here too: the owner's switch already does (P7).
+  it('⛔ leave out a pack the owner said "Not now" to, keyed as the row keys it', async () => {
+    const offers = createNeededPackOffers({ catalogue: catalogue(SNAPSHOT), enabled: () => true, installedPackSlugs: () => new Set(),
+      hidden: (key) => key === 'offer:pack:markitdown' });
+    expect(await offers(['recued-core.markitdown', 'recued-core.docling'])).toEqual([DOCLING]);
+  });
+
   it('⛔ leave out what is installed, an uncertified publisher, and a pack the marketplace does not list', async () => {
     const offers = offersOver(SNAPSHOT, ['markitdown']);
     expect(await offers([

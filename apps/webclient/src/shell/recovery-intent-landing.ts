@@ -424,6 +424,12 @@ const ROUTE_LANDING_POLICIES: Record<WebclientRouteId, RouteLandingPolicy> = {
     continue: [heading('data-recued-stats-route-heading')],
     review: [heading('data-recued-stats-route-heading')],
   },
+  // D-405 slice 4 — Set up is read-only but for "Show it again": its heading is the landing, as Stats'.
+  setup: {
+    choose_again: [heading('data-recued-setup-route-heading')],
+    continue: [heading('data-recued-setup-route-heading')],
+    review: [heading('data-recued-setup-route-heading')],
+  },
   logs: {
     choose_again: [
       control('data-recued-logs-filter'),
@@ -572,6 +578,8 @@ const ROUTE_LANDING_INVALIDATIONS: Record<
   yours: [invalidation('data-yours-error')],
   // D-250 § D7 — one section, one error surface; nothing to scope against a sibling.
   stats: [],
+  // D-405 slice 4 — a failed "Show it again" says so on its own line; nothing demotes the landing.
+  setup: [],
   logs: [
     // Runs renders History, Active, Active passes, and detail status beside
     // each other. Keep a still-valid landing inside its own section so an

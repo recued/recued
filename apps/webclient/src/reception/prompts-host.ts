@@ -99,6 +99,7 @@
 
 import { e } from '@recued/ui-shared/template';
 import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';
+import { wireFocusTrap, type FocusTrapHandle } from '@recued/ui-shared/focus-trap';
 import {
   actionBar,
   button,
@@ -120,6 +121,7 @@ import {
 } from './spine.js';
 import type { ReceptionPageShell } from './page-shell.js';
 import type { ReceptionHostPromptAction } from './page-host.js';
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -534,25 +536,52 @@ export const mountReceptionPromptsHost = (
   let state: PromptState | null = null;
   let disposed = false;
   let lastHtml = '';
+  let pendingToken: number | null = null;
+  const doc = host.ownerDocument;
+  const focusOwner = doc ? trackCustomerWorkspaceFocus(doc) : null;
+  let trap: FocusTrapHandle | null = null;
+  let returnSource: { action: string; endpointId?: string } | null = null;
+  const dialogTitle = { extend: 'Give it more time', rotate: 'Swap the secret', revoke: 'Take this link back', 'emergency-disable-all': 'Turn Reception off right now?' };
 
   const render = (): void => {
     if (disposed) return;
-    const html = state === null ? '' : renderPrompt(state);
+    const html = state === null ? '' : `<section class="reception-prompt" role="dialog" aria-modal="true" aria-label="${e(dialogTitle[state.prompt])}" aria-busy="${pendingToken !== null}" tabindex="-1">${renderPrompt(state)}${pendingToken !== null ? '<p class="reception-prompt-status" role="status">Saving…</p>' : ''}</section>`;
     if (html === lastHtml) return;
+    const active = doc?.activeElement as HTMLElement | null;
+    const previous = active && host.contains(active) ? { action: active.dataset.action, field: active.dataset.promptField } : null;
     host.innerHTML = html;
     lastHtml = html;
+    const controls = Array.from(host.querySelectorAll?.<HTMLInputElement | HTMLButtonElement>('[data-prompt-field], [data-action="reception-prompt-submit"]') ?? []);
+    if (pendingToken !== null) for (const control of controls) control.disabled = true;
+    if (previous?.field || previous?.action) {
+      Array.from(host.querySelectorAll?.<HTMLElement>('[data-prompt-field], [data-action]') ?? []).find(el =>
+        (previous.field ? el.dataset.promptField === previous.field : el.dataset.action === previous.action) && !el.matches(':disabled'))?.focus({ preventScroll: true });
+    }
   };
 
   const close = (): void => {
     if (state === null) return;
+    const restore = !doc || doc.activeElement === doc.body || host.contains(doc.activeElement);
     const closing = state.prompt;
     state = null;
+    pendingToken = null;
     // Invalidate any in-flight rpc — its completion handler bails on
     // the token mismatch (DD#8). Same logic applies on `open()` +
     // `dispose()` below; everywhere `state` is reset, the token ticks.
     submitToken += 1;
+    trap?.release(); trap = null;
     render();
     opts.onClose?.(closing);
+    if (restore && returnSource) {
+      const source = returnSource;
+      const actions = Array.from(doc?.querySelectorAll<HTMLElement>('[data-reception-shell-page-main] [data-action]') ?? []);
+      const available = (el: HTMLElement) => !el.matches(':disabled');
+      const target = actions.find(el => el.dataset.action === source.action && el.dataset.endpointId === source.endpointId && available(el))
+        ?? actions.find(el => el.dataset.action === 'reception-open-detail' && el.dataset.endpointId === source.endpointId && available(el))
+        ?? actions.find(el => el.dataset.action === 'reception-refresh' && available(el));
+      target?.focus({ preventScroll: true });
+    }
+    returnSource = null;
   };
 
   const swallow = (promise: Promise<unknown>, onError: (message: string) => void): void => {
@@ -563,7 +592,7 @@ export const mountReceptionPromptsHost = (
   };
 
   const setError = (message: string): void => {
-    if (state === null) return;
+    if (state === null || pendingToken !== null) return;
     switch (state.prompt) {
       case 'extend':
         state = { ...state, error: message };
@@ -725,8 +754,14 @@ export const mountReceptionPromptsHost = (
   };
 
   const handleSubmit = (): void => {
-    if (state === null) return;
+    if (state === null || pendingToken !== null) return;
     const myToken = nextToken();
+    const currentFocus = focusOwner?.capture();
+    const submit = (work: () => Promise<unknown>): void => {
+      pendingToken = myToken;
+      render();
+      swallow(work(), onFailure);
+    };
     // Guard a success completion: ignore if the user cancelled / opened
     // another prompt while the rpc was in flight (DD#8).
     const onSettled = (apply: () => void): void => {
@@ -735,7 +770,9 @@ export const mountReceptionPromptsHost = (
     };
     const onFailure = (message: string): void => {
       if (myToken !== submitToken) return;
+      pendingToken = null;
       setError(message);
+      if (doc && (currentFocus?.() || doc.activeElement === doc.body)) host.querySelector<HTMLElement>('[data-action="reception-prompt-submit"]')?.focus({ preventScroll: true });
     };
     switch (state.prompt) {
       case 'extend': {
@@ -766,11 +803,10 @@ export const mountReceptionPromptsHost = (
           }
         }
         const endpoint_id = state.endpoint_id;
-        swallow(
+        submit(() =>
           shell.extendEndpoint(endpoint_id, new_expires_at).then(() => {
             onSettled(close);
           }),
-          onFailure,
         );
         return;
       }
@@ -778,37 +814,25 @@ export const mountReceptionPromptsHost = (
         const endpoint_id = state.endpoint_id;
         const reason = state.reason;
         const callReason = reason === '' ? undefined : reason;
-        swallow(
+        const row = lookupRow(shell, endpoint_id);
+        submit(() =>
           shell.rotateToken(endpoint_id, callReason).then((result) => {
-            onSettled(() => {
-              // DD#4 — look the row up to compose the per-kind share
-              // card. A missing row (page never loaded, or endpoint
-              // vanished mid-flight) means we skip the registration; the
-              // rotate still completes.
-              const row = lookupRow(shell, endpoint_id);
-              if (row !== null) {
-                shell.setEndpointShare(
-                  endpoint_id,
-                  composeRotateShareInput(row, result.share_url_once, now()),
-                );
-              }
-              close();
-            });
+            // Capture the one-shot result even if this prompt has closed.
+            // Only its own live prompt may close or change focus afterwards.
+            if (row !== null) shell.setEndpointShare(endpoint_id, composeRotateShareInput(row, result.share_url_once, now()));
+            onSettled(close);
           }),
-          onFailure,
         );
         return;
       }
       case 'revoke': {
         const endpoint_id = state.endpoint_id;
         const reason = state.reason.trim();
-        swallow(
-          shell
+        submit(() => shell
             .revokeEndpoint(endpoint_id, reason === '' ? undefined : reason)
             .then(() => {
               onSettled(close);
             }),
-          onFailure,
         );
         return;
       }
@@ -820,13 +844,11 @@ export const mountReceptionPromptsHost = (
           return;
         }
         const reason = state.reason.trim();
-        swallow(
-          shell
+        submit(() => shell
             .emergencyDisableAll(reason === '' ? undefined : reason)
             .then(() => {
               onSettled(close);
             }),
-          onFailure,
         );
         return;
       }
@@ -842,6 +864,10 @@ export const mountReceptionPromptsHost = (
     root: host,
     handlers,
   });
+  const onKeydown = (event: KeyboardEvent): void => {
+    if (state !== null && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
+  };
+  host.addEventListener('keydown', onKeydown);
 
   // ── open() dispatch ────────────────────────────────────────────
 
@@ -924,12 +950,16 @@ export const mountReceptionPromptsHost = (
     // this open() replaces the same prompt kind, the new modal is a
     // fresh form and the prior submit's completion must not touch it.
     submitToken += 1;
+    pendingToken = null;
+    returnSource = { action, ...(dataset.endpointId !== undefined ? { endpointId: dataset.endpointId } : {}) };
+    trap?.release(); trap = null;
     state = next;
     // A consecutive open() of the same prompt kind would otherwise be
     // dedup-suppressed by `lastHtml`; force the render so the seed
     // state's freshly prefilled values surface.
     lastHtml = '';
     render();
+    if (doc) trap = wireFocusTrap({ document: doc, getContainer: () => host.querySelector('.reception-prompt'), restoreFocus: false });
   };
 
   return {
@@ -943,9 +973,12 @@ export const mountReceptionPromptsHost = (
       // path's call into `setEndpointShare` / `close` would otherwise
       // race the teardown.
       submitToken += 1;
+      trap?.release(); trap = null;
+      focusOwner?.dispose();
       detachActions();
       host.removeEventListener('input', onFieldEvent);
       host.removeEventListener('change', onFieldEvent);
+      host.removeEventListener('keydown', onKeydown);
       state = null;
       host.innerHTML = '';
       lastHtml = '';
@@ -961,11 +994,18 @@ export const mountReceptionPromptsHost = (
 // ════════════════════════════════════════════════════════════════
 
 export const RECEPTION_PROMPTS_HOST_STYLES = `
+.reception-prompt { width: min(100%, 560px); min-width: 0; color: var(--fg); outline: none; }
+.reception-prompt > .rx-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding: 24px; border-radius: var(--wc-radius, 9px); background: var(--surface); }
+.reception-prompt :is(p, h3) { margin: 0; overflow-wrap: anywhere; }
+.reception-prompt .rx-panel-title { font-size: 18px; line-height: 1.4; font-weight: 650; }
+.reception-prompt .rx-action-bar { gap: 8px; margin: 0; padding-top: 16px; }
+.reception-prompt .rx-btn { min-height: var(--wc-control-h, 40px); border-radius: var(--wc-radius, 9px); font-size: 12px; font-weight: 600; }
+.reception-prompt-status { padding: 12px 16px; font-size: 13px; background: var(--surface); border-radius: var(--wc-radius, 9px); }
 .reception-prompt-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
+  gap: 6px;
+  min-width: 0;
 }
 .reception-prompt-label {
   font-size: 12px;
@@ -974,12 +1014,17 @@ export const RECEPTION_PROMPTS_HOST_STYLES = `
 }
 .reception-prompt-input {
   font: inherit;
-  padding: 6px 8px;
+  padding: 8px 11px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
+  border-radius: var(--wc-radius, 9px);
+  background: var(--surface);
   color: var(--fg);
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--wc-control-h, 40px);
+  font-size: 13px;
+  line-height: 1.5;
   box-sizing: border-box;
 }
 .reception-prompt-input:focus {
@@ -992,7 +1037,7 @@ export const RECEPTION_PROMPTS_HOST_STYLES = `
 }
 .reception-prompt-textarea {
   resize: vertical;
-  min-height: 60px;
+  min-height: 100px;
   font-family: inherit;
 }
 .reception-prompt-toggle {
@@ -1000,7 +1045,14 @@ export const RECEPTION_PROMPTS_HOST_STYLES = `
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  margin-bottom: 12px;
+  min-width: 0;
   cursor: pointer;
+}
+.reception-prompt-toggle input { flex: 0 0 18px; width: 18px; height: 18px; margin: 0; }
+.reception-prompt :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .reception-prompt > .rx-panel { padding: 16px; }
+  .reception-prompt .rx-action-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .reception-prompt .rx-btn { width: 100%; white-space: normal; }
 }
 `;

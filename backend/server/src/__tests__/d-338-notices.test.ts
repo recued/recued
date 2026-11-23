@@ -29,16 +29,21 @@ const signature = { server_kind: 'recued' as const, version: '1', instance_id: '
 const AGENDA: NotificationMessage = { title: 'Agenda · Tue 3 Nov', text: '09:00  Dentist\n13:00  Lunch with Sam' };
 /** What the owner saw, without the two lines that only explain the rule. */
 const SEEN = 'Agenda · Tue 3 Nov\n09:00  Dentist\n13:00  Lunch with Sam';
-const TELEGRAM_RULE = 'Not part of your chat with Recued. To ask about it, use Reply on this message.';
+const TELEGRAM_RULE = '— Sent by Recued. The chat sees it once you reply to it.';
 
 const contactStore = (): ContactStore =>
   ({ list: () => [{ email: 'pat@x.com', name: 'Pat Lee' }], addressSet: (email: string) => [email] }) as unknown as ContactStore;
 
-const fixture = (options: { gateDeps?: GateDeps } = {}) => {
+const fixture = (options: { gateDeps?: GateDeps; briefWriteDelayMs?: number } = {}) => {
   const db = new Database(':memory:'); ensureChatSchema(db);
   let key: Uint8Array | null = new Uint8Array(32).fill(53);
   const getKey = () => key;
   const store = createChatStore(db, getKey);
+  if (options.briefWriteDelayMs !== undefined) {
+    // A slow disk, made certain: every brief write lands this long after it is asked for.
+    const write = store.writeSessionBrief.bind(store), delay = options.briefWriteDelayMs;
+    store.writeSessionBrief = async (...args) => { await new Promise((done) => setTimeout(done, delay)); return write(...args); };
+  }
   store.createSession({ id: 's' }); store.createSession({ id: 'plain' });
   const calls: Array<{ system: string; prompt: string }> = [];
   const middlewareRegistry = createMiddlewareRegistry(); registerFirstPartyMiddlewares(middlewareRegistry);
@@ -95,7 +100,7 @@ describe('D-338 a notification to a linked chat is a notice in it', () => {
   it('goes out marked as a notice, and is kept in the chat where the model cannot see it', async () => {
     const f = fixture();
     const decoration = await f.notify();
-    expect(decoration).toMatchObject({ title: 'Notice · Agenda · Tue 3 Nov', text: `${AGENDA.text}\n\n${TELEGRAM_RULE}` });
+    expect(decoration).toMatchObject({ title: 'Agenda · Tue 3 Nov', text: `${AGENDA.text}\n\n${TELEGRAM_RULE}` });
 
     const notice = await f.noticeOf();
     expect(notice).toMatchObject({ role: 'notice', content: AGENDA.text, contributor: 'tool_result',
@@ -127,12 +132,12 @@ describe('D-338 a notification to a linked chat is a notice in it', () => {
     expect(f.db.prepare("SELECT COUNT(*) AS n FROM chat_messages WHERE role = 'notice'").get()).toEqual({ n: 0 });
   });
 
-  it('says on Slack to reply in its thread, and names a notice without a title "Notice"', async () => {
+  it('says on Slack to reply in its thread, and names a notice without a title "From Recued"', async () => {
     const f = fixture(); f.store.createSession({ id: 'slack-chat' });
     f.bridge.bind('slack', 'C1', 'slack:42', 'slack-chat');
     const decoration = await f.notify({ text: 'Your backup finished.' }, { vendor: 'slack', recipient: 'C1' });
-    expect(decoration).toMatchObject({ title: 'Notice',
-      text: "Your backup finished.\n\nNot part of your chat with Recued. To ask about it, reply in this message's thread." });
+    expect(decoration).toMatchObject({ title: 'From Recued',
+      text: "Your backup finished.\n\n— Sent by Recued. The chat sees it once you reply in its thread." });
   });
 });
 
@@ -226,6 +231,15 @@ describe('D-338 an answer given without a model', () => {
     expect(reply).toMatchObject({ content: answer, answered_without_model: { from: 'contacts' } });
     const brief = JSON.parse((await f.store.readSessionBrief('plain'))!);
     expect(brief).toMatchObject({ intent: question, findings: [answer], pending: [] });
+  });
+
+  // 2026-11-19: the reply row's commit completes the turn, and the brief was written after it. A slow write then
+  // landed after the turn had completed, and this file went red in a sweep under load. Slowed on purpose here.
+  it('has the answer in the brief by the time its turn completes, however slow the write', async () => {
+    const f = fixture({ gateDeps: gate(), briefWriteDelayMs: 150 });
+    await f.send('plain', question, 'gate');
+    await f.settled('plain', 1);
+    expect(JSON.parse((await f.store.readSessionBrief('plain'))!)).toMatchObject({ findings: [answer] });
   });
 
   it('keeps what the brief already holds, the still-to-do list included', async () => {

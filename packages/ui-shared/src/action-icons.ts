@@ -4,10 +4,23 @@ const glyph = (label: string, body: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="${label}">${body}</svg>`;
 
 export const ACTION_ICONS = {
+  "add": glyph("Add", "<path d=\"M12 5v14M5 12h14\"/>"),
+  "menu": glyph("Navigation", "<path d=\"M4 6h16M4 12h16M4 18h16\"/>"),
+  "search": glyph("Search", "<circle cx=\"10.75\" cy=\"10.75\" r=\"6.75\"/><path d=\"m16 16 4.5 4.5\"/>"),
+  "chat": glyph("Chat", "<path d=\"M21 11a8 8 0 0 1-8 8H7l-4 3V7a4 4 0 0 1 4-4h6a8 8 0 0 1 8 8Z\"/><path d=\"M7 8h10M7 12h7\"/>"),
+  "user": glyph("Account", "<circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M5 21v-2a7 7 0 0 1 14 0v2\"/>"),
+  "contacts": glyph("Contacts", "<circle cx=\"9\" cy=\"8\" r=\"3\"/><path d=\"M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m2 3a6 6 0 0 1 3 5v2\"/>"),
+  "bookmark": glyph("Saved views", "<path d=\"M6 3h12v18l-6-4-6 4V3Z\"/>"),
+  "database": glyph("Data", "<ellipse cx=\"12\" cy=\"5\" rx=\"9\" ry=\"3\"/><path d=\"M3 5v14c0 4 18 4 18 0V5M3 12c0 4 18 4 18 0\"/>"),
+  "chart": glyph("Stats", "<path d=\"M4 3v18h17M8 16v-5m5 5V7m5 9V4\"/>"),
+  "microphone": glyph("Microphone", "<rect x=\"9\" y=\"2\" width=\"6\" height=\"12\" rx=\"3\"/><path d=\"M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8\"/>"),
+  "stop": glyph("Stop", "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" rx=\"1\"/>"),
   "reply": glyph("Reply", "<path d=\"m9 7-5 5 5 5M4 12h11a5 5 0 0 1 5 5v1\"/>"),
   "reply-all": glyph("Reply all", "<path d=\"m6 7-5 5 5 5m6-10-5 5 5 5M7 12h8a5 5 0 0 1 5 5v1\"/>"),
   "forward": glyph("Forward", "<path d=\"m15 7 5 5-5 5m5-5H9a5 5 0 0 0-5 5v1\"/>"),
   "refresh": glyph("Refresh", "<path d=\"M20 4v6h-6M4 20v-6h6M5.4 8A7 7 0 0 1 17 5l3 5M4 14l3 5a7 7 0 0 0 11.6-3\"/>"),
+  "chevron-left": glyph("Previous", "<path d=\"m14 6-6 6 6 6\"/>"),
+  "chevron-right": glyph("Next", "<path d=\"m10 6 6 6-6 6\"/>"),
   "close": glyph("Close", "<path d=\"m6 6 12 12M18 6 6 18\"/>"),
   "more": glyph("More actions", "<circle cx=\"5\" cy=\"12\" r=\"1\" fill=\"currentColor\"/><circle cx=\"12\" cy=\"12\" r=\"1\" fill=\"currentColor\"/><circle cx=\"19\" cy=\"12\" r=\"1\" fill=\"currentColor\"/>"),
   "attach": glyph("Attach file", "<path d=\"m21 12-8 8a6 6 0 0 1-8.5-8.5L13 3a4 4 0 0 1 5.7 5.7l-8.5 8.5a2 2 0 0 1-2.8-2.8l7.8-7.8\"/>"),

@@ -7,6 +7,7 @@ import type {
   ChatPlanProposal,
   ChatSession,
   ChatSessionSummary,
+  ChatToolCallRecord,
   ServerEvent,
 } from '@recued/contracts';
 
@@ -30,6 +31,8 @@ import {
   CHAT_ROUTE_PLAN_APPROVE_ATTR,
   CHAT_ROUTE_PLAN_CANCEL_ATTR,
   CHAT_ROUTE_PLAN_CARD_ATTR,
+  CHAT_ROUTE_PLAN_GROUP_ATTR,
+  CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR,
   CHAT_PLAN_CONFLICT_ATTR,
   CHAT_ROUTE_PLAN_CONTEXT_ATTR,
   CHAT_ROUTE_PLAN_CONTEXT_CLEAR_ATTR,
@@ -48,8 +51,20 @@ import {
   type ChatRouteConn,
   CHAT_ROUTE_LATE_RESULT_ATTR,
   CHAT_ROUTE_TOOL_DETAILS_ATTR,
+  CHAT_ROUTE_ACTIVITY_ATTR,
+  CHAT_ROUTE_ACTIVITY_ROW_ATTR,
+  CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR,
 } from '../chat/bootstrap-chat-route.js';
 import { PLAN_CLAIM_ACTION_ATTR, PLAN_CLAIM_ATTR, PLAN_SUMMARY_EMPTY, PLAN_SUMMARY_NOTE } from '../chat/plan-claim-editor.js';
+import type { LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
+import {
+  CHAT_STOP_ALLOWING_ATTR,
+  CHAT_STOP_ALLOWING_BUTTON_ATTR,
+  CHAT_STOP_ALLOWING_CANCEL_ATTR,
+  CHAT_STOP_ALLOWING_CONFIRM_ATTR,
+  CHAT_STOP_ALLOWING_NOTE_ATTR,
+  type ChatStopAllowingCaller,
+} from '../chat/stop-allowing-control.js';
 import {
   MEMORY_CLAIM_ADD_ACTION,
   MEMORY_CLAIM_ADD_CONTACT_ACTION,
@@ -79,12 +94,15 @@ interface FakeEl {
   children: FakeEl[];
   parent: FakeEl | null;
   listeners: Map<string, Array<() => void>>;
+  /** Inline styles the shared Undo control sets (D-348 §7.8). */
+  style: Record<string, string>;
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   querySelector(selector: string): FakeEl | null;
   querySelectorAll(selector: string): FakeEl[];
   appendChild(c: FakeEl): FakeEl;
+  append(...c: FakeEl[]): void;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
   addEventListener(type: string, fn: () => void): void;
@@ -94,7 +112,7 @@ interface FakeEl {
 interface FakeDoc {
   styleElements: FakeEl[];
   listeners: Map<string, Array<(event?: unknown) => void>>;
-  head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
+  head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl; append(...elements: FakeEl[]): void };
   createElement(tag: string): FakeEl;
   createTextNode(text: string): FakeEl;
   addEventListener(type: string, fn: (event?: unknown) => void): void;
@@ -122,6 +140,7 @@ const makeFakeEl = (tag: string): FakeEl => {
     children: [],
     parent: null,
     listeners: new Map(),
+    style: {},
     get firstChild() {
       return el.children[0] ?? null;
     },
@@ -145,6 +164,9 @@ const makeFakeEl = (tag: string): FakeEl => {
       c.parent = el;
       el.children.push(c);
       return c;
+    },
+    append(...c) {
+      for (const child of c) el.appendChild(child);
     },
     removeChild(c) {
       const idx = el.children.indexOf(c);
@@ -192,6 +214,7 @@ const makeFakeDocument = (): FakeDoc => {
           ) ?? null
         );
       },
+      append(...elements) { styleElements.push(...elements); },
       appendChild(el) {
         styleElements.push(el);
         return el;
@@ -463,6 +486,10 @@ interface RouteHarnessOptions {
   cancelPlan?: PlanRpc;
   /** Any other method the test answers. */
   rpc?: Readonly<Record<string, (payload: unknown) => unknown>>;
+  /** The app's Undo callers (D-348 §7.8), when the test gives the chat them. */
+  localUndo?: LocalUpdateUndoCallers;
+  /** D-402 slice F5 — the app's "Stop allowing", when the test gives the chat it. */
+  stopAllowing?: ChatStopAllowingCaller;
 }
 
 const requirePlanPayload = (payload: unknown): { plan_id: string } => {
@@ -554,6 +581,8 @@ const mountChatRoute = (options: RouteHarnessOptions = {}): RouteHarness => {
       reconnectListeners.add(listener);
       return () => reconnectListeners.delete(listener);
     },
+    ...(options.localUndo !== undefined ? { localUndo: options.localUndo } : {}),
+    ...(options.stopAllowing !== undefined ? { stopAllowing: options.stopAllowing } : {}),
   });
 
   return {
@@ -1004,6 +1033,74 @@ describe('a reloaded conversation shows its tool calls as the live one does', ()
       const content = row.children.find((child) => child.className === 'chat-message-content');
       expect(content?.textContent ?? '').not.toMatch(/[{}]/u);
     }
+  });
+});
+
+describe('D-348 §7.8 — a change a standing permission let the chat make, undone from its line', () => {
+  const RECEIPT = 'lmr_00000000-0000-4000-8000-000000000001';
+  const record = (extra: Partial<ChatToolCallRecord> = {}): ChatToolCallRecord => ({
+    message_id: 'tool:rename', session_id: 'chat_1', turn_id: 'turn_1', tool_name: 'calendar.update',
+    state: 'succeeded', started_at: 1, updated_at: 2,
+    local_receipt: { receipt_id: RECEIPT, kind: 'local_calendar', committed_at: 2 }, ...extra,
+  });
+  const callRow = (call: ChatToolCallRecord = record()): ChatMessage => ({ ...assistantMessage('tool:rename'),
+    role: 'tool', content: 'calendar.update({"summary":"Team sync"})', turn_id: 'turn_1', tool_call: call });
+  // As a turn writes it: the call it made, by the call's own row (it has no run).
+  const answer = (): ChatMessage => ({ ...assistantMessage('answer_1', 'Done: the team meeting is now "Team sync".'),
+    turn_id: 'turn_1', tool_calls: [{ tool_name: 'calendar.update', tier: 1, args: {}, status: 'ok',
+      started_at: 1, call_id: 'tool:rename' }] });
+  const callers = (): LocalUpdateUndoCallers => ({ get: vi.fn(async () => null), review: vi.fn(), decide: vi.fn() });
+  const undoControls = (root: FakeEl): FakeEl[] => collectByAttr(root, 'data-local-update-undo');
+  const opened = (root: FakeEl): string | null =>
+    collectByAttr(root, CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR)[0]?.getAttribute('aria-expanded') ?? null;
+
+  it('a reloaded chat offers it on the call\'s line, opened, and one control lasts through repaints', async () => {
+    const h = mountChatRoute({ messages: [callRow(), answer()], localUndo: callers() });
+    await openMountedRoute(h);
+    // The call's own row folds into the answer that lists it: one line, not two.
+    expect(collectByAttr(h.root, CHAT_ROUTE_MESSAGE_ATTR).map((row) => row.getAttribute(CHAT_ROUTE_MESSAGE_ATTR)))
+      .toEqual(['answer_1']);
+    expect(opened(h.root)).toBe('true');
+    const [line] = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_ROW_ATTR);
+    expect(line!.getAttribute('data-local-mutation-receipt')).toBe(RECEIPT);
+    const [control] = undoControls(line!);
+    expect(control!.getAttribute('data-local-update-undo')).toBe(RECEIPT);
+    expect(allText(control!)).toContain('Review undo');
+    // Another call's news repaints the thread; the Undo is the same control, so a review the
+    // owner has open is not lost.
+    const [block] = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_ATTR);
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call', cursor: 2,
+      value: { message_id: 'tool:other', session_id: 'chat_1', turn_id: 'turn_2', tool_name: 'mail.search',
+        run_id: 'run_9', state: 'running', started_at: 3, updated_at: 3 } } as ServerEvent);
+    await tick();
+    expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_ATTR)[0]).not.toBe(block);
+    expect(undoControls(h.root)).toEqual([control]);
+  });
+
+  it('live: the call\'s settlement brings it, before its answer lands', async () => {
+    const h = mountChatRoute({ localUndo: callers() });
+    await openMountedRoute(h);
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call', cursor: 1,
+      value: record() } as ServerEvent);
+    h.publish(messageComplete('turn_1', answer()));
+    await tick();
+    expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_ROW_ATTR)[0]!.getAttribute('data-local-mutation-receipt')).toBe(RECEIPT);
+    expect(undoControls(h.root).map((control) => control.getAttribute('data-local-update-undo'))).toEqual([RECEIPT]);
+  });
+
+  it.each([
+    ['the app gives the chat no Undo', [callRow(), answer()], false],
+    ['the change kept no receipt', [callRow(record({ local_receipt: undefined })), answer()], true],
+  ] as const)('none when %s, and the finished call stays quiet', async (_case, messages, withCallers) => {
+    const h = mountChatRoute({ messages: [...messages], ...(withCallers ? { localUndo: callers() } : {}) });
+    await openMountedRoute(h);
+    expect(opened(h.root)).toBe('false');
+    // Opened by the owner, its line still offers none.
+    collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR)[0]!.click();
+    await tick();
+    expect(opened(h.root)).toBe('true');
+    expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_ROW_ATTR)).toHaveLength(1);
+    expect(undoControls(h.root)).toEqual([]);
   });
 });
 
@@ -3140,9 +3237,10 @@ describe('D-343 slice 5 — a day’s records, once kept, read as the day’s ch
     h.publish(messageComplete('turn_day', assistantMessage('msg_plan_day', 'Shall I record your day?')));
     await tick();
     let card = requirePlanCard(h.root, 'plan_day');
-    expect(allText(requireChildClass(card, 'chat-plan-card-tool'))).toBe('Record your day · Fri 6 Nov');
+    expect(allText(requireChildClass(card, 'chat-plan-card-tool'))).toBe('Record your day, Fri 6 Nov');
     expect(requireChildClass(card, 'chat-plan-card-details').children.map(row => row.children.map(cell => cell.textContent)))
-      .toEqual([['Done', 'Ran 5 km, Went for a walk'], ['Skipped', 'Spanish lesson']]);
+      // D-343 (2026-11-14) — the task recorded as done is ticked off by the same approval, which says so.
+      .toEqual([['Done', 'Ran 5 km, Went for a walk'], ['Skipped', 'Spanish lesson'], ['Ticks off', 'Ran 5 km']]);
     expect(collectByAttr(card, CHAT_ROUTE_PLAN_CHECKLIST_ATTR)).toHaveLength(0);
     collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
     await vi.waitFor(() => { expect(requirePlanCard(h.root, 'plan_day').getAttribute('data-status')).toBe('approved'); });
@@ -3178,7 +3276,200 @@ describe('D-343 slice 5 — a day’s records, once kept, read as the day’s ch
     expect(checklistOf(requirePlanCard(h.root, 'plan_kept'))).toEqual([['done', '✓ Ran 5 km'], ['done', '✓ Went for a walk'], ['skipped', '– Spanish lesson, skipped']]);
     const unsure = requirePlanCard(h.root, 'plan_unsure');
     expect(collectByAttr(unsure, CHAT_ROUTE_PLAN_CHECKLIST_ATTR)).toHaveLength(0);
-    expect(requireChildClass(unsure, 'chat-plan-card-details').children).toHaveLength(2);
+    // Done, Skipped and (D-343) the task it ticks off.
+    expect(requireChildClass(unsure, 'chat-plan-card-details').children).toHaveLength(3);
     h.route.dispose();
+  });
+});
+
+describe('D-177 §N.15.9 (1c-b) — a round\'s held writes of one kind are one card', () => {
+  const GROUP = 'turn_round:round-0';
+  const ALLOW = 'Allow in this chat';
+  const NOTE = '“Allow in this chat” stops asking about “Add a task” in this conversation.';
+  const task = (n: number, overrides: Partial<Omit<PlanProposedEvent, 'kind'>> = {}): PlanProposedEvent => planProposed({
+    plan_id: `plan_t${String(n)}`, turn_id: 'turn_round', tool: 'work.create', tier: 1, held: true,
+    args: { kind: 'task', title: `Call guest ${String(n)}` }, always_allow: ALLOW, always_allow_note: NOTE,
+    group: GROUP, cursor: n, ...overrides,
+  });
+  const stage = async (h: RouteHarness, events: readonly PlanProposedEvent[]): Promise<void> => {
+    await openMountedRoute(h);
+    for (const event of events) h.publish(event);
+    h.publish(messageComplete('turn_round', assistantMessage('msg_round', 'I asked once for all of them.')));
+    await tick();
+  };
+  const groupCards = (h: RouteHarness) => collectByAttr(h.root, CHAT_ROUTE_PLAN_GROUP_ATTR);
+  const buttonsOf = (card: FakeEl) => requireChildClass(card, 'chat-plan-card-actions')
+    .children.filter((child) => child.tagName === 'BUTTON').map((child) => child.textContent);
+  const rows = (card: FakeEl) => collectByAttr(card, CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR);
+
+  it('carries the group from the live proposal, a reload and a late answer', () => {
+    expect(onlyPlanCard(reduceChatThreadEvent(hydrated(), task(1))).group).toBe(GROUP);
+    // Only a held write is in a group.
+    expect(onlyPlanCard(reduceChatThreadEvent(hydrated(), task(1, { held: undefined }))).group).toBeUndefined();
+    const recovered = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...chatSession(), messages: [],
+      plans: [{ plan: chatPlan({ plan_id: 'plan_t1', hold: { run_id: 'run-1', group: GROUP } }), payload_available: true }],
+    } as never);
+    expect(onlyPlanCard(recovered).group).toBe(GROUP);
+    const late = applyPlanResolution(hydrated(), chatPlan({ plan_id: 'plan_t1', status: 'approved', hold: { run_id: 'run-1', group: GROUP } }));
+    expect(onlyPlanCard(late).group).toBe(GROUP);
+  });
+
+  it('paints one card for the three: each write listed, one answer for all, sent through the first', async () => {
+    const approve = deferred<{ plan: ChatPlanProposal }>();
+    const h = mountChatRoute({ approvePlan: () => approve.promise });
+    await stage(h, [task(1), task(2), task(3)]);
+    const cards = collectByAttr(h.root, CHAT_ROUTE_PLAN_CARD_ATTR);
+    expect(cards).toHaveLength(1);
+    const [card] = groupCards(h);
+    expect(card!.getAttribute(CHAT_ROUTE_PLAN_GROUP_ATTR)).toBe('3');
+    expect(card!.getAttribute('data-plan-id')).toBe('plan_t1');
+    // The single card's words, said of all three.
+    expect(allText(card!)).toContain('Needs a look');
+    expect(allText(card!)).toContain('One yes for all 3');
+    expect(allText(card!)).toContain('Saying yes does all 3 now, each once');
+    expect(allText(card!)).toContain('You can also answer it from your phone or your messages.');
+    expect(rows(card!).map((row) => allText(row).trim())).toEqual(['• Call guest 1', '• Call guest 2', '• Call guest 3']);
+    expect(buttonsOf(card!)).toEqual(['Say yes to all 3', ALLOW, 'Don’t approve']);
+    expect(allText(card!)).toContain(NOTE);
+
+    collectByAttr(card!, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
+    await tick();
+    expect(h.connSpy).toHaveBeenCalledWith('chat.plan.approve', { plan_id: 'plan_t1' });
+    const pending = collectByAttr(groupCards(h)[0]!, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!;
+    expect(pending.textContent).toBe('Approving…');
+    // One answer at a time: another press sends none.
+    pending.click();
+    collectByAttr(groupCards(h)[0]!, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]!.click();
+    expect(h.connSpy.mock.calls.filter(([method]) => method.startsWith('chat.plan.'))).toHaveLength(1);
+
+    // The server answers each write's card, then each one runs.
+    const answered = (n: number) => chatPlan({ plan_id: `plan_t${String(n)}`, turn_id: 'turn_round', tool: 'work.create', tier: 1,
+      status: 'approved', resolved_at: 4_000, hold: { run_id: `run-${String(n)}`, group: GROUP } });
+    approve.resolve({ plan: answered(1) });
+    h.publish(planResolved(answered(2)));
+    h.publish(planResolved(answered(3)));
+    for (const n of [1, 2, 3]) {
+      h.publish({ kind: 'chat.tool_call_completed', session_id: 'chat_1', turn_id: 'turn_round', tool_name: 'work.create',
+        tier: 1, status: 'ok', result_ref: `chat_1:turn_round:work.create:${String(n)}`, run_id: `run-${String(n)}`,
+        plan_id: `plan_t${String(n)}`, cursor: 10 + n } satisfies ServerEvent);
+    }
+    await vi.waitFor(() => expect(allText(groupCards(h)[0]!)).toContain('3 of 3 done'));
+    const done = groupCards(h)[0]!;
+    expect(done.getAttribute('data-status')).toBe('approved');
+    expect(allText(done)).toContain('Completed');
+    expect(allText(done)).toContain('They are done.');
+    expect(rows(done).map((row) => row.getAttribute('data-status'))).toEqual(['completed', 'completed', 'completed']);
+    expect(collectByAttr(done, CHAT_ROUTE_PLAN_RUN_ATTR)).toHaveLength(3);
+    expect(collectByAttr(done, CHAT_ROUTE_PLAN_APPROVE_ATTR)).toHaveLength(0);
+    h.route.dispose();
+  });
+
+  it('no is sent through the first too; every write\'s row then says it was not done', async () => {
+    const h = mountChatRoute();
+    await stage(h, [task(1), task(2)]);
+    collectByAttr(groupCards(h)[0]!, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]!.click();
+    await tick();
+    expect(h.connSpy).toHaveBeenCalledWith('chat.plan.cancel', { plan_id: 'plan_t1' });
+    h.publish(planResolved(chatPlan({ plan_id: 'plan_t2', turn_id: 'turn_round', tool: 'work.create', tier: 1,
+      status: 'cancelled', resolved_at: 4_000, hold: { run_id: 'run-2', group: GROUP } })));
+    await vi.waitFor(() => expect(groupCards(h)[0]!.getAttribute('data-status')).toBe('cancelled'));
+    expect(allText(groupCards(h)[0]!)).toContain('You gave no permission');
+    expect(allText(groupCards(h)[0]!)).toContain('Nothing ran.');
+    expect(rows(groupCards(h)[0]!).map((row) => row.getAttribute('data-status'))).toEqual(['cancelled', 'cancelled']);
+    h.route.dispose();
+  });
+
+  it('lists the first five, and the rest behind "Show all"', async () => {
+    const h = mountChatRoute();
+    await stage(h, [1, 2, 3, 4, 5, 6, 7].map((n) => task(n)));
+    const [card] = groupCards(h);
+    expect(card!.getAttribute(CHAT_ROUTE_PLAN_GROUP_ATTR)).toBe('7');
+    expect(rows(card!)).toHaveLength(7);
+    expect(allText(card!)).toContain('Show all 7');
+    expect(buttonsOf(card!)[0]).toBe('Say yes to all 7');
+    h.route.dispose();
+  });
+
+  it('a write alone in its group is its own card, as before', async () => {
+    const h = mountChatRoute();
+    await stage(h, [task(1)]);
+    expect(groupCards(h)).toHaveLength(0);
+    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CARD_ATTR)).toHaveLength(1);
+    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.textContent).toBe('Say yes, once');
+    h.route.dispose();
+  });
+});
+
+describe('D-402 slice F5 — "Stop allowing" on the line of a call a standing permission ran', () => {
+  // As a turn writes it: a run of "Add a morning note" an "Always" of the owner's chats let through.
+  const answer = (stoppable = true): ChatMessage => ({ ...assistantMessage('answer_1', 'Added your morning note.'),
+    turn_id: 'turn_1', tool_calls: [{ tool_name: 'recipe.run', tier: 2, args: { recipe_id: 'add-morning-note' }, status: 'ok',
+      started_at: 1, run_id: 'run_1', recipe_name: 'Add a morning note',
+      ...(stoppable ? { stop_allowing_recipe_id: 'add-morning-note' } : {}) }] });
+  const ended = { preapprovals: 1, site_passes: 1, session_grants: 0, delegations: 0, write_rules: 0 };
+  const controls = (root: FakeEl): FakeEl[] => collectByAttr(root, CHAT_STOP_ALLOWING_ATTR);
+  const opened = (root: FakeEl): string | null =>
+    collectByAttr(root, CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR)[0]?.getAttribute('aria-expanded') ?? null;
+  const press = (root: FakeEl, attr: string): void => { collectByAttr(root, attr)[0]!.click(); };
+
+  it('its line says it ran without asking, opened; it asks once more, then ends what your chats may do with the recipe', async () => {
+    const stopAllowing = vi.fn(async () => ({ ended }));
+    const h = mountChatRoute({ messages: [answer()], stopAllowing });
+    await openMountedRoute(h);
+    expect(opened(h.root)).toBe('true');
+    const [control] = controls(h.root);
+    expect(control!.getAttribute(CHAT_STOP_ALLOWING_ATTR)).toBe('add-morning-note');
+    expect(allText(control!)).toContain('Ran without asking, as you allowed. It stays on until you end it.');
+    press(control!, CHAT_STOP_ALLOWING_BUTTON_ATTR);
+    expect(stopAllowing).not.toHaveBeenCalled();
+    expect(allText(control!)).toContain('It asks again from now on.');
+    // Cancel puts it back as it was.
+    press(control!, CHAT_STOP_ALLOWING_CANCEL_ATTR);
+    expect(collectByAttr(control!, CHAT_STOP_ALLOWING_BUTTON_ATTR)).toHaveLength(1);
+    press(control!, CHAT_STOP_ALLOWING_BUTTON_ATTR);
+    press(control!, CHAT_STOP_ALLOWING_CONFIRM_ATTR);
+    expect(stopAllowing).toHaveBeenCalledWith({ caller: { kind: 'owner_chat' }, recipe_id: 'add-morning-note' });
+    await tick();
+    expect(collectByAttr(control!, CHAT_STOP_ALLOWING_NOTE_ATTR)[0]!.textContent)
+      .toBe('Ended 1 standing approval and 1 site pass. It asks again from now on.');
+    // Another call's news repaints the thread; what it said stays, the same control.
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call', cursor: 2,
+      value: { message_id: 'tool:other', session_id: 'chat_1', turn_id: 'turn_2', tool_name: 'mail.search',
+        run_id: 'run_9', state: 'running', started_at: 3, updated_at: 3 } } as ServerEvent);
+    await tick();
+    expect(controls(h.root)).toEqual([control]);
+    expect(stopAllowing).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refusal says why and stays asking; nothing left to end says so', async () => {
+    const refused = vi.fn(async () => { throw new Error('collection.contract.stopAllowing: Recued is busy, try again in a moment'); });
+    const h = mountChatRoute({ messages: [answer()], stopAllowing: refused });
+    await openMountedRoute(h);
+    const [control] = controls(h.root);
+    press(control!, CHAT_STOP_ALLOWING_BUTTON_ATTR);
+    press(control!, CHAT_STOP_ALLOWING_CONFIRM_ATTR);
+    await tick();
+    expect(allText(control!)).toContain('Recued could not end it: Recued is busy, try again in a moment');
+    expect(collectByAttr(control!, CHAT_STOP_ALLOWING_CONFIRM_ATTR)).toHaveLength(1);
+
+    const none = mountChatRoute({ messages: [answer()],
+      stopAllowing: vi.fn(async () => ({ ended: { preapprovals: 0, site_passes: 0, session_grants: 0, delegations: 0, write_rules: 0 } })) });
+    await openMountedRoute(none);
+    const [other] = controls(none.root);
+    press(other!, CHAT_STOP_ALLOWING_BUTTON_ATTR);
+    press(other!, CHAT_STOP_ALLOWING_CONFIRM_ATTR);
+    await tick();
+    expect(collectByAttr(other!, CHAT_STOP_ALLOWING_NOTE_ATTR)[0]!.textContent).toBe('Nothing was left to end.');
+  });
+
+  it.each([
+    ['the app gives the chat no "Stop allowing"', answer(), false],
+    ['nothing standing ran the call', answer(false), true],
+  ] as const)('none when %s, and the finished call stays quiet', async (_case, message, withCaller) => {
+    const h = mountChatRoute({ messages: [message], ...(withCaller ? { stopAllowing: vi.fn() } : {}) });
+    await openMountedRoute(h);
+    expect(opened(h.root)).toBe('false');
+    expect(controls(h.root)).toEqual([]);
   });
 });

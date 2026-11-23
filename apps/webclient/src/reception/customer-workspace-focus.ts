@@ -18,3 +18,22 @@ export const restoreCustomerWorkspaceControl = (doc:Document,source:HTMLElement|
   const target=[source,...fallbacks].find(node=>node.isConnected && !node.matches(':disabled'));
   target?.focus({preventScroll:true});
 };
+
+/** An async review may reveal its result until the owner interacts elsewhere.
+ * Capture before disabling its controls; native blur to body is not a new intent. */
+export const trackCustomerWorkspaceFocus = (doc: Document) => {
+    let revision = 0;
+    const interacted = () => { revision++; };
+    const events = ['pointerdown', 'keydown', 'focusin'] as const;
+    for (const event of events) doc.addEventListener?.(event, interacted, true);
+    return {
+        capture: () => {
+            const current = revision;
+            return () => current === revision;
+        },
+        dispose: () => {
+            revision++;
+            for (const event of events) doc.removeEventListener?.(event, interacted, true);
+        },
+    };
+};

@@ -603,3 +603,29 @@ describe('recipe.list projects the mailbox settings from the body', () => {
     expect(full.mailbox_settings).toEqual(row.mailbox_settings);
   });
 });
+
+/** D-402 slice H2 — the dish's settings offer the owner's paired browsers for each setting a browser
+ *  operation takes as its `bridge_id`, which a trimmed row cannot say on its own. */
+describe('recipe.list projects the browser settings from the body', () => {
+  it('a trimmed row says which settings name a browser; a recipe with none carries no field; recipe.get agrees', async () => {
+    const db = new Database(':memory:');
+    const store = createRecipeStore('/nonexistent', db);
+    store.save({
+      ...recipe('read-then-type'),
+      variables: { browser_1: 'inst-work', browser_2: 'inst-personal' },
+      steps: [
+        { id: 'act_1', op: 'core.dom.act', args: { target: 'https://a.example/*', steps: [{ url: 'https://a.example/', do: 'read', form: 'text' }],
+          bridge_id: '{{config.browser_1}}' } },
+        { id: 'act_2', op: 'core.dom.act', args: { target: 'https://b.example/*', steps: [{ url: 'https://b.example/', do: 'click', selector: '#go' }],
+          bridge_id: '{{config.browser_2}}' } },
+      ],
+    } as unknown as RecipeDefinition, 'acme', 'pair-sync', 1_700_001_000_000);
+    store.save(recipe('no-browser'), 'acme', 'pair-sync', 1_700_000_000_000);
+    const deps = { store, serverStartedAt: SERVER_STARTED_AT };
+    const rows = (await listServerRecipes(deps)).recipes;
+    const row = rows.find((entry) => entry.recipe_id === 'read-then-type')!;
+    expect(row.browser_settings).toEqual([{ key: 'browser_1' }, { key: 'browser_2' }]);
+    expect('browser_settings' in rows.find((entry) => entry.recipe_id === 'no-browser')!).toBe(false);
+    expect((await getServerRecipe(deps, 'read-then-type')).recipe!.browser_settings).toEqual(row.browser_settings);
+  });
+});

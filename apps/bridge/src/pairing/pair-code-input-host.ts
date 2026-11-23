@@ -104,6 +104,9 @@ export const BRIDGE_PAIR_CODE_INPUT_FORM_ID = 'bridge-pair-code-input-form';
 export const BRIDGE_PAIR_CODE_INPUT_SERVER_URL_ID = 'bridge-pair-code-input-server-url';
 export const BRIDGE_PAIR_CODE_INPUT_CODE_ID = 'bridge-pair-code-input-code';
 export const BRIDGE_PAIR_CODE_INPUT_SUBMIT_ID = 'bridge-pair-code-input-submit';
+/** D-402 slice H1b — the field naming this browser, and the longest name (the server's rename takes 64). */
+export const BRIDGE_PAIR_CODE_INPUT_BROWSER_NAME_ID = 'bridge-pair-code-input-browser-name';
+export const BRIDGE_PAIR_BROWSER_NAME_MAX = 64;
 export const BRIDGE_PAIR_CODE_INPUT_STATUS_ID = 'bridge-pair-code-input-status';
 /** D-212 — the RAW code the server sent, when it is not one Recued maps.
  *  Carried for support ("what did your server actually say?"); the copy the
@@ -468,7 +471,7 @@ export interface MountedBridgePairCodeInputHost {
    *  keystroke / paste). For `recoveryKey` a whitespace-containing
    *  value triggers paste-style distribute across the 24 slots. */
   setFieldValue(
-    field: 'serverUrl' | 'pairingCode' | 'recoveryKey',
+    field: 'serverUrl' | 'pairingCode' | 'recoveryKey' | 'browserName',
     value: string,
   ): void;
   /** Resolves once the worker's answer to "where does pairing stand?" has
@@ -484,6 +487,9 @@ interface BridgePairCodeInputState {
   serverUrl: string;
   pairingCode: string;
   recoveryKey: string;
+  /** D-402 slice H1b — the name the owner gives this browser ("Work"), which Recued shows when it asks
+   *  which browser to use. Starts as the device label ("Chrome on macOS"). */
+  browserName: string;
   submitting: boolean;
   error: {
     copy: string;
@@ -534,6 +540,7 @@ export const mountBridgePairCodeInputHost = (
     serverUrl: options.seed?.serverUrl ?? '',
     pairingCode: options.seed?.pairingCode ?? '',
     recoveryKey: '',
+    browserName: options.displayName ?? '',
     submitting: false,
     error: null,
     shownServer: '',
@@ -568,6 +575,11 @@ export const mountBridgePairCodeInputHost = (
         state = { ...state, serverUrl: value, error: null };
         clearStatusInPlace();
         syncSubmitState();
+        return;
+      }
+      if (kind === 'browser-name') {
+        // A name gates nothing: an empty one pairs under the device label.
+        state = { ...state, browserName: value };
         return;
       }
       if (kind === 'pairing-code') {
@@ -845,7 +857,11 @@ export const mountBridgePairCodeInputHost = (
         serverUrl: state.serverUrl,
         ...(code.length > 0 ? { code } : {}),
         ...(recoveryKey.length > 0 ? { recoveryKey } : {}),
-        ...(options.displayName ? { displayName: options.displayName } : {}),
+        // D-402 slice H1b — the owner's name for this browser, else the device label.
+        ...((): { displayName?: string } => {
+          const name = state.browserName.trim().slice(0, BRIDGE_PAIR_BROWSER_NAME_MAX) || options.displayName;
+          return name ? { displayName: name } : {};
+        })(),
       }),
     );
     if (disposed) return;
@@ -902,6 +918,7 @@ export const mountBridgePairCodeInputHost = (
     setFieldValue: (field, value) => {
       if (disposed) return;
       if (field === 'serverUrl') state = { ...state, serverUrl: value, error: null };
+      else if (field === 'browserName') state = { ...state, browserName: value };
       else if (field === 'pairingCode')
         state = { ...state, pairingCode: value, error: null };
       else state = { ...state, recoveryKey: value, error: null };
@@ -1048,6 +1065,22 @@ const renderForm = (state: BridgePairCodeInputState): string => {
           autocapitalize="characters"
           spellcheck="false"
           ${state.submitting ? 'disabled' : ''} />
+      </div>
+
+      <div class="form-row">
+        <label for="${e(BRIDGE_PAIR_CODE_INPUT_BROWSER_NAME_ID)}">Name this browser</label>
+        <input id="${e(BRIDGE_PAIR_CODE_INPUT_BROWSER_NAME_ID)}"
+          type="text"
+          data-${e(BRIDGE_PAIR_CODE_INPUT_FIELD_NAME)}="browser-name"
+          value="${e(state.browserName)}"
+          placeholder="Work, Personal…"
+          maxlength="${String(BRIDGE_PAIR_BROWSER_NAME_MAX)}"
+          aria-describedby="bridge-pair-code-input-browser-name-hint"
+          autocomplete="off"
+          ${state.submitting ? 'disabled' : ''} />
+        <p class="field-hint" id="bridge-pair-code-input-browser-name-hint">
+          Recued shows this name when it asks which browser to use. You can rename it later in Recued.
+        </p>
       </div>
 
       <fieldset class="form-row form-row-recovery">

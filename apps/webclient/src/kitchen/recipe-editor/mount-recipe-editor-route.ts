@@ -68,6 +68,8 @@ import {
 /** D-333 — the bar above the editor while changes to the saved recipe are kept
  *  (`orphaned`: the link to changes whose recipe is gone). */
 export const RECIPE_CHANGES_ATTR = 'data-recued-recipe-changes';
+/** D-402 slice E4c — what Recued says of changes it made to a recipe (a way taken in the chat). */
+export const RECIPE_CHANGES_NOTES_ATTR = 'data-recued-recipe-changes-notes';
 
 /** The loader host (value = the recipe_id being loaded). */
 export const MOUNT_RECIPE_EDITOR_HOST_ATTR = 'data-recued-recipe-editor-mount';
@@ -302,6 +304,8 @@ export interface MountRecipeEditorRouteOptions {
     recipe: RecipeDefinition;
     publisher_id?: string;
     webhook_bindings?: ReadonlyArray<WebhookIngressBindingSelection>;
+    webhook_on?: boolean;
+    webhook_consent?: string;
   }) => Promise<RecipeSaveResult>;
   webhookIngressListCaller?: () => Promise<{ ingresses: WebhookIngressView[] }>;
   webhookStatusCaller?: (args: { recipe_id: string }) => Promise<{
@@ -309,6 +313,9 @@ export interface MountRecipeEditorRouteOptions {
   }>;
   webhookArmCaller?: RecipeWebhookControl['armCaller'];
   webhookDisarmCaller?: RecipeWebhookControl['disarmCaller'];
+  /** D-201 Slice 10I — what saving a draft would let its webhook do, for the
+   *  save's "keep its webhook on?". */
+  webhookPreviewCaller?: RecipeWebhookControl['previewCaller'];
   /** D-315 §5.1 — the owner's kinds of email, for the mail-fact pickers. */
   mailFactTypesCaller?: BootstrapRecipeEditorRouteOptions['mailFactTypesCaller'];
   /** D-315 §5.2 — the author's templates, and one as a checked starter. */
@@ -396,6 +403,8 @@ export const mountRecipeEditorRoute = (
     const note = doc.createElement('span');
     note.textContent = item?.base !== undefined && item.base.version !== saved.version
       ? 'The recipe was saved again after these changes began. They are kept until you save or discard them.'
+      // D-402 slice E4c — changes Recued made from the chat ("Make a recipe" where a run was carried on).
+      : item?.made_from !== undefined ? 'Recued made these changes from your chat. They are kept until you save or discard them.'
       : 'Your changes are kept until you save or discard them.';
     const status = doc.createElement('span');
     status.setAttribute('role', 'status');
@@ -406,6 +415,16 @@ export const mountRecipeEditorRoute = (
     bar.appendChild(note);
     bar.appendChild(status);
     bar.appendChild(discard);
+    if (item?.notes !== undefined && item.notes.length > 0) {
+      const notes = doc.createElement('ul');
+      notes.setAttribute(RECIPE_CHANGES_NOTES_ATTR, '');
+      for (const text of item.notes) {
+        const line = doc.createElement('li');
+        line.textContent = text;
+        notes.appendChild(line);
+      }
+      bar.appendChild(notes);
+    }
     host.appendChild(bar);
     const sync = (): void => {
       if (disposed) return;
@@ -585,6 +604,9 @@ export const mountRecipeEditorRoute = (
             initialStatus: statusResult.webhook,
             armCaller: options.webhookArmCaller,
             disarmCaller: options.webhookDisarmCaller,
+            ...(options.webhookPreviewCaller !== undefined
+              ? { previewCaller: options.webhookPreviewCaller }
+              : {}),
           };
         } catch {
           // Webhook owner controls are additive. A server without 5B1 may still

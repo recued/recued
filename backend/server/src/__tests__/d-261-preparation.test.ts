@@ -76,6 +76,22 @@ describe('D-261 preparation using dispatch resolution and durable selection', ()
     } finally { db.close(); }
   });
 
+  // D-201 Slice 10AW (10AS finding 30) — a recipe may leave its variables out,
+  // as the validator allows; preparing one threw "Cannot convert undefined or
+  // null to object".
+  it('prepares a recipe that leaves its variables out', () => {
+    const { variables: _left, ...bare } = definition({ steps: [
+      { id: 'send', ingredient: 'mail-send', input: { to: 'alex@example.com', subject: '{{config.subject}}' } },
+    ] });
+    expect(Object.hasOwn(bare, 'variables')).toBe(false);
+    const h = harness(bare as RecipeDefinition);
+    if (h.fixture.request.subject.kind !== 'recipe') throw new Error('fixture');
+    h.fixture.request.subject.config = { subject: 'Given' };
+    const plan = h.build();
+    expect(plan.recipe_snapshots[0]!.effective_config).toEqual({ subject: 'Given' });
+    expect(plan.members.map(m => m.input)).toEqual([{ to: 'alex@example.com', subject: 'Given' }]);
+  });
+
   it('uses the actual config layers, item shape and conditions without evaluating a transform', () => {
     const r = definition({ variables: { subject: 'Default', targets: [] }, steps: [
       { id: 'generated', transform: 'does-not-exist' },

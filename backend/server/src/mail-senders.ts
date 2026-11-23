@@ -35,10 +35,10 @@
  *  to read. It tells the caller to ask the owner, whose answer (a name or an
  *  address) then settles it.
  *
- *  ⚠ A DOOR'S SEND ASKS BY DEFAULT, NOT ALWAYS. The outbound-send lift that
- *  makes every send ask is the owner's alone (`liftOutboundSend`); a door's
- *  send asks because its contract's trust ceiling holds a write, and the owner
- *  can raise that ceiling. By default the approval names the filled mailbox. A
+ *  ⚠ A DOOR'S SEND ASKS BY DEFAULT, NOT ALWAYS. No send asks by name (the
+ *  outbound-send lift is gone, D-177 §N.15.7); a door's send asks because its
+ *  contract's trust ceiling holds a write, and the owner can raise that
+ *  ceiling. By default the approval names the filled mailbox. A
  *  door whose ceiling was raised sends from the only mailbox without asking, as
  *  the owner's own run would, and is refused, never guessed, once a second
  *  mailbox can send. */

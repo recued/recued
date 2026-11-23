@@ -144,6 +144,14 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // `/oauth/complete`, the dialog that started the flow (holding the
   // `claim_secret`) claims the credential point-to-point. Carries no token.
   'connection.vendor_oauth_completed',
+  // D-348 — a rule for a request the owner repeats was made, ended or used. Live control's
+  // "Requests that run without asking" re-lists off it, so a rule's uses left stay current. Pinned
+  // ⊆ subs by `LIVE_CONTROL_BROADCAST_KINDS` in the bubble's own test.
+  'contract.chain_rule_changed',
+  // D-402 slice F5 (§7.10) — a pre-approval was granted, used or ended. The "runs without asking" lists
+  // (Contracts, an AI app's page, a recipe's page) read again off it. Pinned ⊆ subs by
+  // `CALLER_PREAPPROVAL_PANEL_BROADCAST_KINDS` in the panel's own test.
+  'contract.preapproval_changed',
   // D-171 — `contract_definition` lifecycle (mint / revoke). The authoritative
   // signal the Privacy → Contracts inspector AND the MCP door's Advanced
   // cap/expiry summary re-list off, so a peer minting / revoking a limit (or

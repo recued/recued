@@ -9,6 +9,7 @@ import {
 } from '../missed-run-ask.js';
 import { answerMissed } from '../schedule-handler.js';
 import { browserSecrets, hasBrowserSecretSurface } from '../bridges/browser-secrets.js';
+import { browserTrials } from '../bridges/browser-trials.js';
 /** D-266 — where the ask's link lands: the Automation Schedules section,
  *  which is the only surface offering a PER-RECIPE answer. The ask's own
  *  two options are all-or-nothing by design (a chat card with one button
@@ -413,6 +414,10 @@ export const startPostListenerRuntime = async (
       ...(options.storage.browserLoginStore !== undefined ? { logins: options.storage.browserLoginStore } : {}),
       ...(options.storage.auditLog !== undefined ? { auditLog: options.storage.auditLog } : {}),
     }).catch((error: unknown) => { console.warn('[d-335] browser secrets could not be installed', error); });
+    // D-402 slice C — a trial of a draft asks about each change in a web page through this block too; it
+    // ends the trial asks a restart left open, whose steps are gone.
+    void browserTrials.install({ notifier: options.notificationBlock })
+      .catch((error: unknown) => { console.warn('[d-402] browser trials could not be installed', error); });
   }
 
   const schedulersBundle = startSchedulers({

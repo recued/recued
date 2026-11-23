@@ -126,19 +126,10 @@ export const createNoAskRelease = (deps: NoAskReleaseDeps) => async (
   // crash in between leaves the checkpoint for the boot sweep rather
   // than losing the hold entirely.
   //
-  // ⚠ KNOWN, ACCEPTED: unlike the ask path, this leg has NO serializer. The
-  // ask path is serialized by the notification block's per-`ask_id`
-  // answer handling; with no ask there is nothing to serialize on. So the
-  // checkpoint-retention staleness sweep can land its `failed` row in the
-  // window between `resumeRun` and this delete, leaving an audit row that
-  // denies a dispatch which actually happened.
-  //
-  // Deleting FIRST would close that window (`resumeRun` takes the
-  // `Checkpoint` by value, so it does not need the row), but it trades a
-  // rare wrong-audit-row for a crash that loses the submission outright.
-  // The current order is the better trade: the visitor's request survives.
-  // Revisit only if the ordering ever has to serve an at-most-once claim
-  // stronger than "the run resumed".
+  // Inbox decisions and recipe retention share the per-hold queue. The
+  // checkpoint supplied here may be an isolated, owner-edited approval value;
+  // the stored hold keeps its original values until consumed. A failed
+  // pre-dispatch attempt therefore cannot contaminate a later approval.
   await deps.checkpointStore.delete(checkpoint.checkpoint_id);
 };
 

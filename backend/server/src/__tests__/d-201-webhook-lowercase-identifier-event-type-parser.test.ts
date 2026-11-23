@@ -92,7 +92,7 @@ describe('D-201 Slice 9Q lowercase identifier event-type parser', () => {
     expect(accessorReads).toBe(0);
   });
 
-  it('binds only GitHub to the grammar through trusted profile data', () => {
+  it('binds GitHub and Telegram to the grammar through trusted profile data', () => {
     const selected = webhookLowercaseIdentifierEventTypeProfilePreset(
       'github.webhook.v1',
     );
@@ -103,9 +103,16 @@ describe('D-201 Slice 9Q lowercase identifier event-type parser', () => {
     expect(webhookLowercaseIdentifierEventTypeProfilePreset(
       'paddle.notification.v1',
     )).toBeNull();
+    // D-201 Slice 10G — Telegram's names are lowercase too.
+    expect(webhookLowercaseIdentifierEventTypeProfilePreset(
+      'telegram.bot-webhook.v1',
+    )).toEqual({
+      profile_id: 'telegram.bot-webhook.v1',
+      parser: { kind: 'lowercase_json_member_event_type.v1', max_characters: 128 },
+    });
     expect(Object.values(
       WEBHOOK_LOWERCASE_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS,
-    ).map((value) => value?.profile_id)).toEqual(['github.webhook.v1']);
+    ).map((value) => value?.profile_id)).toEqual(['telegram.bot-webhook.v1', 'github.webhook.v1']);
     expect(Object.isFrozen(
       WEBHOOK_LOWERCASE_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS,
     )).toBe(true);

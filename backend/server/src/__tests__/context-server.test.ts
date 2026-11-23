@@ -95,6 +95,21 @@ describe('handleExecute — context.server injection', () => {
     expect(wasSkipped(none, 'zone_is_owners')).toBe(true);
   });
 
+  // D-201 Slice 10AW (10AS finding 30) — a recipe may leave its variables out,
+  // as the validator allows: Kitchen saved one, and every run of it (a webhook
+  // run in the drive) threw "Cannot convert undefined or null to object".
+  it('runs a recipe that leaves its variables out', async () => {
+    const { variables: _left, ...bare } = PROBE_RECIPE as unknown as Record<string, unknown>;
+    const deps = makeDeps();
+    deps.recipeStore.register({ ...bare, recipe_id: 'probe-no-variables' } as unknown as RecipeDefinition);
+    const result = await handleExecute(deps, { recipe_id: 'probe-no-variables' });
+    expect(result.success).toBe(true);
+    expect(wasSkipped(result, 'gated_on_server')).toBe(false);
+    // It declares nothing, so the argument boundary still holds.
+    await expect(handleExecute(deps, { recipe_id: 'probe-no-variables', config: { anything: 1 } }))
+      .rejects.toThrow("config key not declared by this recipe: 'anything'");
+  });
+
   it('caller-supplied context.server={available:false} wins (no overwrite)', async () => {
     const deps = makeDeps({ serverName: 'Should-Not-Win' });
     const result = await handleExecute(deps, {

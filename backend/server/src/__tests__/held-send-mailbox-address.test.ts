@@ -36,7 +36,9 @@ const MAILBOXES: readonly SendCapableMailbox[] = [
   { name: 'old-imap', address: '', provider: 'IMAP' },
 ];
 
-const owner: ExecutionSource = { channel: 'user', actor: 'user_self', user_id: 'owner-1', client_token_id: 'client-1' };
+/** The owner's chat, where a send asks by its approval (D-177 §N.15.6); run from the app
+ *  (`channel: 'user'`) it would go without asking, as every write does there. */
+const owner: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-solo', user_id: 'owner-1' } as ExecutionSource;
 /** One chat turn: the sends it holds join one approval. */
 const turn: ExecutionSource = {
   channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner-1', turn_id: 'turn-1',

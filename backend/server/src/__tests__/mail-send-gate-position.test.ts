@@ -99,6 +99,10 @@ const ownerSource: ExecutionSource = {
   channel: 'user', actor: 'user_self',
   user_id: 'owner-1', client_token_id: 'client-1',
 };
+/** The owner's chat: the `read` ceiling, where each op's approval decides (D-177 §N.15.6). */
+const ownerChatSource = {
+  channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner-1',
+} as ExecutionSource;
 
 const mailSendManifest = {
   slug: 'mail-send', name: 'mail-send', description: 'Test mail-send manifest',
@@ -275,27 +279,17 @@ describe('mail-send — WHERE the gate lands, through the real composition root'
     expect(mailSendSpy).not.toHaveBeenCalled();
   });
 
-  it('⛔⛔⛔ THE OWNER IS ASKED TOO — sending is lifted ABOVE the risk algebra', async () => {
-    // ⛔ THIS ARM REVERSED WHAT I BELIEVED TWICE OVER, so read the provenance
-    // rather than the verdict. The checkpoint's own words:
-    //
-    //   pre_lift_approval: 'never'      ← the risk × ceiling algebra said ADMIT
-    //   lift_reason:       'review_send' ← and a LIFT overrode it
-    //
-    // A contract-free `user_self` takes `CONTRACT_LESS_TRUST_CEILING = 'admin'`,
-    // so a `write` relaxes silent — that is why `pre_lift_approval` is 'never'.
-    // `liftOutboundSend` then raises it anyway, for `user_self` SPECIFICALLY
-    // (`op-risk-admission.ts` — `'system'` is exempt so an unattended digest does
-    // not prompt every run, and `'contracted_user'` needs no lift because its LOW
-    // ceiling already surfaced it).
-    //
-    // ⇒ Mail leaving the trust boundary is asked about for EVERYONE, by two
-    // different mechanisms: a lift for the owner, the ceiling for an agent.
+  it('⛔⛔⛔ THE OWNER IS ASKED IN THEIR CHAT — by the send\'s own approval, no lift (D-177 §N.15.6)', async () => {
+    // Until 2026-11-10 the owner's manual run was asked here by a by-name LIFT over an `admin`
+    // ceiling that had admitted it (`pre_lift_approval: 'never'`, `lift_reason: 'review_send'`).
+    // The owner: *"(mail-send, mail-post, slack-post) should join the risk & approval setting so
+    // that it is uniformed"*. Now the owner's chat takes the `read` ceiling, so the send's own
+    // `ask` holds there, and nothing is lifted.
     const { deps, mailSendSpy, checkpoints } = makeHarness();
     const result = await handleExecute(deps, {
       recipe_id: recipe.recipe_id,
-      trigger_source: 'manual',
-      execution_source: ownerSource,
+      trigger_source: 'chat',
+      execution_source: ownerChatSource,
     }) as unknown as { success: boolean; errors: unknown[]; awaiting_approval?: unknown };
 
     expect(result.errors).toEqual([]);
@@ -310,13 +304,22 @@ describe('mail-send — WHERE the gate lands, through the real composition root'
       };
     };
     expect(cp.gated_step_id).toBe('send');
-    // ⛔ THE PROVENANCE IS THE ASSERTION. "The owner was asked" is true under the
-    // ceiling algebra too (if a ceiling ever tightened), and that would be a
-    // different system with an identical-looking result.
-    const prov = cp.preflight_context?.authorization_provenance;
-    expect(prov?.pre_lift_approval, 'the algebra alone would have admitted').toBe('never');
-    expect(prov?.lift_reason).toBe('review_send');
+    // ⛔ THE PROVENANCE IS THE ASSERTION: the op's own approval, not a lift.
+    expect(cp.preflight_context?.authorization_provenance).toEqual({ pre_lift_approval: 'ask' });
     expect(String(cp.preflight_context?.reason)).toContain('outside this server');
+  });
+
+  it('the owner\'s own run from the app sends without asking, like every write there', async () => {
+    const { deps, mailSendSpy, checkpoints } = makeHarness();
+    const result = await handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'manual',
+      execution_source: ownerSource,
+    }) as unknown as { success: boolean; errors: unknown[]; awaiting_approval?: unknown };
+
+    expect(result.awaiting_approval).toBeUndefined();
+    expect(checkpoints).toHaveLength(0);
+    expect(mailSendSpy).toHaveBeenCalledTimes(1);
   });
 
   it('⛔ CONTROL — the same owner, a non-send write, is NOT asked at all', async () => {
@@ -325,8 +328,8 @@ describe('mail-send — WHERE the gate lands, through the real composition root'
     // the fixture is measuring itself. `note-create` is the same `risk_tier:
     // 'write'`, the same owner, the same harness — and it simply runs.
     //
-    // ⇒ the owner's ordinary manual operations ARE ungated; sending is the
-    // deliberate exception, which is exactly where the lift sits.
+    // ⇒ the owner's ordinary manual operations ARE ungated from the app, sends included
+    // now (D-177 §N.15.6).
     const { deps, noteCreateSpy, checkpoints } = makeHarness();
     const result = await handleExecute(deps, {
       recipe_id: noteRecipe.recipe_id,

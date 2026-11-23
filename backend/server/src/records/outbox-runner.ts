@@ -51,11 +51,20 @@ export const drainRecordsOutboxOnce = async (
   };
   for (const delivery of deliveries) {
     const { event, subscriber } = delivery;
-    const namespace = store.getNamespace(event.owner);
-    const bindingCurrent = namespace?.state.state === 'ready'
-      && namespace.activation_generation === event.activation_generation
-      && namespace.subscriber_digest === event.subscriber_digest
-      && await runtime.admit(subscriber);
+    const namespaceCurrent = (): boolean => {
+      const namespace = store.getNamespace(event.owner);
+      return namespace?.state.state === 'ready'
+        && namespace.activation_generation === event.activation_generation
+        && namespace.subscriber_digest === event.subscriber_digest;
+    };
+    // A preceding delivery may have awaited while this receipt was retired or settled.
+    if (!store.isDeliveryPending(event.event_id, subscriber.binding_digest)) continue;
+    const admitted = namespaceCurrent() && await runtime.admit(subscriber);
+    // Admission awaits recipe/grant lookups. Re-read persisted authority after that wait,
+    // keeping these checks synchronous through the call to deliver. A completed retirement
+    // or acknowledgement belongs to its writer: preserve its reason and retry accounting.
+    if (!store.isDeliveryPending(event.event_id, subscriber.binding_digest)) continue;
+    const bindingCurrent = admitted && namespaceCurrent();
     const recursion = delivery.watcher_digest === subscriber.binding_digest;
     const exhausted = delivery.causal_depth >= RECORDS_MAX_CAUSAL_DEPTH;
     if (!bindingCurrent || recursion || exhausted) {

@@ -177,6 +177,20 @@ describe('calendar, whose Collection.search() is a no-op', () => {
     const calendar = groups.find((g) => g.platform === 'calendar');
     expect(calendar?.matches[0]?.hot_fields.summary).toBe('Kestrel review');
   });
+
+  // ⛔ D-406 (2026-11-20): "Add records" checks a picked match by its record id and `received_at`, and refuses one
+  // without the stamp ("Invalid identity"). The calendar's matches came without it, so on a real server no event
+  // could be added from a search, while the browser specs' fake server sent one. Found by driving a real server.
+  it('⛔ gives every match its received_at, calendar included, as "Add records" requires', async () => {
+    const { groups } = await run(
+      [mailStore('inbox', { m1: 'Kestrel invoice' }), calendarStore('work', { e1: 'Kestrel review' })],
+      { query: 'kestrel' },
+    );
+    expect(groups.map((g) => g.platform).sort()).toEqual(['calendar', 'mail']);
+    for (const group of groups) {
+      for (const m of group.matches) expect(m.received_at, `${group.platform} ${m.record_id}`).toBe(NOW);
+    }
+  });
 });
 
 describe('did you mean — from the searched stores\' own words', () => {

@@ -10,7 +10,7 @@ const notice = (page: Page) => panel(page).locator('[data-close-day-message]');
 const reads = (page: Page) => page.evaluate(() => window.__closeDay.calls.filter(call => call.kind === 'read').length);
 const changes = (page: Page) => page.evaluate(() => window.__closeDay.calls.filter(call => call.kind !== 'read'));
 const unsaved = (page: Page) => page.evaluate(() => window.__closeDay.hasUnsavedChanges());
-const release = (page: Page, kind: 'read' | 'save' | 'send', index = 0, outcome: 'success' | 'error' | 'unsupported' | 'unnamed' = 'success') =>
+const release = (page: Page, kind: 'read' | 'save' | 'send' | 'retry' | 'review', index = 0, outcome: 'success' | 'error' | 'unsupported' | 'unnamed' = 'success') =>
   page.evaluate(({ kind, index, outcome }) => window.__closeDay.release(kind, index, outcome), { kind, index, outcome });
 const goto = async (page: Page) => { await page.goto('/close-day-harness.html'); await page.waitForFunction(() => window.__closeDay !== undefined); };
 const open = async (page: Page) => { await goto(page); await release(page, 'read'); await expect(time(page)).toHaveValue('21:00'); };
@@ -69,4 +69,40 @@ test('a first read that fails shows the card with a way to retry it', async ({ p
   await expect(notice(page)).toHaveAttribute('role', 'alert');
   const retry = panel(page).getByRole('button', { name: 'Retry', exact: true });
   await retry.click(); await release(page, 'read', 1); await expect(time(page)).toHaveValue('21:00'); await expect(retry).toBeHidden();
+});
+
+test('an email handoff retries in place, retains a draft through a failed refresh, and lets an older unknown reply be marked reviewed', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 }); await open(page);
+  await page.evaluate(() => {
+    window.__closeDay.setEmailReplies([
+      { id: 'reply-1', received_at: Date.parse('2026-11-14T20:00:00Z'), reason: 'retry', session_id: 'chat/1', retry_available: true },
+      { id: 'old-reply', received_at: Date.parse('2026-11-13T20:00:00Z'), reason: 'unknown', retry_available: false },
+    ]);
+    window.__closeDay.refresh();
+  });
+  await release(page, 'read', 1);
+  const email = panel(page).locator('[data-close-day-email-replies]');
+  await expect(email).toContainText('Your reply is saved; Recued will try again.');
+  await expect(email.getByRole('link', { name: 'Open conversation' })).toHaveAttribute('href', '#chat/session/chat%2F1');
+  await expect(email.getByRole('button', { name: 'Try opening in Chat' })).toHaveCount(1);
+  await time(page).fill('22:30');
+  const retry = email.getByRole('button', { name: 'Try opening in Chat' });
+  await retry.focus(); await page.keyboard.press('Enter');
+  await expect(retry).toBeDisabled(); await expect(notice(page)).toBeFocused();
+  await release(page, 'retry');
+  await expect.poll(() => reads(page)).toBe(3);
+  await release(page, 'read', 2, 'error');
+  await expect(notice(page)).toHaveText('Read interrupted.');
+  await expect(time(page)).toHaveValue('22:30'); expect(await unsaved(page)).toBe(true);
+  await panel(page).getByRole('button', { name: 'Retry', exact: true }).click();
+  await release(page, 'read', 3);
+  await expect(retry).toHaveCount(0);
+  const reviewed = email.getByRole('button', { name: 'Mark reviewed' });
+  await reviewed.focus(); await page.keyboard.press('Enter');
+  await release(page, 'review'); await expect.poll(() => reads(page)).toBe(5); await release(page, 'read', 4);
+  await expect(notice(page)).toHaveText('Earlier email reply marked reviewed.');
+  await expect(notice(page)).toBeFocused(); await expect(email).toBeEmpty();
+  await expect(time(page)).toHaveValue('22:30');
+  expect(await changes(page)).toEqual([{ kind: 'retry', reply_id: 'reply-1' }, { kind: 'review', reply_id: 'old-reply' }]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

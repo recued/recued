@@ -26,11 +26,14 @@ import {
 import {
   ASSET_CREATE_OP_ID,
   ASSET_UPDATE_OP_ID,
+  BOOKING_UPDATE_OP_ID,
   CALENDAR_CREATE_OP_ID,
   CALENDAR_UPDATE_OP_ID,
   FENCED_EMPTY_CONTAINER,
   MEMORY_READ_OP_ID,
   MEMORY_WRITE_OP_ID,
+  OCCASION_CREATE_OP_ID,
+  OCCASION_UPDATE_OP_ID,
   SCHEDULE_RECIPE_OP_ID,
   TASK_MARK_DONE_OP_ID,
   WORK_ENTITY_CREATE_OP_ID,
@@ -94,16 +97,21 @@ const EXPECTED: Readonly<Record<Tier1ToolName, readonly string[]>> = {
   'situation.query': [SITUATION_READ_OP],
   // A type is described for creating one, so `work.type` asks for the asset create.
   'work.type': [ASSET_CREATE_OP_ID],
-  'work.create': [...Object.values(WORK_ENTITY_CREATE_OP_ID), ASSET_CREATE_OP_ID],
+  // D-407 slice 1 — an occasion is checked against its own switch (`neededSwitchOff`).
+  'work.create': [...Object.values(WORK_ENTITY_CREATE_OP_ID), ASSET_CREATE_OP_ID, OCCASION_CREATE_OP_ID],
   'calendar.create': [CALENDAR_CREATE_OP_ID],
   'calendar.update': [CALENDAR_UPDATE_OP_ID],
-  'work.update': [...Object.values(WORK_ENTITY_UPDATE_OP_ID), ASSET_UPDATE_OP_ID, TASK_MARK_DONE_OP_ID],
+  // A booking and an occasion are checked against their own switches too (D-343, D-407). A mail fact's close is
+  // checked per fact type (`mailFactCloseOps`), so no fixed switch names it here.
+  'work.update': [...Object.values(WORK_ENTITY_UPDATE_OP_ID), ASSET_UPDATE_OP_ID, TASK_MARK_DONE_OP_ID, BOOKING_UPDATE_OP_ID, OCCASION_UPDATE_OP_ID],
   // D-343 slice 2 — a cited item's read switch is checked too, for the kind it is.
-  'episode.record': [EPISODE_RECORD_OP_ID],
+  'episode.record': [EPISODE_RECORD_OP_ID, 'core.work-entity.task.mark-done'],
   'file.search': fencedCollection('file.search'),
   // Each step meets its own op gate inside the run; the tool checks nothing first.
   'recipe.run': [],
   'recipe.stop': [],
+  // D-402 slice F4 — checks nothing beyond its own switch: the owner's own chat only, by its source.
+  'recipe.stop_allowing': [],
   'recipe.schedule': [SCHEDULE_RECIPE_OP_ID],
   'schedule.run_prompt': ['core.schedule.prompt'],
   'schedule.list': ['core.schedule.prompt'],

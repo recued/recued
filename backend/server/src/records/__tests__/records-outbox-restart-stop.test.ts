@@ -117,7 +117,7 @@ describe('records outbox during a restart drain', () => {
   });
 
   const compose = async (extra: { isStopping?: () => boolean; isDraining?: () => boolean;
-    isServerPaused?: () => boolean } = {}) => {
+    isServerPaused?: () => boolean; beforeGrantRead?: () => void } = {}) => {
     const packSlug = await recordsCatalogSlug(OWNER);
     composeRecordsOutbox({
       recordsStore: store,
@@ -131,10 +131,13 @@ describe('records outbox during a restart drain', () => {
         get: () => watcher,
       } as never,
       contractStore: {
-        scan: () => [{
-          segments: [GRANT.installed_pack_id, GRANT.ingredient_id, GRANT.connection_name, 'read'],
-          value: { allowed: true },
-        }],
+        scan: () => {
+          extra.beforeGrantRead?.();
+          return [{
+            segments: [GRANT.installed_pack_id, GRANT.ingredient_id, GRANT.connection_name, 'read'],
+            value: { allowed: true },
+          }];
+        },
       } as never,
       executeDeps: {
         ...(extra.isDraining ? { isDraining: extra.isDraining } : {}),
@@ -151,6 +154,15 @@ describe('records outbox during a restart drain', () => {
   const job = (id: string): void => {
     store.execute({ binding: create, args: { id, values: { title: id } }, principal: 'owner' });
   };
+
+  it('does not execute a queued watcher orphaned during the production grant lookup', async () => {
+    job('a');
+    await compose({ beforeGrantRead: () => { store.orphanNamespace(OWNER); } });
+    await vi.waitFor(() => expect(store.listOutbox(OWNER, 'dead_letter')).toHaveLength(1));
+    expect(run.calls).toBe(0);
+    expect(store.listOutbox(OWNER, 'delivered')).toEqual([]);
+    expect(store.getNamespace(OWNER)?.quota.outbox_count).toBe(0);
+  });
 
   it('starts no pass while the server is stopping: every delivery stays pending', async () => {
     job('a');

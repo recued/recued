@@ -1,6 +1,6 @@
 /** D-335 slice J — a sequence of steps on one page (`core.dom.act`), as the DOM adapter runs it once
  *  approved: each step through the Bridge's own action, Recued's checks after each (a CAPTCHA
- *  stops it, a sent form must move the page on), a step's own `expect`, and a stop that says how
+ *  stops it, a sent form may update the same document), a step's own `expect`, and a stop that says how
  *  far it got and where the tab is. The Bridge here is a stub answering by action; what the
  *  Bridge does in real Chrome is pinned by `browser-toolkit-browser.test.ts`. The hold and its
  *  ask are pinned by `held-browser-target.test.ts`. */
@@ -12,6 +12,9 @@ import {
   BRIDGE_SUBMIT_OUTPUT_KEYS,
   BRIDGE_WAIT_OUTPUT_KEYS,
   bridgeElementChangedMessage,
+  bridgeRunsCommand,
+  readBrowserFailure,
+  type BridgeCapabilityProfile,
   type BridgeResult,
 } from '@recued/contracts';
 import type { ResolvedCall } from '@recued/ingredients';
@@ -32,6 +35,7 @@ afterEach(() => { vi.useRealTimers(); });
 const PAGE = '7:DOC1';
 const LOGIN_URL = 'https://example.com/login';
 const HOME = { page: '7:DOC2', url: 'https://example.com/home', title: 'Home' };
+const noObservation = (requested_page = PAGE) => ({ page_observation: { state: 'unavailable', reason: 'read_failed', requested_page } });
 
 const ok = (outputs: Record<string, unknown>): DispatchOutcome => ({ kind: 'completed', bridge_client_token_id: 'bridge-1',
   attempts: 1, result: { command_id: 'c', duration_ms: 3, bridge_version: '0.0.7', idempotency_key_seen: false, status: 'ok',
@@ -79,7 +83,7 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
       fill: ok({ filled: true }),
       submit: ok({ filled: true, submitted: true, moved: true, ...HOME }),
     });
-    expect(result).toEqual({ done: 2, of: 2, steps: ['typed into e3', 'typed into e5 and sent its form'], ...HOME });
+    expect(result).toMatchObject({ done: 2, of: 2, steps: ['typed into e3', 'typed into e5 and sent its form'], ...HOME, post_action: { action_status: 'acknowledged', view_status: 'unavailable', application_outcome: 'unverified' } });
     expect(requests.map((r) => [r.action, r.args])).toEqual([
       ['fill', { page: PAGE, ref: 'e3', value: 'ada@example.com' }],
       // Sending is Recued's own check: the page must move on, so the Bridge watches for it.
@@ -104,8 +108,9 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
   it('a CAPTCHA stops the sequence where it shows, saying how far it got and where the tab is', async () => {
     const { error, requests } = await act([...SIGN_IN, { do: 'click', ref: 'e9' }], [ok({ filled: true, challenge: 'reCAPTCHA' })]);
     expect(code(error)).toBe('DOM_CHECK_FAILED');
-    expect(message(error)).toBe('Stopped at step 1 of 3: the page now shows a reCAPTCHA CAPTCHA that nobody has solved: '
-      + 'the owner can solve it in their browser, then ask again. Done: 1. typed into e3. The tab\'s page is 7:DOC1.');
+    expect(message(error)).toContain('Stopped at step 1 of 3: the page now shows a reCAPTCHA CAPTCHA that nobody has solved');
+    expect(message(error)).toContain('no fresh tab snapshot was returned');
+    expect(readBrowserFailure(error)?.details.batch_progress).toMatchObject({ failed_step: 1, completed_steps: [] });
     expect(requests).toHaveLength(1);
   });
 
@@ -113,19 +118,17 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
     const { error } = await act(SIGN_IN, { fill: ok({ filled: true }),
       submit: ok({ submitted: true, filled: true, moved: false, page: PAGE, url: LOGIN_URL, title: 'Sign in', challenge: 'hCaptcha' }) });
     expect(code(error)).toBe('DOM_CHECK_FAILED');
-    expect(message(error)).toBe('Stopped at step 2 of 2: the page now shows a hCaptcha CAPTCHA that nobody has solved: the '
-      + 'owner can solve it in their browser, then ask again. Done: 1. typed into e3; 2. typed into e5 and sent its form. '
-      + 'The tab shows “Sign in” (https://example.com/login), page 7:DOC1.');
+    expect(message(error)).toContain('Stopped at step 2 of 2: the page now shows a hCaptcha CAPTCHA that nobody has solved');
+    expect(message(error)).toContain('last observed tab snapshot');
+    expect(readBrowserFailure(error)?.details.batch_progress).toMatchObject({ failed_step: 2, completed_steps: [1] });
   });
 
-  it('a sent form that leaves the page where it was stops, and says how to check a form that answers in place', async () => {
-    const { error } = await act(SIGN_IN, { fill: ok({ filled: true }),
+  it('an acknowledged form that stays on the same document leaves application success unverified', async () => {
+    const { result, error } = await act(SIGN_IN, { fill: ok({ filled: true }),
       submit: ok({ submitted: true, filled: true, moved: false, page: PAGE, url: LOGIN_URL, title: 'Sign in' }) });
-    expect(code(error)).toBe('DOM_CHECK_FAILED');
-    expect(message(error)).toBe('Stopped at step 2 of 2: the form was sent, but within 5 seconds the page did not move on: '
-      + 'it may be showing an error, so inspect it. For a form that answers where it is, give the step a success_when, such as '
-      + '{ "shows": "…" }. Done: 1. typed into e3; 2. typed into e5 and sent its form. '
-      + 'The tab shows “Sign in” (https://example.com/login), page 7:DOC1.');
+    expect(error).toBeUndefined();
+    expect(result).toMatchObject({ done: 2, post_action: { action_status: 'acknowledged', check_status: 'not_requested',
+      transition: 'unknown', application_outcome: 'unverified', view_status: 'unavailable' } });
   });
 
   it('a form whose success_when names what shows is checked by it, not by the page moving on', async () => {
@@ -164,9 +167,10 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
     const moved = ok({ clicked: true, moved: true, ...HOME });
     const byRef = await act([{ do: 'click', ref: 'e3' }, { do: 'click', ref: 'e4' }], { click: moved });
     expect(code(byRef.error)).toBe('DOM_SELECTOR_NOT_FOUND');
-    expect(message(byRef.error)).toBe('Stopped at step 2 of 2: it names e4, a ref from the page before step 1 loaded a new one: '
-      + 'inspect the page it loaded to name its elements, or name them by their text. Done: 1. clicked e3. The tab shows “Home” (https://example.com/home), '
-      + 'page 7:DOC2.');
+    expect(message(byRef.error)).toContain('Stopped at step 2 of 2: it names e4, a ref from the page before step 1 loaded a new one');
+    expect(message(byRef.error)).toContain('last observed tab snapshot');
+    expect(readBrowserFailure(byRef.error)?.details.batch_progress).toMatchObject({ failed_step: 2, completed_steps: [1], page_state: 'unknown' });
+    expect(readBrowserFailure(byRef.error)?.details.batch_progress).not.toHaveProperty('current_page');
     expect(byRef.requests).toHaveLength(1);
     const bySelector = await act([{ do: 'click', ref: 'e3' }, { do: 'click', selector: '#next' }], { click: moved });
     expect(bySelector.result).toMatchObject({ done: 2, steps: ['clicked e3', 'clicked “#next”'] });
@@ -178,8 +182,11 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
     const { error } = await act(SIGN_IN, [ok({ filled: true }),
       failed('value_not_applied', 'The form was not sent: password: Please fill in this field.')]);
     expect(code(error)).toBe('DOM_WRITE_FAILED');
-    expect(message(error)).toBe('Stopped at step 2 of 2: The form was not sent: password: Please fill in this field. '
-      + 'Done: 1. typed into e3. The tab\'s page is 7:DOC1.');
+    expect(message(error)).toContain('Stopped at step 2 of 2: The form was not sent: password: Please fill in this field.');
+    expect(message(error)).toContain('its current document is unverified');
+    const progress = readBrowserFailure(error)?.details.batch_progress;
+    expect(progress).toMatchObject({ failed_step: 2, completed_steps: [1], page_state: 'unknown' });
+    expect(progress).not.toHaveProperty('current_page');
     // A Bridge that predates sending a form says so, after the steps before it.
     const old = await act(SIGN_IN, [ok({ filled: true }), { kind: 'capacity_gap', capacity_gap: { kind: 'bridge_online' },
       reason: 'bridge_update_required', attempts: 0 }]);
@@ -190,7 +197,7 @@ describe('D-335 slice J — a sequence runs step by step, one approval for all o
     const loading = ok({ submitted: true, filled: true, moved: true });
     const last = await act(SIGN_IN, { fill: ok({ filled: true }), submit: loading });
     // No handle yet: the model lists the tabs for it.
-    expect(last.result).toEqual({ done: 2, of: 2, steps: ['typed into e3', 'typed into e5 and sent its form'] });
+    expect(last.result).toMatchObject({ done: 2, of: 2, steps: ['typed into e3', 'typed into e5 and sent its form'], post_action: { view_status: 'unavailable', reason: 'page_loading', transition: 'unknown' } });
     const more = await act([...SIGN_IN, { do: 'click', selector: '#continue' }], { fill: ok({ filled: true }), submit: loading });
     expect(message(more.error)).toBe('Stopped at step 2 of 3: the page started loading and was not ready within 10 seconds, so '
       + 'the next step could not be done: list the tabs for its page handle, then inspect it. Done: 1. typed into e3; '
@@ -240,8 +247,9 @@ describe('D-335 slice K — failure, caught as it happens', () => {
     const { error } = await act(SIGN_IN, { fill: ok({ filled: true }),
       submit: ok({ submitted: true, filled: true, moved: false, ...SIGN_IN_PAGE, problem: INVALID }) });
     expect(code(error)).toBe('DOM_CHECK_FAILED');
-    expect(message(error)).toBe(`Stopped at step 2 of 2: the page shows an error message: “${INVALID}”. Done: 1. typed `
-      + 'into e3; 2. typed into e5 and sent its form. The tab shows “Sign in” (https://example.com/login), page 7:DOC1.');
+    expect(message(error)).toContain(`Stopped at step 2 of 2: the page shows an error message: “${INVALID}”.`);
+    expect(message(error)).toContain('last observed tab snapshot');
+    expect(readBrowserFailure(error)?.details.batch_progress).toMatchObject({ failed_step: 2, completed_steps: [1] });
   });
 
   it('a form sent back to its page with an error is a failure, though the page moved on', async () => {
@@ -268,8 +276,10 @@ describe('D-335 slice K — failure, caught as it happens', () => {
     // Watched for as long as the step checks, beside the page moving.
     expect(requests[0]!.args).toEqual({ page: PAGE, ref: 'e4', watch_ms: 5_000, send_watch_ms: 5_000,
       fail: { selector: '.flash.error' } });
-    expect(message(error)).toBe('Stopped at step 1 of 1: the step\'s fail_when holds: “.flash.error” shows, and the page '
-      + `says “${INVALID}”. Done: 1. clicked e4. The tab shows “Sign in” (https://example.com/login), page 7:DOC1.`);
+    expect(message(error)).toContain('Stopped at step 1 of 1: the step\'s fail_when holds: “.flash.error” shows');
+    expect(message(error)).toContain(INVALID);
+    expect(message(error)).toContain('last observed tab snapshot');
+    expect(readBrowserFailure(error)?.details.batch_progress).toMatchObject({ failed_step: 1, completed_steps: [] });
   });
 
   it('a fail_when on the address stops a click that lands there', async () => {
@@ -285,10 +295,8 @@ describe('D-335 slice K — failure, caught as it happens', () => {
     const unmoved = await act(steps, { fill: ok({ filled: true }),
       click: ok({ clicked: true, sent: true, moved: false, ...SIGN_IN_PAGE }) });
     expect(unmoved.requests[1]!.args).toEqual({ page: PAGE, ref: 'e4', send_watch_ms: 5_000 });
-    expect(message(unmoved.error)).toBe('Stopped at step 2 of 2: the click sent its form, but within 5 seconds the page did '
-      + 'not move on: it may be showing an error, so inspect it. For a form that answers where it is, give the step a '
-      + 'success_when, such as { "shows": "…" }. Done: 1. typed into e3; 2. clicked e4, which sent its form. The tab shows '
-      + '“Sign in” (https://example.com/login), page 7:DOC1.');
+    expect(unmoved.error).toBeUndefined();
+    expect(unmoved.result).toMatchObject({ post_action: { action_status: 'acknowledged', application_outcome: 'unverified', transition: 'unknown', view_status: 'unavailable' } });
     const signedIn = await act(steps, { fill: ok({ filled: true }), click: ok({ clicked: true, sent: true, moved: true, ...HOME }) });
     expect(signedIn.result).toMatchObject({ done: 2, steps: ['typed into e3', 'clicked e4, which sent its form'], ...HOME });
     // A click that sends nothing has no such check.
@@ -338,7 +346,7 @@ describe('D-335 slice L — typing that picks one of the field\'s suggestions', 
 
   it('sends one pick: the text, the suggestion and how long to wait for it, inside a longer command', async () => {
     const { result, requests } = await act([COMPANY], { pick: ok({ filled: true, picked: 'Acme Corp', moved: false, ...NEW_DEAL }) });
-    expect(result).toEqual({ done: 1, of: 1, steps: ['typed into e3 and picked “Acme Corp”'], ...NEW_DEAL });
+    expect(result).toEqual({ done: 1, of: 1, steps: ['typed into e3 and picked “Acme Corp”'], ...NEW_DEAL, ...noObservation() });
     expect(requests.map((r) => [r.action, r.args])).toEqual([
       ['pick', { page: PAGE, ref: 'e3', value: 'Acme', pick: 'Acme Corp', pick_ms: 5_000 }]]);
     expect(requests[0]!.expects_output_keys).toEqual([...BRIDGE_PICK_OUTPUT_KEYS]);
@@ -350,7 +358,7 @@ describe('D-335 slice L — typing that picks one of the field\'s suggestions', 
       pick: ok({ filled: true, picked: 'Acme Corp', moved: false, ...NEW_DEAL }),
       submit: ok({ submitted: true, moved: true, ...HOME }),
     });
-    expect(result).toEqual({ done: 1, of: 1, steps: ['typed into e3, picked “Acme Corp” and sent its form'], ...HOME });
+    expect(result).toMatchObject({ done: 1, of: 1, steps: ['typed into e3, picked “Acme Corp” and sent its form'], ...HOME, post_action: { action_status: 'acknowledged', application_outcome: 'unverified' } });
     expect(requests.map((r) => [r.action, r.args])).toEqual([
       ['pick', { page: PAGE, ref: 'e3', value: 'Acme', pick: 'Acme Corp', pick_ms: 5_000 }],
       // Nothing typed again: the pick put the text in.
@@ -362,7 +370,7 @@ describe('D-335 slice L — typing that picks one of the field\'s suggestions', 
     const article = { page: '7:DOC5', url: 'https://example.com/wiki/Ada_Lovelace', title: 'Ada Lovelace' };
     const sent = await act([{ ...COMPANY, submit: true }], { pick: ok({ filled: true, picked: 'Acme Corp', moved: true, ...article }) });
     expect(sent.result).toEqual({ done: 1, of: 1,
-      steps: ['typed into e3 and picked “Acme Corp”, which loaded a new page, so its form was not sent'], ...article });
+      steps: ['typed into e3 and picked “Acme Corp”, which loaded a new page, so its form was not sent'], ...article, ...noObservation(article.page) });
     expect(sent.requests.map((r) => r.action)).toEqual(['pick']);
     const after = await act([COMPANY, { do: 'click', ref: 'e7' }], { pick: ok({ filled: true, picked: 'Acme Corp', moved: true, ...article }) });
     expect(message(after.error)).toMatch(/^Stopped at step 2 of 2: it names e7, a ref from the page before step 1 loaded a new one/);
@@ -371,7 +379,11 @@ describe('D-335 slice L — typing that picks one of the field\'s suggestions', 
   it('a suggestion the Bridge could not pick stops the sequence with its words', async () => {
     const none = 'None of its suggestions is “Acme Corp”. They were: “Acme Inc”; “Acme Ltd”. Pick one of them by its text.';
     const { error } = await act([COMPANY, { do: 'click', ref: 'e9' }], [failed('value_not_applied', none)]);
-    expect(message(error)).toBe(`Stopped at step 1 of 2: ${none} Nothing was done. The tab's page is 7:DOC1.`);
+    expect(message(error)).toContain(`Stopped at step 1 of 2: ${none} No step was confirmed complete.`);
+    expect(message(error)).toContain('its current document is unverified');
+    const progress = readBrowserFailure(error)?.details.batch_progress;
+    expect(progress).toMatchObject({ failed_step: 1, completed_steps: [], page_state: 'unknown' });
+    expect(progress).not.toHaveProperty('current_page');
   });
 
   it('a Bridge that predates picking says to update it, after the steps before', async () => {
@@ -411,13 +423,13 @@ describe('D-335 slice N — a single typing that picks one of the field\'s sugge
       ['pick', { page: PAGE, ref: 'e3', value: 'Acme', pick: 'Acme Corp', pick_ms: 5_000 }]]);
     expect(requests[0]!.expects_output_keys).toEqual([...BRIDGE_PICK_OUTPUT_KEYS]);
     expect(requests[0]!.timeout_ms).toBe(25_000);
-    expect(result).toEqual({ written: 1, fields: ['__core_dom_value'], failed: [], picked: 'Acme Corp', ...NEW_DEAL });
+    expect(result).toEqual({ written: 1, fields: ['__core_dom_value'], failed: [], picked: 'Acme Corp', ...NEW_DEAL, ...noObservation() });
   });
 
   it('an empty pick is plain typing, as before', async () => {
     const { result, requests } = await write({ pick: '' }, { fill: ok({ filled: true }) });
     expect(requests.map((r) => r.action)).toEqual(['fill']);
-    expect(result).toEqual({ written: 1, fields: ['__core_dom_value'], failed: [] });
+    expect(result).toEqual({ written: 1, fields: ['__core_dom_value'], failed: [], ...noObservation() });
   });
 
   it('a suggestion the Bridge could not pick fails the write with its words', async () => {
@@ -547,6 +559,21 @@ describe('D-335 slice X — one batch across tabs, reading as it goes', () => {
     expect(refused.requests.map((r) => r.action)).toEqual(['list_tabs']);
   });
 
+  it('D-402 ruling 18 — a batch a pre-approval let through opens a tab at an address it found, within its recipe\'s sites', async () => {
+    // A pre-approval stands in for the ask, so the batch has no admission of its own (`browser-batch-admission.ts`).
+    const admissions = createBrowserBatchAdmissions();
+    const BILL = { page: '16:BILL', url: 'https://en.wikipedia.org/wiki/Invoice', title: 'Invoice' };
+    // The address the run found as it went (on a bill, say), as a step's address.
+    const { result, requests, error } = await batch({ target: 'https://en.wikipedia.org/*', steps: [{ url: BILL.url, do: 'read' }] },
+      (request) => request.action === 'list_tabs' ? tabs() : request.action === 'open_tab' ? ok(BILL) : read(BILL), {}, admissions);
+    expect(error).toBeUndefined();
+    const open = requests.find((request) => request.action === 'open_tab');
+    expect(open?.args.url).toBe(BILL.url);
+    // Within the recipe's own sites: its command may reach only the batch's target, which the Bridge opens under.
+    expect(open?.ingredient.domain_allowlist).toEqual(['https://en.wikipedia.org/*']);
+    expect((result!.tabs as Array<Record<string, unknown>>)[0]).toMatchObject({ page: BILL.page, opened: true });
+  });
+
   it('a read before a click and one after it are two commands, never one answer replayed', async () => {
     const MAIN = { page: '16:MAIN', url: 'https://en.wikipedia.org/wiki/Main_Page', title: 'Wikipedia' };
     let clicked = false;
@@ -564,8 +591,9 @@ describe('D-335 slice X — one batch across tabs, reading as it goes', () => {
     expect(new Set(reads.map((r) => r.idempotency_key)).size).toBe(2);
     const entry = (result!.tabs as Array<Record<string, unknown>>)[0]!;
     expect((entry.reads as Array<Record<string, unknown>>).map((r) => String(r.outline).includes('After'))).toEqual([false, true]);
-    // The click changed the tab, so its entry says what changed since its first read.
-    expect(entry).toHaveProperty('changes');
+    // The final fresh read already answers the changed page; no third read or duplicate body.
+    expect(requests.map(r => r.action)).toEqual(['inspect', 'click', 'inspect']);
+    expect(entry.changes).toBeUndefined();
   });
 
   it('a batch\'s reads hold at most 60,000 characters: one past that is named, not sent', async () => {
@@ -688,7 +716,7 @@ describe('D-335 slice Y — an element named by its text', () => {
   const LOGIN_HTML = '<main><label for="u">Username</label><input ref="e1" id="u"><button ref="e2">Log in</button></main>';
   type Respond = (request: DispatchRequest) => DispatchOutcome | Promise<DispatchOutcome>;
   const run = async (slug: 'dom-act' | 'dom-click' | 'dom-write', input: Record<string, unknown>, respond: Respond,
-    reads = createPageReadStore()) => {
+    reads = createPageReadStore(), options: { textLookupLoadingMs?: number; itemShownMs?: number } = {}) => {
     const requests: DispatchRequest[] = [];
     const dispatch = vi.fn<BridgeDispatcher['dispatch']>(async (request) => {
       requests.push(request);
@@ -698,6 +726,7 @@ describe('D-335 slice Y — an element named by its text', () => {
       manifests: { get: (slug) => KERNEL_MANIFESTS.find((manifest) => manifest.slug === slug) ?? null },
       getDispatcher: () => ({ dispatch, cancel: vi.fn(), canResolve: vi.fn(() => false) }),
       pageReads: reads,
+      ...options,
     });
     const manifest = KERNEL_MANIFESTS.find((m) => m.slug === slug)!;
     const call: ResolvedCall = { slug, risk_tier: 'write', output: manifest.output, input: { target: '*://*/*', ...input },
@@ -705,7 +734,7 @@ describe('D-335 slice Y — an element named by its text', () => {
     const settled: { result?: Record<string, unknown>; error?: unknown } = await adapter(call)
       .then((result) => ({ result: result as Record<string, unknown> }), (error: unknown) => ({ error }));
     // What the steps sent, without the read for what changed at the end (slice T).
-    return { ...settled, requests: requests.filter((r) => r.action !== 'reread') };
+    return { ...settled, requests: requests.filter((r) => r.action !== 'reread'), allRequests: requests };
   };
   const page = (tab: { page: string; url: string; title: string }, html: string, truncated = false) =>
     ok({ ...tab, html, truncated });
@@ -825,21 +854,33 @@ describe('D-335 slice Y — an element named by its text', () => {
   const SENT = { page: '33:F2', url: 'https://httpbin.org/post', title: '' };
   const sentHtml = (more = '') => '<main><pre>{ "form": { "custname": "Ada Test", "size": "large", "topping": [ "bacon", '
     + `"mushroom" ] }, "headers": { "Accept": "text/html,application/xhtml+xml" } }</pre>${more}</main>`;
-  const sendAndRead = async (atTheEnd: string, reads = createPageReadStore()) => {
-    const { result, error } = await run('dom-act', { page: FORM.page, steps: [{ do: 'click', ref: 'e13' }, { do: 'read' }] },
+  const sendAndRead = async (atTheEnd: string, reads = createPageReadStore(), later: unknown[] = []) => {
+    const { result, error, allRequests } = await run('dom-act', { page: FORM.page,
+      steps: [{ do: 'click', ref: 'e13' }, { do: 'read' }, ...later] },
       (request) => request.action === 'click' ? ok({ clicked: 1, moved: true, ...SENT })
         : page(SENT, request.action === 'reread' ? atTheEnd : sentHtml()), reads);
     expect(error).toBeUndefined();
+    expect(allRequests.filter(r => r.action === 'reread')).toHaveLength(later.length ? 1 : 0);
     return (result!.tabs as Array<Record<string, unknown>>)[0]!;
   };
 
-  it('a page a click loaded and the call then read is compared with that read at its end: its blocks keep their numbers', async () => {
+  it('reuses a final fresh whole-page read after navigation and preserves its block numbers', async () => {
     const reads = createPageReadStore();
     const tab = await sendAndRead(sentHtml(), reads);
     expect(String((tab.reads as Array<Record<string, unknown>>)[0]!.outline)).toContain('(b1)');
-    // Read once more at the end, the same lines: nothing changed since the call's read, and b1 answers from it.
-    expect(tab.changes).toBe(PAGE_UNCHANGED_NOTE);
+    expect(tab.changes).toBeUndefined();
     expect(reads.block(SENT.page, 'b1')).toMatchObject({ text: expect.stringContaining('"bacon", "mushroom"') });
+  });
+
+  it('still rereads after cached search/continuation reads or a loading snapshot', async () => {
+    for (const tail of [{ find: 'form' }, { from: 1 }, { loading: true }]) {
+      const { error, allRequests } = await run('dom-act', { page: FORM.page, steps: [
+        { do: 'click', ref: 'e13' }, { do: 'read', ...('loading' in tail ? {} : tail) },
+      ] }, request => request.action === 'click' ? ok({ clicked: 1, moved: true, ...SENT })
+        : ok({ ...SENT, html: sentHtml(), truncated: false, ...('loading' in tail ? tail : {}) }));
+      expect(error).toBeUndefined();
+      expect(allRequests.filter(r => r.action === 'reread')).toHaveLength(1);
+    }
   });
 
   // D-347 follow-up 17 (2026-11-08) — a step refused because the page drew something else into the element its
@@ -854,17 +895,16 @@ describe('D-335 slice Y — an element named by its text', () => {
     const { error, requests } = await run('dom-act', { page: LIST.page, steps: [{ do: 'click', ref: 'e2' }] },
       (request) => request.action === 'click' ? failed('selector_not_found', refusal) : page(LIST, listHtml('Dee')), reads);
     expect(code(error)).toBe('DOM_SELECTOR_NOT_FOUND');
-    const [stopped, ...changes] = message(error)!.split('\n');
-    expect(stopped!.startsWith(`Stopped at step 1 of 1: ${refusal.replace(/\.$/, '')}. Nothing was done.`)).toBe(true);
-    expect(changes[0]).toMatch(/^\(What changed on the page, numbered as it is now: /);
-    expect(changes.join('\n')).toMatch(/Dee \[Delete\]\(e2\)/);
+    expect(message(error)!.startsWith(`Stopped at step 1 of 1: ${refusal.replace(/\.$/, '')}. No step was confirmed complete.`)).toBe(true);
+    const observed = readBrowserFailure(error)?.details.post_action;
+    expect(observed).toMatchObject({ action_status: 'refused', view_status: 'fresh' });
+    expect(observed?.view?.outline).toMatch(/Dee \[button: Delete\]\(e2\)/);
     expect(sent(requests)).toEqual([['click', 'e2']]);
   });
 
-  it('what changed after the call read the page it loaded comes as changes, not as the page read anew', async () => {
-    const tab = await sendAndRead(sentHtml('<p>Order received.</p>'));
-    expect(String(tab.changes)).toContain('Order received.');
-    expect(String(tab.changes)).not.toContain('The page now');
+  it('an action after the last read still gets a closing reread with the later changes', async () => {
+    const tab = await sendAndRead(sentHtml('<p>Order received.</p>'), createPageReadStore(), [{ do: 'click', selector: '#more' }]);
+    expect(tab.post_action).toMatchObject({ view_status: 'fresh', view: { outline: expect.stringContaining('Order received.') } });
   });
 
   it('after a click opens a dialog, the next step finds its button in the page read again', async () => {
@@ -880,17 +920,17 @@ describe('D-335 slice Y — an element named by its text', () => {
     expect(sent(requests)).toEqual([['inspect', null], ['click', 'e9'], ['inspect', null], ['click', 'e10']]);
   });
 
-  it('after a step loads a new page, a step by text acts there, where a ref would be refused', async () => {
+  it('after a step loads a new form page, the pending field step stops before typing there', async () => {
     const { error, requests, result } = await run('dom-act', { page: SEARCH.page, steps: [
       { do: 'click', text: 'Log in', role: 'link' }, { do: 'type', text: 'Username', value: 'ada' },
     ] }, (request) => {
       if (request.action === 'inspect') return request.args.page === LOGIN.page ? page(LOGIN, LOGIN_HTML) : page(SEARCH, MAIN_HTML);
       return request.action === 'click' ? ok({ clicked: 1, ...LOGIN }) : ok({ filled: true });
     });
-    expect(error).toBeUndefined();
-    expect(requests.map((r) => [r.action, r.args.page, r.args.ref ?? null])).toEqual([
-      ['inspect', SEARCH.page, null], ['click', SEARCH.page, 'e3'], ['inspect', LOGIN.page, null], ['fill', LOGIN.page, 'e1']]);
-    expect(result).toMatchObject({ page: LOGIN.page, title: 'Log in' });
+    expect(readBrowserFailure(error)?.details.navigation_boundary).toMatchObject({ kind: 'unobserved_form_document', page: LOGIN.page, pending_step: 2 });
+    expect(requests.filter(request => ['fill', 'submit'].includes(request.action))).toEqual([]);
+    expect(requests.filter(request => request.action === 'click')).toHaveLength(1);
+    expect(result).toBeUndefined();
   });
 
   it('a text several elements share, or none has, stops the step before anything is sent, naming them', async () => {
@@ -925,6 +965,93 @@ describe('D-335 slice Y — an element named by its text', () => {
     expect(message(both.error)).toBe("core.dom.click: 'text' names the element on the page its 'page' handle names, in place of a ref or a selector");
     expect(both.requests).toHaveLength(0);
   });
+
+  // 2026-11-20 — the page still loading when a step names an element by its text and nothing read the page
+  // before: a recipe's first step on the page it opens. A Bridge with `dom_readiness` answers a read before
+  // `readyState` is complete, which ads or trackers can hold off for 7 to 12 s; the lookup refused at once,
+  // saying the page "is long" (D-402's benchmark tasks C, L, N and P, all four).
+  // 2026-11-21 (D-402, task P) — an app draws its list after it answers (P's notes, after a sign-in or a save).
+  describe('a step named inside its card, when no card shows its texts yet', () => {
+    const NOTE = (title: string) => '<div class="col"><div data-testid="note-card" class="card"><div class="card-header">'
+      + `${title}</div><div class="card-footer"><button ref="e${title === 'Bench stock review' ? '7' : '8'}">Edit</button></div></div></div>`;
+    const NOTES = (...titles: string[]) => ok({ ...SEARCH, html: `<main><div class="row">${titles.map(NOTE).join('')}</div></main>`, truncated: false });
+    const EDIT = { page: SEARCH.page, steps: [{ do: 'click', text: 'Edit', role: 'button',
+      within: { text: ['Bench stock review'], card: 'div[data-testid="note-card"]' } }] };
+
+    it('reads again until one does, then acts in it, with the card for the Bridge to check', async () => {
+      let reads = 0;
+      const { error, requests } = await run('dom-act', EDIT, (request) => request.action !== 'inspect' ? ok({ clicked: 1, ...SEARCH })
+        : ++reads < 3 ? NOTES('Grocery list') : NOTES('Grocery list', 'Bench stock review'));
+      expect(error).toBeUndefined();
+      expect(sent(requests)).toEqual([['inspect', null], ['inspect', null], ['inspect', null], ['click', 'e7']]);
+      expect(requests.find((request) => request.action === 'click')?.args).toMatchObject({ within: ['Bench stock review'],
+        within_card: 'div[data-testid="note-card"]' });
+    });
+
+    it('none showing once the time is up is refused, and nothing is clicked', async () => {
+      const { error, requests } = await run('dom-act', EDIT, (request) => request.action !== 'inspect' ? ok({ clicked: 1, ...SEARCH })
+        : NOTES('Grocery list'), createPageReadStore(), { itemShownMs: 1_200 });
+      expect(code(error)).toBe('DOM_SELECTOR_NOT_FOUND');
+      expect(message(error)).toContain('no card on the page shows “Bench stock review”');
+      expect(requests.filter((request) => request.action === 'inspect').length).toBeGreaterThan(2);
+      expect(requests.filter((request) => request.action !== 'inspect')).toEqual([]);
+    });
+  });
+
+  describe('a page still loading when its element is named by its text', () => {
+    const CLICK_SEARCH = { page: SEARCH.page, steps: [{ do: 'click', text: 'Search', role: 'button' }] };
+    const loading = (html: string, settled = true) => ok({ ...SEARCH, html, truncated: false, loading: true, settled });
+
+    it('acts once two reads of the same still-loading document show the same element, never on one', async () => {
+      const { error, requests } = await run('dom-act', CLICK_SEARCH,
+        (request) => request.action === 'inspect' ? loading(MAIN_HTML) : ok({ clicked: 1, ...SEARCH }));
+      expect(error).toBeUndefined();
+      expect(sent(requests)).toEqual([['inspect', null], ['inspect', null], ['click', 'e2']]);
+      // The single-op tools look elements up the same way.
+      const clicked = await run('dom-click', { page: SEARCH.page, text: 'Log in' },
+        (request) => request.action === 'inspect' ? loading(MAIN_HTML) : ok({ clicked: 1, ...LOGIN }));
+      expect(clicked.error).toBeUndefined();
+      expect(sent(clicked.requests)).toEqual([['inspect', null], ['inspect', null], ['click', 'e3']]);
+    });
+
+    it('a page that finishes loading answers from its loaded read', async () => {
+      let reads = 0;
+      const { error, requests } = await run('dom-act', CLICK_SEARCH, (request) => request.action !== 'inspect'
+        ? ok({ clicked: 1, ...SEARCH }) : ++reads === 1 ? loading(MAIN_HTML) : page(SEARCH, MAIN_HTML));
+      expect(error).toBeUndefined();
+      expect(sent(requests)).toEqual([['inspect', null], ['inspect', null], ['click', 'e2']]);
+    });
+
+    it('a later read that had not held still is not enough: it reads on, and acts on one that had', async () => {
+      let reads = 0;
+      const { error, requests } = await run('dom-act', CLICK_SEARCH, (request) => request.action !== 'inspect'
+        ? ok({ clicked: 1, ...SEARCH }) : loading(MAIN_HTML, ++reads !== 2));
+      expect(error).toBeUndefined();
+      expect(sent(requests)).toEqual([['inspect', null], ['inspect', null], ['inspect', null], ['click', 'e2']]);
+    });
+
+    it('never acts on an element that changes between reads of a loading page, and says so', async () => {
+      let reads = 0;
+      // Each read numbers the button anew, as a page that keeps drawing above it does.
+      const { error, requests } = await run('dom-act', CLICK_SEARCH, (request) => request.action !== 'inspect'
+        ? ok({ clicked: 1, ...SEARCH }) : loading(MAIN_HTML.replace('ref="e2">Search', `ref="e${String(20 + ++reads)}">Search`)),
+      createPageReadStore(), { textLookupLoadingMs: 1_200 });
+      expect(code(error)).toBe('DOM_SELECTOR_NOT_FOUND');
+      expect(message(error)).toContain('“Search” (button) did not hold still while the page loaded: it changed between reads '
+        + 'for the 1.2 s Recued looked, so nothing was sent to it');
+      expect(requests.filter((request) => request.action !== 'inspect')).toEqual([]);
+    });
+
+    it('a loading page that never shows the element is refused once the time is up, saying it was loading', async () => {
+      const { error, requests } = await run('dom-act', CLICK_SEARCH, (request) => request.action !== 'inspect'
+        ? ok({ clicked: 1, ...SEARCH }) : loading(LOGIN_HTML), createPageReadStore(), { textLookupLoadingMs: 1_200 });
+      expect(code(error)).toBe('DOM_SELECTOR_NOT_FOUND');
+      expect(message(error)).toContain('nothing a person can act on is called “Search” (button) on the page as it loaded '
+        + '(Recued read it for 1.2 s, and it was still loading)');
+      expect(message(error)).not.toContain('it is long');
+      expect(requests.filter((request) => request.action !== 'inspect')).toEqual([]);
+    });
+  });
 });
 
 describe('D-335 slice Z — a step that types a secret the model never holds', () => {
@@ -933,7 +1060,10 @@ describe('D-335 slice Z — a step that types a secret the model never holds', (
   const PASSWORD_PAGE = '<main><form><input ref="e3" name="email" type="email" aria-label="Email">'
     + '<input ref="e5" name="passwd" type="password" aria-label="Password"><button ref="e6">Next</button></form></main>';
   type Respond = (request: DispatchRequest) => DispatchOutcome;
-  const run = async (steps: unknown[], respond: Respond, source: BrowserSecretSource, run_id = 'run-z') => {
+  /** D-402 slice H5 — the paired browsers routing knows, for the browser a secret is typed in. */
+  type Roster = ReturnType<NonNullable<BridgeDispatcher['listBrowsers']>>;
+  const run = async (steps: unknown[], respond: Respond, source: BrowserSecretSource, run_id = 'run-z',
+    at: { page?: string; bridge_id?: string; roster?: Roster } = {}) => {
     const requests: DispatchRequest[] = [];
     const flows = createBrowserFlowRecorder({ now: () => 50 });
     flows.bindRun(run_id, { session_id: 's1', turn_id: 't1' });
@@ -942,14 +1072,15 @@ describe('D-335 slice Z — a step that types a secret the model never holds', (
       getDispatcher: () => ({ dispatch: vi.fn<BridgeDispatcher['dispatch']>(async (request) => {
         requests.push(request);
         return respond(request);
-      }), cancel: vi.fn(), canResolve: vi.fn(() => false) }),
+      }), cancel: vi.fn(), canResolve: vi.fn(() => false), ...(at.roster !== undefined ? { listBrowsers: () => at.roster! } : {}) }),
       pageReads: createPageReadStore(),
       browserFlows: flows,
       secrets: source,
     });
     const manifest = KERNEL_MANIFESTS.find((m) => m.slug === 'dom-act')!;
     const call: ResolvedCall = { slug: 'dom-act', risk_tier: 'write', output: manifest.output,
-      input: { target: '*://*/*', page: LOGIN.page, steps }, stepMeta: { recipe_id: 'act-on-web-page', step_id: 'act', run_id } };
+      input: { target: '*://*/*', page: at.page ?? LOGIN.page, steps, ...(at.bridge_id !== undefined ? { bridge_id: at.bridge_id } : {}) },
+      stepMeta: { recipe_id: 'act-on-web-page', step_id: 'act', run_id } };
     const settled: { result?: Record<string, unknown>; error?: unknown } = await adapter(call)
       .then((result) => ({ result: result as Record<string, unknown> }), (error: unknown) => ({ error }));
     return { ...settled, requests: requests.filter((r) => r.action !== 'reread'), flows: flows.stepsFor('s1', () => true) };
@@ -964,6 +1095,25 @@ describe('D-335 slice Z — a step that types a secret the model never holds', (
     const asked: BrowserSecretRequest[] = [];
     return { asked, source: { resolve: vi.fn(async (request: BrowserSecretRequest) => { asked.push(request); return answer; }) } };
   };
+
+  it('D-402 slice H5 — asks for the secret of the browser it is typed in, by its lasting id and its owner\'s name', async () => {
+    const roster: Roster = [{ bridge_id: 'tok-work', browser_id: 'inst-work', name: 'Work', online: true },
+      { bridge_id: 'tok-home', browser_id: 'inst-home', name: 'Home', online: true }];
+    // A page whose handle names its pairing (as every page the Bridge answered for does).
+    const byHandle = source({ value: 'hunter2', from: 'saved' });
+    await run([{ do: 'type', ref: 'e5', secret: 'password', submit: true }], bridge(), byHandle.source, 'run-z',
+      { page: `bridge:tok-work:${LOGIN.page}`, roster });
+    expect(byHandle.asked).toEqual([expect.objectContaining({ browser: 'inst-work', browser_name: 'Work' })]);
+    // A draft's step, naming its browser by its setting: the lasting id.
+    const bySetting = source({ value: 'hunter2', from: 'saved' });
+    await run([{ do: 'type', ref: 'e5', secret: 'password', submit: true }], bridge(), bySetting.source, 'run-z',
+      { bridge_id: 'inst-home', roster });
+    expect(bySetting.asked).toEqual([expect.objectContaining({ browser: 'inst-home', browser_name: 'Home' })]);
+    // No browser to name (no handle, no setting): none, so nothing is read or kept for it.
+    const unnamed = source({ value: 'hunter2', from: 'owner' });
+    await run([{ do: 'type', ref: 'e5', secret: 'password', submit: true }], bridge(), unnamed.source);
+    expect(unnamed.asked[0]).not.toHaveProperty('browser');
+  });
 
   it('finds the field\'s site and name first, types what the source gives in that one command, and says only what it was', async () => {
     const saved = source({ value: 'hunter2', from: 'saved' });
@@ -992,7 +1142,7 @@ describe('D-335 slice Z — a step that types a secret the model never holds', (
     const refused = await run([{ do: 'type', ref: 'e5', secret: 'password', submit: true }], bridge(),
       source({ refused: 'nobody gave your password for mail.google.com within 5 minutes, so the task stopped at this step' }).source);
     expect(message(refused.error)).toContain('Stopped at step 1 of 1: nobody gave your password for mail.google.com within 5 minutes, '
-      + 'so the task stopped at this step. Nothing was done.');
+      + 'so the task stopped at this step. No step was confirmed complete.');
     expect(refused.requests.map((r) => r.action)).toEqual(['describe', 'inspect']);
     const local = source({ value: 'hunter2', from: 'saved' });
     const file = await run([{ do: 'type', ref: 'e5', secret: 'password' }], bridge('file:///Users/me/login.html'), local.source);
@@ -1016,5 +1166,77 @@ describe('a wait written with page_changes, run as the check of the click before
   it('stops when the page stays, as the check written on the click does', async () => {
     const stayed = await act(steps, { click: ok({ clicked: true, moved: false, page: PAGE, url: LOGIN_URL, title: 'Sign in' }) });
     expect(message(stayed.error)).toMatch(/^Stopped at step 1 of 1: within 5 seconds the page did not move on, and the step expected it to\./);
+  });
+});
+
+// 2026-11-21 (D-402, benchmark task M, live) — a recipe names its browser by its lasting id (its `browser` setting) and a
+// step's page by the handle a step before it gave, which names the same browser by its current token. One browser, so one
+// batch: the pairing roster says which ids are the same browser. Before, the batch was refused as two.
+describe('one batch, one browser, named by its lasting id and by a page handle', () => {
+  const roster = [{ bridge_id: 'token-1', browser_id: 'lasting-1', name: 'Chrome', online: true },
+    { bridge_id: 'token-2', browser_id: 'lasting-2', name: 'Laptop', online: true }];
+  const run = async (bridge_id: string, page: string, listBrowsers?: () => typeof roster) => {
+    const requests: DispatchRequest[] = [];
+    const dispatch = vi.fn<BridgeDispatcher['dispatch']>(async (request) => {
+      requests.push(request);
+      return request.action === 'reread' ? ok(noObservation()) : ok({ clicked: true, moved: true, ...HOME });
+    });
+    const adapter = createBridgeDomAdapter({
+      manifests: { get: (slug) => KERNEL_MANIFESTS.find((manifest) => manifest.slug === slug) ?? null },
+      getDispatcher: () => ({ dispatch, cancel: vi.fn(), canResolve: vi.fn(() => false), ...(listBrowsers ? { listBrowsers } : {}) }),
+    });
+    const manifest = KERNEL_MANIFESTS.find((m) => m.slug === 'dom-act')!;
+    const call: ResolvedCall = { slug: 'dom-act', risk_tier: 'write', output: manifest.output,
+      input: { target: '*://*/*', bridge_id, steps: [{ do: 'click', page, ref: 'e9', success_when: { url_includes: '/home' } }] },
+      stepMeta: { recipe_id: 'browser-plan-example', step_id: 'act_2', run_id: 'run-1' } };
+    return adapter(call).then((result) => ({ result, requests }), (error: unknown) => ({ error, requests }));
+  };
+
+  it('runs a step on a page of the browser the setting names', async () => {
+    const same = await run('lasting-1', 'bridge:token-1:7:DOC1', () => roster);
+    expect('error' in same ? message(same.error) : undefined).toBeUndefined();
+    expect(same.requests.filter((r) => r.action === 'click')).toHaveLength(1);
+  });
+
+  it('refuses a page of another browser, and with no roster one it cannot tell is the same', async () => {
+    for (const refused of [await run('lasting-1', 'bridge:token-2:7:DOC1', () => roster), await run('lasting-1', 'bridge:token-1:7:DOC1')]) {
+      expect('error' in refused ? code(refused.error) : undefined).toBe('DOM_PAGE_NOT_MATCHING');
+      expect(refused.requests).toHaveLength(0);
+    }
+  });
+});
+
+// 2026-11-21 (D-402, benchmark task H, live) — one wait or check may take 30 s. A click or a sent form watched longer than a
+// Bridge before 0.0.14 watches (10 s) needs one that can (`long_waits`), and a command long enough to hold the watch.
+describe('a check watched longer than 10 seconds after a click', () => {
+  const long = [{ do: 'click', ref: 'e9', success_when: { url_includes: '/home', seconds: 20 } }];
+  it('is sent to a Bridge that can, in a command long enough for the click, the watch and the answer', async () => {
+    const run = await act(long, { click: ok({ clicked: true, moved: true, ...HOME }) });
+    expect(run.result).toMatchObject({ done: 1 });
+    expect(run.requests[0]!.args).toEqual({ page: PAGE, ref: 'e9', watch_ms: 20_000 });
+    expect(run.requests[0]!.timeout_ms).toBe(40_000);
+    // A watch a Bridge has always held goes in the usual command.
+    const usual = await act([{ do: 'click', ref: 'e9', success_when: { url_includes: '/home', seconds: 8 } }], { click: ok({ clicked: true, moved: true, ...HOME }) });
+    expect(usual.requests[0]!.timeout_ms).toBeUndefined();
+  });
+
+  it('is refused before step 1 on a Bridge that stops watching at 10 seconds, with nothing done', async () => {
+    const requests: DispatchRequest[] = [];
+    const older = { software_version: '0.0.13', chrome_version: '140', permissions_granted: ['tabs', 'scripting'], granted_origins: ['*://*/*'],
+      offscreen_supported: true, alarms_supported: true, supported_actions: ['click', 'describe', 'inspect', 'reread'] } as unknown as BridgeCapabilityProfile;
+    const adapter = createBridgeDomAdapter({
+      manifests: { get: (slug) => KERNEL_MANIFESTS.find((manifest) => manifest.slug === slug) ?? null },
+      getDispatcher: () => ({ dispatch: vi.fn(async (request: DispatchRequest) => { requests.push(request); return ok({ clicked: true, moved: true, ...HOME }); }),
+        cancel: vi.fn(), canResolve: vi.fn(() => false),
+        runs: (request: Pick<DispatchRequest, 'action' | 'args'>) => bridgeRunsCommand(older, request.action, request.args) }),
+    });
+    const manifest = KERNEL_MANIFESTS.find((m) => m.slug === 'dom-act')!;
+    const error = await adapter({ slug: 'dom-act', risk_tier: 'write', output: manifest.output,
+      input: { target: '*://*/*', page: PAGE, steps: [{ do: 'click', ref: 'e1' }, ...long] },
+      stepMeta: { recipe_id: 'act-on-web-page', step_id: 'act', run_id: 'run-1' } }).then(() => undefined, (failure: unknown) => failure);
+    expect(code(error)).toBe('ROLE_RESTRICTION');
+    expect(message(error)).toBe('Update the Browser Bridge: step 2 checks for longer than 10 seconds after it acts, which the connected '
+      + 'Browser Bridge cannot watch (0.0.14 or later can). Nothing was done.');
+    expect(requests).toHaveLength(0);
   });
 });

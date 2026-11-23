@@ -9,9 +9,9 @@
  *  Tests inject a deterministic transport factory + sleep so the
  *  loop is fully simulated without real WebSockets. */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
-  createWsClient,
+  createWsClient as createClient,
   type WsClientHandlers,
   type WsTransport,
   type WsTransportFactory,
@@ -41,8 +41,8 @@ const buildFakeTransport = (): FakeTransport => {
     fakeSay(payload) {
       for (const l of [...transport.messageListeners]) l(payload);
     },
-    send: () => undefined,
-    close: () => undefined,
+    send: vi.fn(),
+    close: vi.fn(),
     onMessage(handler) {
       transport.messageListeners.push(handler);
       return () => {
@@ -65,24 +65,29 @@ const buildFakeTransport = (): FakeTransport => {
   return transport;
 };
 
-const buildScriptedFactory = (
-  outcomes: Array<'fail' | FakeTransport>,
-  log: { sleeps: number[] },
-): { factory: WsTransportFactory; opens: number } => {
-  let i = 0;
-  const factory: WsTransportFactory = {
-    async open() {
-      const next = outcomes[i++];
-      if (next === 'fail' || next === undefined) {
-        throw new Error('synthetic open failure');
-      }
-      return next;
-    },
-  };
-  return { factory, opens: i };
+const clients = new Set<ReturnType<typeof createClient>>();
+const createWsClient: typeof createClient = (options) => {
+  const client = createClient(options);
+  clients.add(client);
+  return client;
 };
 
+beforeEach(() => { vi.useFakeTimers(); });
+afterEach(async () => {
+  for (const client of clients) await client.stop();
+  clients.clear();
+  vi.clearAllTimers();
+  vi.useRealTimers();
+});
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const settle = () => vi.advanceTimersByTimeAsync(0);
+const deferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
 
 describe('D-148 P3 — WS client connect lifecycle', () => {
   it('connect → onConnected fires + isConnected returns true', async () => {
@@ -105,7 +110,7 @@ describe('D-148 P3 — WS client connect lifecycle', () => {
       },
     });
     await client.start();
-    await wait(20);
+    await vi.advanceTimersByTimeAsync(20);
     expect(client.isConnected()).toBe(true);
     expect(connected_with).toBe(transport);
   });
@@ -134,8 +139,8 @@ describe('D-148 P3 — exponential backoff on failure', () => {
       max_backoff_ms: 30_000,
     });
     await client.start();
-    // Wait long enough for at least 4 backoff retries to schedule.
-    await wait(60);
+    // Advance the injected timers through four retries.
+    await vi.advanceTimersByTimeAsync(60);
     expect(sleeps.slice(0, 4)).toEqual([1_000, 2_000, 4_000, 8_000]);
   });
 
@@ -161,7 +166,7 @@ describe('D-148 P3 — exponential backoff on failure', () => {
       max_backoff_ms: 30_000,
     });
     await client.start();
-    await wait(50);
+    await vi.advanceTimersByTimeAsync(50);
     // Last entry should equal the cap.
     expect(sleeps[sleeps.length - 1]).toBe(30_000);
   });
@@ -191,14 +196,14 @@ describe('D-148 P3 — exponential backoff on failure', () => {
       max_backoff_ms: 30_000,
     });
     await client.start();
-    await wait(20);
+    await vi.advanceTimersByTimeAsync(20);
     expect(client.isConnected()).toBe(true);
     expect(sleeps).toEqual([1_000, 2_000]);
     // Connected, but the wait is not reset by the open alone.
     expect(client.currentBackoff()).toBe(4_000);
     sessions[0]!.fakeSay('{"type":"registered"}');
     sessions[0]!.fakeClose('server restarted');
-    await wait(20);
+    await vi.advanceTimersByTimeAsync(20);
     // Back at once, with no wait, and from the first wait again.
     expect(opens).toBe(4);
     expect(sleeps).toEqual([1_000, 2_000]);
@@ -225,9 +230,9 @@ describe('2026-11-03 — a refused sign-in, and a connection the server never sp
         sleep: async () => { await wait(0); },
       });
       await client.start();
-      await wait(10);
+      await vi.advanceTimersByTimeAsync(10);
       transport.fakeCloseWith(code, why);
-      await wait(20);
+      await vi.advanceTimersByTimeAsync(20);
       expect(opens).toBe(1);
       expect(refusals).toEqual([{ code, reason: why }]);
       expect(disconnects).toEqual([why]);
@@ -235,7 +240,7 @@ describe('2026-11-03 — a refused sign-in, and a connection the server never sp
       expect(client.isConnected()).toBe(false);
       // The keepalive nudges start() every 30 s: it must not bring the refusals back.
       await client.start();
-      await wait(20);
+      await vi.advanceTimersByTimeAsync(20);
       expect(opens).toBe(1);
     });
   }
@@ -265,7 +270,7 @@ describe('2026-11-03 — a refused sign-in, and a connection the server never sp
       max_backoff_ms: 30_000,
     });
     await client.start();
-    await wait(80);
+    await vi.advanceTimersByTimeAsync(80);
     expect(sleeps).toEqual([1_000, 2_000, 4_000, 8_000, 16_000]);
     // One open per wait, and one before the first: never a reconnect without waiting.
     expect(opens).toBeLessThanOrEqual(sleeps.length + 1);
@@ -284,9 +289,9 @@ describe('2026-11-03 — a refused sign-in, and a connection the server never sp
       sleep: async () => { await wait(0); },
     });
     await client.start();
-    await wait(10);
+    await vi.advanceTimersByTimeAsync(10);
     first.fakeCloseWith(4004, 'ws path disabled');
-    await wait(20);
+    await vi.advanceTimersByTimeAsync(20);
     expect(refusals).toEqual([]);
     expect(opens).toBe(2);
     await client.stop();
@@ -316,9 +321,9 @@ describe('D-148 P3 — disconnect handler fires', () => {
       },
     });
     await client.start();
-    await wait(10);
+    await vi.advanceTimersByTimeAsync(10);
     transport.fakeClose('test-close');
-    await wait(10);
+    await vi.advanceTimersByTimeAsync(10);
     expect(reasons).toContain('test-close');
   });
 });
@@ -341,11 +346,172 @@ describe('D-148 P3 — stop halts the reconnect loop', () => {
       },
     });
     await client.start();
-    await wait(10);
+    await vi.advanceTimersByTimeAsync(10);
     const opens_before = opens;
     await client.stop();
-    await wait(20);
+    await vi.advanceTimersByTimeAsync(20);
     // Bound the count; once stopped, no further open attempts schedule.
     expect(opens).toBeLessThanOrEqual(opens_before + 1);
+  });
+});
+
+
+describe('WS client — obsolete connections after shutdown or restart', () => {
+  it('a bearer resolved after restart cannot open a connection for the old run', async () => {
+    const oldBearer = deferred<string>();
+    const current = buildFakeTransport();
+    const open = vi.fn(async () => current);
+    let resolutions = 0;
+    const connected = vi.fn();
+    const client = createWsClient({
+      url: 'wss://test/',
+      resolveBearer: () => ++resolutions === 1 ? oldBearer.promise : Promise.resolve('new-bearer'),
+      factory: { open },
+      handlers: { onConnected: connected },
+    });
+    await client.start();
+    await client.stop();
+    await client.start();
+    await settle();
+    oldBearer.resolve('old-bearer');
+    await settle();
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith({ url: 'wss://test/', auth_bearer: 'new-bearer' });
+    expect(connected).toHaveBeenCalledExactlyOnceWith(current);
+    expect(client.isConnected()).toBe(true);
+  });
+
+  it('a transport opened after stop is closed without becoming active or firing callbacks', async () => {
+    const pending = deferred<WsTransport>();
+    const late = buildFakeTransport();
+    const connected = vi.fn();
+    const client = createWsClient({
+      url: 'wss://test/', resolveBearer: async () => 'bearer',
+      factory: { open: () => pending.promise },
+      handlers: { onConnected: connected },
+    });
+    await client.start();
+    await settle();
+    await client.stop();
+    pending.resolve(late);
+    await settle();
+    expect(client.isConnected()).toBe(false);
+    expect(connected).not.toHaveBeenCalled();
+    expect(late.close).toHaveBeenCalledExactlyOnceWith(1000, 'bridge: shutdown');
+    expect(() => client.send('after stop')).toThrow(/disconnected/);
+  });
+
+  for (const outcome of ['opened', 'rejected'] as const) {
+    it(`an old open that ${outcome} after restart cannot replace the new connection or retry`, async () => {
+      const pending = deferred<WsTransport>();
+      const late = buildFakeTransport();
+      const current = buildFakeTransport();
+      const open = vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValue(current);
+      const sleep = vi.fn(async () => undefined);
+      const connected = vi.fn();
+      const client = createWsClient({
+        url: 'wss://test/', resolveBearer: async () => 'bearer', factory: { open }, sleep,
+        handlers: { onConnected: connected },
+      });
+      await client.start();
+      await settle();
+      await client.stop();
+      await client.start();
+      await settle();
+      if (outcome === 'opened') pending.resolve(late);
+      else pending.reject(new Error('old handshake failed'));
+      await settle();
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(connected).toHaveBeenCalledExactlyOnceWith(current);
+      expect(client.isConnected()).toBe(true);
+      client.send('new session');
+      expect(current.send).toHaveBeenCalledExactlyOnceWith('new session');
+      expect(current.close).not.toHaveBeenCalled();
+      if (outcome === 'opened') expect(late.close).toHaveBeenCalledExactlyOnceWith(1000, 'bridge: shutdown');
+    });
+  }
+
+  it('a retry wait from before restart cannot change the new backoff or open another socket', async () => {
+    const retry = deferred<void>();
+    const current = buildFakeTransport();
+    const open = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(current);
+    const sleep = vi.fn(() => retry.promise);
+    const client = createWsClient({
+      url: 'wss://test/', resolveBearer: async () => 'bearer', factory: { open }, sleep,
+    });
+    await client.start();
+    await settle();
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(1_000);
+    await client.stop();
+    await client.start();
+    await settle();
+    retry.resolve();
+    await settle();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(client.currentBackoff()).toBe(1_000);
+    expect(client.isConnected()).toBe(true);
+    expect(current.close).not.toHaveBeenCalled();
+  });
+
+  it('queued messages, closes and refusals from a stopped socket cannot affect its replacement', async () => {
+    const old = buildFakeTransport();
+    const current = buildFakeTransport();
+    const open = vi.fn().mockResolvedValueOnce(old).mockResolvedValue(current);
+    const message = vi.fn(), disconnected = vi.fn(), refused = vi.fn();
+    const client = createWsClient({
+      url: 'wss://test/', resolveBearer: async () => 'bearer', factory: { open },
+      handlers: { onMessage: message, onDisconnected: disconnected, onSignInRefused: refused },
+    });
+    await client.start();
+    await settle();
+    // Save callbacks already queued by a transport: removing listeners alone cannot cancel them.
+    const oldMessage = old.messageListeners[0]!;
+    const oldClose = old.closeListeners[0]!;
+    await client.stop();
+    expect(old.messageListeners).toHaveLength(0);
+    expect(old.closeListeners).toHaveLength(0);
+    expect(old.errorListeners).toHaveLength(0);
+    await client.start();
+    await settle();
+    oldMessage('stale frame');
+    oldClose({ code: 1006, reason: 'stale close' });
+    oldClose({ code: 4401, reason: 'stale refusal' });
+    await settle();
+    expect(message).not.toHaveBeenCalled();
+    expect(disconnected).not.toHaveBeenCalled();
+    expect(refused).not.toHaveBeenCalled();
+    expect(client.refused()).toBe(false);
+    expect(client.isConnected()).toBe(true);
+    expect(open).toHaveBeenCalledTimes(2);
+    current.fakeSay('current frame');
+    expect(message).toHaveBeenCalledExactlyOnceWith('current frame');
+    client.send('current request');
+    expect(current.send).toHaveBeenCalledExactlyOnceWith('current request');
+  });
+
+  it('a rejected onConnected from a dropped socket cannot start another reconnect loop', async () => {
+    const connectedWork = deferred<void>();
+    const first = buildFakeTransport(), current = buildFakeTransport();
+    const open = vi.fn().mockResolvedValueOnce(first).mockResolvedValue(current);
+    const connected = vi.fn().mockImplementationOnce(() => connectedWork.promise);
+    const sleep = vi.fn(async () => undefined);
+    const client = createWsClient({
+      url: 'wss://test/', resolveBearer: async () => 'bearer', factory: { open }, sleep,
+      handlers: { onConnected: connected },
+    });
+    await client.start();
+    await settle();
+    first.fakeSay('registered');
+    first.fakeClose('restart');
+    await settle();
+    connectedWork.reject(new Error('old subscription failed'));
+    await settle();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(connected).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(client.isConnected()).toBe(true);
+    client.send('still current');
+    expect(current.send).toHaveBeenCalledExactlyOnceWith('still current');
   });
 });

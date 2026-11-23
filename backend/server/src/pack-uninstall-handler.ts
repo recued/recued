@@ -570,9 +570,15 @@ export const handlePacksUninstall = async (
   // payload pins because those runs immediately lose read authorization.
   if (deps.webhookConsumerStore) {
     try {
+      // D-201 Slice 10AX (10AS finding 12) — the doors kept for a later version,
+      // and the owner's answers, go with the pack in the removal's own
+      // transaction: installed again, it starts with fresh doors. They were
+      // forgotten after it, best effort, and a fault there left an answer that
+      // closed the reinstalled pack's door without asking.
       const removedWebhook = deps.webhookConsumerStore.removeConsumer(
         'pack_install',
         pack_slug,
+        { forget_last_doors: true },
       );
       // D-209 #1 W2b — retire the pack's webhook DOORS alongside their
       // trigger rows: a revoked definition stops governing immediately, so

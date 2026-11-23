@@ -68,6 +68,8 @@ export interface InFlightToolCall {
   tool_name: string;
   tier: ChatToolCall['tier'];
   args: unknown;
+  /** The installed recipe the call runs, by its name (`ChatToolCall.recipe_name`). */
+  recipe_name?: ChatToolCall['recipe_name'];
   status: 'started' | 'ok' | 'error';
   result_ref?: string;
   reason?: ChatToolCall['reason'];
@@ -173,6 +175,9 @@ export interface PlanApprovalCard {
   /** D-329 — its hold expired unanswered (`hold.lapsed_at`): cancelled with nothing run, by
    *  no one's no. */
   lapsed?: true;
+  /** D-343 — a newer version of it was proposed before anyone answered (`hold.replaced_at`):
+   *  withdrawn with nothing run, by no one's no. */
+  replaced?: true;
   /** D-329 — how the owner knows the records `args` names, by their names
    *  (`ChatPlanProposal.value_labels`). Display only: `args` is what runs. */
   value_labels?: import('@recued/contracts').ApprovalValueLabels;
@@ -190,6 +195,10 @@ export interface PlanApprovalCard {
   /** D-341 — what that answer lets happen, in the ask's words (`hold.always_allow_note`): the
    *  card says it under its buttons. */
   always_allow_note?: string;
+  /** D-177 §N.15.9 — the round of the chat whose held writes of one kind were asked once
+   *  (`ChatPlanProposal.hold.group`): the cards of one group render as one card, and answering it
+   *  answers each of them. */
+  group?: string;
 }
 
 /** Execution receipt for a consumed one-time approval. `held` is distinct
@@ -395,11 +404,13 @@ export const hydrateThreadFromSnapshot = (
         : {}),
       ...(record.plan.hold !== undefined ? { held: true as const } : {}),
       ...(record.plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
+      ...(record.plan.hold?.replaced_at !== undefined ? { replaced: true as const } : {}),
       ...(record.plan.value_labels !== undefined ? { value_labels: record.plan.value_labels } : {}),
       ...(record.plan.editable_args !== undefined ? { editable_args: record.plan.editable_args } : {}),
       ...(record.plan.memory_conflicts !== undefined ? { memory_conflicts: record.plan.memory_conflicts } : {}),
       ...(record.plan.hold?.always_allow !== undefined ? { always_allow: record.plan.hold.always_allow } : {}),
       ...(record.plan.hold?.always_allow_note !== undefined ? { always_allow_note: record.plan.hold.always_allow_note } : {}),
+      ...(record.plan.hold?.group !== undefined ? { group: record.plan.hold.group } : {}),
       recovered: true,
       payload_available: record.payload_available,
     })),
@@ -803,6 +814,7 @@ export const reduceChatThreadEvent = (
           ...(event.memory_conflicts !== undefined ? { memory_conflicts: event.memory_conflicts } : {}),
           ...(event.held === true && event.always_allow !== undefined ? { always_allow: event.always_allow } : {}),
           ...(event.held === true && event.always_allow_note !== undefined ? { always_allow_note: event.always_allow_note } : {}),
+          ...(event.held === true && event.group !== undefined ? { group: event.group } : {}),
           recovered: false,
           payload_available: true,
         },
@@ -866,6 +878,7 @@ export const reduceChatThreadEvent = (
           args: event.args,
           status: 'started',
           ...(event.call_id ? { call_id: event.call_id } : {}),
+          ...(event.recipe_name !== undefined ? { recipe_name: event.recipe_name } : {}),
         },
       ],
     });
@@ -984,9 +997,11 @@ const projectFailureNotice = (
     turn_id,
     kind,
     text,
+    // Each is fixed in Settings → AI / Models: no model chosen, one its provider does not have, or
+    // one whose thinking used up its whole output allowance (its Thinking setting is there).
     settings_link:
       kind === 'engine.decoder_unavailable' &&
-      (payload as { reason?: unknown }).reason === 'no_source',
+      ['no_source', 'model_unavailable', 'output_limit'].includes(String((payload as { reason?: unknown }).reason)),
   };
 };
 
@@ -1025,8 +1040,10 @@ export const applyPlanResolution = (
           status: plan.status,
           ...(plan.hold !== undefined ? { held: true as const } : {}),
           ...(plan.hold?.lapsed_at !== undefined ? { lapsed: true as const } : {}),
+          ...(plan.hold?.replaced_at !== undefined ? { replaced: true as const } : {}),
           ...(plan.value_labels !== undefined ? { value_labels: plan.value_labels } : {}),
           ...(plan.memory_conflicts !== undefined ? { memory_conflicts: plan.memory_conflicts } : {}),
+          ...(plan.hold?.group !== undefined ? { group: plan.hold.group } : {}),
         },
       ],
     };
@@ -1034,9 +1051,10 @@ export const applyPlanResolution = (
   const existing = state.plan_cards[index];
   const held = plan.hold !== undefined && existing.held !== true;
   const lapsed = plan.hold?.lapsed_at !== undefined && existing.lapsed !== true;
+  const replaced = plan.hold?.replaced_at !== undefined && existing.replaced !== true;
   // D-336 slice E — the owner changed it while approving: the card shows what ran.
   const changed = plan.args_hash !== undefined && existing.args_hash !== undefined && plan.args_hash !== existing.args_hash;
-  if (existing.status === plan.status && !held && !lapsed && !changed) return state;
+  if (existing.status === plan.status && !held && !lapsed && !replaced && !changed) return state;
   const copy = state.plan_cards.slice();
   // Slice G — the notes it met were for the relationship as proposed, so a change of it
   // drops them; a change of the summary alone keeps them, as the server does.
@@ -1048,6 +1066,7 @@ export const applyPlanResolution = (
     status: plan.status,
     ...(held ? { held: true as const } : {}),
     ...(lapsed ? { lapsed: true as const } : {}),
+    ...(replaced ? { replaced: true as const } : {}),
     ...(changed ? { args: plan.args, args_hash: plan.args_hash } : {}),
   };
   return { ...state, plan_cards: copy };

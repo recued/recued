@@ -48,3 +48,20 @@ describe('the answer the server refuses while paused', () => {
     expect(await paused({ handler_kind: 'gateway.in_doubt' }, 'retry')).toBeUndefined();
   });
 });
+
+describe('D-177 §N.15.9 — a round\'s gathered approval waits for Resume too', () => {
+  const GATHERED = { handler_kind: 'gateway.preflight.gathered' };
+
+  it('paused, it is answered no, never yes: a yes would run every call it lists', async () => {
+    expect(askWaitsForResume({ isPaused: () => true }, GATHERED)).toBe(true);
+    const refuse = createPausedAnswerRefusal({ isPaused: () => true });
+    for (const option of ['approve', 'allow_kind']) {
+      expect(await refuse(GATHERED, option)).toEqual({ code: 'server_paused', message: PAUSED_APPROVAL_REFUSAL });
+    }
+    expect(await refuse(GATHERED, 'deny')).toBeUndefined();
+  });
+
+  it('running, it is answered as ever', async () => {
+    expect(await createPausedAnswerRefusal({ isPaused: () => false })(GATHERED, 'approve')).toBeUndefined();
+  });
+});

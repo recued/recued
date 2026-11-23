@@ -76,7 +76,7 @@ const executor = (found: PageFileAddress, inPage: FetchedFile, blocked: string[]
     tabUrl: async () => 'https://bank.example.com/statements',
     executeInDocument: async (_target: unknown, func: (...args: unknown[]) => unknown) => {
       ran.push(func === pageFileAddress ? 'address' : func === fetchFile ? 'fetch in the page' : func === rebindPageRef ? 'rebind' : 'other');
-      return { document_id: 'DOC1', result: func === pageFileAddress ? found : inPage };
+      return { document_id: 'DOC1', result: func === rebindPageRef ? { kept: true } : func === pageFileAddress ? found : inPage };
     },
   } as unknown as BridgeBrowserApi;
   const built = buildActionExecutor(api);
@@ -135,7 +135,7 @@ describe('D-335 slice AQ — upload_file in the executor', () => {
       tabUrl: async () => url,
       executeInDocument: async (_target: unknown, func: (...args: unknown[]) => unknown) => {
         ran.push(func === attachPageFile ? 'attach' : func === describePageElement ? 'describe' : func === rebindPageRef ? 'rebind' : 'other');
-        return { document_id: 'DOC1', result: func === attachPageFile ? attached
+        return { document_id: 'DOC1', result: func === rebindPageRef ? { kept: true } : func === attachPageFile ? attached
           : { outputs: { url, title: 'Apply', role: 'file field', label: 'CV', protected: false } } };
       },
     } as unknown as BridgeBrowserApi;

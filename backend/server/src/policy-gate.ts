@@ -337,10 +337,9 @@ export const gateRecipeAgainstPolicy = (
       return;
     }
     // D-187 slice 4 — op-risk × stage-trust approval (replaces the matrix
-    // `admitWithPolicyMatrix` approval verdict). The outbound-send LIFT inside
-    // `admitByOpRisk` is user_self-scoped; in the static walk an `ask` falls through
-    // exactly like an `admit` (only `deny` is a denial — see below), so a lifted send is
-    // a no-op here and the static + per-call halves stay in lockstep on the same fn.
+    // `admitWithPolicyMatrix` approval verdict). In the static walk an `ask` falls
+    // through exactly like an `admit` (only `deny` is a denial — see below), so the
+    // static + per-call halves stay in lockstep on the same fn.
     const decision = admitByOpRisk({
       slug,
       risk_tier: manifest.risk_tier,

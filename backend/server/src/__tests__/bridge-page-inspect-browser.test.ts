@@ -12,7 +12,7 @@
  *  §3.2, not copied from any site. */
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFailed } from 'vitest';
 import {
   BRIDGE_DESCRIBE_OUTPUT_KEYS,
   BRIDGE_INSPECT_MAX_CHARS,
@@ -28,8 +28,25 @@ import {
   type BridgeDocumentIdentity,
   type BridgeIngredientRef,
   type BridgeResult,
+  parseBrowserCollectSpec,
 } from '@recued/contracts';
+import { collectBrowserPages } from '../bridges/browser-collect.js';
+import { outlinePage, PAGE_COVER_NOTE_TAIL } from '../bridges/page-outline.js';
 import { createReviewedBrowserFixture } from './d-261-browser-fixture.js';
+
+const STRUCTURE = `<!doctype html><html><head><title>Sibling positions</title></head><body>
+<main id="rows">
+<div hidden data-secret="hidden row"><input value="hidden input"><span>Hidden subtree</span></div>
+<div class="row" id="first"><span hidden data-secret="hidden cell">Hidden text</span><b>Label</b>
+<script>/* secret script */</script><span>Ada</span><span aria-hidden="true">Hidden aria</span><span>CA</span></div>
+<style>.unused { color: red }</style>
+<div class="row" id="second"><span hidden>Hidden text</span><b>Label</b>
+<template><input value="secret template"></template><span>Grace</span><span hidden>Hidden cell</span><span>NY</span></div>
+</main><input type="hidden" value="secret token" name="private">
+<p data-recued-structural-only>Visible marker text</p>
+<select id="choices"><option hidden value="secret option">Hidden option</option><option>Ada</option></select>
+<table id="table"><tbody><tr hidden><td>Secret</td></tr><tr><td hidden>Secret</td><td>Ada</td><td>CA</td></tr></tbody></table>
+</body></html>`;
 
 const PAGE = `<!doctype html><html><head><title>Inspect fixture</title>
 <style>.gone { display: none }</style><link rel="stylesheet" href="/missing.css"></head>
@@ -78,6 +95,14 @@ for (const id of ['custom', 'plain', 'planted']) {
   document.getElementById(id).addEventListener('click', () => window.clicks.push(id));
 }</script>
 </body></html>`;
+
+const TOOLTIPS = `<!doctype html><html><head><title>Shortcut tooltips</title></head><body>
+<form id="search" action="/second"><input id="q" type="search" name="search" accesskey="f"
+  aria-label="Search Wikipedia" title="Search Wikipedia [f]"></form>
+<ul><li><span id="owner">Ada</span> <a id="view" accesskey="g" title="View [g]" href="/one">View</a></li></ul>
+<script>window.clicks = [];document.querySelector('#view').addEventListener('click', event => {
+  event.preventDefault();window.clicks.push('view');
+});</script></body></html>`;
 
 const BIG = `<!doctype html><html><head><title>Big</title></head><body><main>${
   Array.from({ length: 3_000 }, (_, i) => `<p>Paragraph ${i + 1} of the long page.</p>`).join('')}</main></body></html>`;
@@ -129,6 +154,18 @@ customElements.define('boxed-action', class extends HTMLElement {
 /** D-347 follow-up 18 — a banner shown in turn (three offers in one place, one on top) and a notice over the
  *  whole page that new mail has come; `turn` and `notice` bring them in `ms` from now, as the page's own
  *  timer would. Each click is logged. */
+/** 2026-11-21 (D-402, task P) — notes in cards, as task P's notes app draws them: no list item or table row holds
+ *  a note, so a step names its Edit by the card it sits in (`within_card`). */
+const CARDS = `<!doctype html><html><head><title>Notes</title></head><body><main><h1>MyNotes</h1><div class="row">
+<div class="col"><div data-testid="note-card" class="card"><div class="card-header" id="title-a">Bench stock review</div>
+<div class="card-footer"><input id="qty-a" aria-label="Quantity"><button id="edit-a" type="button">Edit</button></div></div></div>
+<div class="col"><div data-testid="note-card" class="card"><div class="card-header" id="title-b">Grocery list</div>
+<div class="card-footer"><input id="qty-b" aria-label="Quantity"><button id="edit-b" type="button">Edit</button></div></div></div>
+</div></main><script>
+window.clicks = [];
+for (const id of ['edit-a', 'edit-b']) document.getElementById(id).addEventListener('click', () => window.clicks.push(id));
+</script></body></html>`;
+
 const ROTATING = `<!doctype html><html><head><title>Offers</title><style>
 #offers { position: relative; width: 300px; height: 120px }
 #offers a { position: absolute; inset: 0; display: block; background: #eee; z-index: 0 }
@@ -209,6 +246,84 @@ const FRAMES = `<!doctype html><html><head><title>Frames</title></head><body>
 <script>document.querySelector('#other').src = new URLSearchParams(location.search).get('other') + '/frame-inner';</script>
 </body></html>`;
 
+/** 2026-11-22 — cnn.com's "Legal Terms and Privacy", as it is built: a modal dialog inside a wrapper marked
+ *  aria-hidden, in a see-through layer over the whole page. The wrapper also holds words and a paragraph of
+ *  its own, and the dialog a mark it hides; Agree takes the layer away. */
+const HIDDEN_DIALOG = `<!doctype html><html><head><title>Hidden dialog</title></head><body style="margin:0">
+<main><h1>Morning news</h1><a id="story" href="#story">Read the story</a></main>
+<div id="shell" aria-hidden="true">Hidden wrapper words<p>Hidden sibling text</p>
+<div id="layer" style="position:fixed;inset:0;z-index:1000">
+<div id="terms" role="dialog" aria-modal="true" aria-labelledby="terms-title"
+ style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:520px;padding:24px;background:#fff;border:1px solid #000">
+<h2 id="terms-title">Legal Terms and Privacy</h2><p>By clicking "Agree", you agree to the Terms of Use.</p>
+<span aria-hidden="true">Decorative mark</span><button id="agree">Agree</button></div></div></div>
+<script>window.clicks = [];
+document.getElementById('story').addEventListener('click', event => { event.preventDefault(); window.clicks.push('story'); });
+document.getElementById('agree').addEventListener('click', () => { window.clicks.push('agree'); document.getElementById('layer').remove(); });
+</script></body></html>`;
+/** A dialog marked aria-hidden that something else covers: not on top, so not read. */
+const HIDDEN_BEHIND = `<!doctype html><html><head><title>Hidden behind</title></head><body style="margin:0">
+<main><h1>Front page</h1></main>
+<div aria-hidden="true"><div role="dialog" aria-modal="true" style="position:fixed;inset:0;z-index:1;background:#eee">
+<h2>Old notice</h2><button id="dismiss">Dismiss</button></div></div>
+<div style="position:fixed;inset:0;z-index:2;background:#fff"><p>Cover text</p></div></body></html>`;
+/** A whole page marked aria-hidden under an overlay that is not a dialog (as Google's vignette ad does): since
+ *  2026-11-22 the overlay is read as what covers the page, and the page behind it is not. */
+const HIDDEN_PAGE = `<!doctype html><html><head><title>Hidden page</title></head><body aria-hidden="true" style="margin:0">
+<main><h1>Article</h1><p>Article text</p></main>
+<ins style="display:block;position:fixed;inset:0;z-index:2147483647;background:#333"><span>Advertisement</span>
+<button>Close ad</button></ins></body></html>`;
+/** A modal dialog the page does not hide, with the page behind it marked aria-hidden: as before, the
+ *  dialog is read and what is behind it is not. */
+const BACKGROUND_HIDDEN = `<!doctype html><html><head><title>Background hidden</title></head><body style="margin:0">
+<div id="app" aria-hidden="true"><h1>App</h1><button id="behind">Behind</button></div>
+<div style="position:fixed;inset:0;z-index:5;background:rgba(0,0,0,0.4)"></div>
+<div role="dialog" aria-modal="true" aria-label="Sign up"
+ style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:400px;padding:24px;background:#fff;z-index:10">
+<p>Join us</p><button id="close">Close</button></div></body></html>`;
+/** A dialog marked aria-hidden inside a closed web component, on top. */
+const HIDDEN_IN_COMPONENT = `<!doctype html><html><head><title>Hidden in a component</title></head><body style="margin:0">
+<main><h1>Shop</h1></main><consent-box></consent-box>
+<script>customElements.define('consent-box', class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'closed' }).innerHTML = '<div aria-hidden="true"><div role="dialog" aria-modal="true" aria-label="Cookies"'
+      + ' style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:400px;padding:24px;background:#fff;z-index:10">'
+      + '<p>We use cookies</p><button id="accept">Accept</button></div></div>';
+  }
+});</script></body></html>`;
+
+/** 2026-11-22 (the owner: "build the 'show the blocker' version") — a page that marks itself hidden under an ad's layer
+ *  with a countdown, whose Close button shows once it ends and takes the layer away. */
+const COUNTDOWN_COVER = `<!doctype html><html><head><title>Countdown cover</title></head><body style="margin:0">
+<main><h1>Recipe</h1><p>Recipe text</p><a id="next" href="#next">Next step</a></main>
+<script>window.clicks = [];
+document.getElementById('next').addEventListener('click', event => { event.preventDefault(); window.clicks.push('next'); });
+document.body.setAttribute('aria-hidden', 'true');
+const cover = document.createElement('div'); cover.id = 'cover';
+cover.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#fff';
+cover.innerHTML = '<p>Advertisement</p><p id="count">You can close this ad in 2 seconds.</p>';
+document.body.appendChild(cover);
+setTimeout(() => {
+  document.getElementById('count').textContent = 'You can close this ad now.';
+  const close = document.createElement('button'); close.id = 'close'; close.textContent = 'Close';
+  close.addEventListener('click', () => { window.clicks.push('close'); cover.remove(); document.body.removeAttribute('aria-hidden'); });
+  cover.appendChild(close);
+}, 2000);
+</script></body></html>`;
+/** A fixed panel marked aria-hidden away from the screen's centre, on a page that is not hidden: not read. */
+const HIDDEN_CORNER = `<!doctype html><html><head><title>Hidden corner</title></head><body style="margin:0">
+<main><h1>Front page</h1><p>Front text</p></main>
+<div aria-hidden="true" style="position:fixed;right:0;bottom:0;width:40vw;height:40vh;background:#eee"><p>Corner panel</p></div>
+</body></html>`;
+/** A small modal dialog the page does not hide, away from the centre, and the page behind it fixed over the
+ *  screen and marked hidden: what is at the centre is that page, hidden on purpose, so it is not read. */
+const MODAL_ASIDE = `<!doctype html><html><head><title>Modal aside</title></head><body style="margin:0">
+<div aria-hidden="true" style="position:fixed;inset:0;z-index:1;background:#fff"><h1>App behind</h1><button id="behind">Behind</button></div>
+<div role="dialog" aria-modal="true" aria-label="Notice"
+ style="position:fixed;left:0;top:0;width:300px;height:150px;z-index:10;background:#fff"><p>Small notice</p><button id="ok">OK</button></div>
+</body></html>`;
+
 const OWNER = '<!doctype html><html data-recued-owner-surface><body><p>pending review</p></body></html>';
 
 const PATHS = ['ordinary', 'reviewed'] as const;
@@ -220,7 +335,9 @@ const refsIn = (html: string) => [...html.matchAll(/<\w+ ref="(e\d+)"(?: id="([^
 const refFor = (html: string, id: string) => refsIn(html).find(row => row.id === id)?.ref;
 const htmlOf = (result: BridgeResult) => {
   expect(result, JSON.stringify(result.error)).toMatchObject({ status: 'ok' });
-  return result.outputs!.html as string;
+  // Legacy content assertions describe the cleaned page; internal stability
+  // metadata has its own raw-snapshot test below.
+  return (result.outputs!.html as string).replace(/ data-recued-field-context="[^"]*"/g, '');
 };
 const PAGE_CHANGED = { status: 'error', error: { code: 'selector_not_found',
   message: 'The page changed since it was inspected: inspect it again.' } };
@@ -265,7 +382,10 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
   // error, and an outer bound below that would hide it (see the fixture).
   beforeAll(async () => {
     const main = await serve({ '/big': BIG, '/owner': OWNER, '/components': COMPONENTS, '/frames': FRAMES, '/frame-inner': FRAME_INNER,
-      '/keys': KEYS, '/selectors': SELECTORS, '/menu': MENU, '/rotating': ROTATING },
+      '/keys': KEYS, '/selectors': SELECTORS, '/menu': MENU, '/rotating': ROTATING, '/tooltips': TOOLTIPS, '/structure': STRUCTURE, '/cards': CARDS,
+      '/hidden-dialog': HIDDEN_DIALOG, '/hidden-behind': HIDDEN_BEHIND, '/hidden-page': HIDDEN_PAGE,
+      '/background-hidden': BACKGROUND_HIDDEN, '/hidden-in-component': HIDDEN_IN_COMPONENT, '/countdown-cover': COUNTDOWN_COVER,
+      '/hidden-corner': HIDDEN_CORNER, '/modal-aside': MODAL_ASIDE },
       { '/away': () => `${other}/page` });
     server = main.created;
     base = main.origin;
@@ -287,6 +407,10 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     }
   }, 120_000);
 
+  beforeEach(() => {
+    onTestFailed(() => { console.error('[d261] page inspection fixture', browser?.diagnostics()); });
+  });
+
   /** A fresh page, granted, and a way to inspect it through one executor.
    *  `reset` clears grants too, so grant after it. */
   const open = async (path: Path, at = '/page', pattern = target) => {
@@ -295,12 +419,13 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     // A pattern other than this site's (slice R: both test sites, for a frame from the other).
     const granted: BridgeIngredientRef = pattern === target ? ingredient : { ...ingredient, domain_allowlist: [pattern] };
     await fixture.grant(granted);
-    const reviewed: BridgeDocumentIdentity | undefined = path === 'reviewed'
-      ? (await fixture.documents()).find(document => document.url === base + at)
-      : undefined;
+    // Once the Bridge has found the page, which its load does not promise (the fixture's `discovered`).
+    // The owner's Recued client is never in its inventory, so it is not waited for.
+    const found = at === '/owner' ? undefined : await fixture.discovered(base + at);
+    const reviewed: BridgeDocumentIdentity | undefined = path === 'reviewed' ? found : undefined;
     if (path === 'reviewed' && !reviewed) throw new Error(`the bridge did not inventory ${at}`);
     const send = async (action: 'inspect' | 'reread' | 'describe' | 'fill' | 'click' | 'press' | 'list_tabs' | 'open_tab'
-      | 'navigate' | 'go_back' | 'reload_page' | 'close_tab' | 'hover',
+      | 'navigate' | 'go_back' | 'reload_page' | 'close_tab' | 'hover' | 'wait_for_element',
       args: Record<string, unknown>, expects?: readonly string[]) => {
       const command: BridgeCommand = { command_id: randomUUID(), recipe_run_id: 'page-inspect', step_id: action,
         ingredient: granted, action, target_domain_pattern: pattern, args,
@@ -316,6 +441,236 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     const clicks = () => fixture.page.evaluate(() => (window as unknown as { clicks: string[] }).clicks);
     return { fixture, inspect, send, clicks, reviewed };
   };
+
+  it('preserves live choice semantics and popup ownership without exposing hidden options', async () => {
+    const { fixture, inspect } = await open('ordinary');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = '<label>Category<select multiple id="category"><option value="home" selected>Home</option>'
+        + '<option value="work" selected>Work</option><option hidden>private-hidden-choice</option>'
+        + '<optgroup disabled><option>Locked</option></optgroup></select></label>'
+        + '<div role="dialog" aria-modal="true"><button role="combobox" aria-label="Custom category" aria-controls="popup" aria-expanded="true">Home</button></div>'
+        + '<div role="listbox" id="popup"><div role="option" aria-selected="false">Work</div></div>'
+        + '<input type="checkbox" id="mixed">';
+      (document.getElementById('mixed') as HTMLInputElement).indeterminate = true;
+    });
+    const html = htmlOf(await inspect({}));
+    expect(html).toContain(' multiple');
+    expect(html).toContain('aria-controls="popup"');
+    expect(html).toContain('aria-checked="mixed"');
+    expect(html).toContain('<option disabled>Locked</option>');
+    expect(html).not.toContain('private-hidden-choice');
+  }, 60_000);
+
+  it.each(['ordinary', 'reviewed'] as const)('%s: positional collection agrees with native CSS without hidden data', async path => {
+    const { fixture, send } = await open(path, '/structure');
+    const normal = await send('inspect', {});
+    const snapshot = await send('inspect', { preserve_structure: true },
+      [...BRIDGE_INSPECT_OUTPUT_KEYS, 'structure_complete', 'structure_root']);
+    expect(snapshot.status).toBe('ok');
+    const output = snapshot.outputs!;
+    expect(output).toMatchObject({ structure_complete: true, structure_root: '2,2,1,1', truncated: false });
+    const html = String(output.html);
+    expect(html).toContain('<span data-recued-structural-only></span>');
+    expect(html).toContain('<script data-recued-structural-only></script>');
+    expect(html).toContain('<template data-recued-structural-only></template>');
+    expect(html).toContain('<input data-recued-structural-only>');
+    expect(html).toContain('<option data-recued-structural-only></option>');
+    expect(html).toContain('<p>Visible marker text</p>');
+    expect(html).not.toMatch(/Hidden|hidden row|hidden cell|hidden input|secret|private|Secret/);
+    const withoutChoices = (text: string) => text.replace(/<select[^>]*>[\s\S]*?<\/select>/g, '');
+    expect(outlinePage(withoutChoices(html), { url: `${base}/structure` }))
+      .toEqual(outlinePage(withoutChoices(String(normal.outputs!.html)), { url: `${base}/structure` }));
+    for (const selector of ['span:nth-child(4)', 'span:nth-of-type(2)', 'span:nth-last-child(1)',
+      'span:nth-last-of-type(3)', ':scope:nth-of-type(2)', 'span:nth-child(2n)', 'span:nth-child(-n+4)',
+      'span:nth-child(odd)', 'b:only-of-type', 'span:last-of-type', 'span:first-child']) {
+      const parsed = parseBrowserCollectSpec({ items: '#rows > .row', fields: { id: { selector: ':scope', attribute: 'id' }, value: { selector, many: true, required: false } }, max_pages: 1 });
+      if (!parsed.ok) throw new Error(parsed.error);
+      const result = await collectBrowserPages({ spec: parsed.spec, assertActive() {},
+        read: async () => ({ page: String(output.page), url: String(output.url), title: String(output.title), html,
+          truncated: false, structure_complete: true, structure_root: String(output.structure_root) }),
+        navigate: async () => { throw new Error('single page must not navigate'); } });
+      const expected = await fixture.page.evaluate(selector => [...document.querySelectorAll('#rows > .row')].map(row =>
+        (selector.startsWith(':scope') ? [row].filter(element => element.matches(selector.slice(6))) : [...row.querySelectorAll(selector)])
+          .filter(element => element.getAttribute('aria-hidden') !== 'true' && element.checkVisibility({ checkVisibilityCSS: true }))
+          .map(element => (element.textContent ?? '').replace(/\s+/g, ' ').trim())), selector);
+      expect(result.complete, selector).toBe(true);
+      // :scope's joined text excludes hidden descendants; compare scalar fields
+      // to native CSS, and its identity separately through the visible row text.
+      if (!selector.startsWith(':scope')) expect(result.records.map(record => record.values.value), selector).toEqual(expected);
+      else expect(result.records.map(record => record.values.value)).toEqual([['Label Ada CA'], []]);
+    }
+    const tableSpec = parseBrowserCollectSpec({ items: '#table tr:nth-child(2)', fields: { name: 'td:nth-child(2)' }, max_pages: 1 });
+    if (!tableSpec.ok) throw new Error(tableSpec.error);
+    expect(await collectBrowserPages({ spec: tableSpec.spec, assertActive() {},
+      read: async () => ({ page: String(output.page), url: String(output.url), title: '', html,
+        truncated: false, structure_complete: true, structure_root: String(output.structure_root) }), navigate: async () => ({}) }))
+      .toMatchObject({ complete: true, records: [{ values: { name: 'Ada' } }] });
+    const cut = await send('inspect', { preserve_structure: true, max_chars: 100 },
+      [...BRIDGE_INSPECT_OUTPUT_KEYS, 'structure_complete', 'structure_root']);
+    expect(cut.outputs).toMatchObject({ truncated: true, structure_complete: false });
+    expect(String(cut.outputs!.html).length).toBeLessThanOrEqual(100);
+  });
+
+  it.each(['ordinary', 'reviewed'] as const)('%s: extracts through an unrelated covering iframe while its click stays blocked', async path => {
+    const { fixture, send } = await open(path, '/structure');
+    await fixture.page.evaluate(other => {
+      const ad = document.createElement('iframe');
+      ad.src = `${other}/frame-inner`;
+      ad.title = 'Advertisement';
+      ad.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;z-index:9999;border:0';
+      document.body.prepend(ad);
+      const button = document.createElement('button');
+      button.id = 'under-ad'; button.textContent = 'Under ad';
+      const state = window as unknown as { underAdClicks: number };
+      state.underAdClicks = 0;
+      button.onclick = () => { state.underAdClicks++; };
+      document.body.append(button);
+      const owner = document.createElement('iframe');
+      owner.id = 'owner-embed'; owner.src = `${location.origin}/owner`;
+      document.body.append(owner);
+      // Page-authored markers must not become Bridge structural authority.
+      document.querySelector('#table')!.setAttribute('data-recued-structure-incomplete', '');
+    }, other);
+    // Wait for the DOM marker, independently of whether Chrome paints this covered page.
+    await fixture.page.frameLocator('#owner-embed').locator('html[data-recued-owner-surface]')
+      .waitFor({ state: 'attached' });
+    const snapshot = await send(path === 'reviewed' ? 'inspect' : 'reread', { preserve_structure: true, structure_scoped: true },
+      [...BRIDGE_INSPECT_OUTPUT_KEYS, 'structure_complete', 'structure_root', 'structure_scoped']);
+    expect(snapshot, JSON.stringify(snapshot.error)).toMatchObject({ status: 'ok', outputs: { structure_complete: false, structure_scoped: true, truncated: false } });
+    const output = snapshot.outputs!;
+    expect(String(output.html)).not.toMatch(/pending review|owner-embed|\/owner/);
+    const parsed = parseBrowserCollectSpec({ items: '#table tbody tr', fields: { name: 'td:nth-child(2)', state: 'td:nth-child(3)' }, max_pages: 1 });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const result = await collectBrowserPages({ spec: parsed.spec, assertActive() {},
+      read: async () => ({ page: String(output.page), url: String(output.url), title: String(output.title), html: String(output.html),
+        truncated: false, structure_complete: false, structure_scoped: output.structure_scoped === true, structure_root: String(output.structure_root) }),
+      navigate: async () => { throw new Error('single page must not navigate'); } });
+    expect(result).toMatchObject({ count: 1, complete: true, records: [{ values: { name: 'Ada', state: 'CA' } }] });
+    expect(await send('click', { selector: '#under-ad' })).toMatchObject({ status: 'error', error: { code: 'value_not_applied',
+      obstruction: { operation: 'click', executed: false, reason: 'target_occluded', source: 'hit_test',
+        target: { tag: 'button' }, blocker: { tag: 'iframe', label: 'Advertisement' }, waited_ms: expect.any(Number) } } });
+    expect(await fixture.page.evaluate(() => (window as unknown as { underAdClicks: number }).underAdClicks)).toBe(0);
+  }, 60_000);
+
+  it('refuses scoped field extraction inside a projected shadow tree', async () => {
+    const { send } = await open('ordinary', '/components');
+    const result = await send('reread', { preserve_structure: true, structure_scoped: true },
+      [...BRIDGE_INSPECT_OUTPUT_KEYS, 'structure_complete', 'structure_root', 'structure_scoped']);
+    expect(result.outputs).toMatchObject({ structure_complete: false, structure_scoped: true });
+    const output = result.outputs!;
+    const parsed = parseBrowserCollectSpec({ items: 'open-card', fields: { text: { selector: 'button:nth-child(3)', required: false } }, max_pages: 1 });
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(await collectBrowserPages({ spec: parsed.spec, assertActive() {},
+      read: async () => ({ page: String(output.page), url: String(output.url), title: String(output.title), html: String(output.html),
+        truncated: false, structure_complete: false, structure_scoped: output.structure_scoped === true, structure_root: String(output.structure_root) }),
+      navigate: async () => { throw new Error('single page must not navigate'); } }))
+      .toMatchObject({ count: 0, complete: false, stop_reason: 'structural_snapshot_required' });
+  });
+
+  it.each(['ordinary', 'reviewed'] as const)('%s: a guarded link clicks once and excludes forms, changed state and rebuilt nodes', async path => {
+    for (const mode of ['stable', 'href', 'form', 'rebuilt', 'row', 'hover'] as const) {
+      const { fixture, inspect, send } = await open(path);
+      await fixture.page.evaluate(() => {
+        document.body.innerHTML = '<main><p id="context">Page 2</p><a id="guard-next" href="/second">Next</a></main>';
+        const state = window as unknown as { guardedClicks: number };
+        state.guardedClicks = 0;
+        document.getElementById('guard-next')!.addEventListener('click', event => { event.preventDefault(); state.guardedClicks++; });
+      });
+      const read = await inspect({});
+      const ref = /<a ref="(e\d+)" id="guard-next"/.exec(htmlOf(read))?.[1];
+      expect(ref).toBeDefined();
+      await fixture.page.evaluate(mode => {
+        const link = document.getElementById('guard-next')!;
+        if (mode === 'href') link.setAttribute('href', '/different');
+        if (mode === 'form') { const form = document.createElement('form'); form.method = 'post'; link.after(form); form.append(link); }
+        if (mode === 'rebuilt') link.replaceWith(link.cloneNode(true));
+        if (mode === 'row') link.textContent = 'Delete';
+        if (mode === 'hover') link.addEventListener('mouseover', () => link.setAttribute('href', '/changed-during-hover'));
+      }, mode);
+      const out = await send('click', { page: read.outputs!.page, ref,
+        navigation_guard: { before_url: `${base}/page`, after_url: `${base}/second` } }, ['clicked']);
+      const count = await fixture.page.evaluate(() => (window as unknown as { guardedClicks: number }).guardedClicks);
+      expect(count, mode).toBe(mode === 'stable' ? 1 : 0);
+      expect(out.status, `${mode}: ${JSON.stringify(out.error)}`).toBe(mode === 'stable' ? 'ok' : 'error');
+      if (mode === 'hover') expect(out.error?.code).toBe('delivery_uncertain');
+      expect(fixture.page.url()).toBe(`${base}/page`);
+    }
+  }, 60_000);
+
+  it('loading-field identity survives unrelated changes but changes with its form owner, destination and field state', async () => {
+    const { fixture, inspect } = await open('ordinary');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = '<main><form id="login" method="post" action="/login"><label for="pw">Password</label>'
+        + '<input id="pw" type="password" value="PRIVATE_PASSWORD"><input id="email" value="PRIVATE_EMAIL"></form>'
+        + '<form id="other" method="post" action="/other"></form><aside id="ad">First ad</aside></main>';
+    });
+    const identity = async () => {
+      const read = await inspect({ max_value_chars: 2_000 });
+      expect(read.status, JSON.stringify(read.error)).toBe('ok');
+      const html = String(read.outputs!.html);
+      expect(html).not.toContain('PRIVATE_PASSWORD');
+      expect(html.match(/ data-recued-field-context="[^"]*"/g)?.join('')).not.toContain('PRIVATE_EMAIL');
+      const field = outlinePage(html, { url: `${base}/page` }).controls.find(control => control.names.includes('Password'))!;
+      expect(field.field_identity).toMatch(/^[a-f0-9]{64}$/);
+      return field.field_identity;
+    };
+    const first = await identity();
+    await fixture.page.evaluate(() => {
+      document.getElementById('ad')!.textContent = 'Another ad';
+      (document.getElementById('email') as HTMLInputElement).value = 'changed sibling';
+    });
+    expect(await identity()).toBe(first);
+    await fixture.page.evaluate(() => { (document.getElementById('login') as HTMLFormElement).action = '/changed'; });
+    const destination = await identity();
+    expect(destination).not.toBe(first);
+    await fixture.page.evaluate(() => { document.getElementById('pw')!.setAttribute('form', 'other'); });
+    const owner = await identity();
+    expect(owner).not.toBe(destination);
+    await fixture.page.evaluate(() => { (document.getElementById('pw') as HTMLInputElement).readOnly = true; });
+    expect(await identity()).not.toBe(owner);
+  });
+
+  it('ordinary: failed waits distinguish absent selectors, hidden controls and text mismatches without field values', async () => {
+    const { fixture, inspect, send } = await open('ordinary');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = '<main><label for="email">Email</label><input id="email" type="text" value="PRIVATE_EMAIL">'
+        + '<input id="hidden" hidden><button id="save">Save</button></main>';
+    });
+    const read = await inspect({});
+    for (const [selector, text, expected] of [
+      ['input[type="email"]', undefined, { matched: 0, visible: 0, text_matched: 0 }],
+      ['#hidden', undefined, { matched: 1, visible: 0, text_matched: 0 }],
+      ['#save', 'Missing', { matched: 1, visible: 1, text_matched: 0 }],
+    ] as const) {
+      const result = await send('wait_for_element', { page: read.outputs!.page, selector, ...(text ? { text } : {}), timeout_ms: 50 },
+        ['page', 'url', 'title', 'found', 'waited_ms', 'match_counts']);
+      expect(result).toMatchObject({ status: 'ok', outputs: { found: false, match_counts: expected } });
+      expect(JSON.stringify(result)).not.toContain('PRIVATE_EMAIL');
+    }
+  });
+
+  it('ordinary: a delayed region is tested and read in the same injection, with protected fields excluded', async () => {
+    const { fixture, inspect, send } = await open('ordinary');
+    await fixture.page.evaluate(() => {
+      document.body.innerHTML = '<section id="result" hidden><h1>.name Grandfathered</h1><input type="password" value="SECRET_PASSWORD"></section>';
+    });
+    const read = await inspect({});
+    const afterReadText = 'Changed after capture';
+    await fixture.armWaitCapture('#result', afterReadText);
+    // Allow real Chrome to schedule the injections. Exact deadline behavior is
+    // covered by the controlled-clock cases in browser-handoff-read.test.ts.
+    const out = await send('wait_for_element', { page: read.outputs!.page, selector: '#result', timeout_ms: 10_000,
+      capture_read: { expected_url: `${base}/page`, max_chars: 4_000, max_value_chars: 200 } },
+    ['page', 'url', 'title', 'found', 'waited_ms', 'html', 'truncated', 'loading', 'selector_matches', 'selected_index']);
+    expect(out, JSON.stringify(out.error)).toMatchObject({ status: 'ok', outputs: { page: read.outputs!.page,
+      url: `${base}/page`, found: true, html: expect.stringContaining('.name Grandfathered'), truncated: false } });
+    expect(JSON.stringify(out.outputs)).not.toContain('SECRET_PASSWORD');
+    expect(out.outputs!.html).toContain('type="password"');
+    expect(out.outputs!.html).not.toContain('Inspect fixture');
+    expect(out.outputs!.html).not.toContain(afterReadText);
+    expect(await fixture.page.locator('#result').textContent()).toContain(afterReadText);
+    expect(await fixture.waitCaptureProbe()).toEqual({ hidden_reads: 1, captures: 1 });
+  });
 
   // D-335 slice X — a tab moved by its handle (an address, back, a reload), closed, and an element
   // pointed at, in real Chrome.
@@ -353,15 +708,18 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     expect(fixture.page.url()).toBe(`${base}/menu`);
   });
 
+  // 120 s, as each test that opens a background tab: the fixture gives the tab 30 s to load and
+  // names a load that runs past that, which the default 30 s test limit would cut off first.
   it('ordinary: closes a tab by its handle, which then lists no more', async () => {
     const { send, fixture } = await open('ordinary', '/menu');
     await fixture.openBackground(`${base}/keys`);
+    await fixture.discovered(`${base}/keys`);
     const listed = await send('list_tabs', {});
     const keys = (listed.outputs!.tabs as Array<{ page: string; url: string }>).find((tab) => tab.url === `${base}/keys`)!;
     expect(await send('close_tab', { page: keys.page }, [...BRIDGE_CLOSE_OUTPUT_KEYS])).toMatchObject({ status: 'ok', outputs: { closed: true } });
     const after = await send('list_tabs', {});
     expect((after.outputs!.tabs as Array<{ url: string }>).map((tab) => tab.url)).not.toContain(`${base}/keys`);
-  });
+  }, 120_000);
 
   // D-335 slice U — a key pressed in an element: the page's own handlers hear it, and what the
   // browser does for the key is done too, since a script's key events make it do nothing.
@@ -622,6 +980,32 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     expect(await clicks()).toEqual(['offer-c']);
   }, 60_000);
 
+  // 2026-11-21 (D-402, task P) — a step named by the card it sits in (`within_card`, `card_rows`): the nearest element
+  // of the card's kind above it, checked at the step as a row is.
+  it('ordinary: a click and typing named by the card they sit in act while it shows their texts, and refuse once it does not', async () => {
+    const { inspect, send, clicks, fixture } = await open('ordinary', '/cards');
+    const read = await inspect({});
+    const page = read.outputs!.page;
+    const html = htmlOf(read);
+    const card = 'div[data-testid="note-card"]';
+    const [edit, quantity] = [refFor(html, 'edit-a')!, refFor(html, 'qty-a')!];
+    expect(await send('click', { page, ref: edit, within: ['Bench stock review'], within_card: card }))
+      .toMatchObject({ status: 'ok', outputs: { clicked: true } });
+    expect(await send('fill', { page, ref: quantity, value: '2', within: ['Bench stock review'], within_card: card }))
+      .toMatchObject({ status: 'ok', outputs: { filled: true } });
+    // The card shows another note now: neither acts.
+    await fixture.page.evaluate(() => { document.getElementById('title-a')!.textContent = 'Weekly plan'; });
+    expect(await send('click', { page, ref: edit, within: ['Bench stock review'], within_card: card })).toMatchObject({ status: 'error',
+      error: { message: 'the card it sits in no longer shows “Bench stock review”, so nothing was clicked' } });
+    expect(await send('fill', { page, ref: quantity, value: '3', within: ['Bench stock review'], within_card: card })).toMatchObject({ status: 'error',
+      error: { message: 'the card it sits in no longer shows “Bench stock review”, so nothing was typed' } });
+    // By no card, a row: none holds it, so it is refused as before.
+    expect(await send('click', { page, ref: edit, within: ['Weekly plan'] })).toMatchObject({ status: 'error',
+      error: { message: 'the row it sits in no longer shows “Weekly plan”, so nothing was clicked' } });
+    expect(await clicks()).toEqual(['edit-a']);
+    expect(await fixture.page.evaluate(() => (document.getElementById('qty-a') as HTMLInputElement).value)).toBe('2');
+  }, 60_000);
+
   it('ordinary: a button a passing notice covers is clicked once it has gone; one it stays over is refused after the wait', async () => {
     const { inspect, send, clicks, fixture } = await open('ordinary', '/rotating');
     const read = await inspect({});
@@ -761,8 +1145,7 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     const { inspect, fixture } = await open('ordinary');
     const away = await fixture.browser.newPage();
     await away.goto(`${other}/page`);
-    const document = (await fixture.documents()).find(row => row.url === `${other}/page`);
-    if (!document) throw new Error('the bridge did not inventory the other origin');
+    const document = await fixture.discovered(`${other}/page`);
     const result = await inspect({ page: `${document.tab_id}:${document.document_id}` });
     expect(result).toMatchObject({ status: 'error', error: { code: 'tab_navigation_blocked',
       message: 'The page is no longer on a site this step may read.' } });
@@ -786,6 +1169,90 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
   // ── D-335 slice B — typing and clicking by the refs inspect marks, and an
   //    element described as a person would name it.
 
+  it('ordinary: shortcut-only tooltip changes keep the same inspected control', async () => {
+    for (const [before, after] of [['Search Wikipedia [f]', 'Search Wikipedia [ctrl-option-f]'],
+      ['Search Wikipedia [ctrl-option-f]', 'Search Wikipedia [f]'], ['Search Wikipedia', 'Search Wikipedia [Alt+Shift+F]']]) {
+      const { fixture, inspect, send } = await open('ordinary', '/tooltips');
+      await fixture.page.locator('#q').evaluate((element, title) => element.setAttribute('title', title), before!);
+      const read = await inspect({});
+      const ref = refFor(htmlOf(read), 'q')!;
+      await fixture.page.locator('#q').evaluate((element, title) => element.setAttribute('title', title), after!);
+      expect(await send('fill', { page: read.outputs!.page, ref, value: 'Ada' })).toMatchObject({ status: 'ok' });
+      expect(await fixture.page.inputValue('#q')).toBe('Ada');
+      // The read keeps the literal tooltip; only the private identity comparison normalizes it.
+      expect(htmlOf(await inspect({}))).toContain(`title="${after}"`);
+    }
+  }, 60_000);
+
+  it('ordinary: shortcut-only tooltip changes rebind a rebuilt control, while two matches remain ambiguous', async () => {
+    for (const twins of [false, true]) {
+      const { fixture, inspect, send } = await open('ordinary', '/tooltips');
+      const read = await inspect({});
+      const ref = refFor(htmlOf(read), 'q')!;
+      await fixture.page.evaluate(twins => {
+        const old = document.querySelector('#search')!;
+        const next = old.cloneNode(true) as HTMLFormElement;
+        next.querySelector('input')!.title = 'Search Wikipedia [ctrl-option-f]';
+        if (twins) next.append(next.querySelector('input')!.cloneNode(true));
+        old.replaceWith(next);
+      }, twins);
+      const result = await send('fill', { page: read.outputs!.page, ref, value: 'Ada' });
+      if (twins) {
+        expect(result).toMatchObject({ status: 'error', error: { code: 'selector_not_found' } });
+        expect(await fixture.page.locator('#q').evaluateAll(elements => elements.map(element => (element as HTMLInputElement).value))).toEqual(['', '']);
+      } else {
+        expect(result).toMatchObject({ status: 'ok' });
+        expect(await fixture.page.inputValue('#q')).toBe('Ada');
+      }
+    }
+  }, 60_000);
+
+  it.each(['semantic title', 'no accesskey', 'changed accesskey', 'wrong hint key', 'unknown modifier',
+    'changed label', 'changed form', 'changed row', 'changed destination'])(
+    'ordinary: shortcut hints do not hide %s', async change => {
+      const { fixture, inspect, send, clicks } = await open('ordinary', '/tooltips');
+      if (change === 'no accesskey') await fixture.page.locator('#q').evaluate(element => element.removeAttribute('accesskey'));
+      const read = await inspect({});
+      const link = change === 'changed row' || change === 'changed destination';
+      const ref = refFor(htmlOf(read), link ? 'view' : 'q')!;
+      await fixture.page.evaluate(change => {
+        const input = document.querySelector<HTMLInputElement>('#q')!;
+        input.title = 'Search Wikipedia [ctrl-option-f]';
+        if (change === 'semantic title') input.title = 'Search private records [ctrl-option-f]';
+        if (change === 'changed accesskey') { input.accessKey = 'g'; input.title = 'Search Wikipedia [ctrl-option-g]'; }
+        if (change === 'wrong hint key') input.title = 'Search Wikipedia [ctrl-option-g]';
+        if (change === 'unknown modifier') input.title = 'Search Wikipedia [help-f]';
+        if (change === 'changed label') input.setAttribute('aria-label', 'Search private records');
+        if (change === 'changed form') document.querySelector('form')!.setAttribute('action', '/elsewhere');
+        if (change === 'changed row' || change === 'changed destination') {
+          document.querySelector('#view')!.setAttribute('title', 'View [ctrl-option-g]');
+          if (change === 'changed row') document.querySelector('#owner')!.textContent = 'Bob';
+          else document.querySelector('#view')!.setAttribute('href', '/elsewhere');
+        }
+      }, change);
+      expect(await send(link ? 'click' : 'fill', { page: read.outputs!.page, ref, ...(link ? {} : { value: 'Ada' }) }))
+        .toMatchObject({ status: 'error', error: { code: 'selector_not_found' } });
+      expect(await fixture.page.inputValue('#q')).toBe('');
+      expect(await clicks()).toEqual([]);
+    }, 60_000,
+  );
+
+  it('ordinary: a changed access key before rebuilding cannot overwrite the inspected identity', async () => {
+    const { fixture, inspect, send } = await open('ordinary', '/tooltips');
+    const read = await inspect({});
+    const ref = refFor(htmlOf(read), 'q')!;
+    await fixture.page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('#q')!;
+      input.accessKey = 'g';
+      input.title = 'Search Wikipedia [ctrl-option-g]';
+      const form = document.querySelector('form')!;
+      form.replaceWith(form.cloneNode(true));
+    });
+    expect(await send('fill', { page: read.outputs!.page, ref, value: 'Ada' }))
+      .toMatchObject({ status: 'error', error: { code: 'selector_not_found' } });
+    expect(await fixture.page.inputValue('#q')).toBe('');
+  }, 60_000);
+
   it.each(PATHS)('%s: a ref types into the field and clicks the element inspect marked', async path => {
     const { inspect, send, clicks, fixture } = await open(path);
     const page = (await inspect({})).outputs!.page;
@@ -808,8 +1275,16 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     expect(await send('describe', { page, ref: 'e1' })).toMatchObject({ outputs: { role: 'link', label: 'Next page' } });
     expect(await send('describe', { page, ref: 'e3' })).toMatchObject({ outputs: { role: 'button', label: 'Custom button' } });
     expect(await send('describe', { page, ref: 'e13' })).toMatchObject({ outputs: { role: 'text editor' } });
-    expect(await send('describe', { page, ref: 'e8' })).toMatchObject({ outputs: { role: 'password field', protected: true } });
+    // D-402 slice G — what a protected field takes is answered only when the describe asks for it: a
+    // server that does not would refuse the answer's keys.
+    const password = await send('describe', { page, ref: 'e8' });
+    expect(password).toMatchObject({ status: 'ok', outputs: { role: 'password field', protected: true } });
+    expect(password.outputs).not.toHaveProperty('protected_kind');
     expect(await send('describe', { page, selector: '#card' })).toMatchObject({ outputs: { protected: true } });
+    const kinds = [...BRIDGE_DESCRIBE_OUTPUT_KEYS, 'protected_kind'];
+    expect((await send('describe', { page, ref: 'e8' }, kinds)).outputs).toMatchObject({ protected: true, protected_kind: 'password' });
+    expect((await send('describe', { page, selector: '#card' }, kinds)).outputs).toMatchObject({ protected: true, protected_kind: 'card' });
+    expect((await send('describe', { page, ref: 'e5' }, kinds)).outputs).not.toHaveProperty('protected_kind');
   }, 60_000);
 
   it.each(PATHS)('%s: a ref whose element the page replaced types and clicks nothing', async path => {
@@ -847,8 +1322,7 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
     const { inspect, send, fixture } = await open('ordinary');
     const away = await fixture.browser.newPage();
     await away.goto(`${other}/page`);
-    const document = (await fixture.documents()).find(row => row.url === `${other}/page`);
-    if (!document) throw new Error('the bridge did not inventory the other origin');
+    const document = await fixture.discovered(`${other}/page`);
     const handle = `${document.tab_id}:${document.document_id}`;
     // The refused read still marks that page's refs, so the write has one to try.
     await inspect({ page: handle });
@@ -872,6 +1346,34 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
   //    reviewed executor runs neither: a reviewed step is bound to one page.
 
   type Listed = { page: string; url: string; title: string };
+  it('ordinary: lists a committed document while a subresource keeps it loading', async () => {
+    const { send, fixture } = await open('ordinary');
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await fixture.page.route('**/held-image', async route => {
+      await held;
+      await route.fulfill({ status: 204 });
+    });
+    await fixture.page.route('**/loading-page', route => route.fulfill({ contentType: 'text/html',
+      body: '<!doctype html><title>Loading metadata</title><body><h1>Ready text</h1><img src="/held-image"></body>' }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await fixture.page.goto(`${base}/loading-page`, { waitUntil: 'domcontentloaded' });
+      expect(await fixture.page.evaluate(() => document.readyState)).not.toBe('complete');
+      await fixture.discovered(`${base}/loading-page`);
+      const result = await Promise.race([send('list_tabs', {}), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Tab listing waited for the held page load')), 3_000);
+      })]);
+      expect(result).toMatchObject({ status: 'ok', outputs: { tabs: [
+        { url: `${base}/loading-page`, title: 'Loading metadata', page: expect.stringMatching(/^\d+:.+$/), loading: true },
+      ] } });
+      expect(await fixture.page.evaluate(() => document.readyState)).not.toBe('complete');
+    } finally {
+      clearTimeout(timer); release();
+      await fixture.page.unrouteAll({ behavior: 'wait' });
+    }
+  }, 60_000);
+
   const listed = async (send: Awaited<ReturnType<typeof open>>['send']) => {
     const result = await send('list_tabs', {});
     expect(result, JSON.stringify(result.error)).toMatchObject({ status: 'ok', outputs: { truncated: false } });
@@ -881,6 +1383,9 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
   it('ordinary: the open tabs on the site are listed with their pages, never the owner client or another site', async () => {
     const { send, fixture } = await open('ordinary');
     for (const url of [`${base}/big`, `${base}/owner`, `${other}/page`]) await (await fixture.browser.newPage()).goto(url);
+    // The pages it could list are ones the Bridge has found (the owner's client is never in its inventory).
+    await fixture.discovered(`${base}/big`);
+    await fixture.discovered(`${other}/page`);
     const tabs = await listed(send);
     expect(tabs.map(tab => [tab.url, tab.title]).sort()).toEqual([[`${base}/big`, 'Big'], [`${base}/page`, 'Inspect fixture']]);
     // A listed page is one the next step can read.
@@ -929,5 +1434,105 @@ describe('D-335 slice A — the Bridge reads a page for an AI, in real Chrome', 
       code: 'tab_navigation_blocked', message: 'The owner client cannot be automated, so its tab was closed.' } });
     expect(fixture.browser.pages().map(page => page.url())).not.toContain(`${base}/owner`);
   }, 60_000);
+
+  // 2026-11-22 — cnn.com's "Legal Terms and Privacy": a dialog the page marks aria-hidden while a person
+  // sees it on top of the page. Read as any dialog, it can be answered; before, the read showed the page as
+  // if it were not there, and every click on the page was refused with nothing to answer it by.
+  it('ordinary: a dialog the page marks hidden is read while it is on top, and can be answered', async () => {
+    const { inspect, send, clicks } = await open('ordinary', '/hidden-dialog');
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const html = htmlOf(read);
+    expect(html).toMatch(/<div id="terms" role="dialog"[^>]* aria-modal="true"/);
+    expect(html).toContain('Legal Terms and Privacy');
+    expect(html).toContain('Morning news');
+    // What is marked hidden inside the dialog, and what is around it, stays out.
+    expect(html).not.toContain('Decorative mark');
+    expect(html).not.toContain('Hidden sibling text');
+    expect(html).not.toContain('Hidden wrapper words');
+    expect(outlinePage(html, { url: `${base}/hidden-dialog` }).shown[0])
+      .toMatch(/^\(A dialog is open at line \d+: “Legal Terms and Privacy”\. Answer it or close it first/);
+    const agree = refFor(html, 'agree');
+    const story = refFor(html, 'story')!;
+    expect(agree).toBeDefined();
+    // A wait sees what the read sees, and leaves out what it leaves out.
+    const waited = (selector: string) => send('wait_for_element', { page, selector, timeout_ms: 50 },
+      ['page', 'url', 'title', 'found', 'waited_ms', 'match_counts']);
+    expect(await waited('#agree')).toMatchObject({ status: 'ok',
+      outputs: { found: true, match_counts: { matched: 1, visible: 1, text_matched: 1 } } });
+    expect(await waited('#shell > p')).toMatchObject({ status: 'ok',
+      outputs: { found: false, match_counts: { matched: 1, visible: 0, text_matched: 0 } } });
+    // The page behind it still cannot be clicked …
+    expect(await send('click', { page, ref: story })).toMatchObject({ status: 'error', error: { code: 'value_not_applied',
+      obstruction: { reason: 'target_occluded', executed: false } } });
+    // … until it is answered.
+    expect(await send('click', { page, ref: agree! })).toMatchObject({ status: 'ok', outputs: { clicked: true } });
+    const after = htmlOf(await inspect({ page }));
+    expect(after).not.toContain('Legal Terms and Privacy');
+    expect(outlinePage(after, { url: `${base}/hidden-dialog` }).shown[0]).not.toMatch(/^\(A dialog is open/);
+    expect(await send('click', { page, ref: story })).toMatchObject({ status: 'ok', outputs: { clicked: true } });
+    expect(await clicks()).toEqual(['agree', 'story']);
+  }, 90_000);
+
+  it('ordinary: only what is on top is read: not a hidden dialog something covers, and a hidden page reads as its cover', async () => {
+    const behind = htmlOf(await (await open('ordinary', '/hidden-behind')).inspect({}));
+    expect(behind).toContain('Cover text');
+    expect(behind).not.toContain('Old notice');
+    expect(refFor(behind, 'dismiss')).toBeUndefined();
+    // Google's vignette ad marks the page's body hidden under an overlay that is no dialog: since 2026-11-22 the
+    // overlay is read as what covers the page (`data-recued-cover`), and the page behind it is not.
+    const hiddenPage = htmlOf(await (await open('ordinary', '/hidden-page')).inspect({}));
+    expect(hiddenPage).toMatch(/<ins data-recued-cover>/);
+    expect(hiddenPage).toMatch(/Advertisement[\s\S]*Close ad/);
+    expect(hiddenPage).not.toContain('Article text');
+    // A modal dialog the page does not hide is read, and the page it marks hidden behind it is not.
+    const background = htmlOf(await (await open('ordinary', '/background-hidden')).inspect({}));
+    expect(background).toContain('Join us');
+    expect(refFor(background, 'close')).toBeDefined();
+    expect(background).not.toMatch(/>App<|Behind/);
+    // In a closed web component, as on the page itself.
+    const component = htmlOf(await (await open('ordinary', '/hidden-in-component')).inspect({}));
+    expect(component).toContain('We use cookies');
+    expect(refFor(component, 'accept')).toBeDefined();
+    expect(outlinePage(component, { url: `${base}/hidden-in-component` }).shown[0])
+      .toMatch(/^\(A dialog is open at line \d+: “Cookies”/);
+  }, 120_000);
+
+  // 2026-11-22 (the owner: "build the 'show the blocker' version") — what covers a page that marks itself hidden is
+  // read as covering it, with its countdown, until its Close button shows and can be pressed.
+  it('ordinary: what covers a page that marks itself hidden is read, its countdown, then its Close button', async () => {
+    const { inspect, send, clicks } = await open('ordinary', '/countdown-cover');
+    const read = await inspect({});
+    const page = String(read.outputs!.page);
+    const first = htmlOf(read);
+    expect(first).toMatch(/<div id="cover" data-recued-cover>/);
+    expect(first).toContain('You can close this ad in 2 seconds.');
+    expect(first).not.toContain('Recipe text');
+    expect(refFor(first, 'close')).toBeUndefined();
+    expect(outlinePage(first, { url: `${base}/countdown-cover` }).shown[0])
+      .toBe(`(Something covers this page at line 2: “Advertisement”. ${PAGE_COVER_NOTE_TAIL})`);
+    // A wait sees what the read sees: its Close button, once the countdown ends.
+    expect(await send('wait_for_element', { page, selector: '#close', timeout_ms: 5_000 },
+      ['page', 'url', 'title', 'found', 'waited_ms', 'match_counts'])).toMatchObject({ status: 'ok', outputs: { found: true } });
+    const later = htmlOf(await inspect({ page }));
+    expect(later).toContain('You can close this ad now.');
+    const close = refFor(later, 'close');
+    expect(close).toBeDefined();
+    expect(await send('click', { page, ref: close! })).toMatchObject({ status: 'ok', outputs: { clicked: true } });
+    const after = htmlOf(await inspect({ page }));
+    expect(after).toContain('Recipe text');
+    expect(after).not.toContain('data-recued-cover');
+    expect(await send('click', { page, ref: refFor(after, 'next')! })).toMatchObject({ status: 'ok', outputs: { clicked: true } });
+    expect(await clicks()).toEqual(['close', 'next']);
+  }, 90_000);
+
+  it('ordinary: a hidden panel away from the centre is not read, nor a page a small modal hides behind it', async () => {
+    const corner = htmlOf(await (await open('ordinary', '/hidden-corner')).inspect({}));
+    expect(corner).toContain('Front text');
+    expect(corner).not.toMatch(/Corner panel|data-recued-cover/);
+    const aside = htmlOf(await (await open('ordinary', '/modal-aside')).inspect({}));
+    expect(aside).toContain('Small notice');
+    expect(aside).not.toMatch(/App behind|data-recued-cover/);
+  }, 90_000);
 });
 

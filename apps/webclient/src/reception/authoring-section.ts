@@ -43,7 +43,7 @@
  *  Design record: internal design notes §9
  *  + Review log R19 / R19.1. */
 
-import { emptyHint, panel } from '@recued/ui-shared/primitives';
+import { button, emptyHint, panel } from '@recued/ui-shared/primitives';
 
 import type {
   Conn,
@@ -64,6 +64,7 @@ import {
 } from './page-host.js';
 import { isReceptionEndpointKindAvailable } from './spine.js';
 import type { ReceptionPageShell } from './page-shell.js';
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 
 // ════════════════════════════════════════════════════════════════
 // Transient seed handoff (templates / AI-propose → routed form)
@@ -87,12 +88,13 @@ let pendingAuthoringSeed: {
 /** Stash a resolved working config for the routed authoring page to pick
  *  up. Called by the route layer's `onEnterAuthoring` impl immediately
  *  before it navigates to `#reception/endpoints/new/<kind>` (templates /
- *  AI-propose picks — the only authoring entries that carry a seed). */
+ *  AI-propose picks — the only authoring entries that carry a seed). Pass
+ *  null for a fresh entry so an abandoned navigation cannot seed it. */
 export const stashReceptionAuthoringSeed = (
   kind: ReceptionEndpointKind,
-  config: object,
+  config: object | null,
 ): void => {
-  pendingAuthoringSeed = { kind, config };
+  pendingAuthoringSeed = config === null ? null : { kind, config };
 };
 
 /** Read + clear the stashed seed. Returns the config only when it was
@@ -154,6 +156,8 @@ export interface ReceptionAuthoringSectionOptions {
 export interface ReceptionAuthoringSectionMount {
   /** Re-render the embedded form from its working config. */
   update(): void;
+  hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   /** Tear down the embedded form + remove the chrome. Idempotent. */
   dispose(): void;
 }
@@ -203,6 +207,8 @@ export const mountReceptionAuthoringSection = (
 
   let form: AuthoringFormMount | null = null;
   let disposed = false;
+  let readLoading = false;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
 
   /** Capture the one-shot share URL (link kinds only — `reception_page`
    *  has no share path) then navigate back. Mirrors the modal host's
@@ -256,6 +262,33 @@ export const mountReceptionAuthoringSection = (
     });
   };
 
+  const loadPage = (): void => {
+    if (disposed || readLoading) return;
+    readLoading = true;
+    const currentFocus = focusOwner.capture();
+    formHost.innerHTML = `<div role="status">${emptyHint({ message: 'Loading page…' })}</div>`;
+    void opts.conn('reception.page.get').then(res => {
+      if (disposed) return;
+      mountForm(res.config ?? null);
+      if (currentFocus()) {
+        const heading = formHost.querySelector?.<HTMLElement>('.reception-form-title');
+        if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+      }
+    }).catch(() => {
+      if (disposed) return;
+      formHost.innerHTML = panel({ tone: 'danger', role: 'alert', title: 'Recued could not load the page',
+        body: '<p class="reception-error-copy">The current page settings could not be loaded. Retry before editing so your existing page stays safe.</p>'
+          + button({ label: 'Retry page settings', size: 'sm', action: 'reception-authoring-retry' }),
+      });
+      if (currentFocus()) formHost.querySelector?.<HTMLElement>('[data-action="reception-authoring-retry"]')?.focus({ preventScroll: true });
+    }).finally(() => { readLoading = false; });
+  };
+  const retryPage = (event: Event): void => {
+    const control = (event.target as HTMLElement | null)?.closest?.('[data-action="reception-authoring-retry"]');
+    if (control && formHost.contains(control)) { event.preventDefault(); loadPage(); }
+  };
+  formHost.addEventListener('click', retryPage);
+
   // ── Seed resolution (precedence: stashed seed → edit-fetch → blank) ──
   const seed = consumeAuthoringSeed(kind);
   if (seed !== null) {
@@ -265,29 +298,7 @@ export const mountReceptionAuthoringSection = (
     // the stale-`null` overwrite race without a gate. `config: null` (no
     // singleton yet) seeds a blank "Set up page" form; a present config
     // seeds the "Edit page" form. Loading hint until it resolves.
-    formHost.innerHTML = emptyHint({ message: 'Loading page…' });
-    void opts
-      .conn('reception.page.get')
-      .then((res) => {
-        // `config: null` is the TRUE fresh-install case (no singleton yet)
-        // → a blank "Set up page" form is correct.
-        if (disposed) return;
-        mountForm(res.config ?? null);
-      })
-      .catch(() => {
-        // A read FAILURE is NOT the same as "no singleton": we don't know
-        // whether a page exists, so opening a blank submittable form would
-        // risk overwriting an existing page on a transient blip (Codex
-        // HIGH). Show an error instead — the back-link (chrome) lets the
-        // user retry by re-entering edit, which re-fetches.
-        if (disposed) return;
-        formHost.innerHTML = panel({
-          tone: 'danger',
-          role: 'alert',
-          title: 'Recued could not load the page',
-          body: '<p class="reception-error-copy">The current page configuration could not be loaded. Go back and try again — editing now could overwrite it.</p>',
-        });
-      });
+    loadPage();
   } else {
     // Fresh `new` create (or a fresh `new` reception_page from the create
     // button) — blank seed, "Set up" / "New" heading.
@@ -299,9 +310,13 @@ export const mountReceptionAuthoringSection = (
       if (disposed) return;
       form?.update();
     },
+    hasInFlightWork: () => form?.hasInFlightWork() ?? false,
+    hasUnsavedChanges: () => form?.hasUnsavedChanges() ?? false,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      focusOwner.dispose();
+      formHost.removeEventListener('click', retryPage);
       form?.dispose();
       try {
         host.removeChild(root);

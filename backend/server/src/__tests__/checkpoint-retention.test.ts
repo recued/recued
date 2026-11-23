@@ -21,6 +21,7 @@ import {
 } from '@recued/storage';
 import { describe, expect, it, vi } from 'vitest';
 
+import { browserTrials } from '../bridges/browser-trials.js';
 import {
   createCheckpointRetention,
   GARBAGE_GRACE_MS,
@@ -232,6 +233,25 @@ describe('checkpoint-retention — staleness guard', () => {
     expect(acts).toHaveLength(1);
     expect(acts[0]?.action).toBe('checkpoint_retention_prune');
     expect(acts[0]?.detail).toContain('expired=1');
+  });
+
+  // D-402 slice C (§8.3) — a trial's saved test is recorded across its approvals, and an expired hold
+  // reports no result: the expiry is how its recorder learns it ended.
+  it('an expired trial lets its saved test know it ended, and lets go of its recorder; a run that is no trial is left alone', async () => {
+    const h = harness();
+    const ended = vi.fn();
+    const recorder = { input: vi.fn(), result: vi.fn(), ended };
+    browserTrials.keepRecorder('run-1', recorder);
+    browserTrials.keepRecorder('run-2', recorder);
+    await seed(h, [checkpoint({ trial: true }), checkpoint({ checkpoint_id: 'cp-2', run_id: 'run-2' })],
+      [anchor(), anchor({ run_id: 'run-2', checkpoint_id: 'cp-2', ask_id: 'ask-2' })]);
+
+    await expect(h.retention.run()).resolves.toMatchObject({ expired: 2 });
+
+    expect(ended).toHaveBeenCalledTimes(1);
+    expect(browserTrials.recorderOf('run-1')).toBeUndefined();
+    expect(browserTrials.recorderOf('run-2')).toBe(recorder);
+    browserTrials.forgetRecorder('run-2');
   });
 
   // The expiry record replaces the paused one: what the run did before it paused
@@ -604,6 +624,33 @@ describe('checkpoint-retention — anchorless raw-op holds', () => {
     status,
     handler_kind: 'gateway.preflight',
     handler_payload: { checkpoint_id: 'cp-raw' },
+  });
+
+  // D-177 §N.15.9 — a round's gathered approval lists each hold it answers.
+  it('keeps a live raw-op hold a round\'s gathered approval lists, and links its receipt to it', async () => {
+    const actions = createGatedActionStore(
+      createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'action-raw-gathered', now: () => NOW },
+    );
+    const payload = {
+      members: [{ checkpoint_id: 'cp-other', run_id: 'run-other' }, { checkpoint_id: 'cp-raw', run_id: 'run-raw' }],
+      checkpoint_ids: ['cp-other', 'cp-raw'],
+    };
+    const h = harness({
+      gatedActionStore: actions,
+      unresolvedAsks: [{ ask_id: 'ask-gathered', status: 'open', handler_kind: 'gateway.preflight.gathered', handler_payload: payload }],
+      ask: { status: 'open', handler_payload: payload },
+    });
+    await seed(h, [rawCheckpoint()], []);
+
+    const result = await h.retention.run();
+
+    expect(result).toMatchObject({ expired: 0, garbage_collected: 0, failed: 0 });
+    expect(await h.checkpointStore.get('cp-raw')).not.toBeNull();
+    expect(await actions.getByCheckpoint('cp-raw')).toMatchObject({
+      status: 'awaiting_approval', current_ask_id: 'ask-gathered',
+    });
+    expect(h.cancelAsk).not.toHaveBeenCalled();
   });
 
   it('keeps a live raw-op approval past the generic 24-hour garbage grace', async () => {

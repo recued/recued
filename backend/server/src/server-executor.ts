@@ -1160,7 +1160,11 @@ export const createBoundExecutor = (
     ? createKernelAdapter(config.kernelDispatchers)
     : undefined;
 
-  const resolveRefs = (obj: Record<string, unknown>) => resolveDeep(obj, stores) as Record<string, unknown>;
+  // D-402 slice B4 — an Act call's data steps carry `{{item.*}}` templates that Act's own data engine
+  // binds per item, so outside a foreach (where nothing else is `item`) they reach it unresolved, as
+  // they do from the toolkit, which passes its steps in whole.
+  const resolveRefs = (obj: Record<string, unknown>, slug?: string) =>
+    resolveDeep(obj, stores, slug === 'dom-act' && stores.item === undefined ? { deferItem: true } : undefined) as Record<string, unknown>;
 
   const raw = createIngredientExecutor({
     manifestLoader: async slug => {
@@ -1170,8 +1174,8 @@ export const createBoundExecutor = (
     },
     adapterRegistry,
     kernelAdapter,
-    resolveRefs: obj => {
-      const resolved = resolveRefs(obj);
+    resolveRefs: (obj, slug) => {
+      const resolved = resolveRefs(obj, slug);
       cacheScopes.validateInput(resolved);
       return resolved;
     },

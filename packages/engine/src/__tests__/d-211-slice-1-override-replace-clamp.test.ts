@@ -20,7 +20,7 @@
  *        alone admits (asserted with and without the row).
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { isPreflightRequiredSignal, operationSpecHash } from '@recued/contracts';
 import type {
   ApiExecutionBinding,
@@ -176,6 +176,14 @@ const ownerDirectSource = {
   chat_session_id: 's1',
   user_id: 'u1',
 } as const;
+/** The owner acting from the app: since D-177 §N.15.6–7 the only owner source whose ceiling
+ *  (`admin`) relaxes an `ask`; the owner's chat follows each op's approval. */
+const ownerAppSource = {
+  channel: 'user',
+  actor: 'user_self',
+  user_id: 'u1',
+  client_token_id: 't1',
+} as const;
 
 describe('D-211 §8 (i) — owner never on an authored-always read, both directions', () => {
   const manifest = manifestFor(operation('read', { approval: 'always' }));
@@ -188,13 +196,11 @@ describe('D-211 §8 (i) — owner never on an authored-always read, both directi
     expect(isPreflightRequiredSignal(caught)).toBe(true);
     expect((caught as PreflightRequiredSignal).tool_slug).toBe('pub/cat.x');
     expect((caught as PreflightRequiredSignal).risk_tier).toBe('read');
-    expect((caught as PreflightRequiredSignal).owner_override_offer).toEqual({
-      kind: 'never_ask',
-      ingredient_id: 'pub/cat',
-      operation_id: 'pub/cat.x',
-      op_hash: operationSpecHash(manifest.operations!.x),
-      approval: 'never',
-    });
+    // D-339 slice 12a (D-211 §6 amended 2026-11-18): an authored-always read is offered no
+    // "Never ask": that row would let every caller past the hold. A row the owner writes on the
+    // Contracts page still applies (the case below). Under every default ceiling a read's `ask` is
+    // lifted (the 2026-09-25 amendment), so an `always` read was the only one ever offered it.
+    expect((caught as PreflightRequiredSignal).owner_override_offer).toBeUndefined();
     expect(executorCalls).toHaveLength(0);
     expect(auditCalls).toHaveLength(0);
   });
@@ -284,7 +290,7 @@ describe('D-211 §8 (ii) — a hand-stored below-floor row resolves at the floor
   it('where the dispatch executes (owner ceiling relaxes the clamped ask), the audit row surfaces approval_clamped_from', async () => {
     const { ctx, executorCalls, auditCalls, fallbackResult } = makeHarness({
       overrideRows: [belowFloorRow],
-      execution_source: ownerDirectSource,
+      execution_source: ownerAppSource,
     });
 
     await expect(run(ctx, manifest)).resolves.toBe(fallbackResult);
@@ -411,5 +417,53 @@ describe('D-211 §8 (v) — an override row has ZERO effect on reachability (the
     expect(isPreflightRequiredSignal(ruledCaught)).toBe(false);
     expect(ruled.executorCalls).toHaveLength(0);
     expect(ruled.auditCalls[0]).toMatchObject(denyExpectation);
+  });
+});
+
+describe('D-402 slice C — a trial of a draft holds a catalog write the owner\'s own run makes silently', () => {
+  const write = manifestFor(operation('write'));
+  const read = manifestFor(operation('read'));
+
+  it('from the app, a write dispatches; in a trial it is held as "always ask", even over the owner\'s "never"', async () => {
+    const plain = makeHarness({ execution_source: ownerAppSource });
+    await expect(run(plain.ctx, write)).resolves.toBe(plain.fallbackResult);
+    const trial = makeHarness({ execution_source: ownerAppSource,
+      overrideRows: [overrideRow(['pub/cat', 'pub/cat.x'], { approval: 'never' } as OverrideValue)] });
+    trial.ctx.trial = true;
+    const caught = await captureRejection(run(trial.ctx, write));
+    expect(isPreflightRequiredSignal(caught)).toBe(true);
+    expect(trial.executorCalls).toHaveLength(0);
+  });
+
+  it('a read in a trial runs as it would', async () => {
+    const trial = makeHarness({ execution_source: ownerAppSource });
+    trial.ctx.trial = true;
+    await expect(run(trial.ctx, read)).resolves.toBe(trial.fallbackResult);
+    expect(trial.executorCalls).toHaveLength(1);
+  });
+});
+
+/** D-339 slice 12a — the catalog gate asks its host (`ctx.heldReads`) only about a read its op holds at
+ *  its OWN `always`. An `always` the owner set on a read with a rule on the Contracts page is theirs, and
+ *  no host's yes waives it: a Body page's "Allow" answers for the Body's read, not for every rule. */
+describe('D-339 slice 12a — the host answers only for an op\'s own `always`', () => {
+  const yes = { admit: () => true };
+
+  it('the op\'s own always: the host\'s yes lets the read run, and a no leaves the ask', async () => {
+    const manifest = manifestFor(operation('read', { approval: 'always' }));
+    const through = makeHarness({ overrideRows: [] }); through.ctx.heldReads = yes;
+    await expect(run(through.ctx, manifest)).resolves.toBe(through.fallbackResult);
+    const held = makeHarness({ overrideRows: [] }); held.ctx.heldReads = { admit: () => false };
+    expect(isPreflightRequiredSignal(await captureRejection(run(held.ctx, manifest)))).toBe(true);
+  });
+
+  it('an always the owner set on a read with a rule: the host is not asked, and the read asks', async () => {
+    const admit = vi.fn(() => true);
+    const { ctx, executorCalls } = makeHarness({ overrideRows: [overrideRow(['pub/cat', 'pub/cat.x'], { approval: 'always' })] });
+    ctx.heldReads = { admit };
+    const caught = await captureRejection(run(ctx, manifestFor(operation('read', { approval: 'ask' }))));
+    expect(isPreflightRequiredSignal(caught)).toBe(true);
+    expect(admit).not.toHaveBeenCalled();
+    expect(executorCalls).toHaveLength(0);
   });
 });

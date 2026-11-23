@@ -390,18 +390,23 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
 
   /** Email's subject names the envelope. A bundle must name an item too.
    * This returns a candidate only; submitAnswer still checks its origin. */
-  const parseTextReply = async (group_id: string, text: string, via: InboundReply['via']): Promise<{ ask_id: string; option: string } | null> => {
+  const parseTextReply = async (group_id: string, text: string, via: InboundReply['via'],
+    options?: { record_unmatched?: boolean }): Promise<{ ask_id: string; option: string } | null> => {
     const group = await deps.store.get(group_id);
     if (!group) return null;
+    const miss = async (reason: UnmatchedAskReply['reason']): Promise<null> => {
+      if (options?.record_unmatched !== false) await unmatched(group_id, via, text, reason);
+      return null;
+    };
     let index = 0;
     let answer = text.trim();
     if (group.asks.length > 1) {
       const match = /^(\d+)\s+(.+)$/.exec(answer);
-      if (!match) { await unmatched(group_id, via, text, 'item_required'); return null; }
+      if (!match) return miss('item_required');
       index = Number(match[1]) - 1;
       answer = match[2]!.trim();
       if (!Number.isSafeInteger(index) || index < 0 || index >= group.asks.length) {
-        await unmatched(group_id, via, text, 'unknown_item'); return null;
+        return miss('unknown_item');
       }
     }
     const ask = group.asks[index]!;
@@ -409,7 +414,7 @@ export const createAskDeliveryController = (deps: AskDeliveryControllerDeps) => 
     const matches = ask.options.filter(option => normalizeEmailAnswerToken(option.id) === normalized
       || normalizeEmailAnswerToken(option.label) === normalized);
     const option = matches.length === 1 ? matches[0] : undefined;
-    if (!option) { await unmatched(group_id, via, text, 'unknown_option'); return null; }
+    if (!option) return miss('unknown_option');
     return { ask_id: ask.ask_id, option: option.id };
   };
 

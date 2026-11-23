@@ -133,6 +133,7 @@ import {
 import {
   mountTemplatesBrowser,
   type TemplatesBrowserMount,
+  type TemplatesBrowserMountOptions,
 } from './templates-mount.js';
 import type {
   LaunchWizardRunResult,
@@ -381,6 +382,7 @@ export interface ReceptionPageHostOptions {
    *  gallery then renders the "Foundation pack not installed" empty
    *  state. */
   getTemplates?: () => ReadonlyArray<IntakeFormTemplate>;
+  onLoadTemplates?: TemplatesBrowserMountOptions['onLoadTemplates'];
   /** D-151 — resolve the raw non-intake config templates (`scheduling_link`
    *  + `reception_page`) for the standalone templates-browser modal. The
    *  route layer returns its `reception.template.list` `config_templates`
@@ -632,11 +634,21 @@ export const mountReceptionPageHost = (
   const openLaunchWizard = (): void => {
     if (disposed) return;
     closeModal();
+    const capturedShares = new Set<string>();
+    const captureShares = (result: LaunchWizardRunResult): void => {
+      for (const created of result.created) {
+        const id = created.result.endpoint_id;
+        if (!isReceptionEndpointKindAvailable(created.kind) || capturedShares.has(id)) continue;
+        shell.setEndpointShare(id, buildShareInputForCreate(created.kind, created.result, null, now()));
+        capturedShares.add(id);
+      }
+    };
     modal = mountLaunchWizard({
       host: modalHost,
       shell,
       exposureProfile: opts.exposureProfile,
       now,
+      onProgress: captureShares,
       ...(opts.renderWizardStepContent !== undefined
         ? { renderStepContent: opts.renderWizardStepContent }
         : {}),
@@ -644,20 +656,7 @@ export const mountReceptionPageHost = (
         ? { onSwitchProfile: opts.onSwitchProfile }
         : {}),
       onClose: (result?: LaunchWizardRunResult): void => {
-        if (result !== undefined) {
-          // Each created entry carries the one-shot `share_url_once` the
-          // shell does NOT auto-cache. Register every one before the
-          // modal disposes; the wizard's planner order is preserved
-          // for every currently available endpoint kind.
-          const at = now();
-          for (const created of result.created) {
-            if (!isReceptionEndpointKindAvailable(created.kind)) continue;
-            shell.setEndpointShare(
-              created.result.endpoint_id,
-              buildShareInputForCreate(created.kind, created.result, null, at),
-            );
-          }
-        }
+        if (result) captureShares(result);
         closeModal();
       },
     });
@@ -672,23 +671,18 @@ export const mountReceptionPageHost = (
   const openTemplatesBrowser = (): void => {
     if (disposed) return;
     closeModal();
-    // `transitioning` guards the order-of-operations hazard: the mount
-    // fires `onUseTemplate` THEN `onClose`. `onUseTemplate` opens the
-    // authoring form, which `closeModal`s the gallery + installs the
-    // authoring mount as `modal`. The mount's trailing `onClose` would
-    // then tear THAT authoring mount down — so we suppress it when a
-    // template was picked (the authoring open already replaced the modal).
-    let transitioning = false;
+    // Selection opens authoring itself. Keep the gallery until a routed
+    // transition is accepted; declining a pending-work leave must retain it.
     modal = mountTemplatesBrowser({
       host: modalHost,
       templates: opts.getTemplates?.() ?? [],
+      ...(opts.onLoadTemplates ? { onLoadTemplates: opts.onLoadTemplates } : {}),
       configTemplates: opts.getConfigTemplates?.() ?? [],
       // D-220 Slice B — the pack section + its unavailable note.
       packTemplates: opts.getPackTemplates?.() ?? [],
       packTemplatesUnavailable: opts.getPackTemplatesUnavailable?.() ?? [],
       now,
       onUseTemplate: (ref: string, kind: ReceptionEndpointKind): void => {
-        transitioning = true;
         if (kind === 'intake_form') {
           enterNewAuthoring('intake_form', opts.resolveTemplateSeed?.(ref) ?? null);
           return;
@@ -702,21 +696,19 @@ export const mountReceptionPageHost = (
       },
       // D-151 P2 — the intent-first sibling. Absent ⇒ the mount hides
       // its Describe-it section. `onUseProposed` opens the authoring form
-      // seeded with the AI-projected config; the `transitioning` guard
-      // suppresses the mount's trailing `onClose` (the authoring open
-      // already replaced the modal — same hazard as `onUseTemplate`).
+      // seeded with the AI-projected config; a selection close must not
+      // tear down that new form.
       ...(opts.onProposeIntent !== undefined
         ? { onProposeIntent: opts.onProposeIntent }
         : {}),
       onUseProposed: (kind: ReceptionEndpointKind, config: object): void => {
-        transitioning = true;
         enterNewAuthoring(kind, config);
       },
-      onClose: (): void => {
+      onClose: (reason?: 'selection'): void => {
         // The explicit close control tears the gallery down; a close that
         // trails a "Use template" pick is a no-op (the authoring form
         // already owns the modal slot).
-        if (transitioning) return;
+        if (reason === 'selection') return;
         closeModal();
       },
     });

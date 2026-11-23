@@ -33,6 +33,7 @@ import {
   REF_PICKER_RECOVERY_ATTR,
   REF_PICKER_RECOVERY_MESSAGE_ATTR,
   REF_PICKER_RETRY_ATTR,
+  REF_PICKER_KEEP_QUERY_ATTR,
   renderRefPicker,
   renderRefPickerResultRows,
   revertQuery,
@@ -611,6 +612,20 @@ describe('ref-picker wire', () => {
     expect(handle.getValue()).toEqual({ id: 'r-alpha', label: 'Alpha report' });
   });
 
+  it('refreshes a recent list without changing selection, query or a closed popup, and restores ordinary empty-search text', async () => {
+    const { root, input, results, mirror } = buildShell('demo', { withMirror: true });
+    let recent = true;
+    const handle = wireRefPicker(asParent(root), { config: { ...CONFIG, emptyText: 'No matching records.' }, minChars: 0,
+      initialValue: { id: 'r-alpha', label: 'Alpha report' }, schedule: syncSchedule,
+      search: async query => query ? { options: [] } : recent ? { options: OPTIONS } : { options: [], emptyText: 'No recent records. Type to search.' } });
+    dispatch(input, 'focusin', {}); await Promise.resolve(); expect(results.innerHTML).toContain('Alpha report');
+    dispatch(input, 'focusout', {}); recent = false; handle.refresh(); await Promise.resolve();
+    expect(input.value).toBe('Alpha report'); expect(mirror.value).toBe('r-alpha'); expect(results.getAttribute('hidden')).not.toBeNull();
+    dispatch(input, 'focusin', {}); await Promise.resolve(); expect(results.innerHTML).toContain('No recent records. Type to search.');
+    input.value = 'absent'; dispatch(input, 'input', {}); await Promise.resolve(); expect(results.innerHTML).toContain('No matching records.');
+    expect(results.innerHTML).not.toContain('No recent records.');
+  });
+
   it('blur reverts the input text to the committed label', () => {
     const { root, input } = buildShell();
     wireRefPicker(asParent(root), {
@@ -623,6 +638,23 @@ describe('ref-picker wire', () => {
     dispatch(input, 'input', {});
     dispatch(input, 'focusout', {});
     expect(input.value).toBe('Alpha report');
+  });
+
+  it('retains a query and stored id while visiting internal controls, then reverts on leaving the picker', () => {
+    const { root, input, shell, results, mirror } = buildShell('demo', { withMirror: true });
+    const preview = makeNode('button', { [REF_PICKER_KEEP_QUERY_ATTR]: '' }); shell.appendChild(preview);
+    const handle = wireRefPicker(asParent(root), { search: syncSearch, config: CONFIG,
+      initialValue: { id: 'r-alpha', label: 'Alpha report' }, schedule: syncSchedule });
+    input.value = 'half-typed'; dispatch(input, 'input', {});
+    dispatch(input, 'focusout', { relatedTarget: preview });
+    expect(input.value).toBe('half-typed'); expect(mirror.value).toBe('r-alpha'); expect(results.getAttribute('hidden')).not.toBeNull();
+    dispatch(preview, 'focusout', { relatedTarget: makeNode('input') });
+    expect(input.value).toBe('Alpha report'); expect(handle.getValue()?.id).toBe('r-alpha');
+    input.value = 'pointer query'; dispatch(input, 'input', {}); dispatch(preview, 'mousedown', {}); dispatch(input, 'focusout', {});
+    expect(input.value).toBe('pointer query'); expect(mirror.value).toBe('r-alpha');
+    dispatch(preview, 'click', {}); dispatch(preview, 'focusout', {}); expect(input.value).toBe('Alpha report');
+    input.value = 'cancelled query'; dispatch(input, 'input', {}); dispatch(preview, 'mousedown', {}); dispatch(preview, 'pointercancel', {});
+    dispatch(input, 'focusout', {}); expect(input.value).toBe('Alpha report');
   });
 
   it('Escape dismisses the popup without bubbling into its parent modal', async () => {
@@ -676,6 +708,19 @@ describe('ref-picker wire', () => {
     expect(clear).not.toBe(fresh.clear);
   });
 
+  it('keeps the typed query and committed selection across a host removal blur', async () => {
+    const { root, input } = buildShell();
+    const onChange = vi.fn();
+    const handle = wireRefPicker(asParent(root), { search: syncSearch, config: CONFIG, schedule: syncSchedule,
+      initialValue: { id: 'r-alpha', label: 'Alpha report' }, onChange });
+    dispatch(input, 'focusin', {}); input.value = 'beta'; dispatch(input, 'input', {}); await flush();
+    handle.beforeRender(); dispatch(input, 'focusout', {});
+    const fresh = buildShell(); fresh.input.focus = () => { fresh.input.focusCount++; dispatch(fresh.input, 'focusin', {}); };
+    handle.rewire(asParent(fresh.root));
+    expect(fresh.input.value).toBe('beta'); expect(fresh.input.focusCount).toBe(1);
+    expect(handle.getValue()).toEqual({ id: 'r-alpha', label: 'Alpha report' }); expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('restores post-commit focus without reopening the dismissed list', async () => {
     const { root, input, results } = buildShell();
     const handle = wireRefPicker(asParent(root), {
@@ -690,6 +735,7 @@ describe('ref-picker wire', () => {
     dispatch(materializeOption(results, 0), 'mousedown', {});
     expect(input.getAttribute('aria-expanded')).toBe('false');
 
+    handle.beforeRender(); dispatch(input, 'focusout', {});
     const fresh = buildShell();
     fresh.input.focus = () => {
       fresh.input.focusCount += 1;
@@ -968,7 +1014,7 @@ const querySelector = (root: FakeNode, selector: string): FakeNode | null => {
 const dispatch = (
   target: FakeNode,
   type: string,
-  props: { key?: string; isComposing?: boolean },
+  props: { key?: string; isComposing?: boolean; relatedTarget?: FakeNode },
 ): {
   defaultPrevented: boolean;
   propagationStopped: boolean;
@@ -977,6 +1023,7 @@ const dispatch = (
     target,
     key: props.key,
     isComposing: props.isComposing,
+    relatedTarget: props.relatedTarget,
     defaultPrevented: false,
     propagationStopped: false,
     preventDefault() {

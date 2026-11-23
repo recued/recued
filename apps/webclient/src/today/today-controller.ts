@@ -38,7 +38,7 @@ import type { BootstrapDataRouteOptions } from '../data/bootstrap-data-route.js'
 export type TodayCallers = Pick<BootstrapDataRouteOptions,
   | 'spheres' | 'proactiveTodayCaller' | 'workEntityListCaller' | 'collectionListCaller' | 'collectionListInstancesCaller'
   | 'workEntitySourceListCaller' | 'workEntityGetCaller' | 'taskMarkDoneCaller'
-  | 'workEntityUpsertCaller' | 'commitmentCloseCaller'>
+  | 'workEntityUpsertCaller' | 'commitmentCloseCaller' | 'reminderCallers'>
   & {
     /** D-267 — the shell's shared Create opener, the same modal the chat
      *  composer chip and the drawer seat open. Wired → Today's zero-state
@@ -57,6 +57,8 @@ export type TodayCallers = Pick<BootstrapDataRouteOptions,
     /** D-325 §15.7 (2026-10-24) — `yours.change` for Done on a renewal, which only acknowledges
      *  it. Absent (an older shell) → Done closes as for any task, and the server refuses it. */
     occurrenceAcknowledgeCaller?: (input: Extract<YoursCommand, { action: 'occurrence.acknowledge' }>) => Promise<YoursCommandResult>;
+    /** D-407 slice 2 — "When is the next one?" answered from Today. */
+    occasionNextCaller?: (input: Extract<YoursCommand, { action: 'occasion.next' }>) => Promise<YoursCommandResult>;
     /** D-325 §8 — the owner opened an item Today showed. Fire and forget: the link
      *  navigates at once, so this must never hold the route-switch guard. */
     situationOpenedCaller?: (input: Extract<YoursCommand, { action: 'navigation.open' }>) => void;
@@ -119,6 +121,8 @@ export interface TodayController {
   restoreSituation: (key: string) => Promise<void>;
   recordOpen: (clusterId: string, index: number) => void;
   closeCommitment: (key: string, outcome: 'fulfill' | 'cancel') => Promise<void>;
+  /** D-407 slice 2 — an occasion's next date (`on`), or `null` for "No next one". */
+  answerOccasionNext: (id: string, on: string | null, time?: string) => Promise<void>;
   /** D-343 slice 4 — "Close the day", once at a time. */
   closeDay: () => Promise<void>;
   closingDay: () => boolean;
@@ -395,6 +399,29 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
         if (snapshot) snapshot = { ...snapshot, items: snapshot.items.filter(row => row.key !== key) };
         notice = `${outcome === 'fulfill' ? 'Done' : 'Cancelled'} “${item.title}”.`;
         host.refreshActive();
+      } catch (cause) {
+        if (!host.isDisposed() && mine === sequence) error = host.errMessage(cause);
+      } finally {
+        closingCommitment = false;
+        if (!host.isDisposed() && mine === sequence) {
+          const carryFocus = host.ownsFocus(); host.render();
+          if (carryFocus) host.focusTask(error ? '[data-today-task-error]' : '[data-today-task-notice]');
+        }
+      }
+    },
+    answerOccasionNext: async (id, on, time) => {
+      const answer = host.callers.occasionNextCaller;
+      const waiting = snapshot?.proactive?.occasions_waiting?.find(row => row.id === id);
+      if (!answer || !waiting || closingCommitment || edit?.busy || host.isDisposed() || !host.isActive()) return;
+      const mine = ++sequence;
+      closingCommitment = true; error = null; notice = null; undoDismissal = null; host.render();
+      try {
+        if (on !== null && on.trim() === '') throw new Error(`Choose the date of the next “${waiting.title}”, or No next one.`);
+        const result = await answer({ action: 'occasion.next', id, on, ...(on !== null && time ? { time } : {}) });
+        if (host.isDisposed() || mine !== sequence) return;
+        if (snapshot?.proactive) snapshot = { ...snapshot, proactive: { ...snapshot.proactive,
+          occasions_waiting: (snapshot.proactive.occasions_waiting ?? []).filter(row => row.id !== id) } };
+        notice = `${waiting.title}: ${result.message}`; host.refreshActive();
       } catch (cause) {
         if (!host.isDisposed() && mine === sequence) error = host.errMessage(cause);
       } finally {

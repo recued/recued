@@ -121,7 +121,7 @@ export const createBulkCollectionOAuthAppSwitchPanel = (deps: {
         + apps.map(a => '<option value="' + e(a.issuer + ':' + a.id) + '"' + (appKey === a.issuer + ':' + a.id ? ' selected' : '') + '>'
           + e((a.issuer === 'google' ? 'Google' : 'Microsoft') + ' · ' + a.label + ' · ' + a.client_id) + '</option>').join('') + '</select></label>'
         + '<p>Select up to ' + BULK_SAVED_APP_LIMIT + ' native accounts for this vendor. Accounts already using the destination will be skipped.</p>'
-        + (app ? '<ul>' + accounts.filter(a => a.issuer === app.issuer).map(a => '<li><label><input type="checkbox" data-bulk-app-account="' + e(key(a)) + '"'
+        + (app ? '<ul class="accounts-bulk-app-accounts" role="list">' + accounts.filter(a => a.issuer === app.issuer).map(a => '<li><label><input type="checkbox" data-bulk-app-account="' + e(key(a)) + '"'
           + (selected.has(key(a)) ? ' checked' : '') + '> ' + e(a.platform + ' ' + a.slug) + ' · ' + e(a.email || 'Vendor email unknown') + '</label></li>').join('') + '</ul>' : '')
         + (!loading && !apps.length ? '<p>Add a saved OAuth app with its secret in Apps & APIs first.</p>' : '')
         + (!loading && app && !accounts.some(a => a.issuer === app.issuer) ? '<p>No native OAuth accounts are available for this vendor.</p>' : '') :

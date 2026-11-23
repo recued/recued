@@ -294,7 +294,7 @@ const resolveEditControl = (
     }
     case 'string': {
       const text = typeof value === 'string' ? value : '';
-      const multiline = text.includes('\n') || text.length > NEEDS_TEXTAREA_CHARS;
+      const multiline = /[\r\n]/.test(text) || text.length > NEEDS_TEXTAREA_CHARS;
       return {
         ...base,
         control: multiline ? 'textarea' : 'text',

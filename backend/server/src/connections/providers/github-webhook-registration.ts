@@ -11,6 +11,7 @@
 import { randomBytes } from 'node:crypto';
 
 import {
+  assertDesiredEventTypesAdmitted,
   WebhookRegistrationAdapterError,
   type ManagedWebhookEndpointCreateResult,
   type ManagedWebhookEndpointMatch,
@@ -155,9 +156,10 @@ const targetScope = (
   };
 };
 
+/** Everything but the event names, which are checked where they are sent
+ *  (create, update): cleanup never depends on them (D-201 Slice 10G). */
 const validateContext = (
   context: ManagedWebhookRegistrationContext,
-  eventTypeParser: WebhookLowercaseIdentifierEventTypeParser,
   remoteUrlParser: WebhookBoundedHttpUrlParser,
   registrationTargetNormalizer: WebhookAccountResourceRegistrationTargetNormalizer,
 ): GitHubTargetScope => {
@@ -169,12 +171,7 @@ const validateContext = (
     || (desired.environment !== 'test'
       && desired.environment !== 'live'
       && desired.environment !== 'custom')
-    || canonicalDesiredEndpoint(desired.endpoint_url, remoteUrlParser) === null
-    || desired.event_types.length < 1
-    || desired.event_types.length > 64
-    || new Set(desired.event_types).size !== desired.event_types.length
-    || desired.event_types.some((eventType) =>
-      eventTypeParser.parse(eventType) === null)) {
+    || canonicalDesiredEndpoint(desired.endpoint_url, remoteUrlParser) === null) {
     throw new WebhookRegistrationAdapterError(
       'registration_input_invalid',
       'GitHub managed registration input is invalid',
@@ -372,7 +369,6 @@ export const createGitHubWebhookRegistrationAdapter = (
   ): Promise<GitHubWebhookRegistrationConnection> => {
     validateContext(
       context,
-      deps.eventTypeParser,
       deps.remoteUrlParser,
       deps.registrationTargetNormalizer,
     );
@@ -516,7 +512,6 @@ export const createGitHubWebhookRegistrationAdapter = (
     validateRemoteId(remoteEndpointId, deps.remoteIdParser);
     const scope = validateContext(
       context,
-      deps.eventTypeParser,
       deps.remoteUrlParser,
       deps.registrationTargetNormalizer,
     );
@@ -551,7 +546,6 @@ export const createGitHubWebhookRegistrationAdapter = (
     context: ManagedWebhookRegistrationContext,
   ): GitHubTargetScope => validateContext(
     context,
-    deps.eventTypeParser,
     deps.remoteUrlParser,
     deps.registrationTargetNormalizer,
   );
@@ -661,7 +655,48 @@ export const createGitHubWebhookRegistrationAdapter = (
       : canonicalDesiredEndpoint(endpoint, deps.remoteUrlParser);
   };
 
-  return createWebhookTargetScopedCollectionRegistrationDriver<GitHubTargetScope>(
+  /** D-201 Slice 10AU (10AS finding 6) — the hook's secret alone, through its
+   *  configuration (`PATCH …/hooks/{id}/config`), which changes only the keys
+   *  it is given. `update` sends the whole hook, `active: true` and Recued's
+   *  events with it: the hourly set again switched a hook someone switched off
+   *  at GitHub back on, and put back events changed there. Its address is
+   *  checked before and in the answer, as `update` checks it. */
+  const setSecret = async (
+    context: ManagedWebhookRegistrationContext,
+    remoteEndpointId: string,
+  ): Promise<ManagedWebhookEndpointSnapshot | null> => {
+    validateRemoteId(remoteEndpointId, deps.remoteIdParser);
+    const scope = validateContext(
+      context,
+      deps.remoteUrlParser,
+      deps.registrationTargetNormalizer,
+    );
+    const current = await read(context, remoteEndpointId);
+    if (current === null) return null;
+    const confirmedEndpoint = await confirmedEndpointFor(context);
+    if (current.endpoint_url !== context.desired.endpoint_url
+      && current.endpoint_url !== confirmedEndpoint) {
+      throw new WebhookRegistrationAdapterError(
+        'upstream_rejected',
+        'GitHub webhook ownership could not be confirmed; its secret was not set',
+      );
+    }
+    const response = await request(
+      context,
+      `${scope.base_path}/${encodeURIComponent(remoteEndpointId)}/config`,
+      { method: 'PATCH', body: { secret: await activeSecretFor(context) } },
+    );
+    const config = await requireJsonStatus(response, 200);
+    if (!isRecord(config) || deps.remoteUrlParser.parse(config.url) !== current.endpoint_url) {
+      throw new WebhookRegistrationAdapterError(
+        'upstream_response_invalid',
+        'GitHub webhook configuration response did not name the webhook address',
+      );
+    }
+    return read(context, remoteEndpointId);
+  };
+
+  const driver = createWebhookTargetScopedCollectionRegistrationDriver<GitHubTargetScope>(
     GITHUB_REGISTRATION_DRIVER_PRESET,
     {
       prepareSearch,
@@ -674,10 +709,10 @@ export const createGitHubWebhookRegistrationAdapter = (
         validateIdempotencyKey(idempotencyKey, deps.idempotencyKeyParser);
         const scope = validateContext(
           context,
-          deps.eventTypeParser,
           deps.remoteUrlParser,
           deps.registrationTargetNormalizer,
         );
+        assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'GitHub');
         // GitHub does not expose an idempotency header or custom hook metadata.
         // Re-run the exhaustive exact-URL search immediately before mutation;
         // crash recovery finds and removes an uncommitted exact-target orphan.
@@ -723,10 +758,10 @@ export const createGitHubWebhookRegistrationAdapter = (
         validateIdempotencyKey(idempotencyKey, deps.idempotencyKeyParser);
         const scope = validateContext(
           context,
-          deps.eventTypeParser,
           deps.remoteUrlParser,
           deps.registrationTargetNormalizer,
         );
+        assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'GitHub');
         const current = await read(context, remoteEndpointId);
         const confirmedEndpoint = await confirmedEndpointFor(context);
         if (current === null
@@ -766,7 +801,6 @@ export const createGitHubWebhookRegistrationAdapter = (
         validateRemoteId(remoteEndpointId, deps.remoteIdParser);
         const scope = validateContext(
           context,
-          deps.eventTypeParser,
           deps.remoteUrlParser,
           deps.registrationTargetNormalizer,
         );
@@ -809,4 +843,5 @@ export const createGitHubWebhookRegistrationAdapter = (
       },
     },
   );
+  return Object.freeze({ ...driver, setSecret });
 };

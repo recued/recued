@@ -1,6 +1,8 @@
 import { expect, it, vi } from 'vitest';
 import type { CalendarEventCreateRequest, CalendarEventCreateResult, CalendarEventDestinations } from '@recued/contracts';
 import { calendarCreateTimes, createCalendarCreateSurface, CALENDAR_CREATE_FIELD, type CalendarCreateDraft } from '../calendar-create-surface.js';
+import { createCalendarRecoveryStore } from '../calendar-draft-recovery.js';
+import { CALENDAR_TIME_FIELD } from '../calendar-time-finder.js';
 
 const calendars: CalendarEventDestinations = { destinations: [{ slug: 'work', calendar_id: 'primary', name: 'Work', provider: 'gcal', incarnation: 'calendar-1', can_invite: true }], unavailable: [] };
 const draft = (): CalendarCreateDraft => ({ destination: '', summary: 'Planning', description: '', location: '',
@@ -16,13 +18,129 @@ const result = (request: CalendarEventCreateRequest): CalendarEventCreateResult 
 } });
 const input = (name: string, value: string) => ({ getAttribute: (key: string) => key === CALENDAR_CREATE_FIELD ? name : null, value }) as unknown as HTMLElement;
 const setup = (callers: Parameters<typeof createCalendarCreateSurface>[0]['callers'] = {},
-  searchContacts?: Parameters<typeof createCalendarCreateSurface>[0]['searchContacts']) => {
+  searchContacts?: Parameters<typeof createCalendarCreateSurface>[0]['searchContacts'],
+  options: Partial<Pick<Parameters<typeof createCalendarCreateSurface>[0], 'recovery' | 'context'>> = {}) => {
   const onCreated = vi.fn(), render = vi.fn();
   const surface = createCalendarCreateSurface({ callers: { destinations: async () => calendars, create: async request => result(request), ...callers },
     actionAttr: 'data-action', context: () => ({ day: '2026-10-31', zone: 'America/Los_Angeles', preferredSlug: 'work' }),
-    now: () => Date.parse('2026-10-31T12:00:00Z'), render, onCreated, ...(searchContacts ? { searchContacts } : {}) });
+    now: () => Date.parse('2026-10-31T12:00:00Z'), render, onCreated, ...(searchContacts ? { searchContacts } : {}), ...options });
   return { surface, onCreated };
 };
+
+const recoveryStore = () => {
+  const rows = new Map<string, string>();
+  return createCalendarRecoveryStore({ scope: 'pair', now: () => Date.parse('2026-10-31T12:00:00Z'), storage: {
+    getItem: key => rows.get(key) ?? null, setItem: (key, value) => { rows.set(key, value); }, removeItem: key => { rows.delete(key); },
+  } });
+};
+const recoveryTarget = (id: string) => ({ getAttribute: (key: string) => key === 'data-calendar-draft-id' ? id : null }) as unknown as HTMLElement;
+const timeInput = (key: string, value: string | boolean) => ({ getAttribute: (attr: string) => attr === CALENDAR_TIME_FIELD ? key : null, value, checked: value }) as unknown as HTMLElement;
+
+it('applies a suggested interval without changing the rest of the draft or creating until explicitly saved', async () => {
+  const recovery = recoveryStore(), create = vi.fn(async (request: CalendarEventCreateRequest) => result(request));
+  const { surface } = setup({ create, overlaps: async request => ({ ...request, checked_at: Date.parse('2026-10-31T12:00Z'),
+    truncated: false, events: [], sources: [{ slug: 'local', name: 'On this server', status: 'local', last_synced_at: null }] }) }, undefined, { recovery });
+  surface.open(); await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  for (const [key, value] of Object.entries({ summary: 'Keep this title', description: 'Keep notes', location: 'Room 2', guestQuery: 'ada@example.test' })) surface.handleInput(input(key, value));
+  surface.handleAction('calendar-create-guest-add'); surface.flush();
+  const before = structuredClone(recovery.list()[0]!.values.draft);
+  surface.handleAction('calendar-create-find-open'); surface.handleAction('calendar-create-find-search');
+  await vi.waitFor(() => expect(surface.render()).toContain('6 suggested times'));
+  surface.handleAction(/data-action="(calendar-create-find-pick-[^"]+)"/.exec(surface.render())![1]!);
+  expect(create).not.toHaveBeenCalled(); surface.flush();
+  expect(recovery.list()[0]!.values.draft).toEqual({ ...before, start: '2026-11-02T09:00', end: '2026-11-02T10:00', startChoice: '', endChoice: '' });
+  surface.handleAction('calendar-create-save'); await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+  expect(create.mock.calls[0]![0]).toMatchObject({ summary: before.summary, description: before.description, location: before.location,
+    guests: before.guests, send_invitations: true, start_at: Date.parse('2026-11-02T17:00Z'), end_at: Date.parse('2026-11-02T18:00Z') });
+  surface.dispose();
+});
+
+it('recovers a suggested second reading of a repeated hour without changing its instant on another browser clock', async () => {
+  const recovery = recoveryStore();
+  const { surface } = setup({ overlaps: async request => ({ ...request, checked_at: Date.parse('2026-10-31T12:00Z'), truncated: false,
+    events: [{ summary: 'First reading busy', start_at: Date.parse('2026-11-01T08:00Z'), end_at: Date.parse('2026-11-01T09:00Z'), is_all_day: false, calendars: ['Work'] }],
+    sources: [{ slug: 'work', name: 'Work', status: 'synced', last_synced_at: Date.parse('2026-10-31T12:00Z') }] }) }, undefined, { recovery });
+  surface.open(); await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  surface.handleInput(input('summary', 'Repeated hour')); surface.handleAction('calendar-create-find-open');
+  for (const [key, value] of Object.entries({ from: '2026-11-01', through: '2026-11-01', duration: '30', workStart: '01:00', workEnd: '02:00', weekdays: false })) surface.handleInput(timeInput(key, value));
+  surface.handleAction('calendar-create-find-search');
+  await vi.waitFor(() => expect(surface.render()).toContain('2 suggested times'));
+  const actions = [...surface.render().matchAll(/data-action="(calendar-create-find-pick-[^"]+)"/g)]; surface.handleAction(actions[1]![1]!);
+  surface.dispose(); const row = recovery.list()[0]!;
+  expect(row.values.draft.startChoice).toBe(String(Date.parse('2026-11-01T09:30Z')));
+  const create = vi.fn(async (request: CalendarEventCreateRequest) => result(request));
+  const next = setup({ create }, undefined, { recovery, context: () => ({ day: '2026-11-10', zone: 'Asia/Tokyo' }) }).surface;
+  next.handleAction('calendar-create-recovery-resume', recoveryTarget(row.id));
+  await vi.waitFor(() => expect(next.render()).not.toContain('Loading writable calendars'));
+  next.handleAction('calendar-create-save'); await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+  expect(create.mock.calls[0]![0]).toMatchObject({ timezone: 'America/Los_Angeles', start_at: Date.parse('2026-11-01T09:30Z'), end_at: Date.parse('2026-11-01T10:00Z') });
+  next.dispose();
+});
+
+it('keeps reverted edits current without making recovery copies of an untouched form', async () => {
+  const recovery = recoveryStore(), { surface } = setup({}, undefined, { recovery });
+  surface.open(); await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  surface.flush(); expect(recovery.list()).toEqual([]);
+  surface.handleInput(input('summary', 'Temporary title')); surface.flush();
+  surface.handleInput(input('summary', '')); surface.flush(); expect(recovery.list()[0]!.values.draft.summary).toBe('');
+  surface.handleInput(input('description', 'Temporary notes')); surface.handleInput(input('description', ''));
+  surface.dispose(); expect(recovery.list()[0]!.values.draft.description).toBe('');
+});
+
+it('recovers every edited field on the original clock and retains an unavailable calendar until explicitly changed', async () => {
+  const recovery = recoveryStore(), first = setup({}, undefined, { recovery }).surface;
+  first.open(); await vi.waitFor(() => expect(first.render()).not.toContain('Loading writable calendars'));
+  for (const [key, value] of Object.entries({ summary: 'Draft planning', description: '\nKeep all notes\n', location: 'Room 2',
+    start: '2026-11-01T01:30', end: '2026-11-01T03:00', startChoice: String(Date.parse('2026-11-01T09:30:00Z')), guestQuery: 'Ada@Example.com' })) first.handleInput(input(key, value));
+  first.handleAction('calendar-create-guest-add'); first.handleInput(input('guestQuery', 'Unadded guest')); first.dispose();
+  const row = recovery.list()[0]!; expect(row.values.draft.guests).toEqual([{ email: 'ada@example.com' }]);
+  const create = vi.fn(async (request: CalendarEventCreateRequest) => result(request));
+  const second = setup({ create, destinations: async () => ({ destinations: [], unavailable: [] }) }, undefined, { recovery,
+    context: () => ({ day: '2026-11-15', zone: 'Asia/Tokyo' }) }).surface;
+  expect(second.render()).toContain('Unfinished calendar events'); expect(second.isOpen()).toBe(false);
+  second.handleAction('calendar-create-recovery-resume', recoveryTarget(row.id));
+  await vi.waitFor(() => expect(second.render()).not.toContain('Loading writable calendars'));
+  expect(second.render()).toContain('Times in America/Los_Angeles'); expect(second.render()).toContain('Keep all notes');
+  expect(second.render()).toContain('2026-11-01T01:30'); expect(second.render()).toContain('Unadded guest');
+  expect(second.render()).toContain('ada@example.com'); expect(second.render()).toContain('Calendar unavailable');
+  second.handleAction('calendar-create-save'); await Promise.resolve(); expect(create).not.toHaveBeenCalled();
+  second.flush(); expect(recovery.list()[0]!.values.draft).toEqual(row.values.draft);
+  second.handleAction('calendar-create-cancel'); second.handleAction('calendar-create-discard');
+  expect(recovery.list()).toEqual([]); second.dispose();
+});
+
+it('recovers a submitted request as a locked check and never substitutes another request after refresh', async () => {
+  const recovery = recoveryStore(); let fail!: (reason: unknown) => void;
+  const firstCreate = vi.fn<(request: CalendarEventCreateRequest) => Promise<CalendarEventCreateResult>>(() => new Promise((_done, reject) => { fail = reject; }));
+  const first = setup({ create: firstCreate }, undefined, { recovery }).surface;
+  first.open(); await vi.waitFor(() => expect(first.render()).not.toContain('Loading writable calendars'));
+  first.handleInput(input('summary', 'Original meeting')); first.handleInput(input('guestQuery', 'ada@example.com'));
+  first.handleAction('calendar-create-guest-add'); first.handleAction('calendar-create-save');
+  const sent = firstCreate.mock.calls[0]![0]; expect(recovery.list()[0]!.values.request).toEqual(sent); first.dispose();
+  const create = vi.fn(async (request: CalendarEventCreateRequest) => result(request)), destinations = vi.fn(async () => calendars);
+  const second = setup({ create, destinations }, undefined, { recovery }).surface;
+  second.handleAction('calendar-create-recovery-resume', recoveryTarget(recovery.list()[0]!.id));
+  expect(create).not.toHaveBeenCalled(); expect(destinations).not.toHaveBeenCalled();
+  expect(second.render()).toContain('Check save'); expect(second.render()).toContain('<fieldset disabled');
+  second.handleInput(input('summary', 'Must not replace it')); second.handleAction('calendar-create-save');
+  await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1)); expect(create.mock.calls[0]![0]).toEqual(sent);
+  await vi.waitFor(() => expect(recovery.list()).toEqual([]));
+  fail({ code: 'timeout' }); await Promise.resolve(); expect(recovery.list()).toEqual([]); second.dispose();
+});
+
+it('requires a fresh selection when the recovered calendar connection was replaced', async () => {
+  const recovery = recoveryStore(), first = setup({}, undefined, { recovery }).surface;
+  first.open(); await vi.waitFor(() => expect(first.render()).not.toContain('Loading writable calendars'));
+  first.handleInput(input('summary', 'Keep the details')); first.dispose();
+  const create = vi.fn(async (request: CalendarEventCreateRequest) => result(request));
+  const second = setup({ create, destinations: async () => ({ ...calendars, destinations: calendars.destinations.map(value => ({ ...value, incarnation: 'replacement' })) }) }, undefined, { recovery }).surface;
+  second.handleAction('calendar-create-recovery-resume', recoveryTarget(recovery.list()[0]!.id));
+  await vi.waitFor(() => expect(second.render()).toContain('This calendar connection changed'));
+  second.handleAction('calendar-create-save'); await Promise.resolve(); expect(create).not.toHaveBeenCalled();
+  second.handleInput(input('destination', JSON.stringify(['work', 'primary'])), true); second.handleAction('calendar-create-save');
+  await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1)); expect(create.mock.calls[0]![0].expected_incarnation).toBe('replacement');
+  second.dispose();
+});
 
 it('reads inclusive all-day dates across DST and requires a valid, explicit timed reading', () => {
   const values = { ...draft(), allDay: true, start: '2026-10-31', end: '2026-11-02' };
@@ -176,4 +294,76 @@ it('lets an input method confirm text without adding a guest or submitting the e
   expect(preventDefault).not.toHaveBeenCalled();
   surface.handleKeyDown({ key: 'Enter', isComposing: false, keyCode: 13, target, preventDefault } as unknown as KeyboardEvent);
   expect(surface.render()).toContain('Remove ada@example.com'); expect(create).not.toHaveBeenCalled();
+});
+
+it('releases an approved leave with its recovery copy intact and retires a late destination read', async () => {
+  const recovery = recoveryStore(); let resolve!: (value: CalendarEventDestinations) => void;
+  const { surface, onCreated } = setup({ destinations: () => new Promise(done => { resolve = done; }) }, undefined, { recovery });
+  surface.open(); surface.handleInput(input('summary', 'Keep this source detour draft'));
+  const resume = vi.fn(); expect(surface.beforeLeave(resume)).toBe(false);
+  expect(surface.releaseAfterLeave()).toBe(true); expect(surface.isOpen()).toBe(false);
+  expect(recovery.list()[0]?.values.draft.summary).toBe('Keep this source detour draft');
+  resolve(calendars); await Promise.resolve(); await Promise.resolve();
+  expect(surface.isOpen()).toBe(false); expect(resume).not.toHaveBeenCalled(); expect(onCreated).not.toHaveBeenCalled(); surface.dispose();
+});
+
+it('does not release a calendar create that is still being submitted', async () => {
+  let finish!: (value: CalendarEventCreateResult) => void;
+  const create = vi.fn<(request: CalendarEventCreateRequest) => Promise<CalendarEventCreateResult>>(() => new Promise(done => { finish = done; }));
+  const { surface } = setup({ create });
+  surface.open(); await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  surface.handleInput(input('summary', 'Still submitting')); surface.handleAction('calendar-create-save');
+  expect(create).toHaveBeenCalledTimes(1); expect(surface.releaseAfterLeave()).toBe(false); expect(surface.isOpen()).toBe(true);
+  finish(result(create.mock.calls[0]![0])); await vi.waitFor(() => expect(surface.isOpen()).toBe(false)); surface.dispose();
+});
+
+it('keeps the latest draft before following the first destination and prevents writes while choosing how to leave', async () => {
+  const recovery = recoveryStore(), create = vi.fn(async (request: CalendarEventCreateRequest) => result(request));
+  const { surface } = setup({ create }, undefined, { recovery }); surface.open();
+  await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  for (const [key, value] of Object.entries({ summary: 'Keep for later', description: '\nLatest notes\n', location: 'Room 2',
+    start: '2026-11-01T01:30', end: '2026-11-01T03:00', startChoice: String(Date.parse('2026-11-01T09:30Z')), guestQuery: 'ada@example.test' })) surface.handleInput(input(key, value));
+  surface.handleAction('calendar-create-guest-add'); surface.handleInput(input('guestQuery', 'Unadded guest'));
+  const resume = vi.fn(), replacement = vi.fn(); surface.beforeLeave(resume); surface.beforeLeave(replacement);
+  surface.handleInput(input('summary', 'Must not replace it')); surface.handleAction('calendar-create-save');
+  const saved = vi.spyOn(recovery, 'save').mockReturnValue(false);
+  surface.handleAction('calendar-create-later'); expect(surface.isOpen()).toBe(true); expect(resume).not.toHaveBeenCalled();
+  expect(surface.render()).toContain('could not be confirmed'); saved.mockRestore();
+  surface.handleAction('calendar-create-later');
+  expect(resume).toHaveBeenCalledOnce(); expect(replacement).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled();
+  expect(surface.isOpen()).toBe(false); expect(surface.render()).toContain('Unfinished calendar events');
+  const row = recovery.list()[0]!;
+  expect(row.values.draft).toMatchObject({ summary: 'Keep for later', description: '\nLatest notes\n', location: 'Room 2',
+    destination: JSON.stringify(['work', 'primary']), startChoice: String(Date.parse('2026-11-01T09:30Z')),
+    guests: [{ email: 'ada@example.test' }], guestQuery: 'Unadded guest' });
+  surface.resumeDraft(row.id); await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  surface.flush(); expect(recovery.list()[0]!.values).toEqual(row.values); surface.dispose();
+});
+
+it('keeps an uncertain creation unchanged and checks only its original request after resuming', async () => {
+  const recovery = recoveryStore();
+  const create = vi.fn<(request: CalendarEventCreateRequest) => Promise<CalendarEventCreateResult>>()
+    .mockRejectedValueOnce({ code: 'timeout' }).mockImplementation(async request => result(request));
+  const { surface } = setup({ create }, undefined, { recovery }); surface.open();
+  await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  surface.handleInput(input('summary', 'Uncertain event')); surface.handleInput(input('guestQuery', 'ada@example.test'));
+  surface.handleAction('calendar-create-guest-add'); surface.handleAction('calendar-create-save');
+  await vi.waitFor(() => expect(surface.hasInFlightWork()).toBe(false));
+  const before = recovery.list()[0]!, resume = vi.fn(); expect(before.status).toBe('unknown');
+  surface.beforeLeave(resume); surface.handleAction('calendar-create-later');
+  expect(resume).toHaveBeenCalledOnce(); expect(recovery.list()).toEqual([before]); expect(create).toHaveBeenCalledOnce();
+  surface.resumeDraft(before.id); expect(create).toHaveBeenCalledOnce();
+  surface.handleAction('calendar-create-save'); await vi.waitFor(() => expect(surface.isOpen()).toBe(false));
+  expect(create.mock.calls[1]![0]).toEqual(create.mock.calls[0]![0]); expect(recovery.list()).toEqual([]); surface.dispose();
+});
+
+it('offers no keep-for-later action without recovery and leaves an untouched form without a prompt', async () => {
+  const { surface } = setup(); surface.open();
+  await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  expect(surface.beforeLeave(vi.fn())).toBe(true); surface.open();
+  await vi.waitFor(() => expect(surface.render()).not.toContain('Loading writable calendars'));
+  surface.handleInput(input('summary', 'Unsaved draft')); const resume = vi.fn(); surface.beforeLeave(resume);
+  expect(surface.render()).not.toContain('Keep draft for later'); surface.handleAction('calendar-create-later');
+  expect(surface.isOpen()).toBe(true); expect(resume).not.toHaveBeenCalled();
+  surface.handleAction('calendar-create-discard'); expect(resume).toHaveBeenCalledOnce(); expect(surface.isOpen()).toBe(false); surface.dispose();
 });

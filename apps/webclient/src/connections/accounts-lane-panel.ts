@@ -312,6 +312,7 @@ type AccountsAction =
   | 'accounts-success-go-chat'
   | 'accounts-success-open-lane'
   | 'accounts-success-refresh'
+  | 'accounts-retry-inventory'
   | 'accounts-dismiss-success'
   | 'accounts-open-detail'
   | 'accounts-delete'
@@ -1942,6 +1943,19 @@ export const mountAccountsLanePanel = (
     opts.onSetupHandoff(destination);
   };
   const handlers: ActionHandlers<AccountsAction> = {
+    'accounts-retry-inventory': (_dataset, _event, element) => {
+      if (disposed || state.loading || state.stage !== 'list' || state.error === null) return;
+      const reclaim = doc.activeElement === element; const lane = state.lane;
+      const pending = doRefresh(false, true); const gen = loadGeneration;
+      void pending.then(() => {
+        const active = doc.activeElement as HTMLElement | null;
+        if (disposed || gen !== loadGeneration || lane !== state.lane || state.stage !== 'list' || !reclaim
+          || active !== doc.body && active?.dataset.action !== 'accounts-retry-inventory') return;
+        (host.querySelector<HTMLElement>('[data-action="accounts-retry-inventory"]')
+          ?? host.querySelector<HTMLElement>('[data-action="accounts-open-detail"]')
+          ?? host.querySelector<HTMLElement>('[data-action="accounts-open-add"]'))?.focus({ preventScroll: true });
+      });
+    },
     'accounts-open-add': () => {
       if (!confirmDiscardSetup()) return;
       openAdd();

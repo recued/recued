@@ -1,5 +1,5 @@
 import type { LLMAdapter, LLMFinishReason, LLMMessage } from '../types.js';
-import { LLMError } from '../types.js';
+import { answeredModelField, LLMError, markOutputLimit } from '../types.js';
 import { callProvider } from './anthropic.js';
 import { hasNonTextPart, joinTextParts, toGoogleParts } from './content-parts.js';
 import { joinApiBase } from '../base-url.js';
@@ -40,15 +40,23 @@ export const createGoogleAdapter = (): LLMAdapter => ({
       },
       body,
       options.timeout_ms,
+      options.signal,
     );
 
     const finishReason = extractGoogleFinishReason(response);
-    return {
+    const usage = extractUsage(response, options.model);
+    let text: string;
+    try {
       // Gemini safety/recitation/blocklist stops may contain no answer parts.
       // The normalized finish reason is the evidence; defer its typed
       // classification to the executor rather than reporting a parse failure.
-      text: finishReason === 'content_filter' ? '' : extractGoogleText(response),
-      usage: extractUsage(response, options.model),
+      text = finishReason === 'content_filter' ? '' : extractGoogleText(response);
+    } catch (e) {
+      throw markOutputLimit(e, finishReason, usage);
+    }
+    return {
+      text,
+      usage,
       ...(finishReason !== undefined
         ? { finish_reason: finishReason }
         : {}),
@@ -209,5 +217,6 @@ const extractUsage = (
     ...(cacheRead !== undefined ? { cache_read_input_tokens: cacheRead } : {}),
     ...(reasoning !== undefined ? { reasoning_tokens: reasoning } : {}),
     model_id: modelId,
+    ...answeredModelField((response as { modelVersion?: unknown }).modelVersion),
   };
 };

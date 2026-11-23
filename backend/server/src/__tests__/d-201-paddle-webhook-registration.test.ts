@@ -1,4 +1,9 @@
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
+import type { ConnectionRow } from '@recued/contracts';
+import { encodeAuthForStorage } from '../connection-auth-storage.js';
+import { createWebhookIngressStore } from '../storage/webhook-ingress-store.js';
+import { createBuiltinWebhookRegistrationProfileRegistry } from '../webhook-registration-profile-presets.js';
 
 import {
   createPaddleWebhookRegistrationAdapter,
@@ -324,8 +329,27 @@ describe('D-201 Slices 8I + 9I + 9AG + 9AK + 9AO + 9AU + 9AZ + 9BD Paddle regist
       .resolves.toMatchObject([{
         endpoint: { event_types: ['normalized.event'] },
       }]);
-    expect(observed.filter((value) => value === 'Custom Event').length)
-      .toBeGreaterThanOrEqual(2);
+    // Paddle's own name went through the parser; the desired one did not, since
+    // a search no longer depends on it (D-201 Slice 10G).
+    expect(observed).toEqual(['Custom Event']);
+
+    // Create and update check the desired names, before any request.
+    observed.length = 0;
+    const refusing = vi.fn();
+    const strict: WebhookDotSegmentEventTypeParser = {
+      preset: EVENT_TYPE_PRESET.parser,
+      parse(value) {
+        observed.push(value);
+        return null;
+      },
+    };
+    const adapter = makeAdapter({ eventTypeParser: strict, fetchImpl: refusing });
+    await expect(adapter.create(customContext, 'recued-d201-create-key'))
+      .rejects.toMatchObject({ code: 'registration_input_invalid' });
+    await expect(adapter.update(customContext, REMOTE_ID, 'recued-d201-update-key'))
+      .rejects.toMatchObject({ code: 'registration_input_invalid' });
+    expect(observed).toEqual(['Custom Event', 'Custom Event']);
+    expect(refusing).not.toHaveBeenCalled();
   });
 
   it('uses injected destination labels and grammar for desired and provider URLs', async () => {
@@ -1068,5 +1092,165 @@ describe('D-201 Slices 8I + 9I + 9AG + 9AK + 9AO + 9AU + 9AZ + 9BD Paddle regist
     expect(createWebhookRegistrationRuntimeRegistry([adapter]).get(
       'paddle.notification.v1',
     )).not.toBeNull();
+  });
+});
+
+describe('D-201 Slice 10Z — a Paddle destination a late create left beside the committed one (the keyless limit)', () => {
+  const DUPLICATE_ID = `ntfset_${'b'.repeat(26)}`;
+  const committed = async () => ({
+    remote_endpoint_id: REMOTE_ID,
+    confirmed_endpoint_url: ENDPOINT,
+    endpoint_secret_key: ENDPOINT_SECRET,
+  });
+
+  it('is found as owned beside the committed one, by the proof an uncommitted one has', async () => {
+    const fetchImpl = vi.fn(async () => json(listEnvelope({
+      data: [
+        setting(testContext),
+        // Made for this ingress at this address, holding a secret never stored.
+        setting(testContext, { id: DUPLICATE_ID }),
+        // Another's description at this address: not this ingress's.
+        setting(testContext, { id: `ntfset_${'c'.repeat(26)}`, description: 'Someone else' }),
+      ],
+    })));
+    const matches = await makeAdapter({ resolveOwnership: committed, fetchImpl }).find(testContext);
+    expect(matches.map((match) => [match.endpoint.remote_endpoint_id, match.correlation])).toEqual([
+      [REMOTE_ID, 'owned'],
+      [DUPLICATE_ID, 'owned'],
+      [`ntfset_${'c'.repeat(26)}`, 'url_only'],
+    ]);
+  });
+
+  it('is removed beside the committed one; another description, or another address, is still refused', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(json(envelope(setting(testContext, { id: DUPLICATE_ID }))))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await expect(makeAdapter({ resolveOwnership: committed, fetchImpl }).delete(testContext, DUPLICATE_ID))
+      .resolves.toBeUndefined();
+    expect(fetchImpl.mock.calls[1]![1]?.method).toBe('DELETE');
+
+    for (const foreign of [
+      { description: 'Someone else' },
+      { destination: 'https://foreign.example/webhook' },
+    ]) {
+      const refused = vi.fn().mockResolvedValueOnce(json(envelope(setting(testContext, { id: DUPLICATE_ID, ...foreign }))));
+      await expect(makeAdapter({ resolveOwnership: committed, fetchImpl: refused }).delete(testContext, DUPLICATE_ID))
+        .rejects.toMatchObject({ code: 'upstream_rejected' });
+      expect(refused).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+describe('D-201 Slice 10AD — a Paddle webhook lined up, never switched on, retired (10AA finding 10)', () => {
+  it("its retire's cleanup proves the destination by the secret it had, and deletes it, on the production registry", async () => {
+    const db = new Database(':memory:');
+    try {
+      const ingressStore = createWebhookIngressStore(db, {
+        getEncryptionKey: () => new Uint8Array(32).fill(5),
+        newIngressId: () => testContext.desired.ingress_id,
+        newPublicId: () => 'opaquePublicId_0123456789abcdef',
+      });
+      const ingress = ingressStore.create({
+        display_name: 'Paddle sandbox',
+        profile_id: 'paddle.notification.v1',
+        environment: 'test',
+        paired_connection_id: 'paddle-api',
+        registration_mode: 'managed_endpoint',
+        selected_event_types: [...testContext.desired.event_types],
+      });
+      await ingressStore.commitManagedRegistrationCreate({
+        expected: ingressStore.prepareManagedRegistration(ingress.ingress_id).expected,
+        remote_endpoint_id: REMOTE_ID,
+        endpoint_url: ENDPOINT,
+        credentials: { endpoint_secret_key: ENDPOINT_SECRET },
+        requires_handshake: false,
+      });
+      // Lined up and never switched on, then retired: its secret retires
+      // with it, before the cleanup runs.
+      expect(ingressStore.retire(ingress.ingress_id)).toMatchObject({ registration_state: 'cleanup_pending' });
+      expect(await ingressStore.readActiveCredentialVersions(ingress.ingress_id)).toEqual([]);
+      const key = new Uint8Array(32).fill(7);
+      const row: ConnectionRow = {
+        pk: 'api:paddle-api',
+        kind: 'api',
+        name: 'paddle-api',
+        display_name: 'Paddle',
+        config_json: JSON.stringify({ vendor: 'paddle' }),
+        auth_ciphertext: await encodeAuthForStorage(
+          { type: 'bearer', token: TEST_API_KEY },
+          { kind: 'api', name: 'paddle-api' },
+          () => key,
+        ),
+        enrolled_at: 1,
+        updated_at: 1,
+      };
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(json(envelope(setting(testContext))))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      vi.stubGlobal('fetch', fetchImpl);
+      try {
+        const adapter = createBuiltinWebhookRegistrationProfileRegistry({
+          connectionStore: { get: (kind: string, name: string) => (kind === 'api' && name === 'paddle-api' ? row : null) } as never,
+          ingressStore,
+          connectionKeyProvider: () => key,
+        }).get('paddle.notification.v1')!;
+        // Before 10AD its ownership read only an active secret, and refused
+        // (`registration_input_invalid`) on every try: the destination stayed.
+        await expect(adapter.delete(testContext, REMOTE_ID)).resolves.toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(fetchImpl.mock.calls.at(-1)![1]?.method).toBe('DELETE');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('the credentials a webhook had when retired are read only while its cleanup is pending', async () => {
+    const db = new Database(':memory:');
+    const clock = { now: 2_100_000_000_000 };
+    try {
+      const ingressStore = createWebhookIngressStore(db, {
+        now: () => clock.now,
+        getEncryptionKey: () => new Uint8Array(32).fill(5),
+        newIngressId: () => testContext.desired.ingress_id,
+        newPublicId: () => 'opaquePublicId_0123456789abcdef',
+      });
+      const ingress = ingressStore.create({
+        display_name: 'Paddle sandbox',
+        profile_id: 'paddle.notification.v1',
+        environment: 'test',
+        paired_connection_id: 'paddle-api',
+        registration_mode: 'managed_endpoint',
+        selected_event_types: [...testContext.desired.event_types],
+      });
+      await ingressStore.commitManagedRegistrationCreate({
+        expected: ingressStore.prepareManagedRegistration(ingress.ingress_id).expected,
+        remote_endpoint_id: REMOTE_ID,
+        endpoint_url: ENDPOINT,
+        credentials: { endpoint_secret_key: ENDPOINT_SECRET },
+        requires_handshake: false,
+      });
+      // Not retired: nothing.
+      expect(await ingressStore.readRetiringCredentialVersions(ingress.ingress_id)).toEqual([]);
+      // A version rotated out before the retire is not one it had then.
+      const rotated = await ingressStore.writeCredentialVersion(ingress.ingress_id, {
+        endpoint_secret_key: `pdl_${REMOTE_ID}_${'R'.repeat(32)}`,
+      });
+      clock.now += 1_000;
+      ingressStore.retireCredentialVersion(ingress.ingress_id, 1);
+      clock.now += 1_000;
+      ingressStore.retire(ingress.ingress_id);
+      expect((await ingressStore.readRetiringCredentialVersions(ingress.ingress_id)).map((version) => version.version))
+        .toEqual([String(rotated.version)]);
+      // Its cleanup done: nothing more is read.
+      ingressStore.completeManagedRegistrationCleanup({
+        expected: ingressStore.prepareManagedRegistrationCleanup(ingress.ingress_id, 'retire').expected,
+        intent: 'retire',
+      });
+      expect(await ingressStore.readRetiringCredentialVersions(ingress.ingress_id)).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 });

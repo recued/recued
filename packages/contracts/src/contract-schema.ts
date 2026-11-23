@@ -737,9 +737,12 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       // session-scope overlay (5.a). D-182 §8 — `'raw_op'` is the recipe-less
       // raw-op door grant (a session grant minted from a human's per-call
       // approval of a door's raw catalog op — no recipe to pin, op + connection
-      // scope + exact payload instead). Schema admits the literals; the matcher
-      // / consumption own their semantics and fail closed on every other surface.
-      grant_mode: 'enum:exact|batch|open|scoped|raw_op?',
+      // scope + exact payload instead). D-177 N.15 — `'kind'` is "Allow in this
+      // chat": the op (+ connection, + recipe version when a stored recipe made
+      // the call) with no argument pin. Schema admits the literals; the
+      // matcher / consumption own their semantics and fail closed on every other
+      // surface.
+      grant_mode: 'enum:exact|batch|open|scoped|raw_op|kind?',
       channel_session_id: 'string?',
       bound_recipe: 'bound_recipe_ref?',
       // D-177 N.14 — the door binding (see `ContractDefinition.bound_contract_id`).

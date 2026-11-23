@@ -170,6 +170,7 @@ import type {
 } from './execution-case-offer-lifecycle.js';
 import { createSituationPrefetch } from './situations/prefetch.js';
 import { situationPersonName } from './situations/model-projection.js';
+import { createSituationPickSettlement } from './situations/named-people.js';
 import type { SituationAccess } from './situations/access.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
@@ -669,7 +670,9 @@ export const createChatStreamMiddlewares = (
   if (deps.buildCatalog) middlewares.push(createCatalogSource(deps.buildCatalog));
   if (deps.getSituationAccess) {
     middlewares.push(createSituationPrefetch({ getAccess: deps.getSituationAccess,
-      personName: id => situationPersonName(deps.getContactStore?.())(id) }));
+      personName: id => situationPersonName(deps.getContactStore?.())(id),
+      // D-406 follow-up — a contact the owner picked settles its own name.
+      settledByPick: message => createSituationPickSettlement(deps.getContactStore?.())(message) }));
   }
   // scoped-grant parse (D-177 rule 5, 5.c) — before-turn over the user's own
   // utterance; files an inert proposal row, contributes nothing model-visible.

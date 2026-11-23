@@ -51,7 +51,7 @@ import type { RecipeStore } from './recipe-store.js';
 import type { DishStore } from './dish-store.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
-import type { ExecuteRequest, ExecuteResponse } from './types.js';
+import { executeResponseAuditRunId, type ExecuteRequest, type ExecuteResponse } from './types.js';
 import type { NotificationMessage } from '@recued/notification';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
@@ -602,6 +602,8 @@ export const createServerAutoRunScheduler = (
     // breaker buys anything at all.
     let failureCode: string | undefined;
     let failureNeeds: readonly RunNeed[] | undefined;
+    // D-402 slice E4b — the failing run, so a hand-off's notice can carry it on in Chat.
+    let failureRunId: string | undefined;
     let totalRefusal = false;
     /** D-268 — the run reported an error the recipe DECIDED to raise. Nothing
      *  about the circuit changed, so nothing about the circuit is written. */
@@ -714,6 +716,7 @@ export const createServerAutoRunScheduler = (
           failureReason = visibleFailure(first?.message ?? 'execution failed');
           // D-346 follow-up — what the run needed, so the notice says how to fix it.
           failureNeeds = (result as { run_needs?: readonly RunNeed[] }).run_needs;
+          failureRunId = executeResponseAuditRunId(result);
           terminated = result.run_terminated;
         }
       } catch (e) {
@@ -728,6 +731,8 @@ export const createServerAutoRunScheduler = (
           const code = (e as { code?: unknown } | null)?.code;
           failureCode = typeof code === 'string' ? code : undefined;
           failureReason = visibleFailure(e);
+          const run_id = (e as { run_id?: unknown } | null)?.run_id;
+          failureRunId = typeof run_id === 'string' ? run_id : undefined;
         }
       }
       if (outcome === 'failed' && stoppedByRestart(failureCode, terminated)) {
@@ -760,6 +765,7 @@ export const createServerAutoRunScheduler = (
           prior_consecutive_failures: priorFailures,
           threshold: CIRCUIT_BREAKER_THRESHOLD,
           needs: failureNeeds,
+          run_id: failureRunId,
         });
         // ⚠ A `conditional` code reaching here means the run reported an error
         // the recipe DECIDED to raise — a tripped guard. It is not evidence the

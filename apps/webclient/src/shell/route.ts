@@ -53,6 +53,8 @@ export const WEBCLIENT_ROUTE_IDS = [
   // otherwise. `#data/today` rewrites to this below.
   'today',
   'yours',
+  // D-405 slice 4 — the "Set up" page: what is connected, what is empty, and what each pack still needs.
+  'setup',
   'logs',
   // D-250 § D7 / § Open 10 — the owner's OWN metrics. Beside Logs in the review
   // section, NOT under Server (operational configuration) and not replacing Chat as the
@@ -381,6 +383,29 @@ const DATA_VERIFICATION_REVIEW_RESULTS: ReadonlySet<string> = new Set([
 export const serializeChatSessionAddress = (
   address: ChatSessionAddress,
 ): string => serializeShellRoute('chat', 'session', address.sessionId);
+
+/** D-402 slice E4b — `#chat/carry-on/<run_id>`, the link on a hand-off's notice (the server's
+ *  `carryOnLink`). It names a run, never a chat: the bootstrap asks for the chat kept for that run
+ *  and hands over to it in place, with the message its composer starts with. */
+export interface ChatCarryOnAddress {
+  readonly runId: string;
+}
+
+export const serializeChatCarryOnAddress = (
+  address: ChatCarryOnAddress,
+): string => serializeShellRoute('chat', 'carry-on', address.runId);
+
+export const parseChatCarryOnAddress = (
+  route: ShellRoute,
+): ChatCarryOnAddress | null => {
+  if (
+    route.surface !== 'chat'
+    || route.segments.length !== 2
+    || route.segments[0] !== 'carry-on'
+  ) return null;
+  const runId = route.segments[1] ?? '';
+  return runId.length > 0 ? { runId } : null;
+};
 
 export const parseChatSessionAddress = (
   route: ShellRoute,

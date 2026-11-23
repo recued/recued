@@ -6,7 +6,7 @@
  *  be worded and held by the new one. */
 
 import type Database from 'better-sqlite3';
-import { resolveServerTimeZone, shouldSuppressForQuietHours } from '@recued/contracts';
+import { resolveServerTimeZone, shouldSuppressForQuietHours, reminderMailReference } from '@recued/contracts';
 
 import { handleNotificationSend, type NotificationDeps } from '../../notification-handler.js';
 import {
@@ -19,6 +19,9 @@ import { moveReminderTasks, type ReminderTaskMoveDeps } from '../../reminders/re
 import { createQuietHoursStore, type QuietHoursStore } from '../../storage/quiet-hours-store.js';
 import { createReminderStore } from '../../storage/reminder-store.js';
 import { createServerTimeZoneStore, type ServerTimeZoneStore } from '../../storage/server-timezone-store.js';
+import { createWorkEntityStore } from '../../storage/work-entity-store.js';
+import { createInstanceStore } from '../../collections/instance-store.js';
+import { collectionTableName, createCollectionTable } from '../../collections/table.js';
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
 
 export interface ReminderWiringDeps {
@@ -44,7 +47,25 @@ const settingsOf = (deps: ReminderWiringDeps): {
 /** The `core.reminder.*` dispatchers. */
 export const wireReminderDispatchers = (deps: ReminderWiringDeps): ReminderDispatchers => {
   const { zone, quiet } = settingsOf(deps);
+  let work: ReturnType<typeof createWorkEntityStore> | undefined;
+  let instances: ReturnType<typeof createInstanceStore> | undefined;
+  const mail = new Map<string, ReturnType<typeof createCollectionTable>>();
   return createReminderDispatchers({
+    readMail: ref => {
+      instances ??= createInstanceStore({ db: deps.db });
+      if (!instances.get('mail', ref.slug)) return null;
+      const incarnation = instances.getIncarnation?.('mail', ref.slug);
+      if (!incarnation || !deps.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(collectionTableName('mail', ref.slug))) return null;
+      let table = mail.get(ref.slug);
+      if (!table) { table = createCollectionTable({ db: deps.db, platform: 'mail', slug: ref.slug }); mail.set(ref.slug, table); }
+      const record = table.get(ref.record_id);
+      return record ? reminderMailReference(ref.slug, record, incarnation) ?? null : null;
+    },
+    readRecord: (kind, id) => {
+      work ??= createWorkEntityStore(deps.db);
+      const record = work.readByKind(kind, id);
+      return record && work.listSources().some(source => source.id === record.source_id && source.sync_posture !== 'read_through') ? record : null;
+    },
     store: createReminderStore(deps.db),
     timeZone: () => ownerZone(zone),
     quietHours: () => quiet.read(),

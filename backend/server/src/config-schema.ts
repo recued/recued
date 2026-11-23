@@ -19,6 +19,7 @@ import {
   type ServerConfigField,
   type ServerConfigValue,
   type ServerRpcRegistry,
+  type ServerLlmSourceLastCall,
   type ServerLlmUsageSource,
 } from '@recued/contracts';
 import {
@@ -291,6 +292,12 @@ export type ConfigMethods =
   | 'server.setLlmPrompt'
   | 'server.probeLlmSource';
 
+/** The results a source's last call can have (`ServerLlmSourceLastCall`), to read a persisted
+ *  record against: one written by another version is shown only when this one knows its result. */
+const LAST_CALL_RESULTS: ReadonlySet<string> = new Set<ServerLlmSourceLastCall['result']>([
+  'answered', 'output_limit', 'auth', 'unreachable', 'model_missing', 'rate_limited', 'provider_error', 'rejected',
+]);
+
 /** Builds the `server.*` config rpc slice. Factory takes just
  *  `llmManager` (required) + optional `runtimeConfig`; the LLM side is
  *  always wired when this slice is built, the runtime side extends the
@@ -558,6 +565,16 @@ export const makeConfigHandlers = (
         }
         const config = llmManager.getConfig();
         const sources: ServerLlmUsageSource[] = [];
+        /** The source's last call, while it still has the model the call was for: a call made
+         *  before the owner chose another model says nothing about the one they have now. A
+         *  persisted record is read as untrusted, field by field. */
+        const lastCallOf = (id: string, model: string): { last_call?: ServerLlmSourceLastCall } => {
+          const last = quota.lastCall?.(id);
+          if (last === undefined || last.model !== model || typeof last.at !== 'number'
+            || !LAST_CALL_RESULTS.has(last.result)) return {};
+          return { last_call: { at: last.at, result: last.result,
+            ...(typeof last.answered_by === 'string' ? { answered_by: last.answered_by } : {}) } };
+        };
 
         const chatSlot = (
           key: 'slot_1' | 'slot_2',
@@ -582,6 +599,7 @@ export const makeConfigHandlers = (
               : {}),
             over_limit: limit !== undefined && limit > 0 && used >= limit,
             in_cooldown: quota.isInCooldown(key),
+            ...lastCallOf(key, slot.model),
           });
         };
         chatSlot('slot_1', 'Slot 1: fast');
@@ -645,6 +663,7 @@ export const makeConfigHandlers = (
               : {}),
             over_limit: limit !== undefined && limit > 0 && used >= limit,
             in_cooldown: quota.isInCooldown(entry.id),
+            ...lastCallOf(entry.id, entry.model),
           });
         }
 

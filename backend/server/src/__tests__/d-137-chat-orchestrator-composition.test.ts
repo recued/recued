@@ -35,7 +35,7 @@ import { createUserMemoryStore, type UserMemoryRow } from '../user-memory-store.
 import { createHeldResultTurnStore, createHeldRunWatchStore } from '../storage/chat-held-result-store.js';
 import type { BlobStore } from '../storage/blob-store.js';
 import { isMcpWireRegistryTool } from '../mcp-server.js';
-import { createInMemoryCollection, type AuditLogStore } from '@recued/storage';
+import { createAuditLogStore, createInMemoryCollection, type ActivityEntry, type AuditEntry, type AuditLogStore } from '@recued/storage';
 import type { EventBus } from '../events/bus.js';
 import type { KeyManager } from '../key-manager.js';
 import type {
@@ -55,6 +55,10 @@ import { createContractStore } from '../storage/contract-store.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
+// D-402 slice E2 — the process's own recorder, as the composition imports it (a module reset in another test
+// would give a dynamic import a fresh one), and the drafts it keeps.
+import { browserFlows } from '../bridges/browser-flow-record.js';
+import { createKitchenDraftStore } from '../kitchen-draft-store.js';
 
 type TestEventBus = EventBus & { emit: ReturnType<typeof vi.fn> };
 type LateGetters = Pick<
@@ -189,6 +193,10 @@ const expectedBundleKeys = [
   // apart from chat, so they reach it late-bound (`AppContext.tier1HeldRef`), as they
   // reach `internalRegistry`.
   'onTier1Held',
+  // A held Tier-1 call, approved, runs under its proposal's reviewed change, so the owner can
+  // undo it from its card. Late-bound into the execute deps the same way
+  // (`AppContext.tier1ApprovedRunRef`).
+  'runApprovedTier1Write',
   // D-343 slice 4 — opens a conversation holding a notice, for Today's "Close the day".
   'openNoticeConversation',
   // D-219 — the capture-only argument buffer, surfaced ONLY so the retention
@@ -229,8 +237,29 @@ const expectedChatDepsKeys = [
   'dropSessionPiiLedger',
   // D-214 — source/privacy deletion cascades through derived case rows.
   'deleteSessionExecutionCases',
+  // D-348 — and through the requests kept for chains to learn from.
+  'deleteSessionChainEvidence',
   // D-335 slice W4 — the browser flows the owner kept, beside the cases in Learning.
   'executionBrowserFlows',
+  // D-402 slice A4 — "Make a recipe" on a request in the chat. A missing wiring must be a red:
+  // without it the chat's button answers `not_configured` on a server that holds the plan.
+  'executionRequestRecipe',
+  // D-402 slice E4b — "Carry on in Chat" from a hand-off's notice. Unwired, the link answers
+  // `not_configured` on every server.
+  'executionCarryOn',
+  // D-404 slice B1 — which steps under chat answers landed. Unwired, no row ever offers Ask again.
+  'nextStepsLanded',
+  // D-405 slice 3 — the hints the owner said "Not now" to. Unwired, `chat.hints.*` answer `not_configured`
+  // and no row offers "Not now".
+  'hints',
+  // D-405 slice 4 — the Set up page's mail, calendar and files, the fact the hints read. Unwired, the
+  // page cannot say what is connected.
+  'setupFeatures',
+  // D-406 slice 1 — the check of an email the owner picked for a message. Unwired, `chat.send` refuses
+  // every message that names one.
+  'pickedMail',
+  // D-406 (Q4) — and of a calendar event the owner picked. Unwired, `chat.send` refuses every message naming one.
+  'pickedCalendar',
   'executionCaseFeedbackRecorder',
   'executionCaseDiagnostics',
   'executionCaseLifecycle',
@@ -816,7 +845,7 @@ describe('composeChatOrchestrator', () => {
     expect(catalog.length).toBeGreaterThan(registryOnly.length);
   });
 
-  it('builds chatDeps with exact field parity and no auditLog key when auditLog is absent', () => {
+  it('builds chatDeps with exact field parity and no auditLog key when auditLog is absent', async () => {
     const bus = eventBus();
     const { bundle } = composeHarness({ eventBus: bus, auditLog: undefined });
 
@@ -825,6 +854,8 @@ describe('composeChatOrchestrator', () => {
     expect(bundle.chatDeps.connectionMcpStore).toBe(bundle.connectionMcpStore);
     expect(bundle.chatDeps.orchestrator).toBe(bundle.orchestrator);
     expect(bundle.chatDeps.planApprovalStore).toBeDefined();
+    await expect(bundle.chatDeps.executionRequestRecipe!({ session_id: 'unrecorded-composition-session',
+      turn_id: 'unrecorded-composition-turn' })).resolves.toMatchObject({ ok: false, reason: 'nothing_kept' });
     expect(bundle.chatDeps.inboundTokenStore).toBe(bundle.inboundTokenStore);
     // D-171 slice 2c — the catalog provider reads the live internal registry
     // but EXCLUDES Tier 3 (peer-MCP passthroughs are rejected on the inbound
@@ -1346,7 +1377,7 @@ describe('D-337 slice O — the composed chat reads a vendor-neutral CRM write o
   // REAL wire, from the run's own stores (the connections, their operation profiles, the
   // manifests), so a composition that stopped passing them through fails HERE.
   const OWNER_SOURCE = { channel: 'chat', actor: 'user_self', chat_session_id: 'cs1', user_id: 'owner' };
-  const run = async (approval: 'ask' | 'always') => {
+  const run = async (approval: 'never' | 'ask' | 'always') => {
     const dir = mkdtempSync(join(tmpdir(), 'd137-neutral-write-'));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const recipes = createRecipeStore(dir, makeDb());
@@ -1381,8 +1412,11 @@ describe('D-337 slice O — the composed chat reads a vendor-neutral CRM write o
 
   it('a recipe whose CRM write the owner\'s CRM makes without asking is not held back; one it asks for is', async () => {
     expect(await run('always')).toMatchObject({ ok: false, reason: 'not_asked_yet' });
-    // Past the check it goes on to run (here into an executor the test stubs).
-    expect(await run('ask')).not.toMatchObject({ reason: 'not_asked_yet' });
+    // D-177 §N.15.7 — in the owner's chat an `ask` asks now, by its approval.
+    expect(await run('ask')).toMatchObject({ ok: false, reason: 'not_asked_yet' });
+    // An author's `never` runs there as authored: past the check it goes on to run (here into an
+    // executor the test stubs).
+    expect(await run('never')).not.toMatchObject({ reason: 'not_asked_yet' });
   });
 });
 
@@ -1458,5 +1492,151 @@ describe('D-337 ruling 4 (a) — the composed chat runs a recipe tool under the 
     } finally {
       vi.doUnmock('../execute-handler.js');
     }
+  });
+});
+
+describe('D-402 slice E2 — "Make a recipe" asks the owner\'s models where the request used judgement', () => {
+  it('through the composed privateAiCall: with no model configured, the draft is made and says the call failed', async () => {
+    const db = makeDb();
+    const { bundle } = composeHarness({ db, keys: undefined, llmConfig: undefined });
+    const session = `sess-e2-${String(Date.now())}`;
+    const turn = 'turn-e2';
+    bundle.chatStore.createSession({ id: session, now: 1 });
+    await bundle.chatStore.appendMessage({ id: 'msg-e2', session_id: session, turn_id: turn, role: 'user', content: 'Send Bob the note',
+      target_server: 'self', picker_at_send: { display_name: 'Self', signature: bundle.chatDeps.selfSignature },
+      model_used: { provider: 'local', model_id: 'local' }, ts: 2 } as never);
+    // What the request did in the browser, as the execute handler and the DOM adapter record it.
+    const run = `run-e2-${session}`;
+    browserFlows.bindRun(run, { session_id: session, turn_id: turn });
+    browserFlows.startCall(run, { recipe_id: 'act-on-web-page', browser: true,
+      args: { page: 'https://mail.example.com/inbox/1', steps: [{ do: 'click', ref: 'e1' }] } });
+    browserFlows.record(run, { do: 'click', url: 'https://mail.example.com/inbox/1', title: 'Inbox',
+      element: { role: 'button', label: 'Send', selector: '#send' } }, 1);
+    browserFlows.finishCall(run, { outcome: 'done', steps: [{ id: 'act', result: { done: 1, of: 1, url: 'https://mail.example.com/inbox/1' } }] });
+    const answer = await bundle.chatDeps.executionRequestRecipe!({ session_id: session, turn_id: turn }) as { ok: boolean; draft_id: string };
+    expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true });
+    // Without the wiring, no call is made and nothing says so.
+    expect(createKitchenDraftStore(db).get(answer.draft_id)?.notes).toContainEqual(
+      expect.stringContaining('Your AI could not say where the request used judgement ('));
+  });
+});
+
+describe('D-402 slice E4b — "Carry on in Chat" reads the run and the recipe the server holds', () => {
+  it('through the composed audit log, recipe store and database: one chat for the run, its message naming the recipe', async () => {
+    const auditLog = createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>());
+    await auditLog.append({
+      run_id: 'run-e4b', recipe_id: 'buy-lamp', recipe_hash: 'hash-e4b', started_at: 1, finished_at: 2, duration_ms: 1,
+      commit_status: 'failed', config_snapshot: {}, trigger_url: null, trigger_source: 'schedule', instance_id: null,
+      errors: [{ error_id: 'e1', code: 'RECIPE_HAND_OFF', message: 'The page showed something this recipe has not met.',
+        severity: 'error', source: { recipe_id: 'buy-lamp', step_id: 'decide_1', ingredient_slug: null },
+        details: {}, timestamp: '2026-11-17T09:00:00Z', retryable: false }],
+    } as unknown as AuditEntry);
+    const recipeStore = { ...(emptyRecipeStore() as object),
+      get: vi.fn((id: string) => (id === 'buy-lamp' ? { recipe_id: 'buy-lamp', metadata: { name: 'Buy the lamp' } } : null)) } as never;
+    const { bundle } = composeHarness({ auditLog, recipeStore });
+    const made: string[] = [];
+    const sessions = {
+      exists: (id: string) => made.includes(id),
+      create: async () => { made.push(`chat-${String(made.length + 1)}`); return made.at(-1)!; },
+    };
+    const answer = await bundle.chatDeps.executionCarryOn!('run-e4b', sessions);
+    expect(answer).toMatchObject({ ok: true, session_id: 'chat-1' });
+    expect(answer.ok && answer.draft).toContain('Carry on with “Buy the lamp” from where its run stopped.');
+    expect(answer.ok && answer.draft).toContain('The page showed something this recipe has not met.');
+    // Kept in the composed database: the second click opens the same chat.
+    expect(await bundle.chatDeps.executionCarryOn!('run-e4b', sessions)).toMatchObject({ ok: true, session_id: 'chat-1' });
+    expect(made).toEqual(['chat-1']);
+    expect(await bundle.chatDeps.executionCarryOn!('run-unknown', sessions)).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  it('E4c — "Make a recipe" in that chat reads the chat\'s run and its recipe as installed', async () => {
+    const db = makeDb();
+    const auditLog = createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>());
+    await auditLog.append({
+      run_id: 'run-e4c', recipe_id: 'buy-lamp', recipe_hash: 'hash-e4c', started_at: 1, finished_at: 2, duration_ms: 1,
+      commit_status: 'failed', config_snapshot: {}, trigger_url: null, trigger_source: 'schedule', instance_id: null,
+      errors: [{ error_id: 'e1', code: 'RECIPE_HAND_OFF', message: 'The page showed something this recipe has not met.',
+        severity: 'error', source: { recipe_id: 'buy-lamp', step_id: 'decide_1', ingredient_slug: null },
+        details: {}, timestamp: '2026-11-17T09:00:00Z', retryable: false }],
+    } as unknown as AuditEntry);
+    const lamp = { recipe_id: 'buy-lamp', version: 3, metadata: { name: 'Buy the lamp' }, steps: [
+      { id: 'act_1', op: 'core.dom.act', args: { target: 'https://shop.example.com/*', steps: [{ url: 'https://shop.example.com/item/7', do: 'read', form: 'text' }] } },
+      { id: 'decide_1', guard: '{{step.act_1.tabs.0.reads.0.text}} not_contains In stock', hand_off: true,
+        fail_reason: 'The page showed something this recipe has not met: the job went on when shop.example.com showed “In stock”.' },
+    ] };
+    const recipeStore = { ...(emptyRecipeStore() as object), get: vi.fn((id: string) => (id === 'buy-lamp' ? lamp : null)) } as never;
+    const { bundle } = composeHarness({ db, auditLog, recipeStore, keys: undefined, llmConfig: undefined });
+    const session = `sess-e4c-${String(Date.now())}`;
+    bundle.chatStore.createSession({ id: session, now: 1 });
+    expect(await bundle.chatDeps.executionCarryOn!('run-e4c', { exists: (id) => id === session, create: async () => session }))
+      .toMatchObject({ ok: true, session_id: session });
+    // What the chat then did in the page, as the execute handler and the DOM adapter record it.
+    const turn = 'turn-e4c';
+    const run = `run-e4c-chat-${session}`;
+    browserFlows.bindRun(run, { session_id: session, turn_id: turn });
+    browserFlows.startCall(run, { recipe_id: 'act-on-web-page', browser: true,
+      args: { page: 'https://shop.example.com/item/7', steps: [{ do: 'click', ref: 'e4' }] } });
+    browserFlows.record(run, { do: 'click', url: 'https://shop.example.com/item/7', title: 'Desk lamp',
+      element: { role: 'button', label: 'Add to wishlist', selector: '#wishlist' } }, 1);
+    browserFlows.finishCall(run, { outcome: 'done', steps: [{ id: 'act', result: { done: 1, of: 1, url: 'https://shop.example.com/item/7' } }] });
+    const answer = await bundle.chatDeps.executionRequestRecipe!({ session_id: session, turn_id: turn });
+    // No model is configured, so nothing names what the page showed: a recipe of its own, saying whose way it is.
+    expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true });
+    expect(answer.ok && answer.issues[0]).toBe('Recued could not add this way to “Buy the lamp”, because nothing says what the page '
+      + 'showed when your AI took this way, so this is a recipe of its own.');
+  });
+});
+
+describe('D-402 slice H2 — "Make a recipe" holds each browser by its lasting id, from the composed dispatcher', () => {
+  it('the draft\'s browser setting holds the lasting id of the browser its call ran in', async () => {
+    const db = makeDb();
+    const listBrowsers = vi.fn(() => [{ bridge_id: 'tok-work', browser_id: 'inst-work', name: 'Work', online: true }]);
+    const { bundle } = composeHarness({ db, keys: undefined, llmConfig: undefined },
+      { ...inertLateGetters(), getExecutorConfig: vi.fn(() => ({ bridgeDispatcherRef: () => ({ listBrowsers }) })) as never });
+    const session = `sess-h2-${String(Date.now())}`;
+    const turn = 'turn-h2';
+    bundle.chatStore.createSession({ id: session, now: 1 });
+    await bundle.chatStore.appendMessage({ id: 'msg-h2', session_id: session, turn_id: turn, role: 'user', content: 'Send it',
+      target_server: 'self', picker_at_send: { display_name: 'Self', signature: bundle.chatDeps.selfSignature },
+      model_used: { provider: 'local', model_id: 'local' }, ts: 2 } as never);
+    // A call that ran in browser "tok-work", as routing stamps its result.
+    const run = `run-h2-${session}`;
+    browserFlows.bindRun(run, { session_id: session, turn_id: turn });
+    browserFlows.startCall(run, { recipe_id: 'act-on-web-page', browser: true,
+      args: { page: 'https://mail.example.com/inbox/1', steps: [{ do: 'click', ref: 'e1' }] } });
+    browserFlows.record(run, { do: 'click', url: 'https://mail.example.com/inbox/1', title: 'Inbox',
+      element: { role: 'button', label: 'Send', selector: '#send' } }, 1);
+    browserFlows.finishCall(run, { outcome: 'done', steps: [{ id: 'act', result: { done: 1, of: 1, url: 'https://mail.example.com/inbox/1',
+      bridge_id: 'tok-work' } }] });
+    const answer = await bundle.chatDeps.executionRequestRecipe!({ session_id: session, turn_id: turn }) as { ok: boolean; draft_id: string };
+    expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true });
+    const draft = JSON.parse(createKitchenDraftStore(db).get(answer.draft_id)!.source) as { variables: Record<string, unknown> };
+    expect(draft.variables).toMatchObject({ browser: 'inst-work' });
+    expect(listBrowsers).toHaveBeenCalled();
+  });
+});
+
+describe('D-402 slice H4 — the chat\'s "not asked yet" reads "Always" for the browsers a run would act in', () => {
+  it('the composition\'s check: a standing "Always" stands for the main dish\'s browser, and not once the dish acts in another', async () => {
+    const { createTriggerPreapprovalStore } = await import('../storage/trigger-preapproval-store.js');
+    const { createDishStore } = await import('../dish-store.js');
+    const { triggerPreapprovalRecipeSha256 } = await import('../trigger-preapproval-rpc.js');
+    const db = makeDb();
+    const triggerPreapprovals = createTriggerPreapprovalStore(db);
+    const dishStore = createDishStore(db);
+    const recipe = { recipe_id: 'read-then-type', version: 1, ttl: 60, variables: { browser: 'inst-home' },
+      metadata: { name: 'Read, then type', description: 'x', author: 'you', supported_platforms: [] },
+      steps: [{ id: 'act', op: 'core.dom.act', args: { target: 'https://b.example/*', bridge_id: '{{config.browser}}', steps: [{ do: 'read' }] } }],
+      output: { render: [] } } as never;
+    dishStore.set({ dish_id: 'dsh_main', recipe_id: 'read-then-type', publisher_id: 'local', name: 'Main', is_default: true,
+      config_overlay: {}, enabled: true, created_at: 1 });
+    triggerPreapprovals.grantCaller({ caller: { kind: 'owner_chat' }, recipe_id: 'read-then-type',
+      recipe_sha256: triggerPreapprovalRecipeSha256(recipe), browsers: { browser: 'inst-home' }, now: 1 });
+    const { chatStandingPreapproval } = await import('../composition/bin/wire-chat-orchestrator.js');
+    const standing = chatStandingPreapproval(() => ({ triggerPreapprovals, dishStore }));
+    const source = { channel: 'chat', actor: 'user_self', chat_session_id: 'cs1', user_id: 'owner' } as never;
+    expect(standing(recipe, source)).toBe(true);
+    dishStore.set({ ...dishStore.get('dsh_main')!, config_overlay: { browser: 'inst-work' } });
+    expect(standing(recipe, source)).toBe(false);
   });
 });

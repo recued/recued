@@ -19,6 +19,13 @@ ${section} :where(*, *::before, *::after) { box-sizing: border-box; min-width: 0
 ${section} > h2 { margin: 0; font-size: 22px; line-height: 1.3; }
 ${section} > p { margin: 0; max-width: 68ch; color: var(--fg-muted); }
 ${panel} { display: flex; flex-direction: column; gap: 20px; }
+${panel} .server-address-rows { display: contents; }
+${panel} [data-server-address-roster] { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 14px); background: var(--surface); }
+${panel} [data-server-address-roster][hidden] { display: none; }
+${panel} [data-server-address-roster-status] { margin: 0; font-size: 13px; line-height: 1.5; }
+${panel}[data-server-address-roster-state="error"] [data-server-address-roster] { border-color: var(--danger); }
+${panel} [data-server-address-roster-retry] { min-height: var(--wc-control-h, 40px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+${panel} [data-server-address-roster-retry][hidden] { display: none; }
 ${row} {
   display: flex;
   flex-direction: column;
@@ -78,6 +85,8 @@ ${row} ${status}:empty { display: none; }
 ${row}[data-server-address-row-state="refused"] ${status} { border-color: var(--danger); background: var(--danger-weak); }
 ${row}:is([data-server-address-row-state="verified"], [data-server-address-row-state="saved"]) ${status} { border-color: var(--accent); background: var(--accent-weak); }
 @media (max-width: 640px) {
+  ${panel} [data-server-address-roster] { padding: 12px; }
+  ${panel} [data-server-address-roster-retry] { width: 100%; }
   ${row} { padding: 16px; }
   ${row} .server-address-actions > button { flex: 1 1 8rem; }
 }

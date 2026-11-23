@@ -31,6 +31,7 @@ import {
   type ConnectionLineSlot,
   type ConfigEditorOverlayHandle,
   type MailboxVariableCallers,
+  type BrowserVariableCallers,
   type MailTemplateVariableCallers,
   type RecordRefVariableSearch,
   RefPicker,
@@ -87,6 +88,9 @@ export interface OpenDishFormArgs {
    *  (`entry.mailbox_settings`) is a list of them, and one that must be set
    *  starts on the only one that fits. Absent ⇒ a text box. */
   readonly mailboxes?: MailboxVariableCallers;
+  /** D-402 slice H2b — the owner's paired browsers: a setting the server says names one
+   *  (`entry.browser_settings`) is a list of them by name. Absent ⇒ a text box. */
+  readonly browsers?: BrowserVariableCallers;
   /** D-320 — the recipe's slots, as `packs.connections.recipe` lists them. Absent
    *  (an older server, or the read failed) ⇒ no lines, and the dish's choice is
    *  left as it is. */
@@ -170,6 +174,9 @@ export const openDishForm = (args: OpenDishFormArgs): ConfigEditorOverlayHandle 
     ...(args.mailTemplates !== undefined ? { mailTemplates: args.mailTemplates } : {}),
     ...(args.mailboxes !== undefined && (entry.mailbox_settings?.length ?? 0) > 0
       ? { mailboxes: { settings: entry.mailbox_settings!, callers: args.mailboxes } }
+      : {}),
+    ...(args.browsers !== undefined && (entry.browser_settings?.length ?? 0) > 0
+      ? { browsers: { settings: entry.browser_settings!, callers: args.browsers } }
       : {}),
     onConfirm: async (rawConfig, extras) => {
       // D-320 — the lines' choice, and the settings it now stands in for. A slot

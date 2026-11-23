@@ -1,6 +1,6 @@
 import { assertKernelReadScope } from '../../situations/read-scope.js';
 import { createResourceReviewHooks } from '../../resource-review.js';
-import { isCustomerAccountPaymentReminderReference } from '@recued/contracts';
+import { isCustomerAccountPaymentReminderReference, type ExecutionSource } from '@recued/contracts';
 /** Round 5 / executorConfig surgical extraction — boot composer for
  *  the `ServerExecutorConfig` object literal.
  *
@@ -262,6 +262,7 @@ export interface ComposeExecutorConfigDeps {
     getQuoteCompletionReminderService?: () => import('../../quote-completion-reminder-service.js').QuoteCompletionReminderService;
     mailDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraft'];
     kitchenDraftImport?: import('../../execute-handler.js').ExecuteHandlerDeps['kitchenDraftImport'];
+    kitchenDraftFromJob?: import('../../execute-handler.js').ExecuteHandlerDeps['kitchenDraftFromJob'];
     kitchenDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['kitchenDraft'];
     mailDraftSaveToMailbox?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraftSaveToMailbox'];
     preapprovalRequest?: import('../../execute-handler.js').ExecuteHandlerDeps['preapprovalRequest'] } | undefined;
@@ -588,6 +589,11 @@ export const composeExecutorConfig = async (
   // recipe's bound contract (the per-dispatch `origin_contract_id`); absent / a grant
   // id ⇒ the author-default checker (registry defaults).
   const readGrantResolver = deps.readGrantResolver;
+  const kernelReadGrants = (input: { origin_contract_id?: string; origin_execution_source?: ExecutionSource;
+    contract_dispatch_reservation?: object }) =>
+    input.origin_execution_source && readGrantResolver?.resolveForDispatch
+      ? readGrantResolver.resolveForDispatch(input.origin_execution_source, input.contract_dispatch_reservation)
+      : readGrantResolver?.resolveForContract(input.origin_contract_id);
 
   /** D-239 — deps for the mail write-back dispatcher.
    *
@@ -1414,8 +1420,7 @@ export const composeExecutorConfig = async (
               // read-grant checker (the recipe-channel analog of the native tool's door
               // contract). The handler applies it ONLY when `trigger_source === 'mcp'`
               // (it flips `gateMcpPrivate` per-call); absent ⇒ registry author defaults.
-              const readGrantChecker =
-                readGrantResolver?.resolveForContract(input.origin_contract_id);
+              const readGrantChecker = kernelReadGrants(input);
               return handleTimelineReadFromRecipe(
                 {
                   timelineDeps: {
@@ -1472,6 +1477,7 @@ export const composeExecutorConfig = async (
             },
             enrichmentList: async (input) => {
               const { handleEnrichmentList } = await import('../../enrichment-handler.js');
+              const readGrantChecker = kernelReadGrants(input);
               return handleEnrichmentList(
                 {
                   store: deps.enrichmentStore!,
@@ -1489,6 +1495,7 @@ export const composeExecutorConfig = async (
                     ? { origin_contract_id: input.origin_contract_id }
                     : {}),
                   ...(readGrantResolver ? { readGrantResolver } : {}),
+                  ...(readGrantChecker ? { readGrantChecker } : {}),
                 },
                 input,
               );
@@ -2100,6 +2107,12 @@ export const composeExecutorConfig = async (
         const importer = deps.getExecuteDeps?.()?.kitchenDraftImport;
         if (!importer) throw new Error('Kitchen draft imports are unavailable until the owner service is ready.');
         return importer(input, meta);
+      },
+      // D-402 slice A5 — an AI app's draft request, bound late as the importer is.
+      kitchenDraftFromJob: async (input, meta) => {
+        const make = deps.getExecuteDeps?.()?.kitchenDraftFromJob;
+        if (!make) throw new Error('Making a recipe from a job is unavailable until the owner service is ready.');
+        return make(input, meta);
       },
       kitchenDraft: async (method, input, meta) => {
         const access = deps.getExecuteDeps?.()?.kitchenDraft;

@@ -636,8 +636,16 @@ const validateAiFunctionInputs = (
   const input = bag as Record<string, unknown>;
   for (const key of required) {
     if (!(key in input)) {
-      add(severity, 'ai_function_input_missing_key', `${path}.${field}['${key}']`,
-        `${slug} requires ${field}.${key}`);
+      // D-116 — an uncontracted prompt is whole in either shape the runtime takes (`buildUncontractedPrompt`):
+      // the instruction and the data apart, which it prefers (the data kept behind the engine's own boundary),
+      // or the legacy `llm.prompt`. ⛔ Requiring `llm.prompt` refused the preferred shape at every run, where an
+      // op step is lowered and checked strictly: D-402 slice E1b's compiled reply failed before its model was
+      // called (found by its first live run, 2026-11-18). A shipped recipe got by only by carrying both.
+      const d116 = bareSlug === 'ai-prompt' && key === 'llm.prompt';
+      if (d116 && 'llm.instruction_block' in input && 'llm.data_block' in input) continue;
+      add(severity, 'ai_function_input_missing_key', `${path}.${field}['${key}']`, d116
+        ? `${slug} requires ${field}.llm.prompt, or both ${field}.llm.instruction_block and ${field}.llm.data_block`
+        : `${slug} requires ${field}.${key}`);
       continue;
     }
     // Optional type checks for the array-valued ones

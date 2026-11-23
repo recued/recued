@@ -1,9 +1,10 @@
 import type { LLMAdapter, LLMFinishReason, LLMMessage, LLMProvider } from '../types.js';
-import { LLMError } from '../types.js';
+import { answeredModelField, LLMError, markOutputLimit } from '../types.js';
 import { callProvider } from './anthropic.js';
 import { hasNonTextPart, joinTextParts, toOpenAIContent } from './content-parts.js';
 import { joinApiBase } from '../base-url.js';
-import { openAiThinkingSwitch } from '../thinking-switch.js';
+import { isOpenAIApi, openAiThinkingSwitch } from '../thinking-switch.js';
+import { openAiReasoningBudget } from '../reasoning-budget.js';
 
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com';
 
@@ -29,7 +30,15 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
 
     const body: Record<string, unknown> = {
       model: options.model,
-      max_tokens: options.max_tokens,
+      // ⛔ OpenAI's own API takes the cap as `max_completion_tokens`. Its reference calls `max_tokens`
+      // deprecated and not compatible with its o-series reasoning models, and reasoning models are
+      // what it ships now: `gpt-4.1-mini` shuts down 2027-01-14 and `gpt-6-luna`, named to replace
+      // it, reasons. The cap covers the reasoning as well as the answer. Every other server
+      // speaking the protocol keeps `max_tokens`, the name they all read: one that ignored the new
+      // name would run with no cap at all.
+      ...(isOpenAIApi(slot)
+        ? { max_completion_tokens: options.max_tokens }
+        : { max_tokens: options.max_tokens }),
       // Native JSON-object mode — the system prompt already instructs JSON, which
       // openai-compatible endpoints require alongside this flag. The executor only
       // sets `options.json` for `supports_json` slots and degrades gracefully if a
@@ -56,7 +65,10 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
     };
 
     // D-344 — the owner's thinking setting, as this endpoint's switch.
-    if (options.thinking !== undefined) Object.assign(body, openAiThinkingSwitch(slot, options.thinking) ?? {});
+    if (options.thinking !== undefined) {
+      Object.assign(body, openAiThinkingSwitch(slot, options.thinking, options.thinking_step) ?? {});
+    }
+    Object.assign(body, openAiReasoningBudget(slot, options) ?? {});
 
     const response = await callProvider(
       url,
@@ -66,15 +78,23 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
       },
       body,
       options.timeout_ms,
+      options.signal,
     );
 
     const finishReason = extractOpenAIFinishReason(response);
-    return {
+    const usage = extractUsage(response, options.model);
+    let text: string;
+    try {
       // A content-filtered response commonly omits message.content entirely.
       // Preserve the provider-normalized stop for the executor to classify;
       // never rewrite an explicit refusal as AI_RESPONSE_PARSE_FAILED.
-      text: finishReason === 'content_filter' ? '' : extractOpenAIText(response),
-      usage: extractUsage(response, options.model),
+      text = finishReason === 'content_filter' ? '' : extractOpenAIText(response, finishReason, usage);
+    } catch (e) {
+      throw markOutputLimit(e, finishReason, usage);
+    }
+    return {
+      text,
+      usage,
       ...(finishReason !== undefined
         ? { finish_reason: finishReason }
         : {}),
@@ -84,13 +104,23 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
 
 /** Extract the assistant reply from an OpenAI-compatible chat completion.
  *  Response shape: { choices: [{ message: { content: "..." } }] } */
-const extractOpenAIText = (response: unknown): string => {
+const extractOpenAIText = (
+  response: unknown,
+  finishReason: LLMFinishReason | undefined,
+  usage: import('../types.js').TokenUsage,
+): string => {
   const obj = response as {
     choices?: Array<{ message?: { content?: string | null } }>;
   };
   const content = obj.choices?.[0]?.message?.content;
   if (typeof content !== 'string' || !content) {
-    throw new LLMError('AI_RESPONSE_PARSE_FAILED', 'OpenAI response missing choices[0].message.content');
+    // A reasoning model that spends its whole cap thinking stops with no answer at all. Name that,
+    // since "missing content" reads as a broken endpoint.
+    throw new LLMError('AI_RESPONSE_PARSE_FAILED', finishReason !== 'length'
+      ? 'OpenAI response missing choices[0].message.content'
+      : (usage.reasoning_tokens ?? 0) > 0
+        ? 'OpenAI response had no answer: the model spent its whole output limit reasoning'
+        : 'OpenAI response had no answer: it stopped at its output limit');
   }
   return content;
 };
@@ -154,5 +184,6 @@ const extractUsage = (
     ...(cacheRead !== undefined ? { cache_read_input_tokens: cacheRead } : {}),
     ...(reasoning !== undefined ? { reasoning_tokens: reasoning } : {}),
     model_id: modelId,
+    ...answeredModelField((response as { model?: unknown }).model),
   };
 };

@@ -65,6 +65,28 @@ describe('Yours search keywords in existing metadata', () => {
     expect(result).toMatchObject({ ok: true, result: { total: 2 } });
   });
 
+  // D-404 (the owner, 2026-11-18): "name is just part of the keyword".
+  it('finds a typed thing by its type\'s name in both paths, though its own name lacks it', async () => {
+    put('passport', 'passport'); put('boiler', 'boiler');
+    expect(work.readAsset('passport')?.name).toBe('Riley’s document');
+    expect(await ids('When does my passport expire?')).toEqual(['passport']);
+    const result = await runWorkEntitySearchTool(readDeps(), { kind: 'asset', query: 'passport' }, dispatch);
+    expect(result).toMatchObject({ ok: true, result: { total: 1 } });
+    // A type's name is matched as a keyword, nothing more: other types' things stay out.
+    expect(work.searchIdsByText('asset', 'boiler', 10)).toEqual(['boiler']);
+  });
+
+  it('an index built before the type\'s name counted is indexed again once', () => {
+    put('passport', 'passport');
+    expect(ASSET_SEARCH_TEXT_REINDEX_ID).toBe('asset-search-text-v3');
+    // As a v2 server left it: the row indexed without the type's name, and v2 recorded as done.
+    db.prepare(`UPDATE ${WORK_ENTITY_FTS_TABLE} SET blob_text = replace(blob_text, 'Passport', '') WHERE key=?`).run('asset.passport');
+    expect(work.searchIdsByText('asset', 'passport', 10)).toEqual([]);
+    db.prepare('DELETE FROM data_repairs WHERE repair_id=?').run(ASSET_SEARCH_TEXT_REINDEX_ID);
+    ensureWorkEntitySchema(db);
+    expect(work.searchIdsByText('asset', 'passport', 10)).toEqual(['passport']);
+  });
+
   it('combines type defaults and instance additions and removes cleared instance terms from both paths', async () => {
     put('passport', 'passport', { [ASSET_SEARCH_TERMS]: ['Reunion', ' FAMILY   VISIT '] });
     expect(await ids('Plan a reunion.')).toEqual(['passport']);

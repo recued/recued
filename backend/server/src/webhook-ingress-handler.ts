@@ -11,6 +11,7 @@
 
 import { randomBytes } from 'node:crypto';
 import {
+  MAX_WEBHOOK_DEAD_LETTER_REASON_LENGTH,
   MAX_WEBHOOK_DELIVERY_PAGE_SIZE,
   MAX_WEBHOOK_CREDENTIAL_TOTAL_BYTES,
   MAX_WEBHOOK_CREDENTIAL_VALUE_BYTES,
@@ -19,16 +20,26 @@ import {
   RpcError,
   WEBHOOK_ENVIRONMENTS,
   WEBHOOK_REGISTRATION_MODES,
+  webhookPairedConnectionKind,
   webhookProfile,
   webhookProfileAcceptsEventType,
   webhookProfileRequiresPairedConnection,
+  type WebhookPairedConnectionKind,
   type HandlerSlice,
   type ServerRpcRegistry,
   type AcceptedWebhookDeliveryRecord,
   type WebhookCredentialVersionView,
+  type WebhookDeadLetterActionRequest,
+  type WebhookDeadLetterActionResponse,
+  type WebhookDeadLetterKind,
+  type WebhookDeadLetterListCursor,
+  type WebhookDeadLetterListRequest,
+  type WebhookDeadLetterListResponse,
+  type WebhookDeadLetterRef,
   type WebhookDeliveryDetailView,
   type WebhookDeliveryEventGetRequest,
   type WebhookDeliveryEventPayloadView,
+  type DishWebhookDoorChange,
   type WebhookDeliveryEventSummaryView,
   type WebhookDeliveryGetRequest,
   type WebhookDeliveryListCursor,
@@ -48,12 +59,15 @@ import {
   type WebhookIngressCredentialWriteResponse,
   type WebhookIngressDisableRequest,
   type WebhookIngressEnableRequest,
+  type WebhookIngressDoorSetRequest,
+  type WebhookIngressStraysDismissRequest,
   type WebhookIngressHealthStatus,
   type WebhookIngressManualConfirmRequest,
   type WebhookIngressRegistrationReconcileRequest,
   type WebhookIngressReadinessBlocker,
   type WebhookIngressRecord,
   type WebhookIngressRetireRequest,
+  type WebhookIngressRetireResponse,
   type WebhookIngressTestDeliveryRequest,
   type WebhookIngressTestDeliveryResponse,
   type WebhookIngressUpdateRequest,
@@ -95,13 +109,25 @@ import {
 import {
   WEBHOOK_CREDENTIAL_VERSION_PARSER,
   WEBHOOK_DELIVERY_ID_PARSER,
+  WEBHOOK_DISPATCH_ID_PARSER,
   WEBHOOK_EVENT_ID_PARSER,
   WEBHOOK_INGRESS_ID_PARSER,
+  WEBHOOK_OUTBOX_ID_PARSER,
   WEBHOOK_REJECTION_ID_PARSER,
 } from './webhook-core-identity-parsers.js';
+import type { WebhookDeadLetterService } from './webhook-dead-letter-service.js';
+import { refusalStateOf } from './webhook-refusal-run.js';
+import { WebhookDeadLetterActionError } from './storage/webhook-dead-letter-reviews.js';
+import {
+  WebhookIngressDoorMasterOnlyError,
+  WebhookIngressDoorNotFoundError,
+  type WebhookIngressDoors,
+} from './webhook-ingress-doors.js';
 
 export interface WebhookIngressRpcDeps {
   store: WebhookIngressStore;
+  /** D-201 Slice 10AR — the time a run of refusals is read at. */
+  now?: () => number;
   /** Server-projected installed profile/mode surface. Portable descriptors do
    * not authorize creation when their executable driver is absent. */
   profileCapabilities?: readonly WebhookProfileRuntimeCapabilityView[];
@@ -118,9 +144,11 @@ export interface WebhookIngressRpcDeps {
   /** Closed trusted managed-endpoint coordinator. Packs/clients can invoke it
    * only by ingress id and never supply an outbound URL or provider request. */
   managedRegistration?: WebhookManagedRegistrationService;
-  /** Trusted API-connection lookup used only to acknowledge an explicit
-   * operation-bound recovery. Absence fails closed. */
-  pairedConnectionAvailable?: (pairedConnectionId: string) => boolean;
+  /** Trusted connection lookup used only to acknowledge an explicit
+   * operation-bound recovery. Absence fails closed. D-201 Slice 10AW (10AS
+   * finding 8) — of the kind the profile pairs with
+   * (`webhookPairedConnectionKind`), never assumed an API connection. */
+  pairedConnectionAvailable?: (pairedConnectionId: string, kind: WebhookPairedConnectionKind) => boolean;
   /** Code-backed remote-account continuity proof for operation-bound recovery.
    * The current generic fixture deliberately supplies none: local connection
    * name/existence is not evidence that attached remote resources belong to
@@ -131,6 +159,15 @@ export interface WebhookIngressRpcDeps {
   }>) => boolean | Promise<boolean>;
   /** Injectable only for deterministic tests. Production uses 256 random bits. */
   generateSecret?: () => string;
+  /** D-201 Slice 10B — the owner's review of dead letters over both stores.
+   * Absent: the dead-letter methods are unavailable and ingress views carry
+   * no count. */
+  deadLetters?: WebhookDeadLetterService;
+  /** D-201 Slice 10X — the recipes each webhook starts, with their doors, for
+   * its card, and the owner's switch making those doors
+   * (`createWebhookIngressDoors`). Absent: views carry no recipes, and the
+   * switch makes no door. */
+  recipeDoors?: Pick<WebhookIngressDoors, 'list' | 'reopen'> & Partial<Pick<WebhookIngressDoors, 'setDoor'>>;
   /** Live, server-trusted enablement evidence. Absent means no ingress can be
    * enabled, even when its persisted configuration is otherwise complete. */
   runtimeReadiness?: (
@@ -163,13 +200,18 @@ type WebhookIngressMethods =
   | 'webhook.ingress.registration.reconcile'
   | 'webhook.ingress.enable'
   | 'webhook.ingress.disable'
+  | 'webhook.ingress.door.set'
+  | 'webhook.ingress.strays.dismiss'
   | 'webhook.ingress.test.deliver'
   | 'webhook.ingress.retire'
   | 'webhook.delivery.list'
   | 'webhook.delivery.get'
   | 'webhook.delivery.event.get'
   | 'webhook.delivery.rejected.list'
-  | 'webhook.delivery.retention.prune';
+  | 'webhook.delivery.retention.prune'
+  | 'webhook.delivery.dead_letter.list'
+  | 'webhook.delivery.dead_letter.requeue'
+  | 'webhook.delivery.dead_letter.resolve';
 
 const CREATE_KEYS = new Set([
   'display_name',
@@ -186,6 +228,7 @@ const REGISTRATION_RECONCILE_KEYS = new Set(['ingress_id', 'paired_connection_id
 const CREDENTIAL_WRITE_KEYS = new Set(['ingress_id', 'credentials']);
 const CREDENTIAL_RETIRE_KEYS = new Set(['ingress_id', 'credential_version']);
 const RETIRE_KEYS = new Set(['ingress_id']);
+const DOOR_SET_KEYS = new Set(['ingress_id', 'recipe_id', 'open']);
 const DELIVERY_LIST_KEYS = new Set(['ingress_id', 'limit', 'cursor']);
 const DELIVERY_CURSOR_KEYS = new Set(['received_at', 'delivery_id']);
 const DELIVERY_GET_KEYS = new Set(['ingress_id', 'delivery_id']);
@@ -193,6 +236,10 @@ const DELIVERY_EVENT_GET_KEYS = new Set(['ingress_id', 'delivery_id', 'event_id'
 const REJECTED_DELIVERY_LIST_KEYS = new Set(['ingress_id', 'limit', 'cursor']);
 const REJECTED_DELIVERY_CURSOR_KEYS = new Set(['bucket_started_at', 'rejection_id']);
 const RETENTION_PRUNE_KEYS = new Set(['ingress_id']);
+const DEAD_LETTER_LIST_KEYS = new Set(['ingress_id', 'limit', 'cursor', 'closed']);
+const DEAD_LETTER_CURSOR_KEYS = new Set(['dead_lettered_at', 'kind', 'dead_letter_id']);
+const DEAD_LETTER_ACTION_KEYS = new Set(['ingress_id', 'dead_letter', 'dead_lettered_at', 'reason']);
+const DEAD_LETTER_REF_KEYS = new Set(['kind', 'dead_letter_id']);
 
 const badRequest = (message: string): RpcError =>
   new RpcError('bad_request', message, 400);
@@ -583,8 +630,20 @@ const testDeliveryErrorToRpc = (
   }
 };
 
+/** D-201 Slice 10T (10Q finding 19) — the names an ingress's service never
+ *  lists, from its profile, for Settings to word a refusal of them as that. */
+const neverListedOf = (deps: WebhookIngressRpcDeps, ingressId: string): readonly string[] => {
+  const ingress = deps.store.get(ingressId);
+  const catalog = ingress === null ? undefined : webhookProfile(ingress.profile_id)?.event_types;
+  return catalog?.kind === 'open' ? catalog.never_listed ?? [] : [];
+};
+
 const managedRegistrationErrorToRpc = (
+  deps: WebhookIngressRpcDeps,
   method: string,
+  /** D-201 Slice 10T — the ingress it is for: a refusal names those of its
+   *  names the ingress's service never lists. */
+  ingressId: string,
   error: WebhookManagedRegistrationError,
 ): RpcError => {
   switch (error.code) {
@@ -627,6 +686,28 @@ const managedRegistrationErrorToRpc = (
         `${method}: ${error.message}`,
         error.code === 'upstream_rejected' ? 409 : 503,
       );
+    case 'event_types_unknown': {
+      // D-201 Slice 10G — named, so Settings can say which to fix. D-201 Slice
+      // 10O — and whether the vendor was left sending every event type.
+      const neverListed = neverListedOf(deps, ingressId);
+      return new RpcError(
+        'webhook_registration_event_types_unknown',
+        `${method}: ${error.message}`,
+        409,
+        method,
+        {
+          event_types: error.event_types.slice(),
+          ...(error.left_on_default ? { left_on_default: true } : {}),
+          // D-201 Slice 10Z (10V finding 25) — it was there already: nothing
+          // was put back, and Settings says so rather than "could not be".
+          ...(error.was_on_default ? { was_on_default: true } : {}),
+          // D-201 Slice 10T — which of them the service never lists.
+          ...(error.event_types.some((name) => neverListed.includes(name))
+            ? { never_listed: error.event_types.filter((name) => neverListed.includes(name)) }
+            : {}),
+        },
+      );
+    }
   }
 };
 
@@ -802,6 +883,10 @@ export const projectWebhookIngress = (
       test_observed_at: row.test_observed_at,
       last_delivery_at: row.last_delivery_at,
       last_error_code: row.last_error_code,
+      // D-201 Slice 10K — the names a vendor did not keep, with their code.
+      ...(row.last_error_event_types !== undefined
+        ? { last_error_event_types: [...row.last_error_event_types] }
+        : {}),
     },
     enabled_at: row.enabled_at,
     created_at: row.created_at,
@@ -831,10 +916,99 @@ const project = async (
       runtime = UNAVAILABLE_RUNTIME_READINESS;
     }
   }
-  return withStoreErrors(
+  const projected = withStoreErrors(
     method,
     () => projectWebhookIngress(deps.store, row, runtime),
   );
+  // D-201 Slice 10AN (the owner's call, 2026-11-20) — a run of messages
+  // refused for their signature, none verified since, is never healthy. Never
+  // in the way of the view: a run that cannot be read is left out. D-201 Slice
+  // 10AR (10AM findings 11 and 30) — read as the pass reads it
+  // (`refusalStateOf`): only for a webhook taking messages, from its last
+  // switch-on or set-up as well as its last verified message.
+  let refusing: WebhookIngressView['health']['refusing'];
+  try {
+    const state = deps.deliveryStore === undefined ? null : refusalStateOf(
+      { ingresses: deps.store, deliveries: deps.deliveryStore },
+      row,
+      (deps.now ?? Date.now)(),
+    );
+    if (state !== null) {
+      const { run, set_again_at: done, set_again_failed_at: failed } = state;
+      const doneInRun = done !== null && done >= run.since ? done : null;
+      refusing = {
+        refused: run.refused,
+        since: run.since,
+        ...(state.sets_again ? { set_again: true as const } : {}),
+        ...(doneInRun !== null ? { set_again_at: doneInRun } : {}),
+        ...(failed !== null && failed >= run.since && (doneInRun === null || failed > doneInRun)
+          ? { set_again_failed_at: failed }
+          : {}),
+      };
+    }
+  } catch {
+    refusing = undefined;
+  }
+  const view: WebhookIngressView = refusing === undefined ? projected : {
+    ...projected,
+    health: {
+      ...projected.health,
+      status: projected.health.status === 'healthy' ? 'degraded' : projected.health.status,
+      refusing,
+    },
+  };
+  // D-201 Slice 10X — the recipes it starts and their doors. Never in the way
+  // of the view: an unreadable list is left out.
+  let recipes: WebhookIngressView['recipes'];
+  try {
+    recipes = deps.recipeDoors?.list(row.ingress_id);
+  } catch {
+    recipes = undefined;
+  }
+  // D-201 Slice 10AH (10AE finding 8) — the strays a rebind could not remove,
+  // which the sweep keeps removing. Never in the way of the view either.
+  let strays = 0;
+  try {
+    strays = deps.store.countStrayEndpoints(row.ingress_id);
+  } catch {
+    strays = 0;
+  }
+  // D-201 Slice 10AL (10AI finding 21) — and the ones Recued stopped trying to
+  // remove, for the owner to remove there.
+  let givenUp = 0;
+  try {
+    givenUp = deps.store.countGivenUpStrayEndpoints(row.ingress_id);
+  } catch {
+    givenUp = 0;
+  }
+  // D-201 Slice 10AQ (10AM finding 7) — each named, with the account it is at:
+  // the card counted them only, and one at the same account and address as the
+  // webhook's own endpoint could not be told from it.
+  let named: WebhookIngressView['strays'];
+  try {
+    const kept = deps.store.listStrayEndpoints(row.ingress_id);
+    named = kept.length === 0 ? undefined : kept.map((stray) => ({
+      remote_endpoint_id: stray.remote_endpoint_id,
+      connection_id: stray.connection_id,
+      given_up: stray.given_up,
+      // D-201 Slice 10BA (10AY finding 4) — one Recued never removes.
+      ...(stray.unproven ? { unproven: true as const } : {}),
+      // D-201 Slice 10BQ (10BM finding 13) — found at another address.
+      ...(stray.unproven && stray.elsewhere ? { elsewhere: true as const } : {}),
+    }));
+  } catch {
+    named = undefined;
+  }
+  return {
+    ...view,
+    ...(deps.deadLetters ? { dead_letters_unresolved: deps.deadLetters.unresolvedForIngress(row.ingress_id) } : {}),
+    ...(strays > 0 ? { stray_endpoints: strays } : {}),
+    ...(givenUp > 0 ? { stray_endpoints_given_up: givenUp } : {}),
+    ...(named !== undefined ? { strays: named } : {}),
+    ...(recipes !== undefined ? { recipes } : {}),
+    // D-201 Slice 10AF — each recipe's own door switch is taken here.
+    ...(recipes !== undefined && deps.recipeDoors?.setDoor !== undefined ? { recipe_door_switch: true as const } : {}),
+  };
 };
 
 const requireDeliveryStore = (
@@ -895,7 +1069,11 @@ const deliveryEventSummaryView = (
     provider_event_type: stored.event.provider_event_type,
     provider_occurred_at: stored.event.provider_occurred_at,
     selected_for_dispatch: stored.event.selected_for_dispatch,
-    dispatch_state: stored.event.dispatch_state,
+    // D-201 Slice 10B — a dead letter the owner (or the review limit) closed
+    // keeps its stored state; the owner sees that it was closed.
+    dispatch_state: stored.event.dispatch_state === 'dead_letter' && stored.resolved_at !== null
+      ? 'resolved' as const
+      : stored.event.dispatch_state,
     metadata_expires_at: stored.event.expires_at,
   };
   return stored.payload_retained
@@ -1047,9 +1225,27 @@ export const handleWebhookIngressList = async (
     }
     includeRetired = includeRetiredValue === true;
   }
-  const rows = withStoreErrors(method, () => deps.store.list({
-    include_retired: includeRetired,
-  }));
+  // D-201 Slice 10AQ (10AM finding 6) — a retired webhook is listed while a
+  // stray of its stands at its service, given up or not, so its card says so
+  // and takes "I removed it". D-201 Slice 10AT (10AS finding 1) — beside the
+  // store's own list (`list()`: not retired, or retired with its clean-up at
+  // the service still pending, whose card offers "Try the clean-up again").
+  // Filtering every retired row by its strays alone dropped a webhook whose
+  // clean-up failed with nothing recorded, and its only retry: a regression of
+  // v26.11.9. A stray that cannot be read lists no more.
+  const hasStrays = (ingressId: string): boolean => {
+    try {
+      return deps.store.listStrayEndpoints(ingressId).length > 0;
+    } catch {
+      return false;
+    }
+  };
+  const rows = withStoreErrors(method, () => {
+    if (includeRetired) return deps.store.list({ include_retired: true });
+    const kept = new Set(deps.store.list().map((row) => row.ingress_id));
+    return deps.store.list({ include_retired: true }).filter((row) => kept.has(row.ingress_id)
+      || (row.intake_state === 'retired' && hasStrays(row.ingress_id)));
+  });
   return {
     ingresses: await Promise.all(rows.map((row) => project(deps, method, row))),
     profiles: (deps.profileCapabilities ?? []).map((profile) => ({
@@ -1059,7 +1255,23 @@ export const handleWebhookIngressList = async (
         ...profile.deduplication,
         identity: { ...profile.deduplication.identity },
       },
+      ...(profile.event_types === undefined
+        ? {}
+        : {
+            event_types: profile.event_types.kind === 'closed'
+              ? { kind: 'closed' as const, values: profile.event_types.values.slice() }
+              : {
+                  kind: 'open' as const,
+                  known_values: profile.event_types.known_values.slice(),
+                  grammar: { ...profile.event_types.grammar },
+                  // D-201 Slice 10T — for Settings to word a refusal of one.
+                  ...(profile.event_types.never_listed !== undefined
+                    ? { never_listed: profile.event_types.never_listed.slice() }
+                    : {}),
+                },
+          }),
     })),
+    ...(deps.deadLetters ? { dead_letter_review: deps.deadLetters.summary() } : {}),
   };
 };
 
@@ -1236,7 +1448,7 @@ export const handleWebhookIngressUpdate = async (
       return { ingress: await project(deps, method, row) };
     } catch (error) {
       if (error instanceof WebhookManagedRegistrationError) {
-        throw managedRegistrationErrorToRpc(method, error);
+        throw managedRegistrationErrorToRpc(deps, method, ingressId, error);
       }
       if (error instanceof WebhookIngressStoreError) {
         throw storeErrorToRpc(method, error);
@@ -1253,7 +1465,7 @@ export const handleWebhookIngressUpdate = async (
       );
     }
     if (pairedConnectionId === null
-      || !(deps.pairedConnectionAvailable?.(pairedConnectionId) ?? false)) {
+      || !(deps.pairedConnectionAvailable?.(pairedConnectionId, webhookPairedConnectionKind(profile)) ?? false)) {
       throw new RpcError(
         'webhook_connection_unavailable',
         `${method}: replacement paired connection is unavailable`,
@@ -1287,7 +1499,7 @@ export const handleWebhookIngressUpdate = async (
         409,
       );
     }
-    if (!(deps.pairedConnectionAvailable?.(pairedConnectionId) ?? false)) {
+    if (!(deps.pairedConnectionAvailable?.(pairedConnectionId, webhookPairedConnectionKind(profile)) ?? false)) {
       throw new RpcError(
         'webhook_connection_unavailable',
         `${method}: replacement paired connection changed during continuity proof`,
@@ -1504,7 +1716,7 @@ export const handleWebhookManagedRegistrationReconcile = async (
       : await deps.managedRegistration.reconcile(ingressId);
   } catch (error) {
     if (error instanceof WebhookManagedRegistrationError) {
-      throw managedRegistrationErrorToRpc(method, error);
+      throw managedRegistrationErrorToRpc(deps, method, ingressId, error);
     }
     if (error instanceof WebhookIngressStoreError) {
       throw storeErrorToRpc(method, error);
@@ -1518,7 +1730,7 @@ export const handleWebhookIngressEnable = async (
   deps: WebhookIngressRpcDeps,
   args: WebhookIngressEnableRequest,
   caller: { instance_id: string | null | undefined } | undefined,
-): Promise<{ ingress: WebhookIngressView }> => {
+): Promise<{ ingress: WebhookIngressView; webhook_doors?: DishWebhookDoorChange[] }> => {
   const method = 'webhook.ingress.enable';
   requireOwnerClient(method, caller);
   const input = ensureRecord(method, args);
@@ -1552,11 +1764,95 @@ export const handleWebhookIngressEnable = async (
       { blockers: recheckedView.readiness.blockers.slice() },
     );
   }
-  if (current.intake_state === 'enabled' || current.intake_state === 'degraded') {
-    return { ingress: recheckedView };
+  const row = current.intake_state === 'enabled' || current.intake_state === 'degraded'
+    ? current
+    : withStoreErrors(method, () => deps.store.enable(ingressId));
+  // D-201 Slice 10X — the switch is the owner's control (the owner's ruling of
+  // 2026-11-19): switched on, and switched on again while on, Recued makes
+  // every door of a recipe this webhook starts that is not open, a door that
+  // was closed before included. Best effort: what cannot be made says why on
+  // the card.
+  let opened: DishWebhookDoorChange[] = [];
+  try {
+    opened = deps.recipeDoors?.reopen(ingressId) ?? [];
+  } catch {
+    // The card shows each door as it stands.
   }
-  const row = withStoreErrors(method, () => deps.store.enable(ingressId));
-  return { ingress: await project(deps, method, row) };
+  // D-201 Slice 10AC (10AA finding 19) — and says what each door it opened may
+  // now do, as a settings save does (D-207 §5.1g). They were dropped.
+  // D-201 Slice 10BL (10BF finding 16) — and a choice it could not keep.
+  const moved = opened.filter((change) => change.state !== 'unchanged' || change.choice_not_kept === true);
+  return {
+    ingress: await project(deps, method, row),
+    ...(moved.length > 0 ? { webhook_doors: moved } : {}),
+  };
+};
+
+/** D-201 Slice 10AF (the owner's rulings of 2026-11-20) — one recipe's own
+ *  door switch on its webhook's card, beside the webhook's master switch. */
+export const handleWebhookIngressDoorSet = async (
+  deps: WebhookIngressRpcDeps,
+  args: WebhookIngressDoorSetRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<{ ingress: WebhookIngressView; webhook_doors?: DishWebhookDoorChange[] }> => {
+  const method = 'webhook.ingress.door.set';
+  requireOwnerClient(method, caller);
+  const input = ensureRecord(method, args);
+  ensureOnlyKeys(method, input, DOOR_SET_KEYS);
+  const ingressId = ensureIngressId(method, ownValue(input, 'ingress_id'));
+  const recipeId = ownValue(input, 'recipe_id');
+  if (typeof recipeId !== 'string' || recipeId.length === 0 || recipeId.length > 256
+    || /[\u0000-\u001f\u007f]/.test(recipeId)) {
+    throw badRequest(`${method}: recipe_id has invalid shape`);
+  }
+  const open = ownValue(input, 'open');
+  if (typeof open !== 'boolean') throw badRequest(`${method}: open must be true or false`);
+  const setDoor = deps.recipeDoors?.setDoor;
+  if (setDoor === undefined) {
+    throw new RpcError('not_configured', `${method}: recipe doors are unavailable on this server`, 501);
+  }
+  const current = withStoreErrors(method, () => deps.store.get(ingressId));
+  if (!current) throw new RpcError('not_found', `${method}: ingress not found`, 404);
+  let changes: DishWebhookDoorChange[];
+  try {
+    changes = setDoor(ingressId, recipeId, open);
+  } catch (error) {
+    if (error instanceof WebhookIngressDoorNotFoundError) {
+      throw new RpcError('not_found', `${method}: ${error.message}`, 404);
+    }
+    // D-201 Slice 10AJ (10AI finding 9) — one recipe: its webhook's switch.
+    if (error instanceof WebhookIngressDoorMasterOnlyError) {
+      throw new RpcError('webhook_door_master_only', `${method}: ${error.message}`, 409);
+    }
+    throw error;
+  }
+  // What an opened door may now do, as switching the webhook on says it.
+  // D-201 Slice 10BL (10BF finding 16) — and a choice it could not keep.
+  const moved = changes.filter((change) => change.state !== 'unchanged' || change.choice_not_kept === true);
+  return {
+    ingress: await project(deps, method, current),
+    ...(moved.length > 0 ? { webhook_doors: moved } : {}),
+  };
+};
+
+/** D-201 Slice 10AL (10AI finding 21) — the owner removed, at the webhook's
+ *  service, the endpoints Recued stopped trying to remove: their record goes.
+ *  The owner's alone, and only those given up: the sweep still removes the
+ *  rest. */
+export const handleWebhookIngressStraysDismiss = async (
+  deps: WebhookIngressRpcDeps,
+  args: WebhookIngressStraysDismissRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<{ ingress: WebhookIngressView }> => {
+  const method = 'webhook.ingress.strays.dismiss';
+  requireOwnerClient(method, caller);
+  const input = ensureRecord(method, args);
+  ensureOnlyKeys(method, input, RETIRE_KEYS);
+  const ingressId = ensureIngressId(method, ownValue(input, 'ingress_id'));
+  const current = withStoreErrors(method, () => deps.store.get(ingressId));
+  if (!current) throw new RpcError('not_found', `${method}: ingress not found`, 404);
+  withStoreErrors(method, () => deps.store.dismissGivenUpStrayEndpoints(ingressId));
+  return { ingress: await project(deps, method, current) };
 };
 
 export const handleWebhookIngressDisable = async (
@@ -1586,7 +1882,7 @@ export const handleWebhookIngressDisable = async (
           row = await deps.managedRegistration.cleanup(ingressId, 'disable');
         } catch (error) {
           if (error instanceof WebhookManagedRegistrationError) {
-            throw managedRegistrationErrorToRpc(method, error);
+            throw managedRegistrationErrorToRpc(deps, method, ingressId, error);
           }
           if (error instanceof WebhookIngressStoreError) {
             throw storeErrorToRpc(method, error);
@@ -1672,7 +1968,7 @@ export const handleWebhookIngressRetire = async (
   deps: WebhookIngressRpcDeps,
   args: WebhookIngressRetireRequest,
   caller: { instance_id: string | null | undefined } | undefined,
-): Promise<{ ingress: WebhookIngressView }> => {
+): Promise<WebhookIngressRetireResponse> => {
   const method = 'webhook.ingress.retire';
   requireOwnerClient(method, caller);
   const input = ensureRecord(method, args);
@@ -1685,7 +1981,10 @@ export const handleWebhookIngressRetire = async (
   // RPC is the owner-visible retry for provider deletion.
   if (current.intake_state === 'retired'
     && current.registration_state === 'retired') {
-    return { ingress: await project(deps, method, current) };
+    return {
+      ingress: await project(deps, method, current),
+      ...closeDeadLettersOfRetired(deps, ingressId),
+    };
   }
   const retryingCleanup = current.intake_state === 'retired'
     && current.registration_state === 'cleanup_pending';
@@ -1714,8 +2013,12 @@ export const handleWebhookIngressRetire = async (
     );
   }
   let row: WebhookIngressRecord;
+  let closedOnRetire: { dead_letters_closed?: number } | null = null;
   if (current.registration_mode === 'managed_endpoint') {
     row = withStoreErrors(method, () => deps.store.retire(ingressId));
+    // D-201 Slice 10I (10H finding 14) — retired here is retired: its dead
+    // letters close now, whether or not the vendor's cleanup below succeeds.
+    if (row.intake_state === 'retired') closedOnRetire = closeDeadLettersOfRetired(deps, ingressId);
     if (row.registration_state === 'cleanup_pending') {
       if (!deps.managedRegistration) {
         throw new RpcError(
@@ -1728,7 +2031,7 @@ export const handleWebhookIngressRetire = async (
           row = await deps.managedRegistration.cleanup(ingressId, 'retire');
         } catch (error) {
           if (error instanceof WebhookManagedRegistrationError) {
-            throw managedRegistrationErrorToRpc(method, error);
+            throw managedRegistrationErrorToRpc(deps, method, ingressId, error);
           }
           if (error instanceof WebhookIngressStoreError) {
             throw storeErrorToRpc(method, error);
@@ -1740,7 +2043,27 @@ export const handleWebhookIngressRetire = async (
   } else {
     row = withStoreErrors(method, () => deps.store.retire(ingressId));
   }
-  return { ingress: await project(deps, method, row) };
+  return {
+    ingress: await project(deps, method, row),
+    ...(closedOnRetire
+      ?? (row.intake_state === 'retired' ? closeDeadLettersOfRetired(deps, ingressId) : {})),
+  };
+};
+
+/** D-201 Slice 10F — a retired webhook's open dead letters can never be tried
+ *  again: closed with a record that the retire did (Settings says so before
+ *  the owner confirms). The retire is committed already; a failure here never
+ *  undoes it, and the next start's pass closes what was left. */
+const closeDeadLettersOfRetired = (
+  deps: WebhookIngressRpcDeps,
+  ingressId: string,
+): { dead_letters_closed?: number } => {
+  if (deps.deadLetters === undefined) return {};
+  try {
+    return { dead_letters_closed: deps.deadLetters.closeForRetiredIngress(ingressId) };
+  } catch {
+    return {};
+  }
 };
 
 export const handleWebhookDeliveryList = async (
@@ -1923,6 +2246,259 @@ export const handleWebhookDeliveryEventGet = async (
   };
 };
 
+// ── D-201 Slice 10B — dead letters: inspect, try again, close ─────────────
+
+const requireDeadLetters = (
+  deps: WebhookIngressRpcDeps,
+  method: string,
+): WebhookDeadLetterService => {
+  if (!deps.deadLetters) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: webhook dead-letter review is unavailable`,
+      501,
+    );
+  }
+  return deps.deadLetters;
+};
+
+const ensureDeadLetterKind = (method: string, value: unknown, field: string): WebhookDeadLetterKind => {
+  if (value !== 'event' && value !== 'target') {
+    throw badRequest(`${method}: ${field} must be 'event' or 'target'`);
+  }
+  return value;
+};
+
+const ensureDeadLetterId = (
+  method: string,
+  kind: WebhookDeadLetterKind,
+  value: unknown,
+  field: string,
+): string => {
+  const parsed = kind === 'event'
+    ? WEBHOOK_OUTBOX_ID_PARSER.parse(value)
+    : WEBHOOK_DISPATCH_ID_PARSER.parse(value);
+  if (parsed === null) throw badRequest(`${method}: ${field} has invalid shape`);
+  return parsed;
+};
+
+const ensureDeadLetteredAt = (method: string, value: unknown, field: string): number => {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw badRequest(`${method}: ${field} must be a non-negative integer`);
+  }
+  return value as number;
+};
+
+const ensureDeadLetterRef = (method: string, value: unknown): WebhookDeadLetterRef => {
+  const input = ensureRecord(method, value, 'dead_letter');
+  ensureOnlyKeys(method, input, DEAD_LETTER_REF_KEYS);
+  const kind = ensureDeadLetterKind(method, ownValue(input, 'kind'), 'dead_letter.kind');
+  return {
+    kind,
+    dead_letter_id: ensureDeadLetterId(
+      method,
+      kind,
+      ownValue(input, 'dead_letter_id'),
+      'dead_letter.dead_letter_id',
+    ),
+  };
+};
+
+const ensureDeadLetterCursor = (
+  method: string,
+  value: unknown,
+): WebhookDeadLetterListCursor | undefined => {
+  if (value === undefined) return undefined;
+  const input = ensureRecord(method, value, 'cursor');
+  ensureOnlyKeys(method, input, DEAD_LETTER_CURSOR_KEYS);
+  const kind = ensureDeadLetterKind(method, ownValue(input, 'kind'), 'cursor.kind');
+  return {
+    dead_lettered_at: ensureDeadLetteredAt(
+      method,
+      ownValue(input, 'dead_lettered_at'),
+      'cursor.dead_lettered_at',
+    ),
+    kind,
+    dead_letter_id: ensureDeadLetterId(
+      method,
+      kind,
+      ownValue(input, 'dead_letter_id'),
+      'cursor.dead_letter_id',
+    ),
+  };
+};
+
+/** Plain owner text, kept with the decision: tabs and line breaks allowed,
+ *  other control characters not. */
+// eslint-disable-next-line no-control-regex
+const DEAD_LETTER_REASON_FORBIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f]/;
+
+const ensureDeadLetterReason = (
+  method: string,
+  value: unknown,
+  required: boolean,
+): string | null => {
+  if (value === undefined) {
+    if (required) throw badRequest(`${method}: reason is required`);
+    return null;
+  }
+  if (typeof value !== 'string') throw badRequest(`${method}: reason must be a string`);
+  const reason = value.trim();
+  if (reason.length === 0) {
+    if (required) throw badRequest(`${method}: reason is required`);
+    return null;
+  }
+  if (reason.length > MAX_WEBHOOK_DEAD_LETTER_REASON_LENGTH) {
+    throw badRequest(
+      `${method}: reason must be at most ${MAX_WEBHOOK_DEAD_LETTER_REASON_LENGTH} characters`,
+    );
+  }
+  if (DEAD_LETTER_REASON_FORBIDDEN.test(reason)) {
+    throw badRequest(`${method}: reason must be plain text`);
+  }
+  return reason;
+};
+
+const deadLetterErrorToRpc = (method: string, error: WebhookDeadLetterActionError): RpcError => {
+  switch (error.code) {
+    case 'not_found':
+      return new RpcError('not_found', `${method}: dead letter not found`, 404);
+    case 'not_dead_letter':
+      return new RpcError(
+        'webhook_dead_letter_settled',
+        `${method}: it is no longer a dead letter: it was already tried again or closed`,
+        409,
+      );
+    case 'stale':
+      return new RpcError(
+        'webhook_dead_letter_stale',
+        `${method}: the dead letter changed since it was shown; look at it again`,
+        409,
+      );
+    case 'no_recipe':
+      return new RpcError(
+        'webhook_dead_letter_no_recipe',
+        `${method}: no recipe takes this message now; close it instead`,
+        409,
+      );
+    // D-201 Slice 10U (10Q finding 9) — its recipe's webhook has no live door,
+    // so it would not run: named, for Settings to say what makes it run.
+    case 'door_missing':
+    case 'door_closed':
+      return new RpcError(
+        'webhook_dead_letter_no_door',
+        `${method}: ${error.message}`,
+        409,
+        method,
+        { door: error.code === 'door_missing' ? 'missing' : 'closed' },
+      );
+  }
+};
+
+const withDeadLetterErrors = <T>(method: string, fn: () => T): T => {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof WebhookDeadLetterActionError) throw deadLetterErrorToRpc(method, error);
+    throw error;
+  }
+};
+
+export const handleWebhookDeadLetterList = async (
+  deps: WebhookIngressRpcDeps,
+  args: WebhookDeadLetterListRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<WebhookDeadLetterListResponse> => {
+  const method = 'webhook.delivery.dead_letter.list';
+  requireOwnerClient(method, caller);
+  const input = ensureRecord(method, args);
+  ensureOnlyKeys(method, input, DEAD_LETTER_LIST_KEYS);
+  const ingressId = ensureIngressId(method, ownValue(input, 'ingress_id'));
+  requireOwnerIngress(deps, method, ingressId);
+  const limit = ensureDeliveryLimit(method, ownValue(input, 'limit'));
+  const cursor = ensureDeadLetterCursor(method, ownValue(input, 'cursor'));
+  const closed = ownValue(input, 'closed');
+  if (closed !== undefined && typeof closed !== 'boolean') {
+    throw badRequest(`${method}: closed must be a boolean`);
+  }
+  const deadLetters = requireDeadLetters(deps, method);
+  const page = deadLetters.list({
+    ingress_id: ingressId,
+    limit,
+    ...(cursor !== undefined ? { cursor } : {}),
+    ...(closed === true ? { closed: true } : {}),
+  });
+  if (page.dead_letters.some((row) => row.ingress_id !== ingressId)) {
+    throw new RpcError('storage_corrupt', `${method}: webhook dead letter identity is corrupt`, 500);
+  }
+  return { ...page, review: deadLetters.summary() };
+};
+
+const handleWebhookDeadLetterAction = async (
+  deps: WebhookIngressRpcDeps,
+  method: 'webhook.delivery.dead_letter.requeue' | 'webhook.delivery.dead_letter.resolve',
+  args: WebhookDeadLetterActionRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<WebhookDeadLetterActionResponse> => {
+  requireOwnerClient(method, caller);
+  const input = ensureRecord(method, args);
+  ensureOnlyKeys(method, input, DEAD_LETTER_ACTION_KEYS);
+  const ingressId = ensureIngressId(method, ownValue(input, 'ingress_id'));
+  const deadLetter = ensureDeadLetterRef(method, ownValue(input, 'dead_letter'));
+  const deadLetteredAt = ensureDeadLetteredAt(
+    method,
+    ownValue(input, 'dead_lettered_at'),
+    'dead_lettered_at',
+  );
+  const resolving = method === 'webhook.delivery.dead_letter.resolve';
+  const reason = ensureDeadLetterReason(method, ownValue(input, 'reason'), resolving);
+  const ingress = requireOwnerIngress(deps, method, ingressId);
+  const deadLetters = requireDeadLetters(deps, method);
+  const action = {
+    ingress_id: ingressId,
+    dead_letter: deadLetter,
+    dead_lettered_at: deadLetteredAt,
+    actor_instance_id: caller?.instance_id ?? null,
+  };
+  if (resolving) {
+    // Closing needs no live ingress: a retired webhook's dead letters can
+    // still be reviewed and closed.
+    return withDeadLetterErrors(method, () => deadLetters.resolve({ ...action, reason: reason! }));
+  }
+  // Trying again would only reach a recipe through a webhook that is taking
+  // deliveries: on any other, the run would be closed at its claim unseen.
+  if (ingress.intake_state !== 'enabled' && ingress.intake_state !== 'degraded') {
+    throw new RpcError(
+      'webhook_ingress_not_receiving',
+      `${method}: switch the webhook on before trying a dead letter again`,
+      409,
+    );
+  }
+  return withDeadLetterErrors(method, () => deadLetters.requeue({ ...action, reason }));
+};
+
+export const handleWebhookDeadLetterRequeue = (
+  deps: WebhookIngressRpcDeps,
+  args: WebhookDeadLetterActionRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<WebhookDeadLetterActionResponse> => handleWebhookDeadLetterAction(
+  deps,
+  'webhook.delivery.dead_letter.requeue',
+  args,
+  caller,
+);
+
+export const handleWebhookDeadLetterResolve = (
+  deps: WebhookIngressRpcDeps,
+  args: WebhookDeadLetterActionRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<WebhookDeadLetterActionResponse> => handleWebhookDeadLetterAction(
+  deps,
+  'webhook.delivery.dead_letter.resolve',
+  args,
+  caller,
+);
+
 export const makeWebhookIngressHandlers = (
   deps: WebhookIngressRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, WebhookIngressMethods, WsClient> | undefined => {
@@ -1941,6 +2517,8 @@ export const makeWebhookIngressHandlers = (
       'webhook.ingress.registration.reconcile',
       'webhook.ingress.enable',
       'webhook.ingress.disable',
+      'webhook.ingress.door.set',
+      'webhook.ingress.strays.dismiss',
       'webhook.ingress.test.deliver',
       'webhook.ingress.retire',
       'webhook.delivery.list',
@@ -1948,6 +2526,9 @@ export const makeWebhookIngressHandlers = (
       'webhook.delivery.event.get',
       'webhook.delivery.rejected.list',
       'webhook.delivery.retention.prune',
+      'webhook.delivery.dead_letter.list',
+      'webhook.delivery.dead_letter.requeue',
+      'webhook.delivery.dead_letter.resolve',
     ],
     handlers: {
       'webhook.ingress.list': (args, client) =>
@@ -1970,6 +2551,10 @@ export const makeWebhookIngressHandlers = (
         handleWebhookIngressEnable(deps, args, caller(client)),
       'webhook.ingress.disable': (args, client) =>
         handleWebhookIngressDisable(deps, args, caller(client)),
+      'webhook.ingress.door.set': (args, client) =>
+        handleWebhookIngressDoorSet(deps, args, caller(client)),
+      'webhook.ingress.strays.dismiss': (args, client) =>
+        handleWebhookIngressStraysDismiss(deps, args, caller(client)),
       'webhook.ingress.test.deliver': (args, client) =>
         handleWebhookIngressTestDelivery(deps, args, caller(client)),
       'webhook.ingress.retire': (args, client) =>
@@ -1984,6 +2569,12 @@ export const makeWebhookIngressHandlers = (
         handleWebhookRejectedDeliveryList(deps, args, caller(client)),
       'webhook.delivery.retention.prune': (args, client) =>
         handleWebhookDeliveryRetentionPrune(deps, args, caller(client)),
+      'webhook.delivery.dead_letter.list': (args, client) =>
+        handleWebhookDeadLetterList(deps, args, caller(client)),
+      'webhook.delivery.dead_letter.requeue': (args, client) =>
+        handleWebhookDeadLetterRequeue(deps, args, caller(client)),
+      'webhook.delivery.dead_letter.resolve': (args, client) =>
+        handleWebhookDeadLetterResolve(deps, args, caller(client)),
     },
   };
 };

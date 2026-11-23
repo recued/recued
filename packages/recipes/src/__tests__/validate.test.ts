@@ -2292,6 +2292,24 @@ describe('phase 3: AI function input contracts', () => {
     expect(issuesOf(result, 'ai_function_input_missing_key').length).toBe(1);
     expect(result.valid).toBe(false);
   });
+  it('ai-prompt in the D-116 shape (instruction and data apart) is whole, as an op step and lowered alike', () => {
+    const d116 = { 'llm.instruction_block': 'Write a reply to the email.', 'llm.data_block': { page: '{{step.read.text}}' },
+      'llm.output_format': 'text' };
+    for (const step of [{ id: 'w', ingredient: 'core-ai-prompt', input: d116 }, { id: 'w', ingredient: 'ai-prompt', input: d116 },
+      { id: 'w', op: 'core.ai.prompt', args: d116 }]) {
+      expect(issuesOf(validateRecipe(singleStepRecipe(step)), 'ai_function_input_missing_key'), JSON.stringify(step)).toEqual([]);
+    }
+    // The legacy shape is whole too.
+    expect(issuesOf(validateRecipe(singleStepRecipe({ id: 'w', ingredient: 'core-ai-prompt',
+      input: { 'llm.prompt': 'Write a reply.' } })), 'ai_function_input_missing_key')).toEqual([]);
+  });
+  it('ai-prompt with half the D-116 shape, or neither shape → error naming both', () => {
+    for (const input of [{ 'llm.instruction_block': 'Write a reply.' }, { 'llm.data_block': { page: 'x' } }, { 'llm.output_format': 'text' }]) {
+      const found = issuesOf(validateRecipe(singleStepRecipe({ id: 'w', ingredient: 'core-ai-prompt', input })), 'ai_function_input_missing_key');
+      expect(found.map((issue) => issue.message), JSON.stringify(input))
+        .toEqual(['core-ai-prompt requires input.llm.prompt, or both input.llm.instruction_block and input.llm.data_block']);
+    }
+  });
   it('ai-score without llm.criteria → error', () => {
     const recipe = singleStepRecipe({
       id: 'sc', ingredient: 'ai-score',

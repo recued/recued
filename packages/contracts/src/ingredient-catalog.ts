@@ -81,7 +81,9 @@ export interface AuthorizationProvenance {
    *  `pre_lift_approval` and with it its session-grant eligibility. ⇒ That cost
    *  is why D-234 § 234.4o's peer-ask lift did NOT earn a fourth member: it is
    *  an outbound send and reports `review_send`, with `ingredient_slug` already
-   *  distinguishing it precisely. */
+   *  distinguishing it precisely. ⛔ Nothing reports `review_send` since D-177 §N.15.6
+   *  (2026-11-10) removed the send lift; it stays a member so a hold stored before
+   *  then still reads back with its provenance. */
   readonly lift_reason?: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'review_approval_workflow' | 'review_customer_payment' | 'quality';
 }
 
@@ -2893,6 +2895,13 @@ const resolveOperationPolicyAgainstSource = (args: {
    *  `approval_clamped_from`). Absent ⇒ authored defaults, byte-identical to
    *  pre-D-211 behavior. */
   owner_override?: OwnerOverridePolicy;
+  /** D-177 §N.15.7 — the dispatch is the owner's own chat or messenger chat (`honorsAuthoredNever`,
+   *  `op-risk-admission.ts`; the owner, 2026-11-10: *"Their author's never"*). There an operation
+   *  whose AUTHOR set `approval: 'never'`, which the risk floor raised to `ask` (§1.3), runs as its
+   *  author set it, as it did when that chat took the `admin` ceiling. The floor keeps holding it
+   *  everywhere else: a door, an AI app, the owner's unattended automation. An owner's own
+   *  below-floor value is never honored by this. Absent ⇒ the floor applies. */
+  honor_authored_never?: boolean;
 }): CatalogOperationResolution => {
   const op = args.operations[args.operation_id];
   if (!op) {
@@ -3034,9 +3043,16 @@ const resolveOperationPolicyAgainstSource = (args: {
   // own automation). An ABSENT ceiling ⇒ no relax (fail-closed): the owner-facing
   // callers always pass one — a dispatch with no `execution_source` resolves to the
   // `admin` ceiling UPSTREAM (DEF-3), never reaching here ceiling-less.
-  const relaxed = args.ceiling !== undefined
-    ? applyTrustCeiling(baseResolution, args.ceiling)
-    : baseResolution;
+  // D-177 §N.15.7 — in the owner's own chat, an author's `never` that the floor raised to `ask`
+  // runs as authored (the owner's ceiling there no longer relaxes an `ask`). Never an owner's own
+  // below-floor value, and never above the floor's `ask` (a destructive op's `always` stays).
+  const authoredNeverHonored = args.honor_authored_never === true
+    && ownerApproval === undefined && op.approval === 'never' && base === 'ask';
+  const relaxed: CatalogOperationResolution = authoredNeverHonored
+    ? { ...baseResolution, approval: 'never', authorization_provenance: { pre_lift_approval: 'never' }, verdict: 'admit' }
+    : args.ceiling !== undefined
+      ? applyTrustCeiling(baseResolution, args.ceiling)
+      : baseResolution;
   // Owner-tighten LAST (stricter-wins) — the connection profile's per-op
   // `approval_defaults` escalation. Runs AFTER the ceiling relax so it cannot be
   // undone by trust.
@@ -3081,6 +3097,13 @@ export const resolveCatalogOperationPolicy = (args: {
    *  Threaded to the shared resolver's replace step; absent ⇒ authored
    *  defaults, behavior byte-identical to pre-D-211. */
   owner_override?: OwnerOverridePolicy;
+  /** D-177 §N.15.7 — the dispatch is the owner's own chat or messenger chat (`honorsAuthoredNever`,
+   *  `op-risk-admission.ts`; the owner, 2026-11-10: *"Their author's never"*). There an operation
+   *  whose AUTHOR set `approval: 'never'`, which the risk floor raised to `ask` (§1.3), runs as its
+   *  author set it, as it did when that chat took the `admin` ceiling. The floor keeps holding it
+   *  everywhere else: a door, an AI app, the owner's unattended automation. An owner's own
+   *  below-floor value is never honored by this. Absent ⇒ the floor applies. */
+  honor_authored_never?: boolean;
 }): CatalogOperationResolution =>
   resolveOperationPolicyAgainstSource({
     operations: args.operations,
@@ -3094,6 +3117,7 @@ export const resolveCatalogOperationPolicy = (args: {
     ...(args.catalog_slug ? { catalog_slug: args.catalog_slug } : {}),
     ...(args.ceiling !== undefined ? { ceiling: args.ceiling } : {}),
     ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
+    ...(args.honor_authored_never === true ? { honor_authored_never: true } : {}),
   });
 
 /** D-182 §7.2 — resolve one `cli` catalog operation against the per-contract
@@ -3131,6 +3155,13 @@ export const resolveCliReachabilityPolicy = (args: {
    *  Reachability (the grant plane) is untouched by it — an override row has
    *  ZERO effect on admission, only on risk/approval resolution. */
   owner_override?: OwnerOverridePolicy;
+  /** D-177 §N.15.7 — the dispatch is the owner's own chat or messenger chat (`honorsAuthoredNever`,
+   *  `op-risk-admission.ts`; the owner, 2026-11-10: *"Their author's never"*). There an operation
+   *  whose AUTHOR set `approval: 'never'`, which the risk floor raised to `ask` (§1.3), runs as its
+   *  author set it, as it did when that chat took the `admin` ceiling. The floor keeps holding it
+   *  everywhere else: a door, an AI app, the owner's unattended automation. An owner's own
+   *  below-floor value is never honored by this. Absent ⇒ the floor applies. */
+  honor_authored_never?: boolean;
 }): CatalogOperationResolution =>
   resolveOperationPolicyAgainstSource({
     operations: args.operations,
@@ -3145,6 +3176,7 @@ export const resolveCliReachabilityPolicy = (args: {
     ...(args.default_policy ? { default_policy: args.default_policy } : {}),
     ...(args.ceiling !== undefined ? { ceiling: args.ceiling } : {}),
     ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
+    ...(args.honor_authored_never === true ? { honor_authored_never: true } : {}),
   });
 
 /** D-187 policy-matrix retirement (slice 3) — the op-risk APPROVAL base for a

@@ -28,8 +28,10 @@
  *      runs persist a durable checkpoint but no user-facing ask fires).
  */
 
+import { stopAllowing } from '../../stop-allowing.js';
 import { createKitchenDraftStore } from '../../kitchen-draft-store.js';
 import { createKitchenDraftImporter, createKitchenDraftAccess } from '../../kitchen-draft-service.js';
+import { createKitchenDraftFromJob } from '../../kitchen-draft-from-job.js';
 import type Database from 'better-sqlite3';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { createPeerAskOutboxStore } from '../../storage/peer-ask-outbox-store.js';
@@ -39,18 +41,13 @@ import type {
   BatchAskRecord,
   Checkpoint,
   ExecutionLane,
-  OwnerOperationPolicyInput,
-  PreflightOverrideOffer,
   QualityGateSwitches,
   ScopedSenderCandidate,
 } from '@recued/contracts';
 import {
   NOTIFICATION_CHANNEL_NAMES,
-  OWNER_OPERATION_SCOPE,
   OWNER_TOOL_PATH_SCOPE,
   OWNER_TOOL_VERSION_SCOPE,
-  isCatalogForm,
-  operationSpecHash,
 } from '@recued/contracts';
 import type {
   AuditLogStore,
@@ -66,6 +63,7 @@ import type {
 } from '@recued/notification';
 import { channelApprovalEnabled } from '@recued/notification';
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
+import type { ServerPreflightResumer } from '../../preflight-resumer.js';
 import { resolveServerTimeZone, type ReceptionInboxFanoutMode } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
@@ -145,7 +143,8 @@ import type { BatchApprovalCoordinator } from '../../batch-approval.js';
 import { createApprovalResumeAuthorityResolver } from '../../approval-resume-authority.js';
 import type { WebhookConsumerStore } from '../../storage/webhook-consumer-store.js';
 import { createWebhookResumeDoorResolver } from '../../webhook-resume-door.js';
-import { upsertOwnerOperationOverride } from '../../contract-handler.js';
+import { createPreflightOwnerOverride } from '../../preflight-owner-override.js';
+import { createApprovalRestartContinuationStore } from '../../storage/approval-restart-continuation-store.js';
 
 /** Inputs to compose the executeDeps surface.
  *
@@ -179,6 +178,7 @@ export interface ComposeExecuteDepsDeps {
   readonly tier1Registry?: ExecuteHandlerDeps['tier1Registry'];
   /** D-336 slice O's open item — told once a Tier-1 call is held. */
   readonly onTier1Held?: ExecuteHandlerDeps['onTier1Held'];
+  readonly runApprovedTier1Write?: ExecuteHandlerDeps['runApprovedTier1Write'];
   /** Forwarded to the notification block: keeps what an owner's page-started
    *  run answered once its approval let it finish, for `execution.get`. */
   readonly settledRunResults?: SettledRunResults;
@@ -223,10 +223,21 @@ export interface ComposeExecuteDepsDeps {
   gatedActionStore?: GatedActionStore;
   /** D-329 §3.4 — see `ExecuteHandlerDeps.writeRules`. */
   writeRules?: ExecuteHandlerDeps['writeRules'];
+  /** D-348 — the evidence chains are learned from. */
+  chainEvidence?: ExecuteHandlerDeps['chainEvidence'];
+  /** D-348 slice 2 — what it teaches. */
+  chainRules?: ExecuteHandlerDeps['chainRules'];
   /** D-335 slice F — see `ExecuteHandlerDeps.browserPasses`. */
   browserPasses?: ExecuteHandlerDeps['browserPasses'];
   /** D-341 slice B1 — see `ExecuteHandlerDeps.triggerPreapprovals`. */
   triggerPreapprovals?: ExecuteHandlerDeps['triggerPreapprovals'];
+  /** D-339 slice 12a — see `ExecuteHandlerDeps.bodyNumbers`. */
+  bodyNumbers?: ExecuteHandlerDeps['bodyNumbers'];
+  /** D-402 slice F3d — see `ExecuteHandlerDeps.aiAppNameOf`. Declared AND forwarded: passed in a spread,
+   *  an undeclared field is dropped here without a type error, which F3d's lookup was until F4. */
+  aiAppNameOf?: ExecuteHandlerDeps['aiAppNameOf'];
+  /** D-402 slice F4 — see `ExecuteHandlerDeps.aiAppContractOf`. */
+  aiAppContractOf?: ExecuteHandlerDeps['aiAppContractOf'];
   /** Notification-block prereq beyond the four executeDeps shares above
    *  (db / auditLog / checkpointStore). Helper composes the block only
    *  when all four are present together. ALSO forwarded onto
@@ -445,6 +456,15 @@ export interface ExecuteDepsBundle {
    *  different approval semantics. Undefined alongside `notificationBlock`
    *  (same four prereqs). */
   preflightResumer: PreflightResumer | undefined;
+  /** D-201 Slice 10W — `NotificationBlockBundle.continueHeldRun`, for the
+   *  webhook runner. Undefined alongside `preflightResumer`. */
+  continueHeldRun: ServerPreflightResumer['continueHeldRun'] | undefined;
+  /** D-201 Slice 10AB — `NotificationBlockBundle.settleDiedTryAgain`, for the
+   *  webhook runner. Undefined alongside `preflightResumer`. */
+  settleDiedTryAgain: ServerPreflightResumer['settleDiedTryAgain'] | undefined;
+  /** D-201 Slice 10AP — `NotificationBlockBundle.isResumingRun`, for the
+   *  webhook reconcile. Undefined alongside `preflightResumer`. */
+  isResumingRun: ServerPreflightResumer['isResumingRun'] | undefined;
   /** D-181 slice 4 — the live in-flight execution registry, surfaced so the
    *  boot site can wire the owner-only `execution.{active,kill,cancel,promote}`
    *  rpc handlers against the SAME instance the execute-handler + cli executor
@@ -545,57 +565,17 @@ export const composeExecuteDeps = (
   const qualityDelegationSignalStore = deps.contractStore
     ? createQualityDelegationSignalStore(deps.contractStore)
     : undefined;
-  const preflightOverrideWriter = deps.contractStore
-    ? async (offer: PreflightOverrideOffer): Promise<void> => {
-        const manifest = deps.executorConfig.manifests.get(offer.ingredient_id);
-        const currentOperation = manifest === null
-          ? undefined
-          : isCatalogForm(manifest)
-            ? Object.values(manifest.operations ?? {}).find(
-                (operation) => operation.operation_id === offer.operation_id,
-              )
-            : manifest.slug === offer.operation_id
-              ? { operation_id: manifest.slug, risk_tier: manifest.risk_tier }
-              : undefined;
-        if (
-          currentOperation === undefined
-          || operationSpecHash(currentOperation) !== offer.op_hash
-        ) {
-          throw new Error(
-            `standing owner action for '${offer.operation_id}' is stale because the `
-              + 'operation changed or was removed; review a fresh ask',
-          );
-        }
-        const segments = [offer.ingredient_id, offer.operation_id];
-        const prior = (
-          deps.contractStore!.get(OWNER_OPERATION_SCOPE, segments)?.value ?? {}
-        ) as unknown as Readonly<Record<string, unknown>>;
-        // `op_hash` is server-owned and gets freshly stamped by the rpc core.
-        // Preserve the other global operation facet while changing approval.
-        const { op_hash: _priorOpHash, ...priorPolicy } = prior;
-        const policy: OwnerOperationPolicyInput = {
-          ...(priorPolicy as OwnerOperationPolicyInput),
-          approval: offer.approval,
-        };
-        await upsertOwnerOperationOverride(
-          {
-            store: deps.contractStore!,
-            getManifest: (slug) => deps.executorConfig.manifests.get(slug),
-            listManifests: () => deps.executorConfig.manifests
-              .slugs()
-              .flatMap((slug) => {
-                const manifest = deps.executorConfig.manifests.get(slug);
-                return manifest === null ? [] : [manifest];
-              }),
-            ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
-          },
-          {
-            ingredient_id: offer.ingredient_id,
-            operation_id: offer.operation_id,
-            policy,
-          },
-        );
-      }
+  const preflightOverride = deps.contractStore
+    ? createPreflightOwnerOverride({
+        store: deps.contractStore,
+        getManifest: slug => deps.executorConfig.manifests.get(slug),
+        listManifests: () => deps.executorConfig.manifests.slugs().flatMap(slug => {
+          const manifest = deps.executorConfig.manifests.get(slug);
+          return manifest === null ? [] : [manifest];
+        }),
+        ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+        ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
+      })
     : undefined;
 
   // One process-wide handle for both execute and reconciliation. Construct it
@@ -635,6 +615,9 @@ export const composeExecuteDeps = (
   let batchApprovals: BatchApprovalCoordinator | undefined;
   // D-210 Phase C — retained for the inbox's no-ask release path.
   let preflightResumer: PreflightResumer | undefined;
+  let continueHeldRun: ServerPreflightResumer['continueHeldRun'] | undefined;
+  let settleDiedTryAgain: ServerPreflightResumer['settleDiedTryAgain'] | undefined;
+  let isResumingRun: ServerPreflightResumer['isResumingRun'] | undefined;
   if (deps.db && deps.auditLog && deps.checkpointStore && deps.annotationStore) {
     const bundle = composeNotificationBlock({
       db: deps.db,
@@ -660,8 +643,8 @@ export const composeExecuteDeps = (
       ...(deps.beforePreflightResume
         ? { beforePreflightResume: deps.beforePreflightResume }
         : {}),
-      ...(preflightOverrideWriter !== undefined
-        ? { upsertOverride: preflightOverrideWriter }
+      ...(preflightOverride !== undefined
+        ? { upsertOverride: preflightOverride.apply, captureOverridePolicy: preflightOverride.capturePolicy }
         : {}),
       // D-192 Slice 6c — the write-executor accessor for the create-plan approve
       // dispatcher (runs `executeCreatePlan` at answer time).
@@ -706,6 +689,9 @@ export const composeExecuteDeps = (
     reconcileOpenBatch = bundle.reconcileOpenBatch;
     batchApprovals = bundle.batchApprovals;
     preflightResumer = bundle.resumer;
+    continueHeldRun = bundle.continueHeldRun;
+    settleDiedTryAgain = bundle.settleDiedTryAgain;
+    isResumingRun = bundle.isResumingRun;
   }
 
   // D-165 P0/P1 — per-connection operation-profile store (LOCAL-ONLY). The
@@ -1006,9 +992,19 @@ export const composeExecuteDeps = (
       store: createKitchenDraftStore(deps.db), gate: opAdmissionGate,
       ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
     }) } : {}),
+    // D-402 slice A5 — an AI app's draft request, over the process's job registry and recorder.
+    ...(deps.db && opAdmissionGate ? { kitchenDraftFromJob: createKitchenDraftFromJob({
+      kitchenDrafts: createKitchenDraftStore(deps.db), gate: opAdmissionGate,
+      ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+      // D-402 slice D2 — the owner's zone, for a typed day relative to the run's day.
+      timeZone: ownerTimeZoneOf(deps.db),
+      // D-402 slice H2 — the paired browsers, so a draft's browser settings hold their lasting ids.
+      browsers: () => deps.executorConfig.bridgeDispatcherRef?.()?.listBrowsers?.(),
+    }) } : {}),
     ...(deps.situationAccess ? { situationAccess: deps.situationAccess } : {}),
     ...(deps.tier1Registry !== undefined ? { tier1Registry: deps.tier1Registry } : {}),
     ...(deps.onTier1Held !== undefined ? { onTier1Held: deps.onTier1Held } : {}),
+    ...(deps.runApprovedTier1Write !== undefined ? { runApprovedTier1Write: deps.runApprovedTier1Write } : {}),
     // D-210 Phase C — the device-fanout branch reads this at each preflight
     // raise. Absent ⇒ every hold raises the actionable ask.
     ...(deps.resolveInboxFanoutMode !== undefined
@@ -1110,9 +1106,25 @@ export const composeExecuteDeps = (
     ...(peerAskOutbox ? { peerAskOutbox } : {}),
     ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
     ...(deps.gatedActionStore ? { gatedActionStore: deps.gatedActionStore } : {}),
+    // D-201 Slice 10N — an approved run a restart stopped after its approved
+    // step returned: the next start finishes it without sending it again.
+    ...(deps.db ? { approvalRestartContinuations: createApprovalRestartContinuationStore(deps.db) } : {}),
     ...(deps.writeRules ? { writeRules: deps.writeRules } : {}),
+    ...(deps.chainEvidence ? { chainEvidence: deps.chainEvidence } : {}),
+    ...(deps.chainRules ? { chainRules: deps.chainRules } : {}),
     ...(deps.browserPasses ? { browserPasses: deps.browserPasses } : {}),
     ...(deps.triggerPreapprovals ? { triggerPreapprovals: deps.triggerPreapprovals } : {}),
+    ...(deps.bodyNumbers ? { bodyNumbers: deps.bodyNumbers } : {}),
+    ...(deps.aiAppNameOf ? { aiAppNameOf: deps.aiAppNameOf } : {}),
+    ...(deps.aiAppContractOf ? { aiAppContractOf: deps.aiAppContractOf } : {}),
+    // D-402 slice F4 — "Stop allowing", over the SAME definition store the session-grant resolver reads.
+    ...(deps.triggerPreapprovals ? { stopAllowing: (input: Parameters<NonNullable<ExecuteHandlerDeps['stopAllowing']>>[0]) => stopAllowing({
+      preapprovals: deps.triggerPreapprovals!,
+      ...(deps.browserPasses ? { browserPasses: deps.browserPasses } : {}),
+      ...(contractDefinitionStore ? { definitions: contractDefinitionStore } : {}),
+      ...(deps.writeRules ? { writeRules: deps.writeRules } : {}),
+      ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+    }, input) } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`
     // on this dep when the engine pauses on a policy `ask`; the
@@ -1243,6 +1255,9 @@ export const composeExecuteDeps = (
     getBatch,
     reconcileOpenBatch,
     preflightResumer,
+    continueHeldRun,
+    settleDiedTryAgain,
+    isResumingRun,
     inFlightRegistry,
     contractDefinitionStore,
     grantEntryStore,

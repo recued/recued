@@ -38,11 +38,14 @@ export type {
   ExchangeFirePayload,
 } from './fire-exchange-output.js';
 export { evaluateCondition } from './condition.js';
+// D-201 Slice 10BN — the server's stop reads a loop's progress as the engine's
+// replay does.
+export { loopAskedBeforeAnyItemRan } from './step-runner.js';
 export { createTransformContext } from './context.js';
 export type { StepEffect } from './step-seed.js';
 export { createDryRunExecutor, generateMockData } from './dry-run.js';
 export type {
-  ExecutionContext, ExecutionResult, StepLog, IngredientExecutor,
+  ExecutionContext, ExecutionResult, StepLog, IngredientExecutor, ReplayedStep,
   CliInvocationCall, CliInvocationExecutor,
   OperationBoundWebhookConsumerIdentity, OperationBoundWebhookCall,
   PreparedOperationBoundWebhookDispatch,

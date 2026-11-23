@@ -121,16 +121,26 @@ describe('D-270 card detail resolver', () => {
       expect(getCheckpoint).not.toHaveBeenCalled();
     });
 
-    it('a MULTI-MEMBER batch would show one member as the whole approval', async () => {
+    it('⛔ a batch of several never shows ONE member as the whole approval', async () => {
+      // The ask names one member's checkpoint. A member the card cannot read
+      // leaves no rows, not the others' rows and not that one's.
       const rows = await mk({
-        getBatch: async () => ({ members: [1, 2] }),
+        getBatch: async () => ({ members: [{ checkpoint_id: 'cp1' }, { checkpoint_id: 'gone' }], current_ask_id: 'a1' }),
+        getCheckpoint: async (id: string) => (id === 'cp1' ? recipeCheckpoint({ to: 'a@b.c', subject: 'Hi' }) : null),
+      })(ask({ checkpoint_id: 'cp1', batch_id: 'b1' }));
+      expect(rows).toBeNull();
+    });
+
+    it('a batched ask that is not its batch\'s live one: a superseded version lists fewer members', async () => {
+      const rows = await mk({
+        getBatch: async () => ({ members: [{ checkpoint_id: 'cp1' }], current_ask_id: 'a2' }),
       })(ask({ checkpoint_id: 'cp1', batch_id: 'b1' }));
       expect(rows).toBeNull();
     });
 
     it('a single-member batch DOES resolve — "one member as the whole" is vacuous at N=1', async () => {
       const rows = await mk({
-        getBatch: async () => ({ members: [1] }),
+        getBatch: async () => ({ members: [{ checkpoint_id: 'cp1' }] }),
       })(ask({ checkpoint_id: 'cp1', batch_id: 'b1' }));
       expect(rows).not.toBeNull();
     });
@@ -172,6 +182,96 @@ describe('D-270 card detail resolver', () => {
       })(ask({ checkpoint_id: 'cp1' }));
       expect(rows).toBeNull();
     });
+  });
+});
+
+describe("D-177 §N.15.9 — an approval of several shows every member's rows", () => {
+  // A round's gathered approval, or an AI app's batch, runs every member on one yes. Before, the card
+  // showed no rows for either, and the owner had to open "The technical bits" to see who each send
+  // went to.
+  const gathered = (...ids: string[]): never => ask(
+    { members: ids.map((id) => ({ checkpoint_id: id, run_id: `run-${id}` })), checkpoint_ids: ids },
+    'gateway.preflight.gathered',
+  );
+  const held = (byId: Record<string, Record<string, unknown>>) => async (id: string) =>
+    Object.hasOwn(byId, id) ? recipeCheckpoint(byId[id]!, { checkpoint_id: id, run_id: `run-${id}` }) : null;
+  const threeSends = {
+    cp1: { to: 'a@b.c', subject: 'Hi' },
+    cp2: { to: 'd@e.f', subject: 'Hi' },
+    cp3: { to: 'g@h.i', subject: 'Hi' },
+  };
+
+  it('the rows they share once, then each one\'s own, numbered as the approval lists them', async () => {
+    const rows = await mk({ getCheckpoint: held(threeSends) })(gathered('cp1', 'cp2', 'cp3'));
+    expect(rows).toEqual([
+      { label: 'subject', value: 'Hi' },
+      // Named here: the card names only a bare field name, and "2 · to" is not one.
+      { label: '1 · To', value: 'a@b.c' },
+      { label: '2 · To', value: 'd@e.f' },
+      { label: '3 · To', value: 'g@h.i' },
+    ]);
+  });
+
+  it('a row only one of them has is numbered too, a field it leaves blank included', async () => {
+    const rows = await mk({
+      getCheckpoint: held({ cp1: { to: 'a@b.c', subject: 'Hi' }, cp2: { to: 'a@b.c' } }),
+    })(gathered('cp1', 'cp2'));
+    expect(rows).toEqual([
+      { label: 'to', value: 'a@b.c' },
+      { label: '1 · Subject', value: 'Hi' },
+      { label: '2 · Not set', value: 'Subject' },
+    ]);
+  });
+
+  it('members that are the same call show its rows once', async () => {
+    const same = { to: 'a@b.c', subject: 'Hi' };
+    const rows = await mk({ getCheckpoint: held({ cp1: same, cp2: same }) })(gathered('cp1', 'cp2'));
+    expect(rows).toEqual([{ label: 'to', value: 'a@b.c' }, { label: 'subject', value: 'Hi' }]);
+  });
+
+  it('⛔ none when one member cannot be read: a list without it would cover less than the yes runs', async () => {
+    const { cp1, cp3 } = threeSends;
+    expect(await mk({ getCheckpoint: held({ cp1, cp3 }) })(gathered('cp1', 'cp2', 'cp3'))).toBeNull();
+    // A member's run that is no longer waiting, by the rule a call's own approval reads.
+    expect(await mk({
+      getCheckpoint: held(threeSends),
+      getAnchor: async (run_id: string) => anchor(run_id === 'run-cp2' ? { commit_status: 'committed' } : {}),
+    })(gathered('cp1', 'cp2', 'cp3'))).toBeNull();
+    // And a member named only by its run: there is no checkpoint to read.
+    expect(await mk({ getCheckpoint: held(threeSends) })(ask({
+      members: [{ run_id: 'run-cp1' }, { checkpoint_id: 'cp2', run_id: 'run-cp2' }],
+    }, 'gateway.preflight.gathered'))).toBeNull();
+  });
+
+  it("an AI app's batch of several: the same rows, from each member's own held call", async () => {
+    const rows = await mk({
+      getCheckpoint: held(threeSends),
+      getBatch: async () => ({ members: ['cp1', 'cp2', 'cp3'].map((checkpoint_id) => ({ checkpoint_id })), current_ask_id: 'a1' }),
+    })(ask({ checkpoint_id: 'cp1', batch_id: 'b1' }));
+    expect(rows).toEqual([
+      { label: 'subject', value: 'Hi' },
+      { label: '1 · To', value: 'a@b.c' },
+      { label: '2 · To', value: 'd@e.f' },
+      { label: '3 · To', value: 'g@h.i' },
+    ]);
+  });
+
+  it('a batch is read when the card asks: a member that joined since is listed too', async () => {
+    let members = ['cp1', 'cp2'];
+    const resolve = mk({
+      getCheckpoint: held(threeSends),
+      // '' until the batch records its live ask: read as not known, not as another ask.
+      getBatch: async () => ({ members: members.map((checkpoint_id) => ({ checkpoint_id })), current_ask_id: '' }),
+    });
+    const labels = async () => (await resolve(ask({ checkpoint_id: 'cp1', batch_id: 'b1' })))?.map((row) => row.label);
+    expect(await labels()).toEqual(['subject', '1 · To', '2 · To']);
+    members = ['cp1', 'cp2', 'cp3'];
+    expect(await labels()).toEqual(['subject', '1 · To', '2 · To', '3 · To']);
+  });
+
+  it('none for a list of fewer than two', async () => {
+    expect(await mk({ getCheckpoint: held(threeSends) })(gathered('cp1'))).toBeNull();
+    expect(await mk({ getCheckpoint: held(threeSends) })(gathered())).toBeNull();
   });
 });
 

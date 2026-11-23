@@ -406,6 +406,8 @@ export interface ServerConfig {
   mailWorkService?: import('./mail-work-service.js').MailWorkService;
   /** D-221 owner-only pack Records explorer and lifecycle rpc deps. */
   recordsRpcDeps?: import('./records-rpc-handler.js').RecordsRpcDeps;
+  /** D-403 — the owner's storage view and purge. */
+  ownerStorageRpcDeps?: import('./owner-storage-rpc.js').OwnerStorageRpcDeps;
   savedDataViewStore?: import('./saved-data-view-store.js').SavedDataViewStore;
   preapprovalDeps?: import('./preapproval-handler.js').PreapprovalHandlerDeps;
   recipeRegressionDeps?: import('./recipe-regression-handler.js').RecipeRegressionDeps;
@@ -1638,6 +1640,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     mailFactRpcDeps: config.mailFactRpcDeps,
     mailWorkService: config.mailWorkService,
     recordsRpcDeps: config.recordsRpcDeps,
+    ownerStorageRpcDeps: config.ownerStorageRpcDeps,
     savedDataViewStore: config.savedDataViewStore,
     preapprovalDeps: config.preapprovalDeps,
     recipeRegressionDeps: config.recipeRegressionDeps,

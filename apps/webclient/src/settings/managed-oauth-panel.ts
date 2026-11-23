@@ -636,9 +636,13 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
         if (integrationSetup && !confirmDiscard('this integration setup')) return;
         clearApp(); deletingProfile = false; setup = true; editingProfile = saved.id; label = saved.label; server = saved.base_url; connectOrigin = saved.connect_ui_origin ?? ''; apiKey = ''; showKey = false; profileBaseline = profileDraft(); render(); focusField('key'); return;
       }
-      case 'close-setup':
+      case 'close-setup': {
         if (profileDraft() !== profileBaseline && !confirmDiscard('this broker setup')) return;
-        setup = false; apiKey = ''; showKey = false; focus = { selector: `[data-managed-action="${editingProfile ? 'edit' : 'add'}"]` }; render(); deps.changed(); return;
+        const returnAction = editingProfile ? 'edit' : 'add';
+        setup = false; apiKey = ''; showKey = false; render(); deps.changed();
+        // Restore after rendering so the outgoing Cancel cannot replace the target.
+        focus = { selector: `[data-managed-action="${returnAction}"]` }; restoreFocus(); return;
+      }
       case 'save-profile': {
         if (!label.trim()) fieldErrors.label = 'Enter a profile name.';
         const validUrl = (value: string): boolean => { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; } };
@@ -689,7 +693,8 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       }
       case 'close-integration':
         if (!confirmDiscard('this integration setup')) return;
-        clearApp(); focus = { selector: '[data-managed-action="add-integration"]' }; render(); deps.changed(); return;
+        clearApp(); render(); deps.changed();
+        focus = { selector: '[data-managed-action="add-integration"]' }; restoreFocus(); return;
       case 'create-integration': {
         if (!integrationId.trim()) fieldErrors['integration-id'] = 'Enter a unique integration ID.';
         if (!integrationLabel.trim()) fieldErrors['integration-label'] = 'Enter an integration name.';

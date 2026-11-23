@@ -86,12 +86,14 @@ import {
   routePlatformRecordOperationArgs,
   resolveCatalogOperationPolicy,
   resolveCliReachabilityPolicy,
+  honorsAuthoredNever,
   resolveTrustCeiling,
   routeQualifiedWorkEntityOperationArgs,
   CONTRACTED_DEFAULT_TRUST_CEILING,
   isRecordsExecutionBinding,
   recordsPrincipalFromExecutionSource,
   CONNECTION_NOT_ADMITTED_DETAIL,
+  chainMayStandIn,
 } from '@recued/contracts';
 // D-217 § 9.8 — the walk's plan lives in `@recued/ingredients` (the sequencer
 // that drives it is the connection adapter). engine → ingredients is the
@@ -2453,15 +2455,57 @@ export const runCatalogOperation = async (
   stepOptions: StepOptions | undefined, stepMeta: StepMeta | undefined,
 ): Promise<unknown> => {
   const hooks = ctx.reviewedExecution;
-  if (!hooks) return runCatalogOperationInner(ctx, manifest, slug, input, connectionName, output, stepOptions, stepMeta);
-  const delegated: ExecutionContext = { ...ctx, ingredientExecutor: (delegateSlug, delegateInput, delegateOutput, options, meta) =>
-    hooks.delegate({ slug: delegateSlug, input: delegateInput, stepMeta: meta },
-      () => ctx.ingredientExecutor(delegateSlug, delegateInput, delegateOutput, options, meta)) };
-  return hooks.invoke({ slug, input, output, catalog: true, connection_name: connectionName, stepMeta },
-    // Reviewed execution never reads a cache; a step's `pages` still applies.
-    () => runCatalogOperationInner(
-      delegated, manifest, slug, input, connectionName, output, { ...stepOptions, cache: 'fresh' }, stepMeta,
-    ));
+  // D-348 slice 6 — the call as the gate admitted it, for the rule's host to keep what a read found.
+  const admitted: AdmittedRead = {};
+  const result = !hooks
+    ? await runCatalogOperationInner(ctx, manifest, slug, input, connectionName, output, stepOptions, stepMeta, admitted)
+    : await hooks.invoke({ slug, input, output, catalog: true, connection_name: connectionName, stepMeta },
+      // Reviewed execution never reads a cache; a step's `pages` still applies.
+      () => runCatalogOperationInner(
+        { ...ctx, ingredientExecutor: (delegateSlug, delegateInput, delegateOutput, options, meta) =>
+          hooks.delegate({ slug: delegateSlug, input: delegateInput, stepMeta: meta },
+            () => ctx.ingredientExecutor(delegateSlug, delegateInput, delegateOutput, options, meta)) },
+        manifest, slug, input, connectionName, output, { ...stepOptions, cache: 'fresh' }, stepMeta, admitted,
+      ));
+  if (admitted.args !== undefined && admitted.operation_key !== undefined && ctx.chainRules?.found !== undefined) {
+    try {
+      ctx.chainRules.found({
+        slug,
+        operation_key: admitted.operation_key,
+        ...(admitted.connection_name ? { connection_name: admitted.connection_name } : {}),
+        args: admitted.args,
+        record_ids: catalogRecordIds(result, resolveCatalogRecordsPath(manifest, admitted.operation_key)),
+      });
+    } catch {
+      /* what a read found is kept best effort: a delete it would have let through asks */
+    }
+  }
+  return result;
+};
+
+/** D-348 slice 6 — a read the gate admitted: its op, account and the arguments it is sent with. */
+interface AdmittedRead {
+  args?: Record<string, unknown>;
+  operation_key?: string;
+  connection_name?: string;
+}
+
+/** D-348 slice 6 — the ids of the records a read returned, read where D-254 reads them to compose
+ *  them for a caller (`stampPlatformRecordIds`): the records at its records path, each by its
+ *  `id`; a targeted read's record is the body itself. Nothing else in the result (an association,
+ *  a field's value) is a record it found. */
+const catalogRecordIds = (result: unknown, path: readonly string[]): string[] => {
+  const at = (root: unknown, segs: readonly string[]): unknown => segs.reduce<unknown>(
+    (node, seg) => (node !== null && typeof node === 'object' && !Array.isArray(node)
+      ? (node as Record<string, unknown>)[seg] : undefined), root);
+  const idOf = (record: unknown): string | undefined => {
+    if (record === null || typeof record !== 'object' || Array.isArray(record)) return undefined;
+    const id = (record as Record<string, unknown>)['id'];
+    return (typeof id === 'string' && id.length > 0) || (typeof id === 'number' && Number.isFinite(id)) ? String(id) : undefined;
+  };
+  const rows = path.length > 0 ? at(result, path) : result;
+  const records = Array.isArray(rows) ? rows : [path.length > 0 ? at(result, path.slice(0, 1)) : result];
+  return records.map(idOf).filter((id): id is string => id !== undefined);
 };
 
 const runCatalogOperationInner = async (
@@ -2473,6 +2517,7 @@ const runCatalogOperationInner = async (
   output: Record<string, string> | undefined,
   stepOptions: StepOptions | undefined,
   stepMeta: StepMeta | undefined,
+  admitted?: AdmittedRead,
 ): Promise<unknown> => {
   throwIfRunKilled(ctx);
   const rawCall = extractCatalogCall(input, connectionName);
@@ -2651,6 +2696,9 @@ const runCatalogOperationInner = async (
   const dispatchCeiling = ctx.execution_source
     ? resolveTrustCeiling(ctx.execution_source, ctx.contract_snapshot)
     : CONTRACTED_DEFAULT_TRUST_CEILING;
+  // D-177 §N.15.7 — in the owner's own chat an op its author set to `never` runs as authored,
+  // although the floor raised it to `ask` and the chat's ceiling no longer relaxes that.
+  const honorAuthoredNever = ctx.execution_source !== undefined && honorsAuthoredNever(ctx.execution_source);
 
   // D-211 §2 — the owner's global REPLACE-IF-PRESENT ruling for this op,
   // read from the actorless exact-operation row BEFORE resolution. It travels
@@ -2663,11 +2711,16 @@ const runCatalogOperationInner = async (
   // risk/approval replace step.
   const qualifiedOpId =
     manifest.operations?.[call.operation_id]?.operation_id ?? call.operation_id;
-  const ownerOverride = readOwnerOperationOverride({
+  const ownedOverride = readOwnerOperationOverride({
     scan: ctx.contractScan,
     ingredient_id: slug,
     operation_id: qualifiedOpId,
   });
+  // D-402 slice C — a trial run of a draft: an operation that writes asks first, as one the owner set
+  // to "always ask" does (no ceiling relaxes it, nothing stands in for it). Reads stay as they are.
+  const declaredRisk = manifest.operations?.[call.operation_id]?.risk_tier;
+  const ownerOverride = ctx.trial === true && declaredRisk !== undefined && declaredRisk !== 'read'
+    ? { ...ownedOverride, approval: 'always' as const } : ownedOverride;
 
   // Resolve the per-kind authorization floor (Invariant 1) + the owner's
   // D-211 replace-if-present ruling + the source-trust ceiling relax (D-209
@@ -2690,6 +2743,7 @@ const runCatalogOperationInner = async (
           ceiling: dispatchCeiling,
           ...(manifest.default_policy ? { default_policy: manifest.default_policy } : {}),
           ...(candidate !== undefined ? { owner_override: candidate } : {}),
+          ...(honorAuthoredNever ? { honor_authored_never: true } : {}),
         })
       : resolveCatalogOperationPolicy({
           operations: manifest.operations ?? {},
@@ -2702,6 +2756,7 @@ const runCatalogOperationInner = async (
           ceiling: dispatchCeiling,
           ...(manifest.default_policy ? { default_policy: manifest.default_policy } : {}),
           ...(candidate !== undefined ? { owner_override: candidate } : {}),
+          ...(honorAuthoredNever ? { honor_authored_never: true } : {}),
         })
   );
   const resolveWithOwnerOverride = (
@@ -2718,7 +2773,10 @@ const runCatalogOperationInner = async (
   const declaredOp = manifest.operations?.[call.operation_id];
   let ownerOverrideOffer: PreflightOverrideOffer | undefined;
   if (resolution.verdict === 'ask') {
-    if (declaredOp !== undefined && resolution.effective_risk_tier === 'read') {
+    // D-339 slice 12a — never for a read its op holds at `always` (a Body's numbers): "Never ask for
+    // this op again" wrote an override for every caller, AI apps too, past the hold that is the point.
+    // Who may read it without asking is the owner's per-caller answer (`ctx.heldReads`).
+    if (declaredOp !== undefined && resolution.effective_risk_tier === 'read' && declaredOp.approval !== 'always') {
       const candidate: OwnerOverridePolicy = {
         ...ownerOverride,
         approval: 'never',
@@ -3244,6 +3302,8 @@ const runCatalogOperationInner = async (
   // grant: the dispatch is grant-admitted and the gate CONSUMES one use at the
   // proceed point below (a failed consume re-raises the hold — fail closed).
   let grantAdmitContractId: string | undefined;
+  // D-348 — the request's rule that admitted the call, for the commit its local change writes.
+  let chainRuleAdmitted: string | undefined;
   // D-177 catalog open mode — the fire hash the matched grant was evaluated
   // against, kept so the proceed-point consume store-verifies an `'open'`
   // consumption against the same recomputation (defense in depth).
@@ -3347,12 +3407,73 @@ const runCatalogOperationInner = async (
         triggerPreapprovalId = null; // fail closed — the ask stands
       }
     }
-    if (grantId === null && triggerPreapprovalId === null) raiseCatalogAsk();
+    // D-348 slice 5 — a catalog op on the rule the owner accepted for the request its run was made
+    // for goes ahead without asking, where a chain may stand in (`chainMayStandIn`, the check its
+    // evidence makes too); the host spends a use. Slice 6 — a delete too, which the host lets
+    // through only for the record its operation names (`record_id_arg`) when a read of the same
+    // run, pack, account and kind of record found it (`found`, Q7).
+    let chainRuleId: string | null = null;
+    if (
+      grantId === null
+      && triggerPreapprovalId === null
+      && ctx.chainRules !== undefined
+      && chainMayStandIn({ slug, risk_tier: resolution.effective_risk_tier, provenance, args: effectiveArgs })
+    ) {
+      try {
+        const recordArg = resolution.effective_risk_tier === 'destructive'
+          ? manifest.operations?.[call.operation_id]?.record_id_arg : undefined;
+        const record = recordArg !== undefined ? effectiveArgs[recordArg] : undefined;
+        chainRuleId = ctx.chainRules.admit({
+          slug,
+          operation_id: resolution.operation_id,
+          operation_key: call.operation_id,
+          ...(call.connection_name ? { connection_name: call.connection_name } : {}),
+          risk_tier: resolution.effective_risk_tier as RiskTier,
+          args: effectiveArgs,
+          ...((typeof record === 'string' && record.length > 0) || (typeof record === 'number' && Number.isFinite(record))
+            ? { record_id: String(record) } : {}),
+        });
+      } catch {
+        chainRuleId = null; // fail closed — the ask stands
+      }
+    }
+    // D-339 slice 12a — a read its op holds at `always` (a Body's numbers) goes ahead without asking
+    // when the owner lets this run's caller make it: their chats' "Allow" on a Body's page. Only that
+    // hold: not one a review lifted, not one the run's ceiling raised. The host answers from the run.
+    let heldReadAdmitted = false;
+    if (
+      grantId === null
+      && triggerPreapprovalId === null
+      && chainRuleId === null
+      && ctx.heldReads !== undefined
+      && resolution.effective_risk_tier === 'read'
+      && declaredOp?.risk_tier === 'read'
+      && declaredOp.approval === 'always'
+      && provenance.lift_reason === undefined
+      && provenance.pre_lift_approval === 'always'
+    ) {
+      try {
+        heldReadAdmitted = ctx.heldReads.admit({ slug, operation_id: resolution.operation_id }) === true;
+      } catch {
+        heldReadAdmitted = false; // fail closed — the ask stands
+      }
+    }
+    if (grantId === null && triggerPreapprovalId === null && chainRuleId === null && !heldReadAdmitted) raiseCatalogAsk();
+    // Let through by a standing permission, it runs under a review of its change as an approved
+    // call does, so it keeps a receipt and can be undone. Only a local change has one to capture.
+    resourceReview ??= captureResourceReview(ctx.resourceReview, slug,
+      { operation: call.operation_id, args: effectiveArgs }, undefined, false);
     // `raiseCatalogAsk` threw on null; the `?? undefined` only satisfies the
     // type-narrowing (grantId is a non-null string past the guard).
     grantAdmitContractId = grantId ?? undefined;
+    chainRuleAdmitted = chainRuleId ?? undefined;
     grantAdmitOpenHash = fireOpenHash;
     grantAdmitDestinations = fireDestinations;
+  }
+  if (admitted !== undefined && resolution.effective_risk_tier === 'read') {
+    admitted.args = effectiveArgs;
+    admitted.operation_key = call.operation_id;
+    if (call.connection_name) admitted.connection_name = call.connection_name;
   }
 
   // ── admit (or resumed-admitted) ── execute via direct surface dispatch,
@@ -3555,13 +3676,11 @@ const runCatalogOperationInner = async (
   }
 
   // D-177 catalog-gate loop — consume the matched grant's use at the proceed
-  // point, synchronously before dispatch. The whole match → consume span is
-  // AWAIT-FREE (the binding build + the open walk hook are sync), so two
-  // concurrent dispatches can't both match-then-consume a final use; the
-  // exact-mode store consume is a plain decrement that trusts the match's
-  // hash verification (same posture as the commit Gateway's exact consume —
-  // codex). A `'batch'`-row consume atomically claims the member the envelope
-  // hash selects; an `'open'`-row consume is store-verified against the
+  // point, synchronously before dispatch. The store's transaction owns the
+  // liveness check and spend across processes sharing SQLite. Exact-mode
+  // consumption trusts the match's hash verification (same posture as the
+  // commit Gateway). A `'batch'`-row consume atomically claims the member
+  // the envelope hash selects; an `'open'`-row consume is store-verified against the
   // fire's recomputed projection hash (defense in depth). A failed / throwing
   // consume — the grant was revoked / expired / exhausted between match and
   // here — re-raises the hold: no use spent on a dead grant, no dispatch, no
@@ -3592,6 +3711,8 @@ const runCatalogOperationInner = async (
           ...(grantAdmitDestinations !== undefined
             ? { destination_emails: grantAdmitDestinations }
             : {}),
+          // D-177 N.15 — the op the match named; a `'kind'` row re-verifies it.
+          operation_id: resolution.operation_id,
         });
     } catch {
       consumed = false;
@@ -3679,7 +3800,8 @@ const runCatalogOperationInner = async (
         return !reviewedApproved && resourceReview && ctx.localMutations
           ? ctx.localMutations.run({ slug, operation: resolution.operation_id,
               input: { operation: call.operation_id, args }, review: resourceReview,
-              ...(stepMeta ? { stepMeta } : {}) }, dispatch)
+              ...(stepMeta ? { stepMeta } : {}),
+              ...(chainRuleAdmitted !== undefined ? { chain_rule_id: chainRuleAdmitted } : {}) }, dispatch)
           : dispatch();
       };
       // A step that says `pages: "all"` reads its search page by page (the

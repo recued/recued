@@ -1690,6 +1690,8 @@ for (const size of [
     const fields = await openHousekeepingSchedule(page);
     await fields.preset('custom').focus();
     await page.keyboard.press('Space');
+    await expect(fields.start).toHaveAccessibleName('Run window start hour');
+    await expect(fields.end).toHaveAccessibleName('Run window end hour');
     for (const [control, value] of [[fields.start, '8'], [fields.end, '19']] as const) {
       await control.focus();
       await control.selectOption(value);

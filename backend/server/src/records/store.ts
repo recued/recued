@@ -307,6 +307,19 @@ export interface RecordsStore {
   getNamespaceState(owner: RecordsPackRef): RecordsNamespaceState | null;
   listNamespaces(): RecordsNamespaceSummary[];
   listKinds(owner: RecordsPackRef): Array<{ kind: string; rows: number; payload_bytes: number }>;
+  /** D-403 — every pack's kinds with rows: their rows and bytes, the oldest `updated_at`, and the rows
+   *  created at or after `since`. One grouped read of the row table. */
+  ownerKindAges(since: number): Array<{ owner: RecordsPackRef; kind: string; rows: number; payload_bytes: number;
+    oldest_updated_at: number | null; added_since: number }>;
+  /** D-403 — a kind's rows last saved before `before`: how many, their bytes, the oldest and newest. */
+  ownerCountOlderThan(owner: RecordsPackRef, kind: string, before: number): { rows: number; payload_bytes: number;
+    oldest: number | null; newest: number | null };
+  /** D-403 — delete up to `limit` of a kind's rows last saved before `before`, oldest first, each through
+   *  the owner delete (`deleteRecord` under `owner_bulk_delete`: CAS, references, quota and outbox as any
+   *  owner delete, and no watcher event, so no recipe wakes). A row another row restricts stays and is
+   *  counted in `blocked`; `skip` passes over that many oldest rows, which are the ones held so far. */
+  ownerDeleteOlderThan(owner: RecordsPackRef, kind: string, before: number, limit?: number, skip?: number):
+    { deleted: number; blocked: number; payload_bytes: number };
   ownerSearch(input: RecordsOwnerSearchInput): RecordsSearchResult;
   ownerGet(owner: RecordsPackRef, entity: string, id: string): RecordsFriendlyRecord | null;
   ownerInspect(owner: RecordsPackRef, entity: string, id: string): {
@@ -355,6 +368,8 @@ export interface RecordsStore {
   acknowledgeEvent(eventId: string, subscriberDigest: string): boolean;
   deadLetterEvent(eventId: string, reason: string): boolean;
   listPendingDeliveries(limit?: number): RecordsOutboxDelivery[];
+  /** Live, read-only status of both the event and its exact subscriber receipt. */
+  isDeliveryPending(eventId: string, bindingDigest: string): boolean;
   acknowledgeDelivery(eventId: string, bindingDigest: string): boolean;
   failDelivery(eventId: string, bindingDigest: string, reason: string, maxRetries?: number): boolean;
   explainIndexes(): string[];
@@ -5952,6 +5967,58 @@ export const createRecordsStore = (
       }
       return { deleted, blocked };
     },
+    ownerKindAges(since) {
+      const rows = db.prepare(`SELECT publisher,pack_slug,kind,count(*) AS rows,coalesce(sum(payload_bytes),0) AS payload_bytes,
+          min(updated_at) AS oldest_updated_at,coalesce(sum(created_at>=?),0) AS added_since
+        FROM ${ROW_TABLE} GROUP BY publisher,pack_slug,kind ORDER BY publisher,pack_slug,kind`)
+        .all(since) as Array<{ publisher: string; pack_slug: string; kind: string; rows: number; payload_bytes: number;
+          oldest_updated_at: number | null; added_since: number }>;
+      return rows.map((row) => ({ owner: { publisher: row.publisher, pack_slug: row.pack_slug }, kind: row.kind, rows: row.rows,
+        payload_bytes: row.payload_bytes, oldest_updated_at: row.oldest_updated_at, added_since: row.added_since }));
+    },
+    ownerCountOlderThan(owner, kind, before) {
+      assertPackRef(owner);
+      if (!Number.isSafeInteger(before)) fail('records_invalid', 'the cutoff must be an epoch ms');
+      const row = db.prepare(`SELECT count(*) AS rows,coalesce(sum(payload_bytes),0) AS payload_bytes,
+          min(updated_at) AS oldest,max(updated_at) AS newest
+        FROM ${ROW_TABLE} WHERE publisher=? AND pack_slug=? AND kind=? AND updated_at<?`)
+        .get(owner.publisher, owner.pack_slug, kind, before) as { rows: number; payload_bytes: number; oldest: number | null; newest: number | null };
+      return row;
+    },
+    ownerDeleteOlderThan(owner, kind, before, limit = 500, skip = 0) {
+      assertOwnerMutationNotFenced(owner);
+      if (!Number.isSafeInteger(before)) fail('records_invalid', 'the cutoff must be an epoch ms');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) fail('records_invalid', 'purge batch size is invalid');
+      if (!Number.isSafeInteger(skip) || skip < 0) fail('records_invalid', 'purge skip is invalid');
+      const ns = requireValue(namespaceRow(owner), 'records_not_found', 'Records namespace was not found');
+      if (ns.state !== 'ready') fail('records_not_ready', 'a purge requires a ready namespace');
+      const schema = JSON.parse(ns.schema_json) as RecordsSchemaSnapshot;
+      entityFor(schema, kind);
+      // A purge is owner policy, like expiry: no business delete operation need exist.
+      const binding = ownerBinding(ns, kind, 'delete');
+      const rows = db.prepare(`SELECT pk,version,revision,payload_bytes FROM ${ROW_TABLE}
+        WHERE publisher=? AND pack_slug=? AND kind=? AND updated_at<? ORDER BY updated_at,pk LIMIT ? OFFSET ?`)
+        .all(owner.publisher, owner.pack_slug, kind, before, limit, skip) as Array<{ pk: string; version: number; revision: number; payload_bytes: number }>;
+      let deleted = 0;
+      let blocked = 0;
+      let payloadBytes = 0;
+      for (const row of rows) {
+        try {
+          deleteRecord({
+            binding,
+            args: { id: row.pk, expected_version: row.version, expected_revision: row.revision },
+            principal: 'user_self',
+            cause: 'owner_bulk_delete',
+          }, schema, true);
+          deleted += 1;
+          payloadBytes += row.payload_bytes;
+        } catch (error) {
+          if (error instanceof RecordsContractError && error.code === 'records_relationship_restrict') blocked += 1;
+          else throw error;
+        }
+      }
+      return { deleted, blocked, payload_bytes: payloadBytes };
+    },
     exportNamespace,
     exportNamespaceCsv,
     orphanNamespace(owner, expectedStateGeneration) {
@@ -6179,6 +6246,12 @@ export const createRecordsStore = (
           retry_count: Number(row.delivery_retry_count),
         }));
       })();
+    },
+    isDeliveryPending(eventId, bindingDigest) {
+      return db.prepare(`SELECT 1 FROM ${OUTBOX_DELIVERY_TABLE} d
+        JOIN ${OUTBOX_TABLE} o ON o.event_id=d.event_id
+        WHERE d.event_id=? AND d.binding_digest=? AND d.status='pending' AND o.status='pending'`)
+        .get(eventId, bindingDigest) !== undefined;
     },
     acknowledgeDelivery(eventId, bindingDigest) {
       return db.transaction(() => {

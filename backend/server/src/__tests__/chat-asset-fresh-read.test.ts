@@ -33,6 +33,7 @@ const fixture = (reuse = false) => {
   const db = new Database(':memory:'); disposals.push(() => db.close());
   ensureChatSchema(db); ensureWorkEntitySchema(db);
   const store = createChatStore(db, () => new Uint8Array(32).fill(31), () => undefined);
+  // This reader fixture supplies Standard carry and writer responses.
   store.createSession({ id: 's' }); store.setRollingBriefEnabled(true);
   const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
   const contacts = createContactStore(db);

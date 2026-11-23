@@ -31,6 +31,7 @@ import {
   createWebhookReceivedAtBodyDeduplicator,
   type WebhookReceivedAtBodyDeduplicatorPreset,
 } from './webhook-received-at-body-deduplicator.js';
+import { assertWebhookEventTypeParserMatchesProfile } from './webhook-event-type-grammar-parity.js';
 
 export interface WebhookJsonApiSingleEventProfilePreset {
   readonly profile_id: WebhookProfileId;
@@ -55,6 +56,12 @@ const preset = (
   const delivery = webhookRawBodyHmacDeliveryProfilePreset(profile_id);
   const eventTypeParser = createWebhookLowercaseIdentifierEventTypeParser(
     eventTypeParserInput,
+  );
+  // D-201 Slice 10C — the runtime admits exactly the profile's grammar.
+  assertWebhookEventTypeParserMatchesProfile(
+    profile_id,
+    eventTypeParser.preset,
+    'webhook JSON:API event-type preset',
   );
   const eventNormalizer = createWebhookJsonApiSingleEventNormalizer(
     eventNormalizerInput,

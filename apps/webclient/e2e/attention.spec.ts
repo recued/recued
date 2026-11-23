@@ -120,7 +120,7 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
   await expect(page.locator(`[${ATTENTION_DIALOG}]`)).toHaveCount(0);
 });
 
-test('the Attention popover closes when keyboard focus leaves it', async ({ page }) => {
+test('the Attention popover closes when keyboard focus leaves it', async ({ page, browserName }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?attention=pending`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -133,7 +133,8 @@ test('the Attention popover closes when keyboard focus leaves it', async ({ page
   const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
   const handoff = dialog.getByRole('link', { name: 'Open approvals' });
   await handoff.focus();
-  await page.keyboard.press('Tab');
+  // WebKit uses its full-control shortcut to include buttons in tab order.
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
 
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(`[${ACCOUNT_MENU_TRIGGER}]`)).toBeFocused();

@@ -418,8 +418,9 @@ describe('createContractOverlayResolver — takeDispatchUse / settleDispatchUse'
 
   it('a release can never push a contract past its authorised max_uses', () => {
     const def = definitionStore.mint(mintInput({ max_uses: 2 }));
-    definitionStore.releaseDispatchUse!(def.contract_id);
-    definitionStore.releaseDispatchUse!(def.contract_id);
+    const reserved = definitionStore.reserveDispatchUse!(def.contract_id)!;
+    expect(definitionStore.releaseDispatchUse!(def.contract_id, reserved.refund)).toBe(true);
+    expect(definitionStore.releaseDispatchUse!(def.contract_id, reserved.refund)).toBe(false);
     expect(definitionStore.get(def.contract_id)?.uses_remaining).toBe(2);
   });
 

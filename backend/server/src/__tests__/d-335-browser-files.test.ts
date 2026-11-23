@@ -5,7 +5,7 @@
 
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { BRIDGE_ACTIONS, BRIDGE_FILE_MAX_BYTES, bridgeRunsCommand, type BridgeResult } from '@recued/contracts';
+import { BRIDGE_ACTIONS, BRIDGE_FILE_MAX_BYTES, bridgeRunsCommand, readBrowserFailure, type BridgeResult } from '@recued/contracts';
 import type { ResolvedCall } from '@recued/ingredients';
 
 import { createBrowserFiles, type BrowserFilesCollection } from '../bridges/browser-files.js';
@@ -149,6 +149,34 @@ describe('D-335 slice AP — a download step in Act on web pages', () => {
 });
 
 // D-335 slice AQ — one of the owner's files into a page's file field, by its ref.
+it('retains an explicit download when a later wait fails without returning file bytes or downloading twice', async () => {
+  const { kept, files } = ownerFiles();
+  const { adapter, requests } = adapterFor(request => request.action === 'download_file' ? answered()
+    : request.action === 'wait_for_element' ? ok({ ...PAGE, found: false }) : ok({ ...PAGE, html: '<main></main>', truncated: false }), files);
+  const error = await adapter(call('dom-act', { page: PAGE.page,
+    steps: [{ do: 'download', address: 'https://bank.example.com/a.pdf' }, { do: 'wait', selector: '#missing', seconds: 0.1 }] })).catch(error => error);
+  const receipt = readBrowserFailure(error)!;
+  expect(receipt.details.completed_files).toEqual([{ step: 1, file_ref: expect.stringMatching(/^file:/), filename: 'october.pdf',
+    mime_type: 'application/pdf', size_bytes: PDF.length }]);
+  expect(JSON.stringify(receipt)).not.toContain(PDF.toString('base64'));
+  expect(kept).toHaveLength(1); expect(requests.filter(request => request.action === 'download_file')).toHaveLength(1);
+});
+
+it('preserves the first public download when a later address-only download cannot be fetched', async () => {
+  const { files, kept } = ownerFiles();
+  const dispatch = vi.fn();
+  const adapter = createBridgeDomAdapter({ files,
+    manifests: { get: slug => KERNEL_MANIFESTS.find(m => m.slug === slug) ?? null },
+    getDispatcher: () => ({ dispatch, cancel: vi.fn(), canResolve: () => false }),
+    fetchFile: async url => url.endsWith('first.csv') ? { kind: 'file', url, bytes: Buffer.from('a,b'), filename: 'first.csv', mime_type: 'text/csv' } : { kind: 'refused', reason: 'fixture unavailable' },
+  });
+  const error = await adapter(call('dom-act', { steps: [{ do: 'download', address: 'https://example.org/first.csv' },
+    { do: 'download', address: 'https://example.org/second.csv' }] })).catch(error => error);
+  expect(readBrowserFailure(error)?.details).toMatchObject({ batch_progress: { failed_step: 2, completed_steps: [1], effects: [] },
+    completed_files: [{ step: 1, filename: 'first.csv', mime_type: 'text/csv' }] });
+  expect(kept).toHaveLength(1); expect(dispatch).not.toHaveBeenCalled();
+});
+
 describe('D-335 slice AQ — an upload step in Act on web pages', () => {
   const act = (steps: unknown[]): ResolvedCall => {
     const manifest = KERNEL_MANIFESTS.find((m) => m.slug === 'dom-act')!;

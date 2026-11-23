@@ -92,6 +92,12 @@ export interface DishHandlerDeps {
    *  (`checkDishConnections`). Late-bound by the websocket server. Absent ⇒ a
    *  dish naming connections is refused. */
   checkConnectionChoices?: (recipe_id: string, connections: Readonly<Record<string, string>>) => void;
+  /** D-402 slice H3c — a recipe's browser settings (`recipeBrowserSettings`) and its own values, for
+   *  "Use this browser instead". Late-bound by the websocket server. Absent ⇒ `dishes.use_browser` is
+   *  refused (`not_configured`); null ⇒ no such recipe. */
+  browserSettingsOf?: (recipe_id: string) => { readonly keys: readonly string[]; readonly variables: Readonly<Record<string, unknown>> } | null;
+  /** D-402 slice H3c — the browsers paired now, by lasting id (routing's `listBrowsers`). Late-bound. */
+  pairedBrowsers?: () => ReadonlyArray<{ readonly browser_id: string }>;
 }
 
 /** D-320 §3.4 — a dish's `connections`: connection names by slot, checked against
@@ -457,6 +463,47 @@ const sameSettings = (a: Record<string, unknown>, b: Record<string, unknown>): b
  *  acted on even when unchanged — "switch on" is also how the owner re-arms
  *  a dish some of whose rows the server stopped; `main: true` makes it the
  *  recipe's main dish. */
+/** D-402 slice H3c (ruling 14) — "Use this browser instead": each browser setting of the dish that holds
+ *  `from`, by the value its run reads (its own, else its group's, else the recipe's), now holds `to`, one
+ *  of the browsers paired now. A fresh pairing is a new browser, so this is how a recipe follows it.
+ *
+ *  ⛔ Only those settings change: the rest of its settings are the ones stored now, read and written in one
+ *  turn (`updateDish` is synchronous), never a copy a client held, which would undo a change made meanwhile.
+ *  Saved through `updateDish`, so a dish that starts on its own is checked as any save is. */
+export const useBrowserInstead = (
+  deps: DishHandlerDeps,
+  body: { dish_id?: unknown; from?: unknown; to?: unknown },
+): { dish: Dish; moved: string[] } => {
+  const required = (value: unknown, name: string): string => {
+    if (typeof value !== 'string' || value.trim() === '') throw new RpcError('bad_request', `${name} is required`, 400);
+    return value.trim();
+  };
+  const dish_id = required(body.dish_id, 'dish_id');
+  const from = required(body.from, 'from');
+  const to = required(body.to, 'to');
+  if (deps.browserSettingsOf === undefined || deps.pairedBrowsers === undefined) {
+    throw new RpcError('not_configured', 'Choosing a browser needs a server that pairs browsers.', 501);
+  }
+  const dish = deps.store.get(dish_id);
+  if (!dish) throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
+  if (!deps.pairedBrowsers().some((browser) => browser.browser_id === to)) {
+    throw new RpcError('bad_request', 'Choose one of the browsers paired now.', 400);
+  }
+  const recipe = deps.browserSettingsOf(dish.recipe_id);
+  if (recipe === null) throw new RpcError('not_found', `Recipe '${dish.recipe_id}' not found`, 404);
+  const group: Readonly<Record<string, unknown>> = dish.group_id !== undefined && dish.group_id !== null
+    ? deps.groupStore?.get(dish.group_id)?.config_overlay ?? {}
+    : {};
+  const own = (layer: Readonly<Record<string, unknown>>, key: string) => Object.prototype.hasOwnProperty.call(layer, key);
+  const held = (key: string): unknown =>
+    own(dish.config_overlay, key) ? dish.config_overlay[key] : own(group, key) ? group[key] : recipe.variables[key];
+  const moved = [...recipe.keys].sort().filter((key) => held(key) === from);
+  if (moved.length === 0) throw new RpcError('bad_request', 'No browser setting of this dish holds that browser.', 400);
+  const config_overlay: Record<string, unknown> = { ...dish.config_overlay };
+  for (const key of moved) config_overlay[key] = to;
+  return { dish: updateDish(deps, dish_id, { config_overlay }).dish, moved };
+};
+
 export const updateDish = (
   deps: DishHandlerDeps,
   dish_id: string,
@@ -696,6 +743,7 @@ export type DishMethods =
   | 'dishes.list'
   | 'dishes.create'
   | 'dishes.update'
+  | 'dishes.use_browser'
   | 'dishes.delete'
   | 'dishes.history'
   | 'dishes.defaults'
@@ -710,7 +758,7 @@ export const makeDishHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
-      'dishes.list', 'dishes.create', 'dishes.update', 'dishes.delete',
+      'dishes.list', 'dishes.create', 'dishes.update', 'dishes.use_browser', 'dishes.delete',
       'dishes.history', 'dishes.defaults',
       'dish_groups.list', 'dish_groups.create', 'dish_groups.update', 'dish_groups.delete',
     ],
@@ -724,6 +772,7 @@ export const makeDishHandlers = (
         }
         return updateDish(deps, args.dish_id, args);
       },
+      'dishes.use_browser': async (args) => useBrowserInstead(deps, args),
       'dishes.delete': async (args) => {
         if (!args.dish_id || typeof args.dish_id !== 'string') {
           throw new RpcError('bad_request', 'dish_id is required', 400);

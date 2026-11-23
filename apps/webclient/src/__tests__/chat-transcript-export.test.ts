@@ -60,10 +60,24 @@ describe('readable conversation export', () => {
         state: 'held', started_at: at, updated_at: at, args: { password: 'not-in-the-transcript' } },
       attachments: [{ file_id: 'file:1', filename: 'old.txt', availability: 'missing', legacy_capture: true }],
     })]), options);
-    expect(result).toContain('Recorded tool status: send-mail · held');
+    expect(result).toContain('Action: send-mail · waiting for your approval');
     expect(result).toContain('```text\nThe action is waiting.\n```');
     expect(result).toContain('old.txt · Unavailable · Original submitted version unverified');
     expect(result).not.toContain('not-in-the-transcript');
+  });
+
+  it('names a recorded call as the chat does, never by its tool\'s name or a raw state', () => {
+    const call = (id: string, extra: Record<string, unknown>) => message(id, 'Done.', {
+      role: 'tool', tool_call: { message_id: id, session_id: 'chat-1', turn_id: 'turn-1', started_at: at, updated_at: at, ...extra },
+    });
+    const result = formatChatMarkdownExport(bundle([
+      call('tool-1', { tool_name: 'recipe.run', recipe_name: 'Weekly digest', state: 'succeeded' }),
+      call('tool-2', { tool_name: 'mail.search', state: 'running' }),
+    ]), options);
+    expect(result).toContain('Action: Run “Weekly digest” · done');
+    expect(result).not.toContain('recipe.run');
+    expect(result).not.toContain('succeeded');
+    expect(result).toMatch(/Action: [^\n]+ · still running/);
   });
 
   it('D-337 slice R — records a call whose approval expired as not answered in time, beside one not approved', () => {
@@ -72,8 +86,8 @@ describe('readable conversation export', () => {
         state: 'failed', started_at: at, updated_at: at, ...extra },
     });
     const result = formatChatMarkdownExport(bundle([call('tool-1', { expired: true }), call('tool-2', { denied: true })]), options);
-    expect(result).toContain('Recorded tool status: send-mail · not answered in time');
-    expect(result).toContain('Recorded tool status: send-mail · not approved');
+    expect(result).toContain('Action: send-mail · not answered in time');
+    expect(result).toContain('Action: send-mail · not approved');
   });
 
   it('refuses malformed or mixed-session snapshots instead of returning a partial transcript', () => {

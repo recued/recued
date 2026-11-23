@@ -468,6 +468,8 @@ describe('D-196 MCP customer usage metering', () => {
       'recued_listIngredients',
       'recued_listRecipes',
       'recued_registryDescribe',
+      // D-402 slice F4 — an app giving up its own permissions is never metered.
+      'recued_stopAllowing',
       'recued_stopRecipe',
       'setup.status',
       'tools.search',
@@ -2182,7 +2184,9 @@ describe('D-171 slice-2c follow-on #1 — buildMcpGrantCatalogLegacyEntries', ()
       .map((tool) => tool.name)
       .filter((name) =>
         name !== 'recued_customerStatus'
-        && name !== 'recued_stopRecipe');
+        && name !== 'recued_stopRecipe'
+        // D-402 slice F4 — giving up its own permissions grants nothing, so it is no checklist entry.
+        && name !== 'recued_stopAllowing');
 
   it('projects grant-cataloged recued_* meta tools with read/write/unknown classifications', () => {
     const entries = buildMcpGrantCatalogLegacyEntries(buildManifests());

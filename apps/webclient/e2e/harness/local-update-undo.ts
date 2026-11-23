@@ -21,7 +21,7 @@ export const localUpdateUndoDemoReply = (method: string, args: unknown): {
   if (method === 'local_undo.get') return { result: JSON.parse(sessionStorage.getItem(savedKey) ?? 'null') };
   if (method === 'local_undo.review') {
     if (JSON.parse(sessionStorage.getItem(savedKey) ?? 'null')?.status === 'completed') {
-      return { error: { code: 'local_undo_conflict', message: 'This change already has an undo receipt.' } };
+      return { error: { code: 'local_undo_conflict', message: 'This change was already undone.' } };
     }
     return { result: review };
   }

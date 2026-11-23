@@ -4,8 +4,7 @@ import {
   createWebhookAsciiIdentifierParser,
 } from '../webhook-ascii-identifier-parser.js';
 import {
-  WEBHOOK_ASCII_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS,
-  webhookAsciiIdentifierEventTypeProfilePreset,
+  webhookLowercaseIdentifierEventTypeProfilePreset,
 } from '../webhook-shared-profile-parser-presets.js';
 
 const PRESET = {
@@ -116,29 +115,10 @@ describe('D-201 Slice 9AR ASCII identifier parser', () => {
     expect(getter).not.toHaveBeenCalled();
   });
 
-  it('binds Telegram event types through trusted profile data', () => {
-    const selected = webhookAsciiIdentifierEventTypeProfilePreset(
-      'telegram.bot-webhook.v1',
-    );
-    expect(selected).toEqual({
-      profile_id: 'telegram.bot-webhook.v1',
-      parser: PRESET,
-    });
-    expect(webhookAsciiIdentifierEventTypeProfilePreset(
-      'github.webhook.v1',
-    )).toBeNull();
-    expect(Object.values(
-      WEBHOOK_ASCII_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS,
-    ).map((value) => value?.profile_id))
-      .toEqual(['telegram.bot-webhook.v1']);
-    expect(Object.getPrototypeOf(
-      WEBHOOK_ASCII_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS,
-    )).toBeNull();
-    expect(Object.isFrozen(
-      WEBHOOK_ASCII_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS,
-    )).toBe(true);
-    expect(Object.isFrozen(selected)).toBe(true);
-    expect(Object.isFrozen(selected?.parser)).toBe(true);
-    expect(() => JSON.stringify(selected)).not.toThrow();
+  it('binds no profile since D-201 Slice 10G: Telegram moved to the lowercase grammar', () => {
+    // The parser stays: the grammar is still read from an older server's
+    // projection, and the single-member normalizer still takes it.
+    expect(webhookLowercaseIdentifierEventTypeProfilePreset('telegram.bot-webhook.v1'))
+      .toMatchObject({ parser: { kind: 'lowercase_json_member_event_type.v1', max_characters: 128 } });
   });
 });

@@ -126,6 +126,10 @@ export interface PiiRestoreAuthority {
    *  appears nowhere else in the packet: a `Person3` the owner or a record wrote
    *  is real text and stays as written. */
   readonly unprefixed_persons?: ReadonlyMap<string, string>;
+  /** An email alias the packet exposed, by the bare local half a model writes when it drops `@d<N>.invalid`
+   *  ("from m1 to m2" → `m1`). Only one the packet does not also hold as text of its own, in any case: a literal
+   *  "M1" or "80 m2" stays as written. */
+  readonly bare_email_locals?: ReadonlySet<string>;
 }
 
 /**
@@ -2299,6 +2303,18 @@ export const derivePiiRestoreAuthority = (
     if (bases.length === 1 && !literal.has(form)) unprefixed_persons.set(form, bases[0]!);
   }
 
+  // A model sometimes drops an address alias's domain half too ("from m1 to m2"): 5 of 154 answers in the D-406
+  // thread check (2026-11-19), under every wording tried. The `m<N>` counter is global, so a bare `m1` names one
+  // address; the only question is whether the text meant the alias at all. Within one request it can only mean the
+  // address it was shown, unless the packet also holds `m1` as text of its own, in any case ("M1 MacBook", "80 m2").
+  const literalLocals = new Set<string>();
+  for (const match of serializedProtectedPacket.matchAll(BARE_EMAIL_LOCAL_LITERAL)) literalLocals.add(`m${match[1]}`);
+  const bare_email_locals = new Set<string>();
+  for (const [key, entry] of byKindBaseAlias) {
+    const base = key.slice(key.indexOf('::') + 2);
+    if (entry.kind === 'email_local' && /^m\d+$/.test(base) && !literalLocals.has(base)) bare_email_locals.add(base);
+  }
+
   return Object.freeze({
     ledger: {
       scope_id: ledger.scope_id,
@@ -2313,6 +2329,7 @@ export const derivePiiRestoreAuthority = (
       preScanLiterals: new Map(),
     },
     ...(unprefixed_persons.size > 0 ? { unprefixed_persons } : {}),
+    ...(bare_email_locals.size > 0 ? { bare_email_locals } : {}),
   });
 };
 
@@ -2358,21 +2375,38 @@ const restoreAliasToken = (ledger: Ledger, match: string): string => {
 /** A person alias written without its `pii.` prefix: a whole token, never part
  *  of a word, an address, a path or a fragment (`Person3.ana`). */
 const UNPREFIXED_PERSON_TOKEN = '(?<![A-Za-z0-9_.@/-])Person\\d+(?![A-Za-z0-9_@]|\\.[A-Za-z0-9])';
-/** The exposed alias grammar plus that form, so one pass restores both. */
-const EXPOSED_OR_UNPREFIXED_PATTERN = new RegExp(`${EXPOSED_ALIAS_TOKEN_PATTERN.source}|${UNPREFIXED_PERSON_TOKEN}`, 'gi');
+/** An address alias written without its `@d<N>.invalid` half: a whole token, never part of a word, an address, a
+ *  path or a fragment, nor a measure after a number ("80 m2", "80m2"). The pattern runs case-insensitively; only
+ *  the lowercase form an alias has is restored (`restoreInStringWithAuthority`). */
+const BARE_EMAIL_LOCAL_TOKEN = '(?<![A-Za-z0-9_.@/-])(?<!\\d[\\s\\u00a0])m\\d+(?![A-Za-z0-9_@]|\\.[A-Za-z0-9])';
+/** The same token as text of the packet's own, in any case: never part of an alias composite (`m1@d1.invalid`,
+ *  `m1.ana@d1.invalid`, `pii.Person1.m2@…`). The packet is serialized JSON, so a token at a line's start follows an
+ *  escape (`\nm1`), which counts as a boundary. */
+const BARE_EMAIL_LOCAL_LITERAL = /(?<=^|[^A-Za-z0-9_.@/-]|\\[nrtbf])m(\d+)(?![A-Za-z0-9_@]|\.[A-Za-z0-9])/gi;
+/** The exposed alias grammar plus both bare forms, so one pass restores all three. Built on first use, like
+ *  `exposedAliasTokenTest`: a top-level `new RegExp` is a statement the Edge bundle must keep. */
+let exposedOrBarePattern: RegExp | undefined;
 
 /** As `restoreInString` over the request's own ledger, and a bare `Person3` the
- *  request can only have meant as `pii.Person3` (`unprefixed_persons`) restores
- *  with it. Still ONE pass: a restored value is never scanned again. */
+ *  request can only have meant as `pii.Person3` (`unprefixed_persons`), or a bare
+ *  `m1` as the address `m1@d1.invalid` (`bare_email_locals`), restores with it.
+ *  Still ONE pass: a restored value is never scanned again. */
 export const restoreInStringWithAuthority = (
   authority: PiiRestoreAuthority,
   text: string,
 ): string => {
   const unprefixed = authority.unprefixed_persons;
-  if (unprefixed === undefined || unprefixed.size === 0) return restoreInString(authority.ledger, text);
+  const bareLocals = authority.bare_email_locals;
+  if ((unprefixed === undefined || unprefixed.size === 0) && (bareLocals === undefined || bareLocals.size === 0)) {
+    return restoreInString(authority.ledger, text);
+  }
   if (typeof text !== 'string' || text.length === 0) return text;
-  return text.replace(EXPOSED_OR_UNPREFIXED_PATTERN, (match) => {
-    const alias = unprefixed.get(match);
+  exposedOrBarePattern ??= new RegExp(`${EXPOSED_ALIAS_TOKEN_PATTERN.source}|${UNPREFIXED_PERSON_TOKEN}|${BARE_EMAIL_LOCAL_TOKEN}`, 'gi');
+  return text.replace(exposedOrBarePattern, (match) => {
+    // ⛔ A bare `m<N>` restores ONLY through its own set. `lookupAliasReal` reads `m1` as `email_local::m1`
+    // directly, so handing it on would restore the literal "M1" or "m2" the set left out.
+    if (/^m\d+$/i.test(match)) return bareLocals?.has(match) === true ? lookupAliasReal(authority.ledger, match) ?? match : match;
+    const alias = unprefixed?.get(match);
     return alias !== undefined
       ? lookupAliasReal(authority.ledger, alias) ?? match
       : restoreAliasToken(authority.ledger, match);

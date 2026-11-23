@@ -177,15 +177,14 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
     }
     await reconcileClosedAsks();
   };
+  // ⛔ Every answer here does something. "Choose date" and "Choose time" were offered and only recorded the press (no
+  // ask can hold a date chooser, on any channel): a day other than today, or another time, is chosen in Yours, which
+  // the ask's link opens (`occurrence.last_done`, `occurrence.later`). An answer from one sent before still records.
   const options = (mode: Mode, item: Context): AskOption[] => {
-    if (mode === 'question') return [
-      { id: 'last_done_today', label: 'Today' }, { id: 'choose_last_done_date', label: 'Choose date' },
-      { id: 'unknown_last_done', label: 'I don’t know' },
-    ];
+    if (mode === 'question') return [{ id: 'last_done_today', label: 'Today' }, { id: 'unknown_last_done', label: 'I don’t know' }];
     if (mode === 'confirm_stop') return [{ id: 'muted', label: 'Stop reminding' }, { id: 'kept', label: 'Keep reminding' }];
     if (mode === 'later_choice') return [
-      { id: 'later_tomorrow', label: 'Tomorrow' }, { id: 'later_week', label: 'A week' },
-      { id: 'later_month', label: 'A month' }, { id: 'later_custom', label: 'Choose time' },
+      { id: 'later_tomorrow', label: 'Tomorrow' }, { id: 'later_week', label: 'A week' }, { id: 'later_month', label: 'A month' },
     ];
     if (mode === 'notice') return [{ id: 'stop_notices', label: 'Stop these' }];
     // D-325 §15.7 (2026-10-24) — a reminder is a notification, so it offers no Done:
@@ -208,9 +207,9 @@ export const createAssetReminderService = (deps: AssetReminderServiceDeps): Asse
       : clock.kind === 'objective' ? `${clock.field.replaceAll('_', ' ')}: ${item.asset.readings[clock.field]?.value ?? 'unknown'} ${clock.unit}; target ${clock.target} ${clock.unit}`
       : `${clock.field.replaceAll('_', ' ')} is ${item.asset.observations[clock.field]?.certainty ?? 'unknown'}`;
     const text = sensitive ? 'An item you track needs attention. Open Yours for the details.'
-      : mode === 'question' ? `When was ${item.asset.name} last done? ${item.rule.title}. The date is unknown; no deadline has been assumed. To choose another date, open this item in Yours.`
+      : mode === 'question' ? `When was ${item.asset.name} last done? ${item.rule.title}. The date is unknown; no deadline has been assumed. If it was another day, open this item in Yours to give the date.`
       : mode === 'confirm_stop' ? `Stop reminders for ${ruleStatement(item.rule, item.asset.name)}? This is a safety, legal or travel clock. Its obligation stays open.`
-      : mode === 'later_choice' ? `The next reminder for ${item.rule.title} is in a week. Choose another time, or open the item to set one.`
+      : mode === 'later_choice' ? `The next reminder for ${item.rule.title} is in a week. Choose tomorrow or a month instead, or open the item in Yours to pick a day and time.`
       : `${ruleStatement(item.rule, item.asset.name)}. ${fact}.${item.due ? ` Due ${item.due}.` : ' No deadline can be established yet.'}${mode !== 'action' ? ''
         : assetRenewal(item.asset, item.rule) ? ' Once renewed, enter the new date in Recued.' : ' Mark it done in Recued.'}`;
     const base = publicBaseUrl?.();

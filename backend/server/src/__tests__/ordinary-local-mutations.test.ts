@@ -7,6 +7,9 @@ import { InFlightRegistry } from '../execution/in-flight-registry.js';
 import { LaneSemaphore } from '../execution/lane-semaphore.js';
 import { createInMemoryCollection, createCommitStore } from '@recued/storage';
 import type { Commit } from '@recued/contracts';
+import { withResourceReview } from '../resource-review.js';
+import { handleExecute } from '../execute-handler.js';
+import { createPreflightResumer } from '../preflight-resumer.js';
 import { ordinaryLocalFixture } from './ordinary-local-mutations-fixture.js';
 import { resourceFixtureDisposers, recordStep, calendarStep, recordsManifest } from './preapproval-resources-fixture.js';
 
@@ -112,7 +115,7 @@ describe('ordinary version-reviewed local mutation receipts', () => {
   });
 
   it('keeps an approved foreach item confirmed without lending its proof to the broader action', async () => {
-    const f = await ordinaryLocalFixture(); f.recipe.variables.items = ['first', 'second'];
+    const f = await ordinaryLocalFixture(); f.recipe.variables!.items = ['first', 'second'];
     const held = await f.hold([{ ...calendarStep(), foreach: '{{config.items}}' }], undefined, { items: ['first', 'second'] });
     await held.resume();
     expect(f.calendar.table.get('meeting')!.event.summary).toBe('Reviewed meeting');
@@ -127,7 +130,7 @@ describe('ordinary version-reviewed local mutation receipts', () => {
 
   it.each(['cancelled', 'replaced'] as const)('refuses a foreach local write when its approval claim is %s during preparation', async change => {
     const f = await ordinaryLocalFixture();
-    f.recipe.variables.items = ['first', 'second'];
+    f.recipe.variables!.items = ['first', 'second'];
     const held = await f.hold([{ ...calendarStep(), foreach: '{{config.items}}' }], undefined, { items: ['first', 'second'] });
     const update = f.calendar.provider.updateEvent.bind(f.calendar.provider);
     f.calendarUpdates.mockImplementationOnce(async input => {
@@ -155,6 +158,31 @@ describe('ordinary version-reviewed local mutation receipts', () => {
     await held.resume();
     expect(f.calendar.table.get('meeting')!.event.summary).toBe('Original meeting');
     expect(f.db.prepare('SELECT count(*) FROM local_mutation_receipts').pluck().get()).toBe(0);
+  });
+
+  it('an inline run is checked against the recipe it runs, whatever the store holds under its id', async () => {
+    // The chat's own recipe, spelled the legacy way (`output.sidebar`), which its run rewrites in
+    // place, under a stored recipe's id: approved and resumed from its snapshot, it writes though
+    // the stored one changes meanwhile. Hashed as handed in, it was refused as changed.
+    const f = await ordinaryLocalFixture();
+    f.save([calendarStep()]);
+    const inline = { ...structuredClone(f.recipe), output: { sidebar: [] } };
+    const held = await handleExecute(f.execution, { recipe: inline, config: {}, execution_source: f.origin.source });
+    expect(held.awaiting_approval).toBe(true);
+    const action = (await f.execution.gatedActionStore!.get(held.action_ref!))!;
+    const checkpoint = (await f.execution.checkpointStore!.listByRun(action.run_id))[0]!;
+    expect(checkpoint.recipe_snapshot).toBeDefined();
+    const update = f.calendar.provider.updateEvent.bind(f.calendar.provider);
+    f.calendarUpdates.mockImplementationOnce(async input => {
+      const payload = await update(input);
+      f.recipe.version += 1; f.save(f.recipe.steps);
+      return payload;
+    });
+    await createPreflightResumer({ getExecuteDeps: () => f.execution, auditLog: f.execution.auditLog!,
+      gatedActionStore: f.execution.gatedActionStore }).resumeRun(checkpoint,
+      { recipe_id: checkpoint.recipe_id, gated_step_id: checkpoint.gated_step_id });
+    expect(f.calendar.table.get('meeting')!.event.summary).toBe('Reviewed meeting');
+    expect(f.db.prepare('SELECT count(*) FROM local_mutation_receipts').pluck().get()).toBe(1);
   });
 
   it.each(['records', 'calendar'] as const)('keeps a committed %s action confirmed after its run is killed', async kind => {
@@ -360,5 +388,18 @@ describe('ordinary version-reviewed local mutation receipts', () => {
     expect(f.calendar.table.get('meeting')!.event.summary).toBe(allowed ? 'Reviewed meeting' : 'Original meeting');
     expect(f.db.prepare('SELECT count(*) FROM local_mutation_receipts').pluck().get()).toBe(allowed ? 1 : 0);
     expect(f.definitions.get(contract.contract_id)!.uses_remaining).toBe(0);
+  });
+
+  it('names on the commit it writes the request\'s rule that let the call through without asking (D-348 §7.8)', async () => {
+    const f = await ordinaryLocalFixture();
+    const hooks = f.local.forRun({ identity: { request_id: 'run-ruled', source: f.origin.source, channel_session_id: 'user:realm',
+      correlation_id: 'c', dispatch_depth: 0 }, store: f.execution.commitStore!, validate: () => undefined });
+    const input = { operation: 'update', args: { id: 'a', expected_version: 1, expected_revision: 0, set: { title: 'Ruled a' } } };
+    const review = f.execution.executorConfig.resourceReview!.capture(recordsManifest.slug, input)!;
+    await hooks.run({ slug: recordsManifest.slug, operation: review.operation, input, review, chain_rule_id: 'chain_1' },
+      () => withResourceReview(review, () => f.records.execute({ binding: f.bindings.update, args: input.args, principal: 'owner' })));
+    expect(f.row('a')!.title).toBe('Ruled a');
+    expect(await f.execution.commitStore!.listByRun('run-ruled')).toEqual([
+      expect.objectContaining({ status: 'succeeded', chain_rule: { id: 'chain_1' }, local_receipt: expect.objectContaining({ kind: 'records' }) })]);
   });
 });

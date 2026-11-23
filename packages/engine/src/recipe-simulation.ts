@@ -39,7 +39,8 @@ export const simulateRecipe = async (
   const stores = Object.fromEntries([...NS].map(key => [key, Object.create(null)])) as NamespaceStores;
   assignOwnSafe(stores.meta, { ...recipe.metadata });
   if (!Object.hasOwn(stores.meta, 'recipe_id')) setNamespaceValue(stores.meta, 'recipe_id', recipe.recipe_id);
-  for (const [key, value] of Object.entries(recipe.variables)) setNamespaceValue(stores.config, key, extractDefault(value));
+  // D-201 Slice 10AW (10AS finding 30) — a recipe may leave its variables out.
+  for (const [key, value] of Object.entries(recipe.variables ?? {})) setNamespaceValue(stores.config, key, extractDefault(value));
   assignOwnSafe(stores.config, copy(input.config ?? {}));
   assignOwnSafe(stores.context, copy(input.context ?? {}));
   if (!Object.hasOwn(stores.context, 'recipe')) setNamespaceValue(stores.context, 'recipe', {});

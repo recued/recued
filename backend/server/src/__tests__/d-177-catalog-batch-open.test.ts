@@ -276,6 +276,7 @@ const fakeSessionGrantResolver = (): FakeSessionGrantResolver => ({
   claimBatchMember: vi.fn<SessionGrantResolver['claimBatchMember']>(() => false),
   mintBatch: vi.fn<SessionGrantResolver['mintBatch']>(() => 'batch-grant-1'),
   mintRawOp: vi.fn<SessionGrantResolver['mintRawOp']>(() => undefined),
+  mintKind: vi.fn<SessionGrantResolver['mintKind']>(() => undefined),
   mint: vi.fn<SessionGrantResolver['mint']>(() => undefined),
 });
 
@@ -623,6 +624,44 @@ describe('handleExecute D-177 catalog hold offer site', () => {
     }));
     expect(notes.ask).not.toHaveBeenCalled();
     expect((await latestAuditEntry(log)).ask_id).toBe('batch-ask-1');
+  });
+
+  it('D-177 §N.15.8 — a hold that offers "Allow in this chat" asks on its own, not in a batch', async () => {
+    // The batch above offers no "Allow in this chat": its op has no name but its id. Named, it does,
+    // and a batch ask could not offer it, so the hold raises its own ask.
+    const recipe = buildRecipe('catalog-kind-offer');
+    const checkpoints = checkpointStore();
+    const notes = notifier();
+    const batchApprovals = fakeBatchApprovals();
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id, catalogHold()));
+    const named = buildCatalogManifest({
+      operations: {
+        [CATALOG_OPERATION_ID]: {
+          operation_id: CATALOG_OPERATION_ID, risk_tier: 'write', groups: ['send'], authority_args: ['recipient'],
+          description: 'Send a note. To one person at a time.',
+        },
+      },
+    } as Partial<IngredientManifest>);
+
+    await handleExecute(
+      makeDeps(recipe, {
+        auditLog: auditLog(),
+        checkpointStore: checkpoints,
+        preflightNotifier: notes,
+        sessionGrantResolver: fakeSessionGrantResolver(),
+        batchApprovals,
+      }, [buildManifest(), named]),
+      { recipe_id: recipe.recipe_id, trigger_source: 'chat', execution_source: chatSource },
+    );
+
+    expect(batchApprovals.registerHold).not.toHaveBeenCalled();
+    expect(notes.ask).toHaveBeenCalledTimes(1);
+    const [, options] = notes.ask.mock.calls[0]!;
+    expect(options.map((option: { id: string }) => option.id)).toEqual(['approve', 'allow_kind', 'deny']);
+    expect([...checkpoints.written.values()][0]!.preflight_context?.kind_grant).toMatchObject({
+      channel_session_id: 'chat:chat-1', ingredient_slug: CATALOG_SLUG, operation_id: CATALOG_OPERATION_ID,
+      connection_name: CONNECTION, name: 'Send a note', recipe: { recipe_id: recipe.recipe_id },
+    });
   });
 
   it('falls back to the per-hold ask when no batch coordinator is wired', async () => {

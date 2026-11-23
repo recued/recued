@@ -927,7 +927,7 @@ describe('pack-guided permission repair editor', () => {
       review_fingerprint: 'a'.repeat(64), required_scopes: ['new'], expires_at: Date.now() + 30 * 60_000,
       resume: { pack: { ...manifest, pre_install: false, installed: false, recipe_count: 1, recipe_refs: manifest.recipes,
         body_visibility_grant_keys: [], body_visibility_grant_count: 0, manifest }, marketplace: false, permissions: [],
-        chosen_connection: 'saved-sheets', also_unticked: [], also_connections: [], webhook_picks: [], template_keep: [] } };
+        chosen_connection: 'saved-sheets', also_unticked: [], also_connections: [], webhook_picks: [], template_keep: [], webhook_doors: [] } };
   };
   const preview = (broker = false, fingerprint = 'a'.repeat(64)) => ({ resolved: true, will_enable: [], hidden_count: 0,
     vendor_permissions: { fingerprint, resolved: true, changes: [{ pack_slug: 'scope-pack', pack_name: 'Scope pack', slot: 'sheets',

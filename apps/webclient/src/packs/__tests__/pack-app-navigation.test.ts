@@ -53,6 +53,18 @@ describe('dynamic Business Pack navigation adapter', () => {
     expect(parsePacksAddress(parseShellRoute('#recipes/x'))).toBeNull();
   });
 
+  // D-404 slice B2 (D-323's P6) — an install offer's link carries its chat answer after the slug.
+  it('reads the chat answer an install offer came from, after the slug and only there', () => {
+    expect(parsePacksAddress(parseShellRoute('#packs/rental-book/return/chat/s1/m1'))).toEqual({
+      kind: 'pack', packSlug: 'rental-book', viewId: null, target: null, returnToChat: { sessionId: 's1', messageId: 'm1' },
+    });
+    expect(parsePacksAddress(parseShellRoute('#packs/rental-book/return/chat/s1'))).toEqual({
+      kind: 'pack', packSlug: 'rental-book', viewId: null, target: null,
+    });
+    expect(parsePacksAddress(parseShellRoute('#packs/rental-book/use/list-buildings/return/chat/s1/m1')))
+      .not.toHaveProperty('returnToChat');
+  });
+
   /** D-282 B5 — a detail page is a place. */
   it('builds and parses a lookup address, round-trip', () => {
     const address = packAppLookupAddress('rental-book', 'show-building', 'bld 42');

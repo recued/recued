@@ -1,8 +1,83 @@
+import { createSelectionNotePicker } from './selection-note-picker.js';
+import { selectionNoteValues } from './selection-note.js';
+import { reconcileNativeField } from '../shell/reconcile-native-field.js';
+import { createBookingReaderActions, bookingIdentity, requireSameBooking, type BookingReaderActionsView } from './booking-reader-actions.js';
+import { createBookingReaderContinuity, type BookingReaderPosition } from './booking-reader-continuity.js';
+import { createSearchRecordPreviewSurface } from './search-record-preview-surface.js';
+import { createCommitmentChat, createWorkRecordChat } from './commitment-chat.js';
+import { createCommitmentFollowUp } from './commitment-follow-up.js';
+import { parseRecordLinkQuery, readExactRecordLink, EXACT_LINK_OPEN_ACTION, EXACT_LINK_RETRY_ACTION, EXACT_LINK_KEY_ATTR, type ExactRecordLinkState } from './exact-record-link.js';
+import { recordLink } from '../shell/record-link.js';
+import { createWorkLinkedFrom, verifyLinkedFromSource, WORK_LINKED_FROM_STYLES, type LinkedFromCaller } from './work-linked-from.js';
+import { savedWorkAddress, savedWorkLinkMatches } from '@recued/contracts';
 import { createContactMergeRecovery, MERGE_RECOVERY_PREFIX, MERGE_RECOVERY_STYLES, type ContactMergeRecoveryCallers } from './contact-merge-recovery.js';
 import { DEFAULT_COMMITMENT_VIEW_FILTERS, parseCommitmentViewFilters, type CommitmentViewFilters } from '@recued/contracts';
-import { commitmentCounterpartyLabel, type WorkEntityCommitmentView } from '@recued/ui-shared/work-entity-page';
+import { commitmentCounterpartyLabel, renderWorkEntityPageHeader, type WorkEntityCommitmentView, type WorkEntityTaskView, type TaskListLayout } from '@recued/ui-shared/work-entity-page';
+import { createMailDraftSearch } from '../mail/mail-draft-search.js';
+import { isUniversalSearchResultType, type UniversalSearchResultType } from '@recued/contracts';
+import { SEARCH_TYPE_ATTR, SEARCH_CLEAR_TYPE_ACTION, retireSearchTypeCounts } from './universal-search-filter.js';
+import { createReminderSearch } from '../reminders/reminder-search.js';
+import { createReminderSearchTriage, SEARCH_TRIAGE_ACTION, SEARCH_TRIAGE_FIELD, SEARCH_TRIAGE_FOCUS } from '../reminders/reminder-search-triage.js';
+import { createReminderDateSearch, renderReminderDateSearch, REMINDER_DATE_FIELD, REMINDER_DATE_FOCUS, REMINDER_DATE_FORM, CLEAR_REMINDER_DATES } from '../reminders/reminder-search-dates.js';
+import { createPromptSearch, promptScheduleHref, promptScheduleIdentity, type PromptScheduleListCaller, type PromptSelection } from '../automation/prompt-search.js';
+import { createPromptSearchBulk, SEARCH_PROMPT_BULK_FOCUS } from '../automation/prompt-search-bulk.js';
+import { createPendingDecisionSearch, type PendingDecisionSearchCallers } from '../approvals/pending-decision-search.js';
+import { SEARCH_OPEN_DECISION, SEARCH_REFRESH_DECISIONS, SEARCH_DECISION_KEY, SEARCH_DECISION_FOCUS } from '../approvals/decision-search-view.js';
+import { decisionSearchHref } from '../approvals/decision-search-record.js';
+import type { PromptBulkClient } from '../automation/prompt-bulk-controls.js';
+import { SEARCH_OPEN_PROMPT, SEARCH_REFRESH_PROMPTS, SEARCH_PROMPT_ID, SEARCH_PROMPT_REVISION, SEARCH_PROMPT_GROUP } from '../automation/prompt-search-view.js';
+import { SEARCH_OPEN_REMINDER_ACTION, SEARCH_MORE_REMINDERS_ACTION, SEARCH_REMINDER_ID_ATTR, SEARCH_REMINDER_STATUS_ATTR } from '../reminders/reminder-search-view.js';
+import { reminderDetailLink, isReminderState, type ReminderSearchStatus } from '@recued/contracts';
+import { createChatSearch, chatSearchKey, type ChatSearchCaller } from './chat-search.js';
 import { createAssetSearch, type AssetSearchCaller } from './asset-search.js';
+import { createNoteReaderContinuity, createTaskReaderContinuity, createCommitmentReaderContinuity } from './note-reader-continuity.js';
+import { readingRecord, sameReadingIdentity, type ReadingEntity, type ReadingRecord, type ReaderStateStore, type SavedReaderState } from './reader-state.js';
+import { createNoteRelatedRecords, type NoteRelatedTarget } from './note-related-records.js';
+import { createCommitmentRelatedRecords, commitmentRelatedIdentity } from './commitment-related-records.js';
+import { duplicateDestinations, duplicateWorkValues, isDuplicateEntity, sameDuplicateEntity, type DuplicateEntity } from './work-entity-duplicate.js';
+import { createNoteFind, NOTE_FIND_ACTION, TASK_FIND_ACTION } from './note-find.js';
+import { createWorkReaderNavigation, WORK_READER_ACTION, WORK_READER_FOCUS, WORK_READER_NAVIGATION_STYLES, type WorkReaderKind, type WorkReaderScope } from './work-reader-navigation.js';
+import { createWorkReaderCopy, WORK_COPY_ACTION } from './work-reader-copy.js';
+import { copyText } from '../shell/copy-text.js';
+import { createNoteDraftCheckpoint, noteDraftOriginal, noteDraftMatchesOriginal, type NoteRecoveryStore } from './note-draft-recovery.js';
+import { NOTE_DRAFT_ACTION, NOTE_DRAFT_RECOVERY_STYLES, renderNoteDraftRecoveries } from './note-draft-recovery-ui.js';
+import { createWorkDraftCheckpoint, isWorkDraftKind, workDraftOriginal, workDraftMatchesOriginal, type WorkDraftKind, type WorkDraftEntity, type WorkRecoveryStores } from './work-draft-recovery.js';
+import { searchRecoveryDrafts, resolveRecoveryDraft, sameRecoveryDraft, SEARCH_OPEN_RECOVERY_DRAFT, SEARCH_REFRESH_RECOVERY_DRAFTS, SEARCH_RECOVERY_DRAFT_KEY, SEARCH_RECOVERY_DRAFT_TOKEN, type RecoveryDraftSearchState, type RecoveryDraftStores } from './recovery-draft-search.js';
+import { WORK_DRAFT_ACTION, WORK_DRAFT_RECOVERY_STYLES, renderWorkDraftRecoveries } from './work-draft-recovery-ui.js';
+import type { RecentSearches } from './recent-searches.js';
+import { recentWorkRecord, recentSourceRecord, type RecentWorkRecord, type RecentWorkRecords, type RecentSourceRecord } from './recent-work-records.js';
+import { createRecentWorkPanel, RECENT_WORK_ACTION, RECENT_WORK_KIND, RECENT_WORK_ID, PINNED_WORK_ACTION, PINNED_WORK_KIND, PINNED_WORK_ID } from './recent-work-panel.js';
+import { pinnedRecordIdentity, type PinnedRecords } from './pinned-records.js';
+import { createRecordPinControls, RECORD_PIN_ACTION, RECORD_PIN_KEY, type RecordPinCandidate } from './record-pin-controls.js';
+import { createSourceRecordCopy, renderSourceRecordCopy, SOURCE_COPY_ACTION, SOURCE_COPY_FOCUS, SOURCE_COPY_VALUE, SOURCE_RECORD_COPY_STYLES } from './source-record-copy.js';
+import { createMailReaderNavigation, MAIL_READER_ACTION, MAIL_READER_NAVIGATION_STYLES } from './mail-reader-navigation.js';
+import { mailTaskValues } from './mail-task.js';
+import { createReaderPassage, readerPassageQuestion, READER_PASSAGE_STYLES, type ReaderPassage } from './reader-passage.js';
+import { calendarTaskValues } from './calendar-task.js';
+import { mailNoteValues, calendarNoteValues } from './source-note.js';
+import { noteTaskValues, sameNoteTaskRecord } from './note-task.js';
+import { contactFollowUpValues, requireFollowUpContact, type ContactFollowUpKind } from './contact-follow-up.js';
+import { contactDraftOrigin, noteDraftOrigin, mailDraftOrigin, calendarDraftOrigin, checkDraftOrigin, draftOriginNoun, draftOriginHash, type DraftOrigin, type CheckedDraftOrigin } from './draft-origin.js';
+import { taskNoteSource, workReaderLink, type TaskNoteSource, type WorkRecordLink } from './task-note-source.js';
+import { createWorkLinkPreviewSurface, WORK_LINK_PREVIEW_STYLES } from './work-link-preview-surface.js';
+import { createRecordLinkInsertSurface, RECORD_LINK_INSERT_STYLES } from './record-link-insert-surface.js';
+import { createWorkProjectPickers, createWorkTaskPickers } from './work-reference-picker.js';
+import { createWorkContactPickers } from './contact-reference-picker.js';
+import { createWorkReferencePreviews } from './work-reference-preview.js';
+import type { RecentReferenceChoices } from './recent-reference-choices.js';
+import { createTaskBlockers, taskSourceStatus, type TaskBlockerFocus } from './task-blockers.js';
+import type { TaskBlockerNavigation } from './task-blocker-navigation.js';
+import { TASK_BLOCKERS_STYLES } from '@recued/ui-shared';
+import type { MailMessageRef, MailMessageSnapshot, CalendarEventRef, CalendarEventSnapshot } from '@recued/contracts';
+import type { PreparedRecordLink } from './record-link-insert.js';
+import { selectedContactContext, type SelectedContactContext } from '../contacts/contact-context.js';
+import type { SelectedCalendarEventContext } from '../calendar/event-context.js';
+import { contactQuickValues, copyContactText, createContactVCard, downloadContactVCard,
+  formatContactMailingAddress as formatMailingAddress, renderContactValueActions, renderContactAdditionalIdentifiers, CONTACT_QUICK_ACTION_STYLES,
+  type ContactQuickActionState, type ContactQuickValue } from './contact-quick-actions.js';
 import { createDocumentContentSearch, DOCUMENT_SEARCH_ACTION, DOCUMENT_SEARCH_FILE, DOCUMENT_SEARCH_FOCUS, DOCUMENT_SEARCH_STYLES, type DocumentSearchCallers } from './document-content-search.js';
+import { readSearchNavigationReturn, saveSearchNavigationReturn } from '../shell/search-navigation-return.js';
+import { readSearchChatReturn, saveSearchChatReturn } from '../shell/search-chat-return.js';
 import { readSearchAssetReturn, saveSearchAssetReturn } from '../shell/search-asset-return.js';
 import { mountSpherePlacement, type SpherePlacementCallers } from '../yours/sphere-placement.js';
 import { canonicalizeEmail, isContactAnnualDate, isDateOnlyDue, isMailboxAddress, isMentionOnlyEmail } from '@recued/contracts';
@@ -18,6 +93,9 @@ import { openFilePreview, readStoredFileDownload, type FilePreviewCallers } from
 import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
 import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug, SAVED_FILES_SLUG, savedFilesInstance } from './cloud-file-explorer.js';
 import { createSavedFileBrowser, savedFileRecord, renderSavedFileSearch, renderSavedFileFooter, type SavedFileListCaller } from './saved-file-browser.js';
+import { createContactActivity, contactActivityMemory, CONTACT_ACTIVITY_STYLES } from './contact-activity.js';
+import { createMailBulkActions, MAIL_BULK_FOCUS, MAIL_BULK_STYLES } from './mail-bulk-actions.js';
+import { createMailInbox, mailInboxMemory, defaultMailInboxFilters, mailInboxHasFilters, renderMailInboxControls, renderMailInboxFooter, MAIL_INBOX_STYLES, type MailInboxPosition } from './mail-inbox.js';
 import type { CloudFileSource } from '@recued/contracts';
 /** D-174 P5 - top-level Data route.
  *
@@ -187,6 +265,8 @@ import {
   validateForm,
 } from '@recued/contracts';
 import { renderProjectOverview, PROJECT_OVERVIEW_STYLES, renderProjectLinkReview, type ProjectOverviewProps, type ProjectLinkReviewProps } from '@recued/ui-shared/work-entity-page';
+import type { ProjectViewMemory, ProjectViewState } from './project-view-state.js';
+import { projectAttentionIdentity, type ProjectAttentionCaller } from './project-attention.js';
 import { createProjectWork, type ProjectWork, type ProjectItemsCaller } from './project-work.js';
 import {
   ENTITY_DETAIL_PANEL_STYLES,
@@ -262,6 +342,8 @@ import {
 } from './mail-facts-surface.js';
 import { createCalendarEventSurface, CALENDAR_EVENT_ACTION_PREFIX, CALENDAR_EVENT_STYLES, type CalendarEventCallers } from './calendar-event-surface.js';
 import { createMailMessageSurface, MAIL_MESSAGE_STYLES, type MailMessageCallers } from './mail-message-surface.js';
+import { createMailReminders, MAIL_REMINDER_CREATE_HOST } from './mail-reminders.js';
+import { sameReminderMailReference, type ReminderMailReference } from '@recued/contracts';
 import {
   createRemindersSurface,
   REMINDERS_ACTION_PREFIX,
@@ -350,10 +432,28 @@ import {
   COLLECTION_RETRY_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
-import { createCalendarAgenda, calendarDateIn, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE } from './calendar-agenda.js';
+import { createCalendarAgenda, calendarAgendaPreferences, calendarDateIn, CALENDAR_AGENDA_STYLES, AGENDA_FOCUS, AGENDA_SOURCE } from './calendar-agenda.js';
 import { createCalendarCreateSurface, CALENDAR_CREATE_STYLES, type CalendarCreateCallers } from './calendar-create-surface.js';
+import { calendarTaskSeed, calendarTaskHref, canScheduleTask, sameCalendarTask, type CalendarTaskOrigin } from './calendar-task-draft.js';
+import { calendarMailSeed, type CalendarMailOrigin } from './calendar-mail.js';
+import { calendarEmailLinks, verifyLinkedCalendarEvent } from './calendar-email-links.js';
+import type { LinkedCalendarEvent } from '@recued/contracts';
+import { calendarDuplicateSeed, type CalendarDuplicateOrigin } from './calendar-event-duplicate.js';
+import { calendarEventContextHref } from '../calendar/event-context.js';
+import type { CalendarRecoveryStore } from './calendar-draft-recovery.js';
+import { calendarRecoverySearchStore, type CalendarEditRecoveryStore } from './calendar-edit-recovery.js';
+import { mailRecoverySearchStore } from './mail-recovery-search.js';
+import type { ReminderDraftEntry, ReminderRecoveryStore } from '../reminders/reminder-draft-recovery.js';
+import type { PromptDraftEntry, PromptRecoveryStore } from '../automation/prompt-draft-recovery.js';
+import { REMINDER_RECOVERY_STYLES } from '../reminders/reminder-create-form.js';
+import type { MailRecoveryEntry } from '../mail/compose-recovery.js';
 import { REMINDER_CREATE_STYLES } from '../reminders/reminder-create-form.js';
+import { createWorkReminder, reminderRecordReference } from './work-reminder.js';
+import { RECORD_REMINDER_HOST } from './record-reminders.js';
+import { sameReminderRecordReference } from '@recued/contracts';
+import type { TodayReminderNavigation } from '../today/reminder-navigation.js';
 import { createTaskBulkActions, TASK_BULK_FOCUS, TASK_BULK_STYLES, type TaskBulkActions } from './task-bulk-actions.js';
+import { createNoteBulkActions, NOTE_BULK_FOCUS, NOTE_BULK_STYLES, type NoteBulkActions } from './note-bulk-actions.js';
 import type { PackInstalledListCaller, RosterPack } from '../discover/pack-discovery.js';
 import {
   renderUniversalSearch,
@@ -374,6 +474,8 @@ import {
   SEARCH_WORK_KIND_ATTR,
   SEARCH_WORK_ID_ATTR,
   SEARCH_OPEN_ASSET_ACTION, SEARCH_MORE_ASSETS_ACTION, SEARCH_ASSET_ID_ATTR,
+  SEARCH_OPEN_DRAFT_ACTION, SEARCH_MORE_DRAFTS_ACTION, SEARCH_DRAFT_ID_ATTR,
+  SEARCH_OPEN_CHAT_ACTION, SEARCH_MORE_CHATS_ACTION, SEARCH_CHAT_SESSION_ATTR, SEARCH_CHAT_MESSAGE_ATTR,
   SEARCH_OPEN_CONTACT_ACTION,
   SEARCH_MORE_CONTACTS_ACTION,
   SEARCH_CONTACT_EMAIL_ATTR,
@@ -384,6 +486,8 @@ import {
   SEARCH_GROUP_SLUG_ATTR,
   SEARCH_GROUP_PLATFORM_ATTR,
   SEARCH_INPUT_ATTR,
+  SEARCH_RECENT_RUN_ACTION, SEARCH_RECENT_REMOVE_ACTION, SEARCH_RECENT_CLEAR_ACTION,
+  SEARCH_RECENT_QUERY_ATTR, SEARCH_RECENT_FOCUS_ATTR,
 } from './universal-search.js';
 import {
   RECORDS_CANCEL_DELETE_ACTION,
@@ -775,6 +879,11 @@ export const CONTACT_ADD_EMAIL_UPDATE = 'Update your Recued server to add an ema
 export type DataContactChangeEmailCaller = (args: { contact_id: string; email: string }) => Promise<{ contact: ContactRecord }>;
 /** D-336 slice R — what the Edit form says when the server is older than `contact.change_email`. */
 export const CONTACT_CHANGE_EMAIL_UPDATE = 'Update your Recued server to change an email address here.';
+/** D-336 (the owner, 2026-11-17) — what New contact says when the server is older than
+ *  `contact.create_by_name`, which adds a contact with no email address. */
+export const CONTACT_NAME_ALONE_UPDATE = 'Update your Recued server to add a contact without an email address.';
+/** D-336 (the owner, 2026-11-17) — New contact's email field, where a contact may be a name alone. */
+export const CONTACT_NAME_ALONE_HINT = 'Optional: someone with no email address can be added by name alone.';
 /** D-336 slice R — `contact.resolve` by email: the contact an address names, its own row or the
  *  contact it is a second address of. */
 export type DataContactResolveCaller = (args: { email: string }) => Promise<{ contact_id: string | null; contact?: ContactRecord }>;
@@ -941,8 +1050,8 @@ export type DataCollectionListCaller = (
 ) => Promise<{ records: CollectionRecord[]; source_freshness?: CollectionSourceFreshness }>;
 /** UNIVERSAL SEARCH — one query fanned across every collection, GROUPED. */
 export type DataCollectionSearchAllCaller = (
-  args: { query: string; per_group?: number },
-) => Promise<{ groups: CollectionSearchGroup[]; did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[] }>;
+  args: { query: string; per_group?: number; platforms?: CollectionPlatform[] },
+) => Promise<{ groups: CollectionSearchGroup[]; did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[]; unavailable_sources?: Array<{ platform: CollectionPlatform; slug: string }> }>;
 export type DataCollectionGetCaller = (
   args: { platform: CollectionPlatform; slug: string; record_id: string },
 ) => Promise<{ record: CollectionRecord | null }>;
@@ -1032,6 +1141,8 @@ export type DataFileReadCaller = (args: Parameters<FilePreviewCallers['read']>[0
   Promise<Awaited<ReturnType<FilePreviewCallers['read']>> & { size_bytes: number }>;
 
 export interface BootstrapDataRouteOptions {
+  todayReminderNavigation?: TodayReminderNavigation;
+  taskBlockerNavigation?: TaskBlockerNavigation;
   /** Resolved by the saved-view host before any collection reads start. */
   savedView?: SavedDataView;
   /** Settings changes, including entering/leaving a detail or draft (null). */
@@ -1042,11 +1153,20 @@ export interface BootstrapDataRouteOptions {
   proactiveTodayCaller?: (input: { now: number; before: number }) => Promise<import('@recued/contracts').ProactiveToday>;
   workEntitySourceListCaller?: WorkEntitySourceListCaller;
   workEntityListCaller?: DataWorkEntityListCaller;
+  workEntityLinkedFromCaller?: LinkedFromCaller;
   workEntitySearchCaller?: DataWorkEntitySearchCaller;
   assetSearchCaller?: AssetSearchCaller;
+  chatSearchCaller?: ChatSearchCaller;
   documentSearchCallers?: DocumentSearchCallers;
   searchContinuityOwner?: object;
+  recentSearches?: RecentSearches;
+  recentWorkRecords?: RecentWorkRecords;
+  recentReferenceChoices?: RecentReferenceChoices;
+  pinnedRecords?: PinnedRecords;
+  readerStates?: ReaderStateStore;
   projectItemsCaller?: ProjectItemsCaller;
+  projectAttentionCaller?: ProjectAttentionCaller;
+  projectViewMemory?: ProjectViewMemory;
   workEntityGetCaller?: DataWorkEntityGetCaller;
   onOwnerRecordOpened?: (ref: import('@recued/contracts').SituationRef) => void;
   workEntityUpsertCaller?: DataWorkEntityUpsertCaller;
@@ -1119,6 +1239,14 @@ export interface BootstrapDataRouteOptions {
   /** D-324 — Data → Owned → Reminders: the list, a new time, a cancel. An
    *  absent caller hides what needs it. */
   reminderCallers?: ReminderCallers;
+  reminderRecovery?: ReminderRecoveryStore;
+  promptRecovery?: PromptRecoveryStore;
+  openPromptDraft?: (entry: PromptDraftEntry) => boolean;
+  promptSchedulesCaller?: PromptScheduleListCaller;
+  promptBulkCaller?: PromptBulkClient;
+  decisionSearchCallers?: PendingDecisionSearchCallers;
+  openPendingDecision?: (id: string) => void;
+  openPromptSchedule?: (selection: PromptSelection) => boolean;
   calendarEventCallers?: CalendarEventCallers;
   calendarCreateCallers?: CalendarCreateCallers;
   mailMessageCallers?: MailMessageCallers;
@@ -1225,6 +1353,18 @@ export interface BootstrapDataRouteOptions {
   fileListCaller?: SavedFileListCaller;
   fileChatCallers?: FileChatCallers;
   onUseFileInChat?: (target: { file: import('@recued/contracts').FileAttachmentSelection; sessionId: string | null }) => void;
+  onAskContact?: (context: SelectedContactContext) => void;
+  onAskCommitment?: (record: PreparedRecordLink) => void;
+  onAskBooking?: (record: PreparedRecordLink) => void;
+  onAskProject?: (record: PreparedRecordLink) => void;
+  onAskCalendarEvent?: (context: SelectedCalendarEventContext, question: string) => void;
+  /** D-406 (Q5) — "Chat about this" on an email: a new chat with the email added, as a record of "Add records". */
+  onAskMail?: (record: PreparedRecordLink) => void;
+  onAskSelection?: (record: PreparedRecordLink, question: string) => void;
+  noteRecovery?: NoteRecoveryStore;
+  workRecovery?: WorkRecoveryStores;
+  calendarRecovery?: CalendarRecoveryStore;
+  calendarEditRecovery?: CalendarEditRecoveryStore;
   fileUsageCaller?: (args: { record_id: string }) => Promise<FileLifecyclePreview>;
   fileRenameCaller?: (args: FileRenameRequest) => Promise<FileLifecyclePreview>;
   fileMutateCaller?: (args: FileLifecycleMutation) => Promise<FileLifecyclePreview>;
@@ -1333,6 +1473,10 @@ interface ContactDialogState {
   /** D-336 slice R — an edit of a contact with an address may change it; the old one stays
    *  its second address. */
   email_changeable?: boolean;
+  /** D-336 (the owner, 2026-11-17: *"it is okay to create a contact with just a name because it
+   *  can be beneficial to PII feature"*) — a new contact may be a name alone: its email may stay
+   *  empty where the server adds a contact from a name (`contact.create_by_name`, slice H). */
+  name_alone?: boolean;
   /** D-336 slice P — the contact that has the address the owner gave this one, as the server's
    *  refusal named it: the two can be merged into it. */
   merge_offer?: { email: string; name?: string; contact?: ContactRecord };
@@ -1362,8 +1506,17 @@ interface TimelineSnapshot {
  *  renders the part it has, because they answer different questions and none is a
  *  precondition for another. */
 interface ContactDetailState {
+  activity_html?: string;
+  work?: { busy?: ContactFollowUpKind | 'open'; preparation?: object; error?: string; created?: Extract<WorkEntity, { _kind: 'task' | 'note' }> };
   from_search?: boolean;
+  from_note?: boolean;
+  from_task?: boolean;
+  from_commitment?: boolean;
+  from_booking?: boolean;
   identifiers?: ContactAdditionalIdentifiers;
+  quick_actions?: ContactQuickActionState;
+  can_chat?: boolean;
+  more_open?: boolean;
   mail?: { opening: boolean; error?: string; notice?: string };
   email: string;
   contact: ContactRecord | null;
@@ -1475,6 +1628,7 @@ export interface DataRoute {
   whenLoaded(): Promise<void>;
   /** Keep an owned search return in the current route on native Back. */
   navigateDeepLink?(hash: string): boolean;
+  navigateDeepLinkAfterLeave?(hash: string): boolean;
   selectTab(tab: DataTabId): Promise<void>;
   openCreateWorkEntityDialog(): void;
   openEditWorkEntityDialog(kind: WorkEntityKind, id: string, intent?: 'read' | 'edit' | 'details'): Promise<void>;
@@ -1531,19 +1685,19 @@ const DATA_ROUTE_STYLES = `
      in dark mode (visual-UX review). */
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
-  padding: 16px;
+  padding: var(--wc-page-pad, 24px);
   color: var(--fg);
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-header {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: var(--wc-space-md, 16px);
+  margin-bottom: var(--wc-space-lg, 24px);
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-title {
   margin: 0;
-  font-size: 20px;
-  font-weight: 650;
+  font-size: var(--wc-font-title, 28px);
+  font-weight: 600;
 }
 [${DATA_ROUTE_CHAT_RETURN_ATTR}],
 [${DATA_ROUTE_LOGS_RETURN_ATTR}],
@@ -1656,7 +1810,36 @@ const DATA_ROUTE_STYLES = `
   gap: 10px 22px;
   margin: 0 0 14px;
 }
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace,
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-content { min-width:0; }
+@media(min-width:960px) {
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split {
+    display:grid; grid-template-columns:176px minmax(0,1fr); align-items:start; gap:24px;
+  }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split > .data-tab-groups {
+    position:sticky; top:16px; display:grid; gap:8px; max-height:calc(100dvh - 240px);
+    overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-width:thin;
+    margin:0; padding:2px 12px 4px 2px; border-right:1px solid var(--border);
+  }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split .data-tab-group { gap:3px; }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split .data-tab-group-label { padding:0 8px; font-size:10px; line-height:15px; }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split .data-tabs { display:grid; gap:2px; }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split > .data-tab-groups .data-tab {
+    width:100%; justify-content:flex-start; min-height:28px; padding:3px 8px;
+    border:1px solid transparent; border-radius:6px; background:transparent; text-align:left;
+  }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split > .data-tab-groups .data-tab:hover { background:var(--surface-sunk); }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-workspace--split > .data-tab-groups .data-tab[data-active="true"] {
+    color:var(--accent); background:var(--accent-weak); border-color:transparent; font-weight:600;
+  }
+}
 [${DATA_ROUTE_HOST_ATTR}] .data-collection-picker { display: none; }
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-header { display:none; }
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list { display:grid; grid-template-columns:minmax(0,1fr) minmax(var(--wc-task-action-width,7.5rem),max-content); align-items:center; gap:8px; margin-bottom:12px; }
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list :is(.work-entity-page-create, .data-collection-create) { grid-column:2; width:100%; margin:0; min-height:var(--wc-control-h,40px); }
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-title { margin:0; font-size:20px; font-weight:600; }
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list .work-entity-page-create-disabled { grid-column:1 / -1; }
+[${DATA_ROUTE_HOST_ATTR}][data-compact-list-layout="true"] .data-lens-switch { margin-bottom: 8px; }
 @media (max-width: 640px) {
   [${DATA_ROUTE_HOST_ATTR}] .data-tab-groups { display: none; }
   [${DATA_ROUTE_HOST_ATTR}] .data-collection-picker {
@@ -1666,6 +1849,22 @@ const DATA_ROUTE_STYLES = `
   [${DATA_ROUTE_HOST_ATTR}] .data-collection-picker select {
     flex: 1; min-height: var(--wc-control-h, 38px); font-size: 16px;
   }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header { display:flex; }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list { display:grid; }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list .data-collection-picker {
+    min-width:0; margin:0;
+  }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list .data-collection-picker select {
+    min-width:0; width:100%;
+  }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list .data-collection-picker-label,
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--list :is(.work-entity-page-title, .data-collection-title) {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
+  }
+}
+@media (max-width:380px) {
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--work:not(.data-collection-header--task) { grid-template-columns:minmax(0,1fr); }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-header--work:not(.data-collection-header--task) .work-entity-page-create { grid-column:1; width:auto; justify-self:end; }
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-tab-group {
   display: grid;
@@ -1730,6 +1929,10 @@ const DATA_ROUTE_STYLES = `
   gap: 8px;
   margin: 10px 0;
 }
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-list-tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; margin:0 0 12px; }
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-list-tools > .data-input { flex:1 1 240px; min-width:0; width:auto; max-width:100%; }
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-list-actions { display:flex; flex-wrap:wrap; gap:8px; }
+[${DATA_ROUTE_HOST_ATTR}][data-compact-list-layout="true"]:not([data-task-list-layout="true"]) .data-sphere-picker { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:12px; font-size:12px; color:var(--muted); }
 /* D-336 — on a phone the phrase moves down whole, never "matched" on one line and "by name" on the next. */
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-relationship-match {
   white-space: nowrap;
@@ -1789,6 +1992,43 @@ const DATA_ROUTE_STYLES = `
   cursor: not-allowed;
   opacity: .65;
 }
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-picker-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin-top: 4px;
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-picker-status[hidden],
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-picker-status button[hidden] {
+  display: none;
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-picker-status > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-preview-trigger { flex: none; margin-left: 4px; }
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-preview-field { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px; }
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-preview-field .ref-picker-input { min-width: 0; padding-right: 8px; }
+[${DATA_ROUTE_HOST_ATTR}] .work-reference-preview-field .ref-picker-clear { position: static; }
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview-control][hidden] { display: none; }
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview] {
+  margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--fg); overflow-wrap: anywhere;
+}
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview] h4 { margin: 12px 0 8px; font-size: 14px; }
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview] dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview] dt { color: var(--muted); }
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview] dd { margin: 0; white-space: pre-wrap; }
+[${DATA_ROUTE_HOST_ATTR}] [data-reference-preview] p { margin: 8px 0; }
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-dialog .form-renderer-array-item > .ref-picker {
+  flex: 1;
+  min-width: 0;
+}
+[${DATA_ROUTE_HOST_ATTR}] .work-entity-dialog .form-renderer-array-remove {
+  flex: none;
+  white-space: nowrap;
+}
 [${DATA_ROUTE_HOST_ATTR}] a.data-button {
   display: inline-block;
   text-decoration: none;
@@ -1812,6 +2052,14 @@ const DATA_ROUTE_STYLES = `
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-file-search { display:grid; grid-template-columns:minmax(0,1fr) var(--wc-task-action-width,7.5rem); align-items:end; gap:8px 12px; min-width:0; margin:16px 0; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-search > label { display:flex; flex-direction:column; gap:6px; min-width:0; font-size:12px; font-weight:600; line-height:1.4; color:var(--muted); }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-search .data-input { box-sizing:border-box; width:100%; min-width:0; max-width:100%; min-height:var(--wc-control-h,44px); padding:0 10px; border-radius:var(--wc-radius,9px); background:var(--surface); color:var(--fg); font-weight:400; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-search > .data-button { box-sizing:border-box; width:100%; min-width:0; min-height:var(--wc-control-h,44px); padding:0 12px; border-radius:var(--wc-radius,9px); font-weight:600; overflow-wrap:anywhere; }
+[${DATA_ROUTE_HOST_ATTR}] .data-file-search > [role="status"] { grid-column:1 / -1; min-width:0; margin:0; color:var(--muted); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+@media (max-width:600px) {
+  [${DATA_ROUTE_HOST_ATTR}] .data-file-search { grid-template-columns:minmax(0,1fr); }
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-empty-actions {
   margin-top: 10px;
@@ -1866,6 +2114,13 @@ const DATA_ROUTE_STYLES = `
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 5px 14px;
   align-items: center;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-list-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; min-width:0; margin:0 0 16px; }
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-list-header > .data-section-title { margin:0; font-size:20px; font-weight:600; line-height:1.2; }
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-exports { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; flex:0 1 20rem; min-width:0; max-width:100%; }
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-exports > .data-button { width:100%; min-width:0; min-height:var(--wc-control-h,44px); padding:0 12px; border-radius:var(--wc-radius,9px); font-weight:600; line-height:1.3; white-space:normal; overflow-wrap:anywhere; }
+@media (max-width:600px) {
+  [${DATA_ROUTE_HOST_ATTR}] .data-form-response-exports { flex-basis:100%; }
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-form-response-list .data-row-title,
 [${DATA_ROUTE_HOST_ATTR}] .data-form-response-list .data-row-meta {
@@ -2936,7 +3191,9 @@ const projectWorkEntityUpsert = (
         throw new Error('This task already has a priority. Choose Low, Medium, or High.');
       }
       setIfDefined(out, 'title', nonEmptyString(values.title));
-      setIfDefined(out, 'body', typeof values.body === 'string' ? values.body.trim() : undefined);
+      // Editing another field must not trim unchanged task notes.
+      setIfDefined(out, 'body', typeof values.body === 'string'
+        ? update && values.body === original.body ? values.body : values.body.trim() : undefined);
       // A task's `null` means "not given", so removing its due date is a flag.
       if (dueOrCleared('due_at') === null) out.clear_due_at = true;
       else setIfDefined(out, 'due_at', dueOrCleared('due_at'));
@@ -2945,10 +3202,14 @@ const projectWorkEntityUpsert = (
         setIfDefined(out, 'done', booleanValue(values.done));
         setIfDefined(out, 'completed_at', when('completed_at'));
       }
-      setIfDefined(out, 'assigned_contact_id', nonEmptyString(values.assigned_contact));
+      if (update && typeof original.assigned_contact === 'string' && original.assigned_contact
+        && (values.assigned_contact === '' || values.assigned_contact === null)) out.clear_assigned_contact = true;
+      else setIfDefined(out, 'assigned_contact_id', nonEmptyString(values.assigned_contact));
       setIfDefined(out, 'parent_calendar_event_id', nonEmptyString(values.parent_calendar_event));
       setIfDefined(out, 'linked_mail_thread_id', nonEmptyString(values.linked_mail_thread));
-      setIfDefined(out, 'parent_project_id', nonEmptyString(values.parent_project));
+      if (update && typeof original.parent_project === 'string' && original.parent_project
+        && (values.parent_project === '' || values.parent_project === null)) out.clear_parent_project = true;
+      else setIfDefined(out, 'parent_project_id', nonEmptyString(values.parent_project));
       setIfDefined(out, 'blocks_task_ids', stringArrayValue(values.blocks_task));
       break;
     case 'note':
@@ -3033,9 +3294,10 @@ const contactDialogFingerprint = (values: ContactDialogValues): string =>
 const validateContactDialog = (
   values: ContactDialogValues,
   /** The address this save gives the contact: a `new` contact's (or, D-336 slice R, a saved
-   *  one changed), one a contact with no address may be given (`optional`, slice I), or the
-   *  one it has (`kept`), unchanged. */
-  address: 'new' | 'optional' | 'kept' = 'new',
+   *  one changed), a new contact's that may be left empty for its name (`create`, 2026-11-17),
+   *  one a contact with no address may be given (`optional`, slice I), or the one it has
+   *  (`kept`), unchanged. */
+  address: 'new' | 'create' | 'optional' | 'kept' = 'new',
 ): Partial<Record<keyof ContactDialogValues, string>> => {
   const errors: Partial<Record<keyof ContactDialogValues, string>> = {};
   const email = values.email.trim();
@@ -3043,6 +3305,8 @@ const validateContactDialog = (
     // An edit keeps the address the contact is keyed on, whatever it holds.
   } else if (email.length === 0) {
     if (address === 'new') errors.email = 'Email is required.';
+    // A name alone is a contact; nothing at all is not.
+    else if (address === 'create' && values.name.trim().length === 0) errors.email = 'Write an email address or a name.';
   } else if (!email.includes('@')) {
     errors.email = 'An email address needs an @ in it.';
   } else if (!isMailboxAddress(canonicalizeEmail(email))) {
@@ -3194,18 +3458,36 @@ const DATA_TAB_GROUPS: readonly { label: string; tabs: readonly DataTabId[] }[] 
   { label: 'Records', tabs: DATA_RECORDS_TABS },
   { label: 'Find', tabs: DATA_SEARCH_TABS },
 ];
-const renderTabs = (active: DataTabId, locked = false): string => `
-  <label class="data-collection-picker">Collection
-    <select ${DATA_ROUTE_COLLECTION_PICKER_ATTR} aria-controls="${DATA_ROUTE_TAB_PANEL_ID}" ${locked ? 'disabled' : ''}>
+const renderCollectionPicker = (active: DataTabId, locked = false): string => `
+  <label class="data-collection-picker"><span class="data-collection-picker-label">Collection</span>
+    <select ${DATA_ROUTE_COLLECTION_PICKER_ATTR} aria-label="Collection" aria-controls="${DATA_ROUTE_TAB_PANEL_ID}" ${locked ? 'disabled' : ''}>
       ${DATA_TAB_GROUPS.map(group => `<optgroup label="${e(group.label)}">${group.tabs.map(tab =>
         `<option value="${e(tab)}" ${tab === active ? 'selected' : ''}>${e(tabLabel(tab))}</option>`).join('')}</optgroup>`).join('')}
     </select>
-  </label>
-  <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR}
-    role="tablist" aria-label="Data collections" aria-orientation="horizontal">
+  </label>`;
+
+const renderDataSpherePicker = (value: string): string => `<label class="data-sphere-picker">Sphere (loaded records) <select data-data-sphere aria-label="Data sphere">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([id, label]) => `<option value="${id}"${id === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
+
+const renderTabs = (active: DataTabId, locked = false, vertical = false): string => `
+  <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR} data-recued-scroll-rail
+    role="tablist" aria-label="Data collections" aria-orientation="${vertical ? 'vertical' : 'horizontal'}">
     ${DATA_TAB_GROUPS.map(group => renderTabGroup(group.label, group.tabs, active, locked)).join('')}
-  </div>
-`;
+  </div>`;
+
+const renderCollectionHeader = (
+  active: DataTabId, locked: boolean, listHeader?: { kind: DataWorkEntityKind; can_create: boolean } | { kind: 'contact' },
+): string => {
+  const picker = renderCollectionPicker(active, locked);
+  if (listHeader && listHeader.kind !== 'contact') return renderWorkEntityPageHeader(listHeader.kind, listHeader.can_create, picker,
+    `data-collection-header data-collection-header--list data-collection-header--work data-collection-header--${listHeader.kind}`);
+  if (listHeader?.kind === 'contact') return `<header class="data-collection-header data-collection-header--list data-collection-header--contact">
+    <h2 class="data-collection-title">Contacts</h2>
+    ${picker}
+    <button type="button" class="data-button data-button--primary data-collection-create"
+      ${DATA_ROUTE_ACTION_ATTR}="open-create-contact">New contact</button>
+  </header>`;
+  return `<header class="data-collection-header">${picker}</header>`;
+};
 
 const renderErrors = (errors: DataLoadErrors): string =>
   Object.entries(errors).filter((entry): entry is [string, string] =>
@@ -3220,6 +3502,8 @@ const renderContactDialog = (
 ): string => {
   if (dialog === null) return '';
   const title = dialog.mode === 'create' ? 'New contact' : 'Edit contact';
+  // D-336 (2026-11-17) — a new contact may be a name alone where the server can add one.
+  const nameAlone = dialog.mode === 'create' && dialog.name_alone === true;
   const error = (key: keyof ContactDialogValues): string =>
     dialog.errors[key] !== undefined
       ? `<p class="data-error" role="alert">${e(dialog.errors[key])}</p>`
@@ -3277,7 +3561,12 @@ const renderContactDialog = (
                 : dialog.email_changeable === true
                   ? '<p class="data-row-subtle" data-contact-email-hint>If you change it, the old address stays with this contact as a second one.</p>'
                   : ''}`,
+              nameAlone ? CONTACT_NAME_ALONE_HINT_ID : undefined,
             )}
+            ${nameAlone
+              // D-336 (2026-11-17) — beside the field, not in its label: the field stays named "Email".
+              ? `<p class="data-row-subtle" id="${CONTACT_NAME_ALONE_HINT_ID}" data-contact-email-hint>${e(CONTACT_NAME_ALONE_HINT)}</p>`
+              : ''}
             ${renderContactField(
               'name',
               'Name',
@@ -3426,6 +3715,8 @@ const renderContactField = (
   value: string,
   readOnly: boolean,
   error: string,
+  /** The id of a hint beside the field: read as its description, never a part of its name. */
+  describedBy?: string,
 ): string => `
   <label class="data-field">
     <span class="data-label">${e(label)}</span>
@@ -3435,10 +3726,14 @@ const renderContactField = (
       value="${e(value)}"
       ${DATA_ROUTE_CONTACT_FIELD_ATTR}="${e(key)}"
       ${readOnly ? 'readonly' : ''}
+      ${describedBy !== undefined ? `aria-describedby="${e(describedBy)}"` : ''}
     />
     ${error}
   </label>
 `;
+
+/** D-336 (2026-11-17) — the id of New contact's hint that a contact may be a name alone. */
+const CONTACT_NAME_ALONE_HINT_ID = 'data-contact-name-alone-hint';
 
 // ── D-205 #2 — the contact detail page ────────────────────────────────────
 //
@@ -3572,12 +3867,6 @@ const renderContactProvenance = (p: ContactProvenanceLike): string =>
     attributes: { 'data-provenance-source': p.source },
   });
 
-const formatMailingAddress = (addr: MailingAddress): string =>
-  [addr.address1, addr.address2, addr.city, addr.state, addr.zip, addr.country]
-    .map((part) => (part ?? '').trim())
-    .filter((part) => part.length > 0)
-    .join(', ');
-
 interface ContactDetailField {
   /** The provenance-map key — see the mapping note in `contactDetailFields`. */
   readonly key: string;
@@ -3598,13 +3887,7 @@ interface ContactDetailField {
  *  on a placeholder (`isMentionOnlyEmail`), which is never shown as one. */
 const contactAddress = (email: string): string => (isMentionOnlyEmail(email) ? 'No email address' : email);
 
-/** A contact as a reference field's picker offers it: its address under its name, none for
- *  a contact keyed on a placeholder. The id stays the key a reference stores. */
-export const contactRefOption = (c: Pick<ContactRecord, 'email' | 'name'>): RefPicker.RefPickerOption => ({
-  id: c.email,
-  label: c.name ?? c.email,
-  ...(isMentionOnlyEmail(c.email) ? {} : { sublabel: c.email }),
-});
+export { contactRefOption } from './contact-reference-picker.js';
 
 const contactDetailFields = (contact: ContactRecord): ContactDetailField[] => {
   const rows: ContactDetailField[] = [];
@@ -3701,6 +3984,8 @@ const renderContactProvenanceBlock = (
   contact: ContactRecord,
   contributions: readonly ContactContributionView[],
   contributionsFailed: boolean,
+  quickValues: readonly ContactQuickValue[] = [],
+  quickState?: ContactQuickActionState,
 ): string => {
   const fields = contactDetailFields(contact);
   const provenance = contact.projection_provenance;
@@ -3736,6 +4021,7 @@ const renderContactProvenanceBlock = (
             <dt class="data-label">${e(field.label)}</dt>
             <dd class="data-contact-value">
               <span class="data-contact-value-text">${e(field.value)}</span>
+              ${renderContactValueActions(quickValues.find(value => value.key === field.key), quickState, DATA_ROUTE_ACTION_ATTR)}
               ${origin}
               ${others}
             </dd>
@@ -3816,6 +4102,8 @@ const renderContactDetailView = (
   now: number,
 ): string => {
   const contact = state.contact;
+  const quickValues = contactQuickValues(contact, state.identifiers, state.email);
+  const context = contact && contact.merged_into === undefined ? selectedContactContext(contact) : null;
   const heading = contact !== null ? contactLabel(contact) : state.email;
   // A tombstone must never render as a live contact — `resolveContactIdentity`
   // follows `merged_into` to the survivor, and so must the human reading this.
@@ -3830,15 +4118,16 @@ const renderContactDetailView = (
       : `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No contact record found for this address.</p>`
     : `
       ${mergedBanner}
-      ${renderContactProvenanceBlock(contact, state.contributions, state.contributions_failed)}
+      ${renderContactProvenanceBlock(contact, state.contributions, state.contributions_failed, quickValues, state.quick_actions)}
       ${renderContactLinks(contact.platform_ids ?? [])}
     `;
   const timeline = loading
     ? '<p class="data-loading">Loading timeline...</p>'
     : state.response === null
-      ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No timeline available for this contact yet.</p>`
+      ? state.activity_html || `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No timeline available for this contact yet.</p>`
       : renderEntityDetailPanel({
           ...deriveEntityDetailProps(state.response, 'contact', state.email, now),
+          ...(state.activity_html ? { timelineHtml: state.activity_html } : {}),
           // D-336 slice I — a contact with no address goes by its name, never its placeholder.
           ...(isMentionOnlyEmail(state.email) ? { targetLabel: contact?.name?.trim() || 'this contact' } : {}),
           // The contact title is h2 and the visible Activity section is h3.
@@ -3850,7 +4139,7 @@ const renderContactDetailView = (
     <section ${DATA_ROUTE_CONTACT_DETAIL_ATTR}="${e(state.email)}">
       <div class="data-contact-toolbar">
         <button type="button" class="data-button"
-          ${DATA_ROUTE_ACTION_ATTR}="close-contact-detail">${state.from_search ? '← Back to search' : '← Back to contacts'}</button>
+          ${DATA_ROUTE_ACTION_ATTR}="close-contact-detail">${state.from_booking ? '← Back to booking' : state.from_commitment ? '← Back to commitment' : state.from_task ? '← Back to task' : state.from_note ? '← Back to note' : state.from_search ? '← Back to search' : '← Back to contacts'}</button>
         <button type="button" class="data-button"
           ${DATA_ROUTE_ACTION_ATTR}="open-edit-contact"
           ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}"${openingEditor
@@ -3858,8 +4147,15 @@ const renderContactDetailView = (
             : ''}>${openingEditor ? 'Opening editor…' : 'Edit'}</button>
         ${state.mail && !loading ? `<button type="button" class="data-button data-button--primary"
           ${DATA_ROUTE_ACTION_ATTR}="contact-email" ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}"${state.mail.opening
-            ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.mail.opening ? 'Opening…' : 'Email'}</button>` : ''}
+            ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.mail.opening ? 'Opening…' : 'Draft email'}</button>` : ''}
+        ${!loading && state.work && context ? (['task', 'note'] as const).map(kind => `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="contact-create-${kind}" data-contact-quick-focus="create-${kind}"${state.work!.busy ? ' aria-disabled="true"' : ''}${state.work!.busy === kind ? ' aria-busy="true"' : ''}>${state.work!.busy === kind ? 'Opening…' : kind === 'task' ? 'Create task' : 'Add note'}</button>`).join('') : ''}
+        ${!loading && context && state.can_chat ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="chat-about-contact" data-contact-quick-focus="chat">Chat about this</button>` : ''}
+        ${!loading && contact ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="view-contact-activity" data-contact-quick-focus="activity">View activity</button>` : ''}
+        ${!loading && contact && contact.merged_into === undefined ? `<details class="data-contact-more" data-contact-more${state.more_open ? ' open' : ''}><summary class="data-button" data-contact-quick-focus="more">More</summary><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="download-contact-vcard" data-contact-quick-focus="download">Download contact (.vcf)</button></details>` : ''}
       </div>
+      ${state.quick_actions?.download ? `<p class="data-contact-quick-feedback" role="${state.quick_actions.download.error ? 'alert' : 'status'}">${e(state.quick_actions.download.text)}</p>` : ''}
+      ${state.work?.error ? `<p data-contact-work-error data-contact-quick-focus="work-error" role="alert" tabindex="-1">${e(state.work.error)}</p>` : ''}
+      ${state.work?.created ? `<p data-contact-work-created role="status">${state.work.created._kind === 'task' ? 'Task' : 'Note'} created${state.work.created.title ? `: ${e(state.work.created.title)}` : '.'} <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="contact-open-created" data-contact-quick-focus="open-created"${state.work.busy ? ' aria-disabled="true"' : ''}>${state.work.busy === 'open' ? 'Opening…' : `Open ${state.work.created._kind}`}</button></p>` : ''}
       ${state.mail?.error ? `<p class="data-contact-mail-error" role="alert">${e(state.mail.error)}</p>` : ''}
       ${state.mail?.notice ? `<p role="status">${e(state.mail.notice)}</p>` : ''}
       <header class="data-contact-detail-header">
@@ -3868,19 +4164,16 @@ const renderContactDetailView = (
         )}</span>
         <span class="data-contact-detail-heading">
           <h2 class="data-section-title" ${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR} tabindex="-1">${e(heading)}</h2>
-          <span class="data-row-meta">${e(contactAddress(state.email))}</span>
+          <span class="data-contact-primary-email"><span class="data-row-meta">${e(contactAddress(state.email))}</span>${renderContactValueActions(quickValues.find(value => value.key === 'email'), state.quick_actions, DATA_ROUTE_ACTION_ATTR)}</span>
           ${contact !== null
             ? `<span class="data-row-subtle">${e(contactSourceLabel(contact.source))} · ${e(String(contact.interaction_count))} interactions</span>`
             : ''}
         </span>
       </header>
       ${identity}
-      ${state.identifiers ? `<section aria-label="Additional contact details"><dl class="data-contact-fields">
-        ${state.identifiers.emails.length ? `<div class="data-contact-field"><dt class="data-label">Other email addresses</dt><dd>${state.identifiers.emails.map(value => e(value)).join('<br />')}</dd></div>` : ''}
-        ${state.identifiers.phones.length ? `<div class="data-contact-field"><dt class="data-label">Other phone numbers</dt><dd>${state.identifiers.phones.map(value => e(value)).join('<br />')}</dd></div>` : ''}
-      </dl></section>` : ''}
+      ${renderContactAdditionalIdentifiers(state.identifiers, quickValues, state.quick_actions, DATA_ROUTE_ACTION_ATTR)}
       ${renderContactRelationships(state)}
-      <h3 class="data-subsection-title">Activity</h3>
+      <h3 class="data-subsection-title" data-contact-activity data-contact-quick-focus="activity-heading" tabindex="-1">Activity</h3>
       ${timeline}
       ${state.history !== undefined ? `<section data-contact-proactive-history><h3 class="data-subsection-title">Occasions and recorded episodes</h3>
         ${state.history_failed ? '<p role="status">This history could not be read. Reopen the contact to retry.</p>' : state.history === null ? '<p>Loading recorded history…</p>'
@@ -4706,9 +4999,8 @@ const renderContactSurface = (
   }
   return `
   <section>
-    <h2 class="data-section-title">Contacts</h2>
     ${renderContactSourcesStrip(contactSources, now)}
-    <div class="data-contact-toolbar">
+    <div class="data-contact-list-tools">
       <input
         type="search"
         class="data-input"
@@ -4717,16 +5009,16 @@ const renderContactSurface = (
         placeholder="Name, email, phone, company or alias"
         aria-label="Search contacts"
       />
-      ${canReviewMerges
-        ? `<button type="button" class="data-button"
-            ${DATA_ROUTE_ACTION_ATTR}="open-contact-scan">Find duplicates</button>`
-        : ''}
-      ${canImport || canUploadFile
-        ? `<button type="button" class="data-button"
-            ${DATA_ROUTE_ACTION_ATTR}="open-contact-import">Import</button>`
-        : ''}
-      <button type="button" class="data-button data-button--primary"
-        ${DATA_ROUTE_ACTION_ATTR}="open-create-contact">New contact</button>
+      ${canReviewMerges || canImport || canUploadFile ? `<div class="data-contact-list-actions">
+        ${canReviewMerges
+          ? `<button type="button" class="data-button"
+              ${DATA_ROUTE_ACTION_ATTR}="open-contact-scan">Find duplicates</button>`
+          : ''}
+        ${canImport || canUploadFile
+          ? `<button type="button" class="data-button"
+              ${DATA_ROUTE_ACTION_ATTR}="open-contact-import">Import</button>`
+          : ''}
+      </div>` : ''}
     </div>
     ${contacts.length === 0
       ? search.trim().length > 0
@@ -5153,9 +5445,9 @@ const renderFormResponseSurface = (
 
   return `
     <section>
-      <div class="data-contact-toolbar">
+      <header class="data-form-response-list-header">
         <h2 class="data-section-title">Form responses</h2>
-        ${canExport ? `
+        ${canExport ? `<div class="data-form-response-exports">
           <button type="button" class="data-button" data-format="json"
             ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null
               ? ''
@@ -5168,8 +5460,8 @@ const renderFormResponseSurface = (
               : ' aria-disabled="true"'}${exportingFormat === 'csv'
               ? ' aria-busy="true"'
               : ''}>${exportingFormat === 'csv' ? 'Exporting CSV…' : 'Export CSV'}</button>
-        ` : ''}
-      </div>
+        </div>` : ''}
+      </header>
       ${responses.length === 0
         ? `<p ${DATA_ROUTE_UNAVAILABLE_ATTR}>No accepted form responses yet. New submissions stay in Reception Inbox until you approve them.</p>`
         : `<ul class="data-form-response-list" role="list">
@@ -5408,6 +5700,9 @@ const renderMirrorSurface = (
   </section>
 `;
 
+const canCreateWorkEntity = (state: WorkEntityPageState, sources: readonly SourceRegistration[]): boolean =>
+  resolveCreateDialogSourceId(state.kind, state.selected_source_id, enabledSourcesForKind(sources, state.kind)) !== null;
+
 const renderWorkEntitySurface = (
   state: WorkEntityPageState,
   sources: readonly SourceRegistration[],
@@ -5427,6 +5722,10 @@ const renderWorkEntitySurface = (
   canMintManageLink: boolean,
   manageLinkBusy: boolean,
   manageLinkNotice: { kind: 'ok' | 'error'; text: string } | null,
+  bookingActionsView: BookingReaderActionsView | undefined,
+  bookingCopyView: ReturnType<ReturnType<typeof createWorkReaderCopy>['state']>,
+  bookingChatView: { available: boolean; busy?: boolean; error?: string } | undefined,
+  bookingCloseLabel: string | undefined,
   discardGuardOpen: boolean,
   /** D-267 — the open edit dialog's provenance feed, ALREADY RENDERED and
    *  already matched to this dialog by the caller. Empty string means nothing
@@ -5442,10 +5741,16 @@ const renderWorkEntitySurface = (
   commitmentView?: WorkEntityCommitmentView,
   closeLabel?: string,
   projectView?: ProjectOverviewProps,
-  taskBulk?: { html: string; selection: ReturnType<TaskBulkActions['selection']> },
+  taskBulk?: { html: string; selection: ReturnType<TaskBulkActions['selection']>; kind?: 'task' | 'note' },
   projectLinkReview?: ProjectLinkReviewProps,
+  duplicate?: { can_duplicate: boolean; busy?: boolean; from?: string },
+  taskView?: WorkEntityTaskView,
+  taskLayout?: TaskListLayout,
+  headerExternal = false,
 ): string => {
-  const options = [...sourceOptionsForKind(sources, state.kind)];
+  const options = [...sourceOptionsForKind(duplicate?.from
+    ? sources.map(source => source.sync_posture === 'read_through' ? { ...source, write_capable: false } : source)
+    : sources, state.kind)];
   if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
     options.push({ id: state.selected_source_id, label: 'This source is not available', source_kind: 'sentinel', write_capable: false });
   }
@@ -5476,20 +5781,20 @@ const renderWorkEntitySurface = (
         });
     if (loadingBookingDetail) {
       return `<section class="work-entity-booking-detail" aria-busy="true">
-        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail">Back to bookings</button>
+        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? 'Back to bookings')}</button>
         <p>Loading booking…</p>
       </section>${dialogHtml}`;
     }
     if (bookingDetailError !== null) {
       return `<section class="work-entity-booking-detail">
-        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail">Back to bookings</button>
+        <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? 'Back to bookings')}</button>
         <p role="alert">${e(bookingDetailError)}</p>
       </section>${dialogHtml}`;
     }
     const entity = bookingDetail?.entity;
     if (entity !== null && entity !== undefined && entity._kind === 'booking') {
       return `${renderBookingDetail({
-        booking: entity,
+        booking: entity, actions: bookingActionsView, copy: bookingCopyView, chat: bookingChatView, close_label: bookingCloseLabel,
         ...(bookingDetail?.booking_history !== undefined
           ? { history: bookingDetail.booking_history }
           : {}),
@@ -5499,7 +5804,7 @@ const renderWorkEntitySurface = (
       })}${dialogHtml}`;
     }
     return `<section class="work-entity-booking-detail">
-      <button type="button" class="work-entity-booking-back" data-action="close-booking-detail">Back to bookings</button>
+      <button type="button" class="work-entity-booking-back" data-action="close-booking-detail" data-booking-focus="back">${e(bookingCloseLabel ?? 'Back to bookings')}</button>
       <p role="alert">This booking no longer exists.</p>
     </section>${dialogHtml}`;
   }
@@ -5514,12 +5819,7 @@ const renderWorkEntitySurface = (
     state.kind === 'booking' ? '' : state.search_query,
   );
   const rows = joinRowsWithSources(visible, options);
-  const canCreate =
-    resolveCreateDialogSourceId(
-      state.kind,
-      state.selected_source_id,
-      enabledSourcesForKind(sources, state.kind),
-    ) !== null;
+  const canCreate = canCreateWorkEntity(state, sources);
   // Load-more paginates the raw (server kind/Source) set. It stays visible under
   // a client-side search too — the "N of M loaded" count is honest (it counts
   // loaded rows, not the search-filtered `visible.length`), and Load more brings
@@ -5541,9 +5841,11 @@ const renderWorkEntitySurface = (
     // `data.contact` ref fields render as live name→id pickers; the route
     // wires them after each render via `mountWorkEntityRefPickers`.
     ref_picker: true,
+    header_external: headerExternal,
+    ...(taskLayout ? { task_list_layout: taskLayout } : {}),
     ...(state.kind === 'task' ? { task_filters: taskViewFilters } : {}),
     ...(state.kind === 'commitment' ? { commitment_filters: commitmentViewFilters, counterparty_labels: commitmentContactLabels } : {}),
-    ...(taskBulk ? { task_selection: taskBulk.selection, list_toolbar_html: taskBulk.html } : {}),
+    ...(taskBulk ? { ...(taskBulk.kind === 'note' ? { note_selection: taskBulk.selection } : { task_selection: taskBulk.selection }), list_toolbar_html: taskBulk.html } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: bookingLifecycleFilter }
       : {}),
@@ -5552,8 +5854,10 @@ const renderWorkEntitySurface = (
       : {}),
     discard_guard: discardGuardOpen,
     task_details_open: taskDetailsOpen,
+    ...(taskView ? { task_view: taskView } : {}),
     note_details_open: noteDetailsOpen,
     ...(noteView ? { note_view: noteView } : {}),
+    ...(duplicate ? { duplicate } : {}),
     ...(commitmentView ? { commitment_view: commitmentView } : {}),
     ...(closeLabel ? { close_label: closeLabel } : {}),
     ...(taskCompletion !== undefined ? { task_completion: taskCompletion } : {}),
@@ -5667,12 +5971,21 @@ export const bootstrapDataRoute = (
     style.setAttribute(DATA_ROUTE_STYLES_MARKER, '');
     style.textContent = [
       DATA_ROUTE_STYLES,
+      CONTACT_QUICK_ACTION_STYLES,
       MERGE_RECOVERY_STYLES,
       FORM_RENDERER_STYLES,
+      TASK_BLOCKERS_STYLES,
       MAIL_MESSAGE_STYLES,
+      READER_PASSAGE_STYLES,
       WORK_ENTITY_PAGE_STYLES,
       TASK_BULK_STYLES,
+      NOTE_BULK_STYLES,
       FILE_BATCH_STYLES,
+      MAIL_INBOX_STYLES,
+      MAIL_BULK_STYLES,
+      CONTACT_ACTIVITY_STYLES,
+      MAIL_READER_NAVIGATION_STYLES,
+      WORK_READER_NAVIGATION_STYLES,
       PROJECT_OVERVIEW_STYLES,
       // The mirror drill-down renders the ui-shared entity-detail panel;
       // bundle its CSS so the `.memory-*` classes paint (mirrors the
@@ -5694,6 +6007,7 @@ export const bootstrapDataRoute = (
       CALENDAR_AGENDA_STYLES,
       CALENDAR_CREATE_STYLES,
       REMINDER_CREATE_STYLES,
+      REMINDER_RECOVERY_STYLES,
       // 2026-08-28 — universal search across every collection.
       UNIVERSAL_SEARCH_STYLES,
       DOCUMENT_SEARCH_STYLES,
@@ -5704,6 +6018,10 @@ export const bootstrapDataRoute = (
       // D-324 — Data → Owned → Reminders.
       REMINDERS_STYLES,
       CALENDAR_EVENT_STYLES,
+      SOURCE_RECORD_COPY_STYLES,
+      WORK_LINK_PREVIEW_STYLES,
+      WORK_LINKED_FROM_STYLES,
+      RECORD_LINK_INSERT_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -5711,12 +6029,23 @@ export const bootstrapDataRoute = (
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(DATA_ROUTE_HOST_ATTR, '');
   const collectionPickerBreakpoint = doc.defaultView?.matchMedia?.('(max-width: 640px)');
+  const collectionRailBreakpoint = doc.defaultView?.matchMedia?.('(min-width: 960px)');
+  let collectionRailScrollTop = 0;
+  let renderedCollectionTab: DataTabId | null = null;
   // A focus fallback must address the navigation that is actually visible:
   // collection tabs on a wide screen, the same collections in a picker on a
   // phone. This also preserves the existing editor/discard-guard ownership.
   const collectionNavigationTarget = (tab: DataTabId): HTMLElement | null =>
     routeRoot.querySelector?.<HTMLElement>(collectionPickerBreakpoint?.matches
       ? `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]` : `[${DATA_ROUTE_TAB_ATTR}="${tab}"]`) ?? null;
+  const revealCollectionTab = (tab: HTMLElement | null): void => {
+    if (!collectionRailBreakpoint?.matches || !tab?.hasAttribute?.(DATA_ROUTE_TAB_ATTR)) return;
+    const rail = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`);
+    if (!rail) return;
+    const item = tab.getBoundingClientRect(); const bounds = rail.getBoundingClientRect();
+    if (item.top < bounds.top + 4) rail.scrollTop -= bounds.top + 4 - item.top;
+    else if (item.bottom > bounds.bottom - 4) rail.scrollTop += item.bottom - bounds.bottom + 4;
+  };
   opts.root.appendChild(routeRoot);
 
   let disposed = false;
@@ -5820,54 +6149,151 @@ export const bootstrapDataRoute = (
     onThingOpened: id => opts.onOwnerRecordOpened?.({ collection: 'mail_fact', id }),
   });
   // D-324 — Data → Owned → Reminders keeps its own state, as Mail facts does.
+  const reminderSearchOrigin = () => {
+    const visit = readSearchNavigationReturn<unknown>(doc, opts.searchContinuityOwner ?? opts.root);
+    return visit?.focus.action === SEARCH_OPEN_REMINDER_ACTION && visit.destinationHash === doc.defaultView?.location.hash ? visit : undefined;
+  };
+  let reminderWorkReturn: { hash: string; id: string; kind: 'task' | 'commitment'; recordId: string; scrollTop: number } | null = null;
+  let reminderMailReturn: { hash: string; id: string; slug: string; recordId: string; scrollTop: number } | null = null;
+  const activeReminderMail = () => reminderMailReturn !== null && activeTab === 'mail'
+    && explorerSelectedSlug === reminderMailReturn.slug && explorerDetail?.record_id === reminderMailReturn.recordId;
+  const activeReminderWork = () => reminderWorkReturn !== null && activeTab === reminderWorkReturn.kind
+    && workEntityState.dialog?.entity_id === reminderWorkReturn.recordId;
   const remindersSurface = createRemindersSurface({
     callers: opts.reminderCallers ?? {},
+    recovery: opts.reminderRecovery,
     ...(activeTab === 'reminder' && opts.initialEntityId ? { initialId: opts.initialEntityId } : {}),
+    backLabel: () => opts.todayReminderNavigation?.owns(remindersSurface.detailId()) ? 'Back to Today'
+      : reminderSearchOrigin() ? 'Back to search' : 'Back to reminders',
+    onBack: () => {
+      if (opts.todayReminderNavigation?.owns(remindersSurface.detailId())) {
+        if (remindersSurface.beforeLeave()) opts.todayReminderNavigation.back(remindersSurface.detailId());
+        return true;
+      }
+      const origin = reminderSearchOrigin();
+      if (!origin || !doc.defaultView) return false;
+      if (remindersSurface.beforeLeave()) doc.defaultView.location.hash = origin.returnHash;
+      return true;
+    },
     onAddressChange: () => syncDataHash(),
     ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
+    isActive: () => activeLens === 'data' && activeTab === 'reminder',
+    ...(opts.workEntityGetCaller ? {
+      readRecord: (ref: import('@recued/contracts').ReminderRecordReference) => opts.workEntityGetCaller!({ kind: ref.kind, id: ref.id }),
+      openRecord: (response: WorkEntityGetRpcResponse) => { void openReminderRecord(response); },
+    } : {}),
+    ...(opts.mailMessageCallers?.get && opts.collectionGetCaller ? {
+      readMail: (ref: ReminderMailReference) => opts.mailMessageCallers!.get!({
+        slug: ref.slug, record_id: ref.record_id, expected_reminder_ref: ref }),
+      openMail: (message: MailMessageSnapshot, ref: ReminderMailReference) => openReminderMail(message, ref),
+    } : {}),
   });
+  const calendarContinuity: ReturnType<typeof calendarAgendaPreferences> = opts.savedView ? {} : calendarAgendaPreferences(opts.searchContinuityOwner ?? {});
+  let calendarDuplicateReturn: { origin: CalendarDuplicateOrigin; slug: string; recordId: string } | null = null;
+  let calendarMailReturn: { origin: CalendarMailOrigin; slug: string; recordId: string } | null = null;
+  let calendarTaskReturn: { origin: CalendarTaskOrigin; slug: string; recordId: string } | null = null;
+  let taskCalendarPreparing: { id: string; navigation: number; sequence: number } | null = null;
+  const revealCreatedCalendarEvent = ({ slug, snapshot }: { slug: string; snapshot: CalendarEventSnapshot }) => {
+    const day = snapshot.event.is_all_day ? new Date(snapshot.event.start_at).toISOString().slice(0, 10)
+      : calendarDateIn(snapshot.event.start_at, calendarAgenda.snapshot().zone);
+    calendarAgenda.showDay(day, slug);
+    explorerCollection = 'calendar'; explorerSelectedSlug = slug; explorerRecords = [snapshot.record];
+    calendarAgendaReturn = { key: 'date', scrollTop: 0, hash: dataHistory.current().hash, sourcesOpen: false };
+    calendarContinuity.returnTo = calendarAgendaReturn;
+    void openExplorerRecord(snapshot.record.record_id);
+  };
   const calendarCreateSurface = createCalendarCreateSurface({
     callers: opts.calendarCreateCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    recovery: opts.calendarRecovery,
     ...(opts.contactListCaller ? { searchContacts: async (query: string) => {
       const result = await opts.contactListCaller!({ query, limit: 8 });
       return result.contacts.map(contact => ({ email: contact.email, ...(contact.name ? { display_name: contact.name } : {}) }));
     } } : {}),
     ...(opts.now ? { now: opts.now } : {}),
-    context: () => ({ day: calendarAgenda.snapshot().window.day, zone: calendarAgenda.snapshot().zone,
+    context: () => ({ day: calendarAgenda.snapshot().selectedDay, zone: calendarAgenda.snapshot().zone,
       preferredSlug: calendarAgenda.selectedSource() }),
     render: () => render(),
-    onCreated: ({ slug, snapshot }) => {
-      const day = snapshot.event.is_all_day ? new Date(snapshot.event.start_at).toISOString().slice(0, 10)
-        : calendarDateIn(snapshot.event.start_at, calendarAgenda.snapshot().zone);
-      calendarAgenda.showDay(day, slug);
-      explorerCollection = 'calendar'; explorerSelectedSlug = slug; explorerRecords = [snapshot.record];
-      calendarAgendaReturn = { key: 'date', scrollTop: 0, hash: dataHistory.current().hash, sourcesOpen: false };
-      void openExplorerRecord(snapshot.record.record_id);
+    onCancelled: origin => {
+      const context = origin.context;
+      if (activeTab === 'calendar' && explorerSelectedSlug === context.slug && explorerDetail?.record_id === context.recordId) {
+        const action = routeRoot.querySelector<HTMLElement>('[data-calendar-event-focus="duplicate"]');
+        action?.focus({ preventScroll: true }); action?.scrollIntoView?.({ block: 'nearest' });
+      } else if (doc.defaultView) doc.defaultView.location.hash = calendarEventContextHref(context);
+    },
+    onMailCancelled: origin => {
+      const message = mailMessageSurface.recentSnapshot();
+      if (activeTab === 'mail' && message?.slug === origin.slug && message.record_id === origin.recordId) {
+        const action = routeRoot.querySelector<HTMLElement>('[data-mail-focus="create-event"]');
+        action?.focus({ preventScroll: true }); action?.scrollIntoView?.({ block: 'nearest' });
+      } else if (doc.defaultView) doc.defaultView.location.hash = draftOriginHash(origin);
+    },
+    onTaskCancelled: origin => { if (doc.defaultView) doc.defaultView.location.hash = calendarTaskHref(origin); },
+    onTaskCreated: (result, origin) => {
+      calendarTaskReturn = { origin, slug: result.slug, recordId: result.snapshot.record.record_id };
+      calendarDuplicateReturn = null; calendarMailReturn = null;
+      revealCreatedCalendarEvent(result);
+    },
+    onCreated: async ({ slug, snapshot }, origin, mail) => {
+      calendarTaskReturn = null;
+      calendarMailReturn = mail ? { origin: mail, slug, recordId: snapshot.record.record_id } : null;
+      if (mail && activeTab !== 'calendar') {
+        const previous = navigationGeneration;
+        const opening = selectTab('calendar', false, undefined, false, undefined, false, true);
+        const navigation = navigationGeneration;
+        if (navigation === previous) return;
+        await opening;
+        if (disposed || navigationGeneration !== navigation || (activeTab as DataTabId) !== 'calendar') return;
+      }
+      calendarDuplicateReturn = origin ? { origin, slug, recordId: snapshot.record.record_id } : null;
+      revealCreatedCalendarEvent({ slug, snapshot });
     },
   });
   let calendarDeletionNotice = '';
   const calendarAgenda = createCalendarAgenda({
+    onSearchEverywhere: query => { void selectTab('search', false, undefined, false, query); },
     ...(opts.collectionListInstancesCaller ? { listInstances: opts.collectionListInstancesCaller } : {}),
     ...(opts.collectionListCaller ? { list: opts.collectionListCaller } : {}),
     ...(opts.now ? { now: opts.now } : {}),
-    initialSource: opts.savedView?.definition.tab === 'calendar' ? opts.savedView.definition.collection_slug
-      : opts.initialTab === 'calendar' ? opts.initialCollectionSlug ?? null : null,
+    ...(opts.savedView?.definition.tab === 'calendar' ? { initialSource: opts.savedView.definition.collection_slug }
+      : opts.initialTab === 'calendar' && opts.initialCollectionSlug !== undefined ? { initialSource: opts.initialCollectionSlug } : {}),
+    continuity: calendarContinuity,
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => { if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null) render(); },
     onSources: (sources) => { explorerInstances = sources; },
-    onViewChange: () => { calendarDeletionNotice = ''; syncDataHash(); opts.onViewChange?.(currentView()); },
+    onViewChange: () => { calendarDeletionNotice = ''; pendingCalendarAgendaRestore = null; syncDataHash(); opts.onViewChange?.(currentView()); },
     newEventButton: () => calendarCreateSurface.available() && !calendarCreateSurface.isOpen()
       ? `<button type="button" class="data-button data-button--primary" ${DATA_ROUTE_ACTION_ATTR}="calendar-create-new" data-calendar-create-focus="new">New event</button>` : '',
-    createForm: () => calendarCreateSurface.render(),
+    createForm: () => calendarEventSurface.renderRecoveries() + calendarCreateSurface.render(),
   });
   let calendarInitialAddress = activeTab === 'calendar' && typeof opts.initialEntityId === 'string';
-  let calendarAgendaReturn: { key: string; scrollTop: number; hash: string; sourcesOpen: boolean } | null = null;
+  let calendarAgendaReturn: { key: string; scrollTop: number; hash: string; sourcesOpen: boolean } | null = calendarContinuity.returnTo ?? null;
   let pendingCalendarAgendaRestore: { key: string; scrollTop: number; sourcesOpen?: boolean } | null = null;
   const calendarEventSurface = createCalendarEventSurface({
-    callers: opts.calendarEventCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    callers: opts.calendarEventCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR, recovery: opts.calendarEditRecovery,
+    ...(opts.now ? { now: opts.now } : {}),
+    document: doc, onAsk: opts.onAskCalendarEvent,
+    copyBlocked: () => sourceRecordCopy.busy(),
+    ...(opts.mailMessageCallers?.get && opts.collectionGetCaller ? {
+      onOpenEmail: (source: TaskNoteSource, ref: CalendarEventRef, snapshot: CalendarEventSnapshot, current: () => boolean) =>
+        openCalendarSourceEmail(source, ref, snapshot, current),
+    } : {}),
+    ...(calendarCreateSurface.available() ? {
+      onExistingDuplicate: () => {
+        if (!calendarCreateSurface.isOpen()) return false;
+        calendarCreateSurface.open(); return true;
+      },
+      onDuplicate: (ref: CalendarEventRef, snapshot: CalendarEventSnapshot, current: () => boolean) => {
+        if (!current() || activeTab !== 'calendar' || explorerSelectedSlug !== ref.slug || explorerDetail?.record_id !== snapshot.event.record_id) return;
+        calendarCreateSurface.open(calendarDuplicateSeed(ref, snapshot));
+      },
+    } : {}),
+    ...(opts.workEntityUpsertCaller && opts.workEntitySourceListCaller ? {
+      onCreateTask: (ref: CalendarEventRef, snapshot: CalendarEventSnapshot, isCurrent: () => boolean) => openCalendarWorkDraft(ref, snapshot, isCurrent),
+      onCreateNote: (ref: CalendarEventRef, snapshot: CalendarEventSnapshot, isCurrent: () => boolean) => openCalendarWorkDraft(ref, snapshot, isCurrent, 'note'),
+    } : {}),
     render: () => render(),
     onRemoved: (recordId, returnToAgenda) => {
       explorerRecords = explorerRecords.filter(record => record.record_id !== recordId);
@@ -5886,9 +6312,49 @@ export const bootstrapDataRoute = (
       explorerLiveRefreshPending = true;
     },
   });
+  const mailReminders = createMailReminders({ root: routeRoot, callers: opts.reminderCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    recovery: opts.reminderRecovery,
+    changed: () => render(), ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}) });
   const mailMessageSurface = createMailMessageSurface({
-    document: doc, callers: opts.mailMessageCallers ?? {}, files: opts.filePreviewCallers,
+    document: doc, root: routeRoot, callers: opts.mailMessageCallers ?? {}, files: opts.filePreviewCallers,
+    onSearchEverywhere: query => { void selectTab('search', false, undefined, false, query); },
+    ...(opts.reminderCallers?.create && opts.reminderCallers.list ? {
+      reminderLifecycle: mailReminders,
+      onRemind: (message: MailMessageSnapshot, current: () => boolean) => mailReminders.open(message, current),
+      reminderHtml: (message: MailMessageSnapshot) => {
+        const navigation = navigationGeneration, ref = message.reminder_ref;
+        return mailReminders.render(message, { visit: String(navigation), current: () => {
+          const selected = mailMessageSurface.recentSnapshot()?.reminder_ref;
+          return !disposed && activeLens === 'data' && activeTab === 'mail' && navigation === navigationGeneration
+            && !!ref && !!selected && sameReminderMailReference(ref, selected);
+        } });
+      },
+    } : {}),
+    ...(opts.workEntityUpsertCaller && opts.workEntitySourceListCaller
+      ? { onCreateTask: (message: MailMessageSnapshot, isCurrent: () => boolean) => openMailWorkDraft(message, isCurrent),
+        onCreateNote: (message: MailMessageSnapshot, isCurrent: () => boolean) => openMailWorkDraft(message, isCurrent, 'note') } : {}),
+    ...(calendarCreateSurface.available() ? {
+      onExistingEvent: () => {
+        if (!calendarCreateSurface.isOpen()) return false;
+        calendarCreateSurface.open(); return true;
+      },
+      onCreateEvent: (message: MailMessageSnapshot, current: () => boolean) => {
+        if (!current() || activeTab !== 'mail') return;
+        calendarCreateSurface.openFromMail(calendarMailSeed(message, doc.defaultView!.location.href));
+      },
+    } : {}),
     ...(opts.mailCompose ? { compose: opts.mailCompose } : {}),
+    // D-406 (Q5) — the email, confirmed as the exact stored record (as "Add records" confirms one), handed to a new
+    // chat as an added record; the message the owner sends then has it read before the first round.
+    ...(opts.onAskMail ? { onChat: async (current: MailMessageRef, _message: MailMessageSnapshot, isCurrent: () => boolean) => {
+      const target = { tab: 'mail' as const, collectionSlug: current.slug, recordId: current.record_id,
+        hash: serializeSourceRecordAddress({ tab: 'mail', collectionSlug: current.slug, recordId: current.record_id }) };
+      const result = await readExactRecordLink(target, exactLinkReaders, doc.defaultView?.location.href ?? doc.URL);
+      if (!isCurrent() || activeTab !== 'mail') return;
+      if (result.state !== 'ready') throw new Error('This email could not be confirmed. Refresh it and try again.');
+      opts.onAskMail!({ reference: result.match });
+    } } : {}),
     onStateChecked: (ref, state) => {
       if (activeTab !== 'mail' || explorerSelectedSlug !== ref.slug) return;
       const update = (record: CollectionRecord): CollectionRecord => {
@@ -5897,11 +6363,14 @@ export const bootstrapDataRoute = (
         return { ...record, hot_fields: { ...record.hot_fields, is_read: state.is_read, is_flagged: state.is_flagged } };
       };
       explorerRecords = explorerRecords.map(update);
+      const checked = explorerRecords.find(record => record.record_id === ref.record_id);
+      if (checked) mailInbox.reconcile(checked);
       if (explorerDetail?.record) explorerDetail = { ...explorerDetail, record: update(explorerDetail.record) };
     },
     onStateChanged: (slug, record) => {
       if (activeTab !== 'mail' || explorerSelectedSlug !== slug) return;
       explorerRecords = explorerRecords.map(row => row.record_id === record.record_id ? record : row);
+      mailInbox.reconcile(record);
       if (explorerDetail?.record?.record_id === record.record_id) explorerDetail = { ...explorerDetail, record };
       explorerLiveRefreshPending = true;
     },
@@ -5913,6 +6382,8 @@ export const bootstrapDataRoute = (
           if (row.hot_fields.is_read !== record.hot_fields.is_read || row.hot_fields.is_flagged !== record.hot_fields.is_flagged) explorerLiveRefreshPending = true;
           return { ...row, ...record, hot_fields: { ...row.hot_fields, ...record.hot_fields } };
         });
+        const selected = explorerRecords.find(row => row.record_id === record.record_id);
+        if (selected) mailInbox.reconcile(selected);
       }
     },
     actionAttr: DATA_ROUTE_ACTION_ATTR, render: () => render(),
@@ -6015,15 +6486,292 @@ export const bootstrapDataRoute = (
     | null = null;
   let workEntityDialogBaseline: string | null = null;
   let workEntityDialogEntity: WorkEntity | null = null;
+  type MailWorkOrigin = { kind: 'task' | 'note'; hash: string; scrollTop: number; indexScroll: ReturnType<typeof mailMessageSurface.captureScroll>;
+    projectReturn: ProjectChildReturn | null; searchReturn: typeof workSearchReturn; attempted: boolean; createdId?: string; opening?: boolean; focus?: string };
+  let mailWorkReturn: MailWorkOrigin | null = null;
+  let pendingMailWorkRestore: { origin: MailWorkOrigin; navigation: number } | null = null;
+  type SourceVisit = { source: TaskNoteSource; record: CollectionRecord } & (
+    { kind: 'mail'; message: MailMessageSnapshot; incarnation: string | null; resume?: (() => Promise<void>) | null }
+    | { kind: 'calendar'; ref: CalendarEventRef; snapshot: CalendarEventSnapshot;
+      linkedFrom?: { row: LinkedCalendarEvent; target: import('@recued/contracts').SavedWorkAddress } });
+  type SourceDetour = { parent: SourceDetour | null; origin: SourceVisit; destination: TaskNoteSource;
+    hash: string; scrollTop: number; indexScroll: ReturnType<typeof mailMessageSurface.captureScroll>;
+    records: CollectionRecord[]; mailFind: ReturnType<typeof mailMessageSurface.captureFindState>; focus?: { attribute: string; key: string } };
+  let sourceDetour: SourceDetour | null = null;
+  let pendingSourceRestore: { origin: SourceDetour; navigation: number } | null = null;
+  const activeSourceDetour = () => sourceDetour && activeTab === sourceDetour.destination.tab
+    && explorerSelectedSlug === sourceDetour.destination.collectionSlug && explorerDetail?.record_id === sourceDetour.destination.recordId ? sourceDetour : null;
+  const activeMailWork = () => mailWorkReturn && activeTab === mailWorkReturn.kind
+    && (mailWorkReturn.opening || workEntityState.dialog && (workEntityState.dialog.mode === 'create' || workEntityState.dialog.entity_id === mailWorkReturn.createdId)) ? mailWorkReturn : null;
+  type CalendarWorkOrigin = { kind: 'task' | 'note'; createdId?: string; hash: string; scrollTop: number; projectReturn: ProjectChildReturn | null; searchReturn: typeof workSearchReturn; attempted: boolean; opening?: boolean; focus?: string };
+  let calendarWorkReturn: CalendarWorkOrigin | null = null;
+  let pendingCalendarWorkRestore: { origin: CalendarWorkOrigin; navigation: number; recordId: string; slug: string } | null = null;
+  const activeCalendarWork = () => calendarWorkReturn && activeTab === calendarWorkReturn.kind
+    && (calendarWorkReturn.opening || workEntityState.dialog && (workEntityState.dialog.mode === 'create' || workEntityState.dialog.entity_id === calendarWorkReturn.createdId)) ? calendarWorkReturn : null;
+  type NoteTaskOrigin = { reader: RelatedWorkOrigin; attempted: boolean };
+  let noteTaskReturn: NoteTaskOrigin | null = null;
+  const activeNoteTask = () => activeTab === 'task' && workEntityState.dialog?.mode === 'create'
+    && noteTaskReturn?.reader === relatedWorkReturn ? noteTaskReturn : null;
+  let noteTaskPreparing: { note: Extract<WorkEntity, { _kind: 'note' }>; sequence: number; navigation: number; action: 'create' | 'open' } | null = null;
+  type ContactWorkOrigin = { parent: ContactWorkOrigin | null; detail: ContactDetailState; contact: ContactRecord; kind: ContactFollowUpKind; hash: string;
+    scrollTop: number; position: ReturnType<typeof contactActivity.capture>; related: RelatedWorkOrigin | null;
+    project: ProjectWork | null; projectReturn: ProjectChildReturn | null; searchReturn: typeof workSearchReturn;
+    attempted: boolean; createdId?: string; focus: string; opening?: boolean };
+  let contactWorkReturn: ContactWorkOrigin | null = null;
+  const activeContactWork = () => contactWorkReturn && activeTab === contactWorkReturn.kind && relatedWorkReturn === contactWorkReturn.related
+    && (contactWorkReturn.opening || workEntityState.dialog && (workEntityState.dialog.mode === 'create'
+      || workEntityState.dialog.entity_id === contactWorkReturn.createdId)) ? contactWorkReturn : null;
+  type RecoveredDraftReturn = { origin: DraftOrigin; kind: 'task' | 'note'; draftId: string; sequence: number; navigation: number; busy: boolean; check: number; error?: string; prepared?: { checked: CheckedDraftOrigin; mailRecord?: CollectionRecord } };
+  let recoveredDraftReturn: RecoveredDraftReturn | null = null;
+  const activeRecoveredDraftReturn = () => recoveredDraftReturn && activeTab === recoveredDraftReturn.kind
+    && workEntityState.dialog?.mode === 'create' && workEntityDialogOpenSeq === recoveredDraftReturn.sequence
+    && navigationGeneration === recoveredDraftReturn.navigation
+    && (activeTab === 'note' ? noteDraft.id() : workDrafts.task.id()) === recoveredDraftReturn.draftId ? recoveredDraftReturn : null;
+  let noteTaskCreated: { note: Extract<WorkEntity, { _kind: 'note' }>; task: Extract<WorkEntity, { _kind: 'task' }> } | null = null;
+  type DuplicateContext = { original: DuplicateEntity; createdId?: string; attempted: boolean };
+  let duplicateContext: DuplicateContext | null = null;
+  let duplicatePreparing: number | null = null;
+  const activeDuplicate = () => duplicateContext && workEntityState.kind === duplicateContext.original._kind
+    && workEntityState.dialog && (workEntityState.dialog.mode === 'create'
+      || workEntityState.dialog.entity_id === duplicateContext.createdId) ? duplicateContext : null;
+  const duplicateControls = () => ({
+    can_duplicate: Boolean(opts.workEntityGetCaller && opts.workEntitySourceListCaller && opts.workEntityUpsertCaller
+      && workEntityState.dialog?.mode === 'edit' && isDuplicateEntity(workEntityDialogEntity)
+      && workEntityState.dialog.entity_id === workEntityDialogEntity.id
+      && duplicateDestinations(sources, workEntityDialogEntity._kind).length),
+    busy: duplicatePreparing === workEntityDialogOpenSeq,
+    ...(activeDuplicate() ? { from: activeDuplicate()!.original.title || (workEntityState.kind === 'note' ? 'Untitled note' : 'Untitled task') } : {}),
+  });
   let projectWork: ProjectWork | null = null;
+  let projectViewLoad: Promise<void> | undefined;
+  let projectInteraction = 0;
   let projectEditing = false;
-  let projectChildReturn: { kind: 'task' | 'note' | 'commitment'; id?: string; linking?: true; scrollTop: number; page: WorkEntityPageState; entities: WorkEntity[]; total: number } | null = null;
+  type ProjectChildReturn = { attention?: true; focus?: string; kind: 'task' | 'note' | 'commitment'; id?: string; linking?: true; hash: string; scrollTop: number; page: WorkEntityPageState; entities: WorkEntity[]; total: number };
+  let projectChildReturn: ProjectChildReturn | null = null;
   let pendingProjectRestore: { key: string; scrollTop: number } | null = null;
+  let taskMode: 'read' | 'edit' = 'read';
+  let taskNotice: string | undefined;
+  let taskDiscardToReader = false;
+  let taskReader = createTaskReaderContinuity();
   let commitmentMode: 'read' | 'edit' = 'read';
   let commitmentNotice: string | undefined;
   let commitmentDiscardToReader = false;
+  let commitmentReader = createCommitmentReaderContinuity();
   let commitmentContactLabels: Record<string, string> = {};
+  const commitmentChat = createCommitmentChat({ get: opts.workEntityGetCaller,
+    href: () => doc.defaultView?.location?.href ?? doc.URL ?? '', open: opts.onAskCommitment,
+    beforeLeave: () => mailMessageSurface.beforeLeave(), changed: () => { if (!disposed) render(); },
+  });
+  const commitmentFollowUp = createCommitmentFollowUp({ get: opts.workEntityGetCaller, contact: opts.contactGetCaller,
+    open: request => mailMessageSurface.openCreate(request), render: () => render(),
+    focus: () => routeRoot.querySelector<HTMLElement>('[data-action="draft-commitment-follow-up"]')?.focus({ preventScroll: true }),
+  });
+  const bindCommitmentFollowUp = (promise: Extract<WorkEntity, { _kind: 'commitment' }>): void => {
+    const seq = workEntityDialogOpenSeq, navigation = navigationGeneration;
+    commitmentFollowUp.bind(promise, () => !disposed && navigation === navigationGeneration && seq === workEntityDialogOpenSeq
+      && activeLens === 'data' && activeTab === 'commitment' && commitmentMode === 'read' && workEntityDialogEntity === promise
+      && workEntityState.dialog?.entity_id === promise.id && !workEntityState.dialog.submitting && !pendingWorkEntityDialogOpen
+      && !workEntityDiscardGuardOpen);
+  };
   let noteMode: 'read' | 'edit' = 'read';
+  let noteWriteRevision: string | undefined;
+  let noteReader = createNoteReaderContinuity();
+  const makeNoteFind = (kind: 'note' | 'task' = 'note') => createNoteFind({ kind, root: routeRoot, render: () => render(),
+    ...(kind === 'task' ? { onReveal: () => taskReader.interact(routeRoot) } : {}),
+    onSearchEverywhere: query => { void selectTab('search', false, undefined, false, query); } });
+  let noteFind = makeNoteFind();
+  let taskFind = makeNoteFind('task');
+  type Reader = ReturnType<typeof createNoteReaderContinuity>;
+  type Find = ReturnType<typeof makeNoteFind>;
+  const readingBindings = new WeakMap<Reader, { entity: ReadingEntity; record: ReadingRecord; ready: boolean }>();
+  let readingTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingReading: { record: ReadingRecord; state: SavedReaderState; key: string } | null = null;
+  let lastReadingWrite = '';
+  const writePendingReading = (): void => {
+    if (readingTimer !== null) clearTimeout(readingTimer); readingTimer = null;
+    if (pendingReading) { opts.readerStates?.set(pendingReading.record, pendingReading.state); lastReadingWrite = pendingReading.key; pendingReading = null; }
+  };
+  const captureWorkReading = (): void => {
+    if (!opts.readerStates || disposed || activeLens !== 'data') return;
+    const entity = workEntityDialogEntity;
+    if (!entity || entity._kind !== 'note' && entity._kind !== 'task' || activeTab !== entity._kind
+      || (entity._kind === 'note' ? noteMode : taskMode) !== 'read') return;
+    const reader = entity._kind === 'note' ? noteReader : taskReader, find = entity._kind === 'note' ? noteFind : taskFind;
+    const binding = readingBindings.get(reader), mounted = routeRoot.querySelector<HTMLElement>(`.work-entity-${entity._kind}-reader`);
+    if (!binding?.ready || binding.entity !== entity || mounted?.getAttribute(`data-${entity._kind}-id`) !== entity.id) return;
+    reader.capture(routeRoot);
+    const state = { ...reader.snapshot(), find: find.snapshot() }, key = JSON.stringify([binding.record, state]);
+    if (pendingReading?.key === key) return;
+    if (lastReadingWrite === key) { pendingReading = null; if (readingTimer !== null) clearTimeout(readingTimer); readingTimer = null; return; }
+    pendingReading = { record: binding.record, state, key };
+    if (readingTimer === null) readingTimer = setTimeout(writePendingReading, 120);
+  };
+  const flushWorkReading = (): void => { captureWorkReading(); writePendingReading(); };
+  const bindWorkReading = (entity: ReadingEntity, reader: Reader, find: Find, verified: boolean): void => {
+    if (!opts.readerStates || !verified) { reader.open(entity.id); find.open(entity.id); return; }
+    const record = readingRecord(entity), previous = readingBindings.get(reader);
+    const same = reader.id() === entity.id && previous && sameReadingIdentity(previous.record, record);
+    if (!same) {
+      reader.reset(); find.reset(); reader.open(entity.id); find.open(entity.id);
+      const saved = entity.deleted_at == null && entity.sync_state !== 'tombstoned' && entity.sync_state !== 'orphaned' ? opts.readerStates.get(record) : undefined;
+      if (saved) { reader.resume(saved); find.resume(saved.find); }
+    } else { reader.open(entity.id); find.open(entity.id); }
+    readingBindings.set(reader, { entity, record, ready: false });
+  };
+  const mountedWorkReading = (): void => {
+    const entity = workEntityDialogEntity;
+    if (entity?._kind === 'task' || entity?._kind === 'note') {
+      const binding = readingBindings.get(entity._kind === 'note' ? noteReader : taskReader);
+      if (binding && binding.entity !== entity) {
+        const record = readingRecord(entity);
+        if (sameReadingIdentity(binding.record, record)) { binding.entity = entity; binding.record = record; }
+      }
+      if (binding?.entity === entity) binding.ready = true;
+    }
+    captureWorkReading();
+  };
+  const passageSubject = () => {
+    if (disposed || activeLens !== 'data') return null;
+    if (activeTab === 'note' && noteMode === 'read' && workEntityDialogEntity?._kind === 'note' && !pendingWorkEntityDialogOpen) {
+      const note = workEntityDialogEntity, body = routeRoot.querySelector<HTMLElement>('[data-note-body]');
+      const identity = JSON.stringify(['note', note.id, note.source_id, note.source_record_id ?? null, note.created_at]);
+      return body ? { kind: 'note' as const, note, body, key: identity, identity, revision: note.body,
+        origin: noteDraftOrigin(note)!, task: !!opts.workEntitySourceListCaller && !!opts.workEntityUpsertCaller && !!opts.workEntityGetCaller && !noteTaskPreparing } : null;
+    }
+    if (activeTab === 'mail') {
+      const message = mailMessageSurface.recentSnapshot(), record = explorerDetail?.record;
+      const body = routeRoot.querySelector<HTMLElement>('[data-mail-message-body]');
+      if (!message || message.body === null || !record || record.record_id !== message.record_id || !body) return null;
+      const identity = JSON.stringify(['mail', message.slug, message.record_id, record.source_id ?? null, record.received_at]);
+      return { kind: 'mail' as const, message, body, identity, key: JSON.stringify([identity, mailMessageSurface.linkedFromIncarnation()]),
+        revision: message.body, origin: mailDraftOrigin(message)!,
+        task: !!opts.workEntitySourceListCaller && !!opts.workEntityUpsertCaller && !!opts.mailMessageCallers?.get };
+    }
+    return null;
+  };
+  const capturePassageView = () => {
+    const scrollTop = workSearchScrollHost()?.scrollTop ?? 0, subject = passageSubject();
+    if (!subject) throw new Error('Reopen the source before using this passage.');
+    if (subject.kind === 'note') {
+      noteReader.capture(routeRoot); noteFind.capture(); flushWorkReading();
+      return { kind: 'note' as const, key: subject.key, revision: subject.revision, scrollTop, reading: noteReader.snapshot(), find: noteFind.snapshot() };
+    }
+    mailMessageSurface.captureFind();
+    return { kind: 'mail' as const, key: subject.key, revision: subject.revision, scrollTop, reading: mailMessageSurface.snapshotReading(),
+      find: mailMessageSurface.captureFindState(), index: mailMessageSurface.captureScroll(routeRoot) };
+  };
+  type SelectionNoteOrigin = { hash: string; subject: NonNullable<ReturnType<typeof passageSubject>>; view: ReturnType<typeof capturePassageView>;
+    related?: RelatedWorkOrigin; mail?: MailWorkOrigin; noteId?: string; existing: boolean; attempted: boolean; returning: boolean };
+  let selectionNoteReturn: SelectionNoteOrigin | null = null;
+  const activeSelectionNote = () => selectionNoteReturn && activeTab === 'note' && workEntityState.dialog
+    && (workEntityState.dialog.mode === 'create' && !selectionNoteReturn.existing || workEntityState.dialog.entity_id === selectionNoteReturn.noteId) ? selectionNoteReturn : null;
+  const selectionNotePicker = createSelectionNotePicker({ document: doc,
+    sources: () => opts.workEntitySourceListCaller!(),
+    ...(opts.workEntitySearchCaller ? { search: opts.workEntitySearchCaller } : {}),
+    ...(opts.workEntityGetCaller ? { get: (args: { kind: 'note'; id: string }) => opts.workEntityGetCaller!(args) } : {}) });
+  const checkPassage = async (passage: ReaderPassage, current: () => boolean) => {
+    const subject = passageSubject();
+    if (!subject || subject.key !== passage.key || !current()) return null;
+    const mailScope = subject.kind === 'mail' ? mailMessageSurface.snapshotReading()?.ref.conversation : undefined;
+    if (subject.kind === 'mail' && mailScope) {
+      if (!opts.mailMessageCallers?.conversation) throw new Error('This email could not be confirmed. Reopen it before using the passage.');
+      const metadata = await opts.mailMessageCallers.conversation({ slug: subject.message.slug, record_id: subject.message.record_id });
+      if (!current()) return null;
+      const identity = JSON.stringify(['mail', metadata.slug, metadata.anchor.record_id, metadata.anchor.source_id ?? null, metadata.anchor.received_at]);
+      if (metadata.incarnation !== mailScope.incarnation || metadata.thread_id !== mailScope.thread_id || identity !== subject.identity)
+        throw new Error('The original email or mailbox changed. Reopen it and select the passage again.');
+    }
+    const checked = await checkDraftOrigin(subject.origin, { mail: opts.mailMessageCallers?.get ? async ref => {
+      const message = await opts.mailMessageCallers!.get!({ ...ref, ...(mailScope ? { conversation: mailScope } : {}) });
+      if (mailScope && (message.conversation?.incarnation !== mailScope.incarnation || message.conversation.thread_id !== mailScope.thread_id))
+        throw new Error('The original email or mailbox changed. Reopen it and select the passage again.');
+      return message;
+    } : undefined,
+      ...(opts.workEntityGetCaller ? { note: (id: string) => opts.workEntityGetCaller!({ kind: 'note', id }) } : {}) });
+    if (!current()) return null;
+    const text = checked.kind === 'note' ? checked.reply.entity.body : checked.kind === 'mail' ? checked.message.body : null;
+    if (text !== passage.revision) throw new Error('This passage changed in its source. Refresh the reader and select it again.');
+    return { subject, checked };
+  };
+  const readerPassage = createReaderPassage({ document: doc, owner: opts.searchContinuityOwner ?? opts.root,
+    source: () => {
+      const subject = selectionNoteReturn ? null : passageSubject();
+      return subject ? { ...subject, note: subject.task, ask: !!opts.onAskSelection && (subject.kind === 'note' ? !!opts.workEntityGetCaller : !!opts.mailMessageCallers?.get) } : null;
+    },
+    capture: capturePassageView,
+    restore: async (view: ReturnType<typeof capturePassageView>) => {
+      if (view.kind === 'mail' && activeTab === 'mail' && view.reading) {
+        await mailMessageSurface.resumeReading(view.reading);
+        if (disposed || (activeTab as DataTabId) !== 'mail' || passageSubject()?.key !== view.key || passageSubject()?.revision !== view.revision) return;
+        mailMessageSurface.restoreFindState(view.find); render(); mailMessageSurface.restoreScroll(routeRoot, view.index);
+      } else if (view.kind === 'note' && passageSubject()?.key === view.key && passageSubject()?.revision === view.revision) {
+        noteReader.resume(view.reading); noteFind.resume(view.find); render();
+      } else return;
+      const host = workSearchScrollHost(); if (host) host.scrollTop = view.scrollTop;
+    },
+    note: async (passage, current) => { await openSelectionNoteDraft(passage, current); },
+    task: async (passage, current) => {
+      const source = await checkPassage(passage, current); if (!source || !current()) return;
+      if (source.checked.kind === 'mail') await openMailWorkDraft(source.checked.message, current, 'task', passage.text);
+      else if (source.checked.kind === 'note') await prepareNoteTask('create', passage.text, current);
+    },
+    ask: async (passage, current) => {
+      const source = await checkPassage(passage, current); if (!source || !current() || !opts.onAskSelection) return;
+      const target = source.subject.kind === 'mail'
+        ? { tab: 'mail' as const, collectionSlug: source.subject.message.slug, recordId: source.subject.message.record_id,
+          hash: serializeSourceRecordAddress({ tab: 'mail', collectionSlug: source.subject.message.slug, recordId: source.subject.message.record_id }) }
+        : { tab: 'note' as const, id: source.subject.note.id, hash: serializeShellRoute('data', 'note', source.subject.note.id) };
+      const link = await readExactRecordLink(target, exactLinkReaders, doc.defaultView?.location.href ?? doc.URL);
+      if (!current()) return;
+      if (link.state !== 'ready' || link.match.identity !== source.subject.identity) throw new Error('The original source was removed or replaced. Reopen it before asking about this passage.');
+      if (hasDataInFlightWork() || !mailMessageSurface.beforeLeave()) return;
+      const shortcut = source.checked.kind === 'mail' ? recentSourceRecord(mailDraftOrigin(source.checked.message), source.checked.message.slug) : undefined;
+      opts.onAskSelection({ reference: link.match, ...(shortcut ? { shortcut } : {}) }, readerPassageQuestion(passage.text));
+    },
+  });
+  const makeNoteRelated = (kind: 'note' | 'task' = 'note') => {
+    const controller = createNoteRelatedRecords({
+      ...(opts.contactGetCaller ? { contact: (id: string) => opts.contactGetCaller!({ email: id }) } : {}),
+      ...(opts.contactResolveCaller ? { resolveContact: (id: string) => opts.contactResolveCaller!({ email: id }) } : {}),
+      ...(opts.workEntityGetCaller ? { project: (id: string) => opts.workEntityGetCaller!({ kind: 'project', id }),
+        task: (id: string) => opts.workEntityGetCaller!({ kind: 'task', id }) } : {}),
+      sources: () => sources, now: opts.now,
+      active: () => !disposed && (kind === 'note' ? noteRelated : taskRelated) === controller && activeTab === kind
+        && (kind === 'note' ? noteMode : taskMode) === 'read',
+      changed: () => { if (!disposed && (kind === 'note' ? noteRelated : taskRelated) === controller && activeTab === kind
+        && (kind === 'note' ? noteMode : taskMode) === 'read') render(); },
+    });
+    return controller;
+  };
+  let noteRelated = makeNoteRelated();
+  let taskRelated = makeNoteRelated('task');
+  const makeCommitmentRelated = () => {
+    const controller = createCommitmentRelatedRecords({ contact: opts.contactGetCaller, resolveContact: opts.contactResolveCaller,
+      work: opts.workEntityGetCaller, sources: () => sources, now: opts.now,
+      active: () => !disposed && commitmentRelated === controller && activeLens === 'data' && activeTab === 'commitment' && commitmentMode === 'read',
+      changed: () => { if (!disposed && commitmentRelated === controller && activeLens === 'data' && activeTab === 'commitment' && commitmentMode === 'read') render(); },
+    });
+    return controller;
+  };
+  let commitmentRelated = makeCommitmentRelated();
+  const bindTaskRelated = (entity: Extract<WorkEntity, { _kind: 'task' }>, snapshot?: { source_freshness?: WorkEntityGetRpcResponse['source_freshness'] }) => taskRelated.open({ ...entity,
+    related_contact_ids: entity.assigned_contact_id ? [entity.assigned_contact_id] : [], related_project_ids: entity.parent_project_id ? [entity.parent_project_id] : [] }, snapshot);
+  const noteDraft = createNoteDraftCheckpoint({ store: opts.noteRecovery, now: opts.now, changed: () => updateNoteDraftStatus() });
+  const workDrafts = {
+    task: createWorkDraftCheckpoint({ kind: 'task', store: opts.workRecovery?.task, now: opts.now, changed: () => updateWorkDraftStatus() }),
+    project: createWorkDraftCheckpoint({ kind: 'project', store: opts.workRecovery?.project, now: opts.now, changed: () => updateWorkDraftStatus() }),
+  };
+  const suspendWorkDrafts = (): void => { workDrafts.task.suspend(); workDrafts.project.suspend(); };
+  let workDraftBusy: string | null = null;
+  let workDraftPreview: string | null = null;
+  let workDraftDiscard: string | null = null;
+  let workDraftNotice: { id: string; text: string } | null = null;
+  let workDraftResumeSequence = 0;
+  let noteDraftBusy: string | null = null;
+  let noteDraftPreview: string | null = null;
+  let noteDraftDiscard: string | null = null;
+  let noteDraftNotice: { id: string; text: string } | null = null;
+  let noteDraftResumeSequence = 0;
   let noteDetailsOpen = false;
   let noteCopying = false;
   let noteCopySequence = 0;
@@ -6040,6 +6788,7 @@ export const bootstrapDataRoute = (
     && 'booking_lifecycle' in opts.savedView.definition ? opts.savedView.definition.booking_lifecycle : 'all';
   let taskViewFilters: TaskViewFilters = opts.savedView?.definition.tab === 'task'
     ? opts.savedView.definition.task_filters ?? DEFAULT_TASK_VIEW_FILTERS : DEFAULT_TASK_VIEW_FILTERS;
+  let taskFiltersOpen = taskViewFilters.completion !== 'all' || taskViewFilters.due !== 'all';
   let commitmentViewFilters: CommitmentViewFilters = opts.savedView?.definition.tab === 'commitment'
     ? opts.savedView.definition.commitment_filters ?? DEFAULT_COMMITMENT_VIEW_FILTERS : DEFAULT_COMMITMENT_VIEW_FILTERS;
   let commitmentListFilter = { ...commitmentViewFilters };
@@ -6051,12 +6800,14 @@ export const bootstrapDataRoute = (
     loading = false; loadingMoreWorkEntities = false;
   };
   const taskBulk = createTaskBulkActions({
+    root: routeRoot,
     rows: () => activeLens === 'data' && activeTab === 'task'
       ? workEntities.filter(row => facetIncludes({ collection: row._kind, id: row.id })) : [],
     sources: () => sources,
     ready: () => !loading && taskListSearch === workEntityState.search_query.trim(),
-    get: opts.workEntityGetCaller, listSources: opts.workEntitySourceListCaller,
+    get: opts.workEntityGetCaller, listSources: opts.workEntitySourceListCaller, search: opts.workEntitySearchCaller,
     complete: opts.taskMarkDoneCaller, update: opts.workEntityUpsertCaller,
+    contactList: opts.contactListCaller, contactGet: opts.contactGetCaller,
     render: () => render(),
     selectionStarted: retireTaskListReads,
     begin: retireTaskListReads,
@@ -6064,12 +6815,41 @@ export const bootstrapDataRoute = (
     settled: () => { if (!disposed && activeLens === 'data' && activeTab === 'task') pendingLoadPromise = refreshActive(true); },
   });
   const focusTaskBatch = (): void => { routeRoot.querySelector<HTMLElement>('[data-task-bulk-focus="results"]')?.focus(); };
+  const retireNoteListReads = (): void => { loadGeneration += 1; loading = false; loadingMoreWorkEntities = false; };
+  const noteBulk: NoteBulkActions = createNoteBulkActions({
+    rows: () => activeLens === 'data' && activeTab === 'note'
+      ? filterAndSortEntities('note', workEntities.filter(row => row._kind === 'note' && facetIncludes({ collection: 'note', id: row.id })), workEntityState.search_query) : [],
+    sources: () => sources, ready: () => !loading,
+    get: opts.workEntityGetCaller, listSources: opts.workEntitySourceListCaller, update: opts.workEntityUpsertCaller,
+    search: opts.workEntitySearchCaller, contactList: opts.contactListCaller, contactGet: opts.contactGetCaller,
+    render: () => render(), begin: retireNoteListReads,
+    confirmed: note => { workEntities = workEntities.map(row => row._kind === 'note' && row.id === note.id ? note : row); },
+    settled: () => { if (!disposed && activeLens === 'data' && activeTab === 'note') pendingLoadPromise = refreshActive(true); },
+  });
+  const focusNoteBatch = (): void => { routeRoot.querySelector<HTMLElement>('[data-note-bulk-focus="results"], [data-note-bulk-focus="preview"]')?.focus(); };
+
   let bookingDetailId: string | null = null;
   let bookingDetail: WorkEntityGetRpcResponse | null = null;
   let bookingDetailError: string | null = null;
   let loadingBookingDetail = false;
   let loadingWorkEntityDetail = false;
   let bookingDetailSeq = 0;
+  let bookingReadingInteraction = 0;
+  const bookingReader = createBookingReaderContinuity();
+  type BookingReaderReturn = { parent: BookingReaderReturn | null; response: WorkEntityGetRpcResponse; hash: string;
+    state: WorkEntityPageState; entities: WorkEntity[]; total: number; errors: typeof errors;
+    position: BookingReaderPosition; target: { kind: 'contact' | 'booking'; id: string };
+    search: typeof workSearchReturn; lifecycle: typeof bookingLifecycleFilter };
+  let bookingReaderReturn: BookingReaderReturn | null = null;
+  const focusBooking = (key: string) => [...(typeof routeRoot.querySelectorAll === 'function' ? routeRoot.querySelectorAll<HTMLElement>('[data-booking-focus]') : [])]
+    .find(node => node.getAttribute('data-booking-focus') === key && !node.hasAttribute('disabled'))?.focus({ preventScroll: true });
+  const bookingActions = createBookingReaderActions({ get: opts.workEntityGetCaller, contact: opts.contactGetCaller,
+    openContact: contact => openBookingCustomer(contact), openHistory: (entry, response) => openPreviousBooking(entry, response),
+    openMail: request => mailMessageSurface.openCreate(request), beforeLeave: () => mailMessageSurface.beforeLeave(),
+    changed: () => { if (!disposed) render(); }, focus: focusBooking,
+  });
+  const bookingChat = createWorkRecordChat({ get: opts.workEntityGetCaller, href: () => doc.defaultView?.location?.href ?? doc.URL ?? '',
+    open: opts.onAskBooking, beforeLeave: () => mailMessageSurface.beforeLeave(), changed: () => { if (!disposed) render(); } });
   let bookingManageLinkBusy = false;
   let bookingManageLinkNotice: { kind: 'ok' | 'error'; text: string } | null = null;
   const resetBookingManageLinkState = (): void => {
@@ -6157,6 +6937,27 @@ export const bootstrapDataRoute = (
   // flow-20 — contact drill-down timeline (own-it Contacts tab), separate
   // from the mirror-tab `timeline` above.
   let contactDetail: ContactDetailState | null = null;
+  const contactActivity = createContactActivity({
+    call: opts.timelineCaller, now: opts.now ?? Date.now,
+    memory: contactActivityMemory(opts.searchContinuityOwner ?? {}),
+    firstPage: (email, response) => { if (contactDetail?.email === email) contactDetail.response = response; },
+    changed: () => {
+      if (!disposed && activeLens === 'data' && activeTab === 'contact' && contactDetail?.email === contactActivity.email()) {
+        if ((contactActivity.snapshot()?.pages ?? 0) > 0 && !contactActivity.snapshot()?.error) {
+          const { timeline: _timelineError, ...rest } = errors; errors = rest;
+        }
+        render();
+      }
+    },
+    renderEntries: (entries, heading) => renderTimelineSection(entries, (opts.now ?? Date.now)(), entry => {
+      const id = runIdFromTimelinePayload(entry.payload); return id !== null ? runHref(id) : null;
+    }, entry => summarizePayload(entry.payload), heading),
+  });
+  const rememberContactActivity = (): void => {
+    if (activeLens === 'data' && activeTab === 'contact' && contactDetail?.email === contactActivity.email())
+      contactActivity.capture(routeRoot, workSearchScrollHost(), doc.activeElement);
+  };
+  const suspendContactActivity = (): void => { rememberContactActivity(); contactActivity.close(); };
   let sphereControl: ReturnType<typeof mountSpherePlacement> | undefined;
   let dataSphere: 'all' | 'personal' | 'professional' | 'unsorted' = 'all';
   let facetKey = ''; let facetGeneration = 0; let facetsLoading = false; let facetError = '';
@@ -6237,72 +7038,62 @@ export const bootstrapDataRoute = (
   let errors: DataLoadErrors = {};
   let loadGeneration = 0;
   let navigationGeneration = 0;
+  const workReminder = createWorkReminder({ root: routeRoot, callers: opts.reminderCallers ?? {}, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    recovery: opts.reminderRecovery,
+    ...(opts.workEntityGetCaller ? { get: opts.workEntityGetCaller } : {}),
+    ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}), ...(opts.now ? { now: opts.now } : {}),
+    changed: () => render(),
+  });
+  const workReminderContext = (record: Extract<WorkEntity, { _kind: 'task' | 'commitment' }>) => {
+    const navigation = navigationGeneration, sequence = workEntityDialogOpenSeq, reference = reminderRecordReference(record);
+    return { visit: JSON.stringify([navigation, sequence]), current: () => {
+      const entity = workEntityDialogEntity;
+      return !disposed && activeLens === 'data' && navigation === navigationGeneration && sequence === workEntityDialogOpenSeq
+        && !pendingWorkEntityDialogOpen && workEntityState.dialog?.mode === 'edit' && workEntityState.dialog.entity_id === reference.id
+        && (activeTab === 'task' && taskMode === 'read' || activeTab === 'commitment' && commitmentMode === 'read')
+        && !!entity && (entity._kind === 'task' || entity._kind === 'commitment')
+        && sameReminderRecordReference(reference, reminderRecordReference(entity));
+    } };
+  };
   let pendingLoadPromise: Promise<void> = Promise.resolve();
 
-  // ── work-entity `data.contact` ref-pickers ─────────────────────────
-  // The work-entity dialog renders `data.contact` ref fields (single:
-  // task.assigned_contact / commitment.counterparty_contact; array:
-  // note.related_contact / project.related_contacts) as picker SHELLS
-  // (`ref_picker: true`). After every render the route ATTACHES a live
-  // name→id picker to each shell; the picker's hidden mirror carries the
-  // committed email, which `readFormValues` reads back at submit — the
-  // value shape is unchanged (one email for singles, a `string[]` of
-  // emails for arrays). Pickers are ephemeral per render (disposed +
-  // re-wired) so Add/Remove, which re-shuffles array indices, needs no
-  // per-handle bookkeeping.
-  let workEntityRefPickers: RefPicker.RefPickerHandle[] = [];
+  // Contact references keep their committed IDs while names load and the form redraws.
+  const workContactPickers = createWorkContactPickers({ recent: opts.recentReferenceChoices, search: opts.contactListCaller, get: opts.contactGetCaller,
+    known: id => contacts.find(contact => contact.email === id || contact.contact_id === id)
+      ?? (contactWorkReturn?.contact.contact_id === id || contactWorkReturn?.contact.email === id ? contactWorkReturn.contact : undefined),
+    changed: () => { syncWorkEntityDialogFromDom(); workReferencePreviews.selectionChanged(); }, clearArrayItem: (field, index) => removeWorkEntityArrayItem(field, index) });
+  const workProjectPickers = createWorkProjectPickers({ recent: opts.recentReferenceChoices, search: opts.workEntitySearchCaller, get: opts.workEntityGetCaller,
+    sources: () => sources, changed: () => { syncWorkEntityDialogFromDom(); workReferencePreviews.selectionChanged(); }, clearArrayItem: (field, index) => removeWorkEntityArrayItem(field, index) });
+  const workTaskPickers = createWorkTaskPickers({ recent: opts.recentReferenceChoices, search: opts.workEntitySearchCaller, get: opts.workEntityGetCaller,
+    sources: () => sources, changed: () => { syncWorkEntityDialogFromDom(); workReferencePreviews.selectionChanged(); }, clearArrayItem: (field, index) => removeWorkEntityArrayItem(field, index),
+    currentTaskId: () => workEntityState.kind === 'task' && workEntityState.dialog?.mode === 'edit' ? workEntityState.dialog.entity_id : undefined });
+  const workReferencePreviews = createWorkReferencePreviews({ contactGet: opts.contactGetCaller, workGet: opts.workEntityGetCaller, sources: () => sources,
+    handle: key => workContactPickers.getHandle(key) ?? workProjectPickers.getHandle(key) ?? workTaskPickers.getHandle(key) });
+  let taskBlockerReturn: TaskBlockerFocus | null = null;
+  let refreshTaskBlockers = false;
+  const taskBlockerSources = new Map<string, import('@recued/contracts').WorkEntitySourceFreshness>();
+  const taskBlockers = createTaskBlockers({ get: opts.workEntityGetCaller, sources: () => sources,
+    ownerStatus: id => { const task = workEntities.find(entity => entity._kind === 'task' && entity.id === id);
+      return task ? taskSourceStatus(task.source_id, taskBlockerSources.get(task.source_id), sources, Date.now()) : { current: false }; },
+    canOpen: () => !workEntityState.dialog && !hasDataInFlightWork(),
+    open: async target => {
+      taskBlockerReturn = target;
+      await openEditWorkEntityDialog('task', target.dependency);
+      if (!disposed && taskBlockerReturn === target && workEntityState.dialog?.entity_id !== target.dependency) {
+        taskBlockerReturn = null;
+        throw new Error(errors.work_entities || 'This linked task could not be opened. Check its status and try again.');
+      }
+    } });
 
-  /** Server-backed contact search for the picker dropdown. A thrown rpc
-   *  error bubbles to the picker, which surfaces it inline. */
-  const contactRefSearch: RefPicker.RefPickerSearchCaller = async (query) => {
-    if (opts.contactListCaller === undefined) return [];
-    const { contacts: results } = await opts.contactListCaller({
-      query,
-      limit: 20,
-    });
-    return results.map(contactRefOption);
-  };
-
-  /** Best-effort display label for a stored contact id (an email).
-   *  Resolves the name from the in-memory contact list when present
-   *  (zero async); otherwise shows the email (owner-chosen fallback). */
-  const resolveContactLabel = (email: string): string =>
-    contacts.find((c) => c.email === email)?.name ?? email;
-
-  const disposeWorkEntityRefPickers = (): void => {
-    for (const handle of workEntityRefPickers) handle.destroy();
-    workEntityRefPickers = [];
-  };
-
-  /** Re-attach a live picker to every `data.contact` ref shell in the
-   *  open work-entity dialog. MUST run after `routeRoot.innerHTML` is set
-   *  (the shells only exist post-paint). A no-op when no dialog is open. */
   const mountWorkEntityRefPickers = (): void => {
-    disposeWorkEntityRefPickers();
-    // Degrade gracefully on a string-only fake DOM (the data-route unit
-    // tests store innerHTML without parsing it into nodes): the picker
-    // can't attach without a queryable host, so skip rather than throw.
+    // String-only test hosts do not parse the form into queryable nodes.
     if (typeof routeRoot.querySelector !== 'function') return;
-    const form = routeRoot.querySelector('.work-entity-dialog-form');
-    if (form === null) return;
-    form.querySelectorAll('[data-ref-picker]').forEach((shell) => {
-      const pickerId = shell.getAttribute('data-ref-picker');
-      if (pickerId === null) return;
-      const mirror = shell.querySelector(
-        `[${RefPicker.REF_PICKER_VALUE_ATTR}]`,
-      ) as HTMLInputElement | null;
-      const id = mirror?.value.trim() ?? '';
-      const initialValue =
-        id === '' ? null : { id, label: resolveContactLabel(id) };
-      workEntityRefPickers.push(
-        RefPicker.wireRefPicker(form, {
-          search: contactRefSearch,
-          config: { pickerId },
-          minChars: 1,
-          initialValue,
-        }),
-      );
-    });
+    const form = routeRoot.querySelector('.work-entity-dialog-form') as HTMLElement | null;
+    const binding = String(workEntityDialogOpenSeq);
+    workProjectPickers.mount(form, binding);
+    workTaskPickers.mount(form, binding);
+    workContactPickers.mount(form, binding);
+    workReferencePreviews.mount(form, binding);
   };
 
   // D-198 Slice 5 — collection-explorer state (mail / calendar tabs). One active
@@ -6335,6 +7126,22 @@ export const bootstrapDataRoute = (
   // empty for the second. Collapsing them would tell an owner their data is
   // absent when the search simply has not run.
   let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
+  let universalSearchType: UniversalSearchResultType = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.result_type ?? 'all' : 'all';
+  let universalReminderStatus: ReminderSearchStatus = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.reminder_state ?? 'all' : 'all';
+  const reminderDates = createReminderDateSearch({ initial: opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.reminder_dates : undefined,
+    zone: opts.serverTimeZone, now: opts.now });
+  let universalSearchTypeGeneration = 0;
+  let universalExactLink: ExactRecordLinkState | undefined, universalExactOpening = false, universalExactError: string | undefined;
+  let exactSearchReturn: { hash: string; destination: string; query: string; type: UniversalSearchResultType; result: Extract<ExactRecordLinkState, { state: 'ready' }>; scrollTop: number } | null = null;
+  let recentSearchNotice: { error: boolean; text: string } | undefined;
+  let pendingRecentSearchFocus: { action: string; query: string | null } | null = null;
+  let recentSearchCandidate: string | null = null;
+  // Search runs while typing. Keep the finished query when leaving, clearing,
+  // or choosing a result, rather than retaining every slow-typed fragment.
+  const finishRecentSearch = () => {
+    if (recentSearchCandidate && recentSearchCandidate === universalSearchQuery.trim()) opts.recentSearches?.remember(recentSearchCandidate);
+    recentSearchCandidate = null;
+  };
   type DocumentSearchOrigin = { sequence: number; query: string; fileId: string; scrollTop: number; hash: string };
   let documentSearchReturn: DocumentSearchOrigin | null = null;
   let documentSearchOpening: DocumentSearchOrigin | null = null;
@@ -6354,7 +7161,7 @@ export const bootstrapDataRoute = (
   let universalSearchContactError: string | undefined;
   let universalSearchContactUnsupported = false;
   let universalSearchContactPageSeq = 0;
-  let contactSearchReturn: { sequence: number; query: string; email: string; scrollTop: number; hash: string } | null = null;
+  let contactSearchReturn: { sequence: number; query: string; email: string; lookupId?: string; scrollTop: number; hash: string } | null = null;
   let pendingContactSearchRestore: { email: string; scrollTop: number } | null = null;
   let universalSearchWorkLoading = false;
   let universalSearchWorkError: string | undefined;
@@ -6364,8 +7171,379 @@ export const bootstrapDataRoute = (
   const universalSearchWorkOffsets = new Map<WorkEntitySearchKind, number>();
   const universalSearchWorkPageSeq = new Map<WorkEntitySearchKind, number>();
   let universalSearchNavigation = 0;
-  let workSearchReturn: { sequence: number; query: string; kind: WorkEntitySearchKind; id: string; scrollTop: number } | null = null;
-  let pendingWorkSearchRestore: { kind: WorkEntitySearchKind; id: string; scrollTop: number } | null = null;
+  type WorkSearchReturn = { hash?: string; sequence: number; query: string; kind: WorkEntitySearchKind; id: string; scrollTop: number; recent?: boolean; pinned?: boolean };
+  let workSearchReturn: WorkSearchReturn | null = null;
+  type RelatedWorkOrigin = {
+    parent: RelatedWorkOrigin | null;
+    entity: Extract<WorkEntity, { _kind: 'note' | 'task' | 'commitment' }>; hash: string; page: WorkEntityPageState; entities: WorkEntity[]; total: number;
+    project: ProjectWork | null; projectReturn: ProjectChildReturn | null; searchReturn: WorkSearchReturn | null;
+    duplicate: DuplicateContext | null; reader: typeof noteReader; find: typeof noteFind; related: typeof noteRelated;
+    taskReader: typeof taskReader; taskFind: typeof taskFind; taskRelated: typeof taskRelated; readerNavigation: ReturnType<typeof createWorkReaderNavigation>; mailWork: MailWorkOrigin | null; calendarWork: CalendarWorkOrigin | null; taskBlocker: TaskBlockerFocus | null;
+    commitmentReader: typeof commitmentReader; commitmentRelated: typeof commitmentRelated;
+    commitmentFilters: CommitmentViewFilters; commitmentAppliedFilters: CommitmentViewFilters;
+    linkedRecord?: { kind: 'contact' | 'project' | 'task'; id: string; key: string };
+    todayReturn: ReturnType<TaskBlockerNavigation['snapshot']>; taskDependency?: string; source?: TaskNoteSource; workLink?: WorkRecordLink;
+  };
+  let relatedWorkReturn: RelatedWorkOrigin | null = null;
+  const isRelatedWorkReader = (origin = relatedWorkReturn): boolean => !!origin && (
+    activeTab === 'task' && origin.taskDependency !== undefined && origin.taskDependency === workEntityState.dialog?.entity_id
+    || (activeTab === 'task' || activeTab === 'note' || activeTab === 'commitment') && origin.workLink?.tab === activeTab && origin.workLink.id === workEntityState.dialog?.entity_id
+    || activeTab === 'booking' && origin.workLink?.tab === 'booking' && origin.workLink.id === bookingDetailId
+    || origin.linkedRecord?.kind === 'project' && activeTab === 'project' && origin.linkedRecord.id === workEntityState.dialog?.entity_id);
+  const discardRelatedWorkReturn = () => {
+    contactWorkReturn = null;
+    noteTaskReturn = null;
+    const projects = new Set<ProjectWork>();
+    while (relatedWorkReturn) {
+      const origin = relatedWorkReturn;
+      origin.related.reset(); origin.reader.reset(); origin.find.reset(); origin.taskReader.reset(); origin.taskFind.reset(); origin.taskRelated.reset();
+      origin.readerNavigation.reset(); origin.commitmentReader.reset(); origin.commitmentRelated.reset();
+      if (origin.project && origin.project !== projectWork) projects.add(origin.project);
+      relatedWorkReturn = origin.parent;
+    }
+    for (const project of projects) project.dispose();
+  };
+  let pendingWorkSearchRestore: { kind: WorkEntitySearchKind; id: string; scrollTop: number; recent?: boolean; pinned?: boolean } | null = null;
+  const activeWorkReader = () => {
+    const entity = workEntityDialogEntity;
+    if ((activeTab !== 'task' && activeTab !== 'note') || entity?._kind !== activeTab
+      || workEntityState.dialog?.mode !== 'edit' || workEntityState.dialog.entity_id !== entity.id
+      || (activeTab === 'task' ? taskMode : noteMode) !== 'read') return null;
+    return { kind: activeTab, id: entity.id };
+  };
+  const workLinkPreviews = createWorkLinkPreviewSurface({ root: routeRoot, document: doc,
+    owner: () => {
+      const active = activeWorkReader(), entity = workEntityDialogEntity;
+      return !disposed && activeLens === 'data' && active && entity && (entity._kind === 'note' || entity._kind === 'task')
+        ? { kind: active.kind, binding: JSON.stringify([navigationGeneration, readingRecord(entity)]) } : null;
+    },
+    href: () => doc.defaultView?.location.href ?? doc.URL,
+    readers: { ...(opts.collectionGetCaller ? { source: opts.collectionGetCaller } : {}), ...(opts.contactGetCaller ? { contact: id => opts.contactGetCaller!({ email: id }) } : {}),
+      ...(opts.workEntityGetCaller ? { work: (kind, id) => opts.workEntityGetCaller!({ kind, id }) } : {}) },
+    blocked: () => hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null,
+    find: kind => {
+      const trigger = routeRoot.querySelector<HTMLElement>(`[data-${kind}-focus="find-open"]`);
+      if (trigger) (kind === 'note' ? noteFind : taskFind).handleAction(`${kind}-find-open`, trigger);
+    },
+    open: (kind, trigger, target) => { if ('id' in target) void openWorkRecordLink(kind, trigger, target); else void openWorkNoteSource(kind, trigger, target); },
+  });
+  const workLinkedFrom = createWorkLinkedFrom({ root: routeRoot,
+    openCalendar: (trigger, row, target) => openLinkedCalendarEvent(trigger, row, target),
+    owner: () => {
+      const active = activeWorkReader(), entity = workEntityDialogEntity;
+      if (disposed || activeLens !== 'data') return null;
+      if ((activeTab === 'mail' || activeTab === 'calendar') && explorerDetail?.record && !explorerDetail.loading && explorerSelectedSlug) {
+        const record = explorerDetail.record;
+        const mail = activeTab === 'mail' ? mailMessageSurface.recentSnapshot() : null;
+        const calendar = activeTab === 'calendar' ? calendarEventSurface.recentSnapshot() : null;
+        if (!(mail?.slug === explorerSelectedSlug && mail.record_id === record.record_id)
+          && !(calendar?.ref.slug === explorerSelectedSlug && calendar.snapshot.record.record_id === record.record_id)) return null;
+        const source_identity = { source_id: record.source_id, received_at: record.received_at,
+          incarnation: activeTab === 'mail' ? mailMessageSurface.linkedFromIncarnation() : calendar!.snapshot.incarnation };
+        const url = recordLink(doc.defaultView?.location.href ?? doc.URL, serializeSourceRecordAddress({ tab: activeTab, collectionSlug: explorerSelectedSlug, recordId: record.record_id }));
+        if (!url) return null;
+        return { kind: activeTab, id: record.record_id, url, source_identity,
+          identity: JSON.stringify([activeTab, explorerSelectedSlug, record.record_id, source_identity]), visit: String(navigationGeneration) };
+      }
+      const contact = activeTab === 'contact' && contactDialog === null && !loadingContactDetail ? contactDetail?.contact : null;
+      if (contact?.contact_id && contact.merged_into === undefined) return { kind: 'contact' as const, id: contact.contact_id,
+        identity: JSON.stringify(['contact', contact.contact_id, contact.created_at]), visit: String(navigationGeneration),
+        contact_identity: { id: contact.contact_id, created_at: contact.created_at } };
+      return active && entity && (entity._kind === 'note' || entity._kind === 'task')
+        ? { kind: entity._kind, id: entity.id, identity: JSON.stringify([entity._kind, entity.id, entity.source_id, entity.source_record_id, entity.created_at]), visit: String(navigationGeneration) } : null;
+    },
+    href: () => doc.defaultView?.location.href ?? doc.URL, call: opts.workEntityLinkedFromCaller,
+    blocked: () => hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null,
+    open: async (kind, trigger, row, target) => {
+      let referenceIds: readonly string[] = [target.id];
+      if (kind === 'mail' || kind === 'calendar') {
+        if (!await openSourceLinkedFrom(kind, trigger, row, target)) return;
+      } else if (kind === 'contact') {
+        const ids = await openContactLinkedSource(trigger, row, target); if (!ids) return; referenceIds = ids;
+      } else if (!await openWorkRecordLink(kind, trigger, { tab: row.kind, id: row.id, hash: serializeShellRoute('data', row.kind, row.id) },
+        response => verifyLinkedFromSource(row, target, response))) return;
+      const entity = workEntityDialogEntity;
+      if (activeWorkReader()?.kind !== row.kind || entity?.id !== row.id) return;
+      const findLink = () => [...routeRoot.querySelectorAll<HTMLAnchorElement>(`.work-entity-${row.kind}-reader [data-${row.kind}-${row.kind === 'note' ? 'body' : 'find-body'}] a[href]`)]
+        .find(anchor => { const address = savedWorkAddress(anchor.getAttribute('href') ?? ''); return address && referenceIds.some(id => savedWorkLinkMatches(address, { ...target, id })); });
+      let link = findLink();
+      if (!link && row.kind === 'note') { noteReader.capture(routeRoot); noteReader.setFormat('plain'); render(); link = findLink(); }
+      link?.focus({ preventScroll: true }); link?.scrollIntoView({ block: 'center' });
+    },
+  });
+  const exactLinkReaders = {
+    ...(opts.collectionGetCaller ? { source: opts.collectionGetCaller } : {}),
+    ...(opts.contactGetCaller ? { contact: (id: string) => opts.contactGetCaller!({ email: id }) } : {}),
+    ...(opts.workEntityGetCaller ? { work: (kind: 'task' | 'note' | 'commitment' | 'booking' | 'project', id: string) => opts.workEntityGetCaller!({ kind, id }) } : {}),
+  };
+  const searchRecordPreviews = createSearchRecordPreviewSurface({ root: routeRoot, document: doc, actionAttr: DATA_ROUTE_ACTION_ATTR,
+    owner: () => !disposed && activeLens === 'data' && activeTab === 'search' ? JSON.stringify([navigationGeneration, universalSearchSeq, universalSearchTypeGeneration]) : null,
+    href: () => doc.defaultView?.location.href ?? doc.URL,
+    readers: { ...exactLinkReaders, mail: opts.mailMessageCallers?.get, calendar: opts.calendarEventCallers?.get },
+    state: () => ({ contacts: universalSearchContacts, work: universalSearchWorkGroups, sources: universalSearchGroups, exact: universalExactLink,
+      empty: !universalSearchQuery.trim(), recent: opts.recentWorkRecords, pinned: opts.pinnedRecords }),
+    blocked: () => hasDataInFlightWork(), scrollHost: () => workSearchScrollHost(),
+    openContact: (email, id) => { void openContactSearchResult(email, id); },
+  });
+  const recordLinkInsert = createRecordLinkInsertSurface({ root: routeRoot, document: doc,
+    owner: () => {
+      const dialog = workEntityState.dialog, kind = activeTab;
+      if (disposed || activeLens !== 'data' || (kind !== 'task' && kind !== 'note') || !dialog
+        || workEntityState.kind !== kind || workEntityDiscardGuardOpen || pendingWorkEntityDialogOpen !== null
+        || (kind === 'note' ? noteMode : taskMode) !== 'edit') return null;
+      return { kind, id: dialog.entity_id, key: JSON.stringify([navigationGeneration, workEntityDialogOpenSeq, kind, dialog.mode, dialog.source_id, dialog.entity_id]) };
+    },
+    href: () => doc.defaultView?.location.href ?? doc.URL,
+    recent: opts.recentWorkRecords, pinned: opts.pinnedRecords,
+    shortcutReaders: { mail: opts.mailMessageCallers?.get, calendar: opts.calendarEventCallers?.get },
+    search: { ...(opts.collectionSearchAllCaller ? { collections: opts.collectionSearchAllCaller } : {}), ...(opts.contactListCaller ? { contacts: opts.contactListCaller } : {}), ...(opts.workEntitySearchCaller ? { work: opts.workEntitySearchCaller } : {}) },
+    readers: { ...(opts.collectionGetCaller ? { source: opts.collectionGetCaller } : {}), ...(opts.contactGetCaller ? { contact: id => opts.contactGetCaller!({ email: id }) } : {}),
+      ...(opts.workEntityGetCaller ? { work: (kind, id) => opts.workEntityGetCaller!({ kind, id }) } : {}) },
+    blocked: () => hasDataInFlightWork() || workEntityState.dialog?.submitting === true,
+  });
+  let recentSourceReturn: { record: RecentSourceRecord; hash: string; scrollTop: number; pinned?: boolean } | null = null;
+  let pendingRecentSourceRestore: { kind: RecentSourceRecord['kind']; id: string; scrollTop: number; recent: true; pinned?: boolean } | null = null;
+  let lastRecentSourceReader: object | null = null;
+  let lastRecentWorkReader: { entity: WorkEntity; sequence: number } | null = null;
+  const makeRecordPanel = (pinned = false) => createRecentWorkPanel({
+    recent: pinned ? opts.pinnedRecords : opts.recentWorkRecords,
+    ...(pinned ? { variant: 'pinned' as const } : {}),
+    scope: () => !disposed && activeLens === 'data' && activeTab === 'search' && !universalSearchQuery.trim()
+      ? JSON.stringify([navigationGeneration, universalSearchSeq, universalSearchTypeGeneration]) : null,
+    blocked: () => hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null,
+    read: opts.workEntityGetCaller ? record => opts.workEntityGetCaller!({ kind: record.kind, id: record.id }) : undefined,
+    readSource: async record => {
+      const checked = await checkDraftOrigin(record.origin, {
+        ...(opts.contactGetCaller ? { contact: (id: string) => opts.contactGetCaller!({ email: id }) } : {}),
+        mail: opts.mailMessageCallers?.get, calendar: opts.calendarEventCallers?.get,
+      });
+      if (checked.kind === 'mail' && record.origin.kind === 'mail') {
+        const result = await getExplorerRecord({ platform: 'mail', slug: record.origin.slug, record_id: record.origin.recordId });
+        if (!result.record || result.record.record_id !== record.origin.recordId || result.record.received_at !== record.origin.receivedAt)
+          throw new Error('This email is no longer available with the same identity. Try again or remove it from Recently opened.');
+        return { ...checked, record: result.record };
+      }
+      if (checked.kind === 'note' || checked.kind === 'mail') throw new Error('This record could not be confirmed.');
+      return checked;
+    },
+    openSource: async (record, checked) => {
+      const origin = { record, hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, pinned };
+      const previous = navigationGeneration;
+      await selectTab(record.kind, false, undefined, true, undefined, true, true);
+      if (disposed || navigationGeneration !== previous + 1 || activeTab !== record.kind) return;
+      recentSourceReturn = origin;
+      if (checked.kind === 'contact') {
+        const { contact, identifiers } = checked.reply;
+        await openContactDetail(contact.email, true, { kind: 'contact', contact, ...(identifiers ? { identifiers } : {}),
+          identity: JSON.stringify([contact.contact_id, contact.created_at]) });
+      } else if (record.origin.kind === 'mail' || record.origin.kind === 'calendar') {
+        const source = record.origin;
+        const selected = checked.kind === 'calendar' ? checked.snapshot.record : checked.record;
+        explorerCollection = source.kind; explorerSelectedSlug = source.slug;
+        explorerDetail = { record_id: source.recordId, loading: false, record: selected };
+        dataHistory.navigate(dataAddress(draftOriginHash(source), source.recordId), { intent: 'push' }); render();
+        if (checked.kind === 'mail' && source.kind === 'mail') {
+          await mailMessageSurface.open({ slug: source.slug, record_id: source.recordId, ...(source.conversation ? { conversation: source.conversation } : {}) }, checked.message);
+        } else if (checked.kind === 'calendar' && source.kind === 'calendar') {
+          await calendarEventSurface.open({ slug: source.slug, source_id: source.sourceId }, source.recordId, checked.snapshot);
+        }
+      }
+    },
+    sources: opts.workEntitySourceListCaller ? async () => (await opts.workEntitySourceListCaller!()).sources : undefined,
+    open: async (entity, freshness, registered) => {
+      const origin: WorkSearchReturn = { sequence: universalSearchSeq, query: '', kind: entity._kind, id: entity.id,
+        scrollTop: workSearchScrollHost()?.scrollTop ?? 0, recent: true, pinned };
+      const previous = navigationGeneration;
+      workSearchReturn = origin;
+      await selectTab(entity._kind, false, undefined, true, undefined, true, true);
+      if (disposed || navigationGeneration !== previous + 1 || workSearchReturn !== origin || activeTab !== entity._kind) {
+        if (workSearchReturn === origin) workSearchReturn = null;
+        return;
+      }
+      if (registered) sources = [...registered];
+      await openEditWorkEntityDialog(entity._kind, entity.id, 'read', false, entity, freshness);
+    },
+    changed: () => render(),
+    focus: target => {
+      const focusAttr = pinned ? 'data-pinned-work-focus' : 'data-recent-work-focus';
+      const node = target ? [...routeRoot.querySelectorAll<HTMLElement>(`[${focusAttr}]`)].find(node =>
+        node.getAttribute(focusAttr) === target.action && node.getAttribute(pinned ? PINNED_WORK_KIND : RECENT_WORK_KIND) === target.kind && node.getAttribute(pinned ? PINNED_WORK_ID : RECENT_WORK_ID) === target.id)
+        : routeRoot.querySelector<HTMLElement>(`[${SEARCH_INPUT_ATTR}]`);
+      node?.focus({ preventScroll: true }); node?.scrollIntoView?.({ block: 'nearest' });
+    },
+  });
+  const recentWorkPanel = makeRecordPanel();
+  const pinnedWorkPanel = makeRecordPanel(true);
+  const pinWorkRecord = (entity: Extract<WorkEntity, { _kind: 'task' | 'note' }>) => ({
+    ...recentWorkRecord(entity, sources.find(source => source.id === entity.source_id)?.source_label ?? 'Source unavailable'),
+    source_record_id: entity.source_record_id ?? null,
+  });
+  const sourceShortcut = (): RecentSourceRecord | undefined => {
+    if (disposed || activeLens !== 'data') return;
+    const message = activeTab === 'mail' && explorerDetail?.record && !explorerDetail.loading ? mailMessageSurface.recentSnapshot() : null;
+    if (message) return recentSourceRecord(mailDraftOrigin(message), message.slug);
+    const event = activeTab === 'calendar' && explorerDetail?.record && !explorerDetail.loading ? calendarEventSurface.recentSnapshot() : null;
+    if (event) return recentSourceRecord(calendarDraftOrigin(event.ref, event.snapshot), `${event.snapshot.event.calendar_name?.trim() || 'Calendar'} · ${event.ref.slug}`);
+    const contact = activeTab === 'contact' && !loadingContactDetail && !contactDialog && !openingContactEditEmail ? contactDetail?.contact : null;
+    if (contact && contact.merged_into === undefined) return recentSourceRecord(contactDraftOrigin(contact), contactAddress(contact.email));
+  };
+  const sourceReaderToolbar = (kind: RecentSourceRecord['kind']) => routeRoot.querySelector<HTMLElement>(kind === 'contact'
+    ? `[${DATA_ROUTE_CONTACT_DETAIL_ATTR}] .data-contact-toolbar` : kind === 'mail' ? '.data-mail-message-actions' : '.calendar-event-quick-actions');
+  const sourceRecordCopy = createSourceRecordCopy({
+    current: () => {
+      const record = sourceShortcut();
+      return record ? { record, scope: JSON.stringify([navigationGeneration, explorerSeq]), href: doc.defaultView?.location?.href ?? doc.URL ?? '' } : null;
+    },
+    blocked: () => hasDataInFlightWork() || activeTab === 'calendar' && calendarEventSurface.isCopying()
+      || activeTab === 'contact' && contactDetail?.quick_actions?.copy?.busy === true,
+    write: value => copyText(doc, value), render: () => render(),
+    focusAction: () => routeRoot.querySelector<HTMLElement>(`[${SOURCE_COPY_FOCUS}="link"]`)?.focus({ preventScroll: true }),
+    actionFocused: () => doc.activeElement?.getAttribute?.(SOURCE_COPY_FOCUS) === 'link',
+    selectFallback: () => {
+      const field = routeRoot.querySelector<HTMLTextAreaElement>(`[${SOURCE_COPY_VALUE}]`);
+      field?.focus({ preventScroll: true }); field?.select(); field?.scrollIntoView?.({ block: 'nearest' });
+    },
+  });
+  let sourceCopyRenderedKey: string | null = null;
+  const mountSourceRecordCopy = (): void => {
+    const view = sourceRecordCopy.state(), host = view ? sourceReaderToolbar(view.kind) : null;
+    sourceCopyRenderedKey = host && view ? sourceRecordCopy.key() : null;
+    if (view) host?.insertAdjacentHTML?.('beforeend', renderSourceRecordCopy(view, DATA_ROUTE_ACTION_ATTR));
+  };
+  const recordPins = createRecordPinControls({
+    pins: opts.pinnedRecords,
+    scope: () => {
+      if (disposed || activeLens !== 'data') return null;
+      if (activeTab === 'search') return JSON.stringify([navigationGeneration, activeTab, universalSearchSeq, universalSearchQuery, universalSearchTypeGeneration]);
+      const entity = workEntityDialogEntity;
+      if (activeWorkReader() && !pendingWorkEntityDialogOpen && !loadingWorkEntityDetail && (entity?._kind === 'task' || entity?._kind === 'note'))
+        return JSON.stringify([navigationGeneration, workEntityDialogOpenSeq, pinnedRecordIdentity(pinWorkRecord(entity))]);
+      const record = sourceShortcut(); return record ? JSON.stringify([navigationGeneration, explorerSeq, pinnedRecordIdentity(record)]) : null;
+    },
+    blocked: () => hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null,
+    changed: () => render(),
+  });
+  const mountRecordPins = (): void => {
+    recordPins.begin(); if (!opts.pinnedRecords || disposed || activeLens !== 'data') return;
+    const mount = (host: HTMLElement | null, candidate: RecordPinCandidate) => recordPins.mount(host, candidate, DATA_ROUTE_ACTION_ATTR);
+    const entity = workEntityDialogEntity;
+    if (activeWorkReader() && !pendingWorkEntityDialogOpen && !loadingWorkEntityDetail && (entity?._kind === 'task' || entity?._kind === 'note')
+      && entity.deleted_at == null && entity.sync_state !== 'tombstoned' && entity.sync_state !== 'orphaned') {
+      const record = pinWorkRecord(entity);
+      mount(routeRoot.querySelector(`.work-entity-${entity._kind}-reader .work-entity-note-display`), { ...record, identity: pinnedRecordIdentity(record), read: async () => record });
+    }
+    const record = sourceShortcut();
+    if (record) {
+      const host = sourceReaderToolbar(record.kind);
+      mount(host, { ...record, identity: pinnedRecordIdentity(record), read: async () => record });
+    }
+    if (activeTab !== 'search') return;
+    for (const button of routeRoot.querySelectorAll<HTMLElement>(`.rq-row-btn[${DATA_ROUTE_ACTION_ATTR}]`)) {
+      const action = button.getAttribute(DATA_ROUTE_ACTION_ATTR), host = button.closest<HTMLElement>('.rq-row');
+      if (action === SEARCH_OPEN_WORK_ACTION && opts.workEntityGetCaller) {
+        const kind = button.getAttribute(SEARCH_WORK_KIND_ATTR), id = button.getAttribute(SEARCH_WORK_ID_ATTR);
+        if (kind !== 'task' && kind !== 'note' || !id) continue;
+        const hit = universalSearchWorkGroups?.find(group => group.kind === kind)?.matches.find(hit => hit.id === id); if (!hit) continue;
+        mount(host, { kind, id, title: hit.title, read: async () => {
+          const reply = await opts.workEntityGetCaller!({ kind, id }), entity = reply.entity;
+          if (entity?._kind !== kind || entity.id !== id || entity.source_id !== hit.source_id || entity.deleted_at != null
+            || entity.sync_state === 'tombstoned' || entity.sync_state === 'orphaned') throw new Error('This record changed identity or is no longer available. Open its collection to review it.');
+          return pinWorkRecord(entity);
+        } });
+      } else if (action === SEARCH_OPEN_CONTACT_ACTION && opts.contactGetCaller) {
+        const email = button.getAttribute(SEARCH_CONTACT_EMAIL_ATTR), contact = universalSearchContacts.find(contact => contact.email === email);
+        const origin = contact && contactDraftOrigin(contact); if (origin?.kind !== 'contact') continue;
+        mount(host, { kind: 'contact', id: origin.id, title: origin.label, read: async () => {
+          const checked = await checkDraftOrigin(origin, { contact: id => opts.contactGetCaller!({ email: id }) });
+          if (checked.kind !== 'contact') throw new Error('This contact could not be confirmed.');
+          const record = recentSourceRecord(contactDraftOrigin(checked.reply.contact), contactAddress(checked.reply.contact.email));
+          if (!record) throw new Error('This contact could not be confirmed.'); return record;
+        } });
+      } else if (action === SEARCH_OPEN_RECORD_ACTION) {
+        const kind = button.getAttribute(SEARCH_GROUP_PLATFORM_ATTR), slug = button.getAttribute(SEARCH_GROUP_SLUG_ATTR), id = button.getAttribute(SEARCH_RECORD_ID_ATTR);
+        if (kind !== 'mail' && kind !== 'calendar' || !slug || !id || (kind === 'mail' ? !opts.mailMessageCallers?.get : !opts.calendarEventCallers?.get)) continue;
+        const hit = universalSearchGroups?.find(group => group.platform === kind && group.slug === slug)?.matches.find(hit => hit.record_id === id); if (!hit) continue;
+        const title = kind === 'mail' ? hit.hot_fields.subject : hit.hot_fields.summary;
+        mount(host, { kind, id: JSON.stringify([slug, id]), title: typeof title === 'string' ? title : kind === 'mail' ? 'Email' : 'Calendar event', read: async () => {
+          const result = await getExplorerRecord({ platform: kind, slug, record_id: id }), row = result.record;
+          if (!row || row.record_id !== id || typeof hit.received_at === 'number' && row.received_at !== hit.received_at) throw new Error('This record changed identity or is no longer available. Try searching again.');
+          let record: RecentSourceRecord | undefined;
+          if (kind === 'mail') {
+            const message = await opts.mailMessageCallers!.get!({ slug, record_id: id });
+            if (message.slug !== slug || message.record_id !== id || message.received_at !== row.received_at) throw new Error('This email changed identity. Try searching again.');
+            record = recentSourceRecord(mailDraftOrigin(message), slug);
+          } else {
+            const ref = { slug, source_id: row.source_id }, snapshot = await opts.calendarEventCallers!.get!(ref);
+            if (snapshot.record.record_id !== id || snapshot.event.record_id !== id || snapshot.record.source_id !== row.source_id
+              || snapshot.event.source_id !== row.source_id || snapshot.record.received_at !== row.received_at) throw new Error('This event changed identity. Try searching again.');
+            record = recentSourceRecord(calendarDraftOrigin(ref, snapshot), `${snapshot.event.calendar_name?.trim() || 'Calendar'} · ${slug}`);
+          }
+          if (!record) throw new Error('This record could not be confirmed.'); return record;
+        } });
+      }
+    }
+  };
+  const workReaderScope = (): WorkReaderScope | null => {
+    if (disposed || activeLens !== 'data' || (activeTab !== 'task' && activeTab !== 'note')
+      || projectChildReturn || projectWork || relatedWorkReturn || duplicateContext || activeMailWork() || activeCalendarWork()
+      || taskBlockerReturn || opts.taskBlockerNavigation?.owns(workEntityDialogEntity?.id ?? '')) return null;
+    const kind = activeTab;
+    if (workSearchReturn) {
+      const origin = workSearchReturn, group = universalSearchWorkGroups?.find(group => group.kind === kind);
+      if (origin.kind !== kind || origin.sequence !== universalSearchSeq || !group) return null;
+      return { kind, key: JSON.stringify(['search', kind, origin.sequence, origin.query]), generation: navigationGeneration,
+        label: 'Search results', ids: group.matches.map(match => match.id), more: group.more,
+        progress: universalSearchWorkOffsets.get(kind) ?? group.matches.length, error: group.error };
+    }
+    const rows = workEntities.filter(row => row._kind === kind && facetIncludes({ collection: kind, id: row.id }));
+    const visible = kind === 'task' ? rows : filterAndSortEntities(kind, rows, workEntityState.search_query);
+    return { kind, key: JSON.stringify(['list', kind, workEntityState.selected_source_id, workEntityState.search_query, kind === 'task' ? taskViewFilters : null, dataSphere]),
+      generation: navigationGeneration, label: kind === 'task' ? 'Tasks' : 'Notes', ids: visible.map(row => row.id),
+      more: dataSphere === 'all' && opts.workEntityListCaller !== undefined && workEntities.length < workEntityTotal,
+      progress: workEntities.length, error: errors.work_entities,
+      ready: !loading && (kind !== 'task' || taskListSearch === workEntityState.search_query.trim()) };
+  };
+  const canLeaveWorkReader = () => !disposed && activeLens === 'data' && activeWorkReader() !== null
+    && !hasDataInFlightWork() && !pendingWorkEntityDialogOpen && !workEntityDiscardGuardOpen && !loading
+    && !loadingMoreWorkEntities && !universalSearchWorkLoadingKinds.has(activeTab as WorkReaderKind)
+    && (activeTab !== 'task' || taskListSearch === workEntityState.search_query.trim());
+  const focusWorkReaderNavigation = (direction: 'previous' | 'next') => {
+    const host = routeRoot.querySelector<HTMLElement>(`.work-entity-${activeTab}-reader`);
+    (host?.querySelector<HTMLElement>(`[${WORK_READER_FOCUS}="${direction}"]:not([disabled])`)
+      ?? host?.querySelector<HTMLElement>(`[${WORK_READER_FOCUS}]:not([disabled])`)
+      ?? host?.querySelector<HTMLElement>('.work-entity-dialog-title'))?.focus({ preventScroll: true });
+  };
+  const makeWorkReaderNavigation = () => createWorkReaderNavigation({ scope: workReaderScope, reading: activeWorkReader,
+    canLeave: canLeaveWorkReader, changed: () => render(), focus: focusWorkReaderNavigation,
+    more: async kind => { if (workSearchReturn) await loadMoreWorkSearch(kind); else await loadMoreWorkEntities(); },
+    open: (kind, id) => openWorkReaderNeighbor(kind, id) });
+  let workReaderNavigation = makeWorkReaderNavigation();
+  let pendingWorkReaderListReturn: { kind: WorkReaderKind; id: string; scrollTop: number } | null = null;
+  const workReaderCopy = createWorkReaderCopy({
+    current: () => {
+      const booking = bookingDetail?.entity;
+      if (!disposed && activeLens === 'data' && activeTab === 'booking' && !loadingBookingDetail && !workEntityState.dialog && booking?._kind === 'booking')
+        return { entity: booking, version: bookingDetailSeq, href: doc.defaultView?.location?.href ?? doc.URL ?? '', counterparty_label: bookingActions.view()?.customer.label ?? 'Customer unavailable' };
+      const reading = activeWorkReader(), entity = workEntityDialogEntity;
+      const readingCommitment = activeTab === 'commitment' && commitmentMode === 'read' && entity?._kind === 'commitment'
+        && workEntityState.dialog?.mode === 'edit' && workEntityState.dialog.entity_id === entity.id;
+      if (disposed || activeLens !== 'data' || !entity || (!reading && !readingCommitment)
+        || (entity._kind !== 'task' && entity._kind !== 'note' && entity._kind !== 'commitment')) return null;
+      return { entity, version: workEntityDialogOpenSeq, href: doc.defaultView?.location?.href ?? doc.URL ?? '',
+        ...(entity._kind === 'commitment' ? { counterparty_label: commitmentCounterpartyLabel(entity, commitmentContactLabels),
+          source_label: sources.find(source => source.id === entity.source_id)?.source_label ?? 'Source unavailable' } : {}) };
+    },
+    blocked: () => noteCopying || hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null,
+    write: value => copyText(doc, value),
+    beforeStart: kind => { if (kind === 'note') noteNotice = undefined; else if (kind === 'task') taskNotice = undefined; else commitmentNotice = undefined; },
+    render: () => render(),
+    focusAction: action => routeRoot.querySelector<HTMLElement>(`[data-action="work-copy-${action}"]`)?.focus({ preventScroll: true }),
+    actionFocused: action => doc.activeElement?.getAttribute('data-action') === `work-copy-${action}`,
+    selectFallback: () => {
+      const input = routeRoot.querySelector<HTMLTextAreaElement>('[data-work-copy-value]');
+      input?.focus({ preventScroll: true }); input?.select(); input?.scrollIntoView({ block: 'nearest' });
+    },
+  });
   /** The server's "did you mean" for the query on screen; cleared with its groups. */
   let universalSearchDidYouMean: CollectionSearchDidYouMean | undefined;
   /** The query's words no store holds — the groups match only the others. */
@@ -6402,8 +7580,96 @@ export const bootstrapDataRoute = (
     assetSearchIds = new Set(state.matches.map(row => row.id));
     if (activeLens === 'data' && activeTab === 'search') render();
   });
+  let pendingDraftSearchRestore: { id: string; scrollTop: number; reveal?: boolean } | null = null;
+  let universalDraftOpening: string | undefined, universalDraftOpenError: string | undefined;
+  let draftSearchIds = new Set<string>();
+  const recoveryDraftStores: RecoveryDraftStores = {
+    task: opts.workRecovery?.task, project: opts.workRecovery?.project, note: opts.noteRecovery, calendar: calendarRecoverySearchStore([opts.calendarRecovery, opts.calendarEditRecovery]),
+    mail: mailRecoverySearchStore(opts.mailCompose?.recovery),
+    reminder: opts.reminderRecovery,
+    prompt: opts.promptRecovery,
+  };
+  let recoveryDraftEpoch = 0, recoveryDraftCacheKey = '';
+  let recoveryDraftCache: RecoveryDraftSearchState = { available: false, matches: [], issues: [] };
+  let recoveryDraftOpening: { key: string; navigation: number; mail?: boolean } | undefined;
+  let recoveryDraftError: string | undefined;
+  const recoveryDraftSearch = (): RecoveryDraftSearchState => {
+    if (universalSearchTimer !== null) return { available: Object.values(recoveryDraftStores).some(Boolean), matches: [], issues: [], loading: true };
+    const key = JSON.stringify([universalSearchQuery, universalSearchSeq, navigationGeneration, recoveryDraftEpoch]);
+    if (key !== recoveryDraftCacheKey) { recoveryDraftCacheKey = key; recoveryDraftCache = searchRecoveryDrafts(recoveryDraftStores, universalSearchQuery); }
+    return recoveryDraftCache;
+  };
+  const draftSearch = createMailDraftSearch(opts.mailCompose?.drafts?.list, () => {
+    const state = draftSearch.state();
+    if (!state.loading && !state.error && doc.activeElement?.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_MORE_DRAFTS_ACTION) {
+      const next = state.matches.find(row => !draftSearchIds.has(row.draft_id));
+      if (next) pendingDraftSearchRestore = { id: next.draft_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, reveal: true };
+    }
+    draftSearchIds = new Set(state.matches.map(row => row.draft_id));
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  });
+  let pendingChatSearchRestore: { sessionId: string; messageId: string; scrollTop: number; reveal?: boolean } | null = null;
+  let chatSearchIds = new Set<string>();
+  const chatSearch = createChatSearch(opts.chatSearchCaller, () => {
+    const state = chatSearch.state();
+    if (!state.loading && !state.error && doc.activeElement?.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_MORE_CHATS_ACTION) {
+      const next = state.matches.find(match => !chatSearchIds.has(chatSearchKey(match)));
+      if (next) pendingChatSearchRestore = { sessionId: next.session_id, messageId: next.message_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, reveal: true };
+    }
+    chatSearchIds = new Set(state.matches.map(chatSearchKey));
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  });
+  let pendingReminderSearchRestore: { id: string; scrollTop: number; reveal?: boolean } | null = null;
+  let reminderSearchIds = new Set<string>();
+  const reminderSearch = createReminderSearch(opts.reminderCallers?.list, () => {
+    const state = reminderSearch.state();
+    if (!state.loading && !state.error && doc.activeElement?.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_MORE_REMINDERS_ACTION) {
+      const next = state.matches.find(row => !reminderSearchIds.has(row.reminder_id));
+      if (next) pendingReminderSearchRestore = { id: next.reminder_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, reveal: true };
+    }
+    reminderSearchIds = new Set(state.matches.map(row => row.reminder_id));
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  });
+  const loadReminderSearch = (append = false): Promise<void> => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'search') return Promise.resolve();
+    const bounds = reminderDates.bounds();
+    if (bounds === null) { reminderSearch.reset(); render(); return Promise.resolve(); }
+    return reminderSearch.load({ query: universalSearchQuery.trim(), state: universalReminderStatus, ...bounds }, append);
+  };
+  const searchReminderTriage = createReminderSearchTriage({
+    callers: opts.reminderCallers ?? {}, rows: () => reminderSearch.state().matches,
+    active: () => !disposed && activeLens === 'data' && activeTab === 'search'
+      && (universalSearchType === 'all' || universalSearchType === 'reminder') && universalSearchTimer === null && !searchPromptBulk.writing(),
+    ready: () => !reminderSearch.state().loading && !reminderSearch.state().error
+      && !reminderSearch.state().unsupported && reminderDates.bounds() !== null && !searchPromptBulk.writing(),
+    zone: () => reminderDates.view().zone, now: opts.now ?? Date.now,
+    actionAttr: DATA_ROUTE_ACTION_ATTR, render: () => render(), refresh: () => loadReminderSearch(),
+  });
+  let pendingNavigationSearchRestore: { focus: { action: string; attribute: string; id: string }; scrollTop: number } | null = null;
+  let promptOpening: string | undefined, promptOpenError: string | undefined, promptOpenSequence = 0;
+  const promptSearch = createPromptSearch(opts.promptSchedulesCaller, () => {
+    if (!disposed && activeLens === 'data' && activeTab === 'search') render();
+  });
+  const searchPromptBulk = createPromptSearchBulk({
+    document: doc, call: opts.promptBulkCaller, state: promptSearch.state,
+    active: () => !disposed && activeLens === 'data' && activeTab === 'search'
+      && (universalSearchType === 'all' || universalSearchType === 'scheduled_prompt') && universalSearchTimer === null,
+    blocked: () => hasDataInFlightWork(),
+    opening: () => {
+      searchReminderTriage.reset(); promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
+    },
+    render: () => render(), refresh: () => promptSearch.load(universalSearchQuery.trim(), true),
+  });
+  const searchWriting = () => searchReminderTriage.writing() || searchPromptBulk.writing();
+  let decisionOpening: string | undefined, decisionOpenError: string | undefined, decisionOpenSequence = 0;
+  const decisionSearch = createPendingDecisionSearch({
+    document: doc, callers: opts.decisionSearchCallers,
+    active: () => !disposed && activeLens === 'data' && activeTab === 'search'
+      && (universalSearchType === 'all' || universalSearchType === 'decision') && universalSearchTimer === null,
+    changed: () => { if (!disposed && activeLens === 'data' && activeTab === 'search') render(); },
+  });
   const captureSearchState = () => ({
-    universalSearchQuery, universalSearchGroups, universalSearchWorkGroups,
+    universalSearchQuery, universalSearchType, universalReminderStatus, universalSearchGroups, universalSearchWorkGroups, universalExactLink,
     universalSearchContacts, universalSearchContactTotal, universalSearchContactOffset,
     universalSearchContactMore, universalSearchContactError, universalSearchContactUnsupported,
     universalSearchWorkError, universalSearchWorkUnsupported,
@@ -6411,34 +7677,62 @@ export const bootstrapDataRoute = (
     universalSearchError, universalSearchRecipes, universalSearchPacks,
     universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery,
     assets: assetSearch.snapshot(),
+    drafts: draftSearch.snapshot(),
+    chats: chatSearch.snapshot(), reminders: reminderSearch.snapshot(), prompts: promptSearch.snapshot(), decisions: decisionSearch.snapshot(),
+    reminderDates: reminderDates.snapshot(),
     documents: documentSearch.snapshot(),
     pending: { records: universalSearchLoading || universalSearchGroups === undefined && !universalSearchError,
       work: universalSearchWorkLoading || universalSearchWorkGroups === undefined && !universalSearchWorkError && !universalSearchWorkUnsupported,
       contacts: universalSearchContactLoading && universalSearchContacts.length === 0,
-      capabilities: universalSearchCapabilitiesLoading },
+      capabilities: universalSearchCapabilitiesLoading, drafts: draftSearch.state().loading, chats: chatSearch.state().loading, reminders: reminderSearch.state().loading, prompts: promptSearch.state().loading, decisions: decisionSearch.state().loading },
   });
   type SearchResume = ReturnType<typeof captureSearchState>;
   let initialSearchResume: SearchResume['pending'] | undefined;
   const savedAssetSearch = readSearchAssetReturn<SearchResume>(doc, searchContinuityOwner);
-  if (savedAssetSearch && activeTab === 'search' && savedAssetSearch.returnHash === doc.defaultView?.location.hash) {
-    ({ universalSearchQuery, universalSearchGroups, universalSearchWorkGroups,
+  const savedChatSearch = readSearchChatReturn<SearchResume>(doc, searchContinuityOwner);
+  const savedNavigationSearch = readSearchNavigationReturn<SearchResume>(doc, searchContinuityOwner);
+  const savedSearchReturn = savedChatSearch ?? savedAssetSearch ?? savedNavigationSearch;
+  if (savedNavigationSearch?.state.universalExactLink?.state === 'ready' && activeTab !== 'search'
+    && (savedNavigationSearch.destinationHash === doc.defaultView?.location.hash || savedNavigationSearch.destinationAliases?.includes(doc.defaultView?.location.hash ?? ''))) {
+    exactSearchReturn = { hash: savedNavigationSearch.returnHash, destination: savedNavigationSearch.destinationHash,
+      query: savedNavigationSearch.state.universalSearchQuery, type: savedNavigationSearch.state.universalSearchType,
+      result: savedNavigationSearch.state.universalExactLink, scrollTop: savedNavigationSearch.scrollTop };
+  }
+
+  if (savedSearchReturn && activeTab === 'search' && savedSearchReturn.returnHash === doc.defaultView?.location.hash) {
+    ({ universalSearchQuery, universalSearchType, universalReminderStatus, universalSearchGroups, universalSearchWorkGroups, universalExactLink,
       universalSearchContacts, universalSearchContactTotal, universalSearchContactOffset,
       universalSearchContactMore, universalSearchContactError, universalSearchContactUnsupported,
       universalSearchWorkError, universalSearchWorkUnsupported,
       universalSearchDidYouMean, universalSearchAbsentWords, universalSearchCapabilitiesError,
       universalSearchError, universalSearchRecipes, universalSearchPacks,
-      universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery } = savedAssetSearch.state);
-    assetSearch.restore(savedAssetSearch.state.assets);
-    documentSearch.restore(savedAssetSearch.state.documents);
+      universalSearchMarket, universalSearchMarketError, universalSearchMarketQuery } = savedSearchReturn.state);
+    assetSearch.restore(savedSearchReturn.state.assets);
+    draftSearch.restore(savedSearchReturn.state.drafts);
+    draftSearchIds = new Set(draftSearch.state().matches.map(row => row.draft_id));
+    chatSearch.restore(savedSearchReturn.state.chats);
+    reminderSearch.restore(savedSearchReturn.state.reminders);
+    if (savedSearchReturn.state.reminderDates) reminderDates.restore(savedSearchReturn.state.reminderDates);
+    if (savedSearchReturn.state.prompts) promptSearch.restore(savedSearchReturn.state.prompts);
+    if (savedSearchReturn.state.decisions) decisionSearch.restore(savedSearchReturn.state.decisions);
+    reminderSearchIds = new Set(reminderSearch.state().matches.map(row => row.reminder_id));
+    chatSearchIds = new Set(chatSearch.state().matches.map(chatSearchKey));
+    documentSearch.restore(savedSearchReturn.state.documents);
     assetSearchIds = new Set(assetSearch.state().matches.map(row => row.id));
-    initialSearchResume = savedAssetSearch.state.pending;
+    initialSearchResume = { ...savedSearchReturn.state.pending,
+      decisions: savedSearchReturn.state.pending.decisions || savedNavigationSearch?.focus.action === SEARCH_OPEN_DECISION,
+      reminders: savedSearchReturn.state.pending.reminders || savedNavigationSearch?.focus.action === SEARCH_OPEN_REMINDER_ACTION,
+      prompts: savedSearchReturn.state.pending.prompts || savedNavigationSearch?.focus.action === SEARCH_OPEN_PROMPT
+        || savedNavigationSearch?.focus.action === SEARCH_OPEN_RECOVERY_DRAFT && savedNavigationSearch.destinationHash.startsWith('#automation/schedules') };
     pendingUniversalSearchFocus = false;
     // The saved-view wrapper adds its tools after the child mounts. Restore
     // after that synchronous layout, before any user event, so scroll anchoring
     // cannot add the tools' height to the retained position.
     queueMicrotask(() => {
       if (disposed || activeTab !== 'search') return;
-      pendingAssetSearchRestore = { id: savedAssetSearch.assetId, scrollTop: savedAssetSearch.scroll.top };
+      if (savedChatSearch) pendingChatSearchRestore = { sessionId: savedChatSearch.sessionId, messageId: savedChatSearch.messageId, scrollTop: savedChatSearch.scroll.top };
+      else if (savedAssetSearch) pendingAssetSearchRestore = { id: savedAssetSearch.assetId, scrollTop: savedAssetSearch.scroll.top };
+      else if (savedNavigationSearch) pendingNavigationSearchRestore = { focus: savedNavigationSearch.focus, scrollTop: savedNavigationSearch.scrollTop };
       render();
     });
     for (const group of universalSearchWorkGroups ?? []) universalSearchWorkOffsets.set(group.kind, group.offset + group.matches.length);
@@ -6452,6 +7746,52 @@ export const bootstrapDataRoute = (
     render();
   });
   let explorerDetail: CollectionExplorerDetailState | null = null;
+  let pendingMailRestore: MailInboxPosition | undefined;
+  let mailListScrollOverride: number | undefined;
+  const mailInbox = createMailInbox(opts.collectionListCaller, () => {
+    const view = mailInbox.snapshot();
+    if (disposed || activeLens !== 'data' || activeTab !== 'mail' || view?.slug !== explorerSelectedSlug) return;
+    explorerRecords = [...view.records];
+    if (!view.loading || !explorerRetrying) {
+      explorerError = view.pages === 0 ? view.error : undefined;
+      explorerErrorRetryable = explorerError !== undefined;
+    }
+    render();
+  }, mailInboxMemory(opts.searchContinuityOwner ?? {}));
+  const mailBulk = createMailBulkActions({
+    view: () => {
+      const inbox = mailInbox.snapshot();
+      if (activeLens !== 'data' || activeTab !== 'mail' || explorerDetail || !inbox || inbox.slug !== explorerSelectedSlug) return null;
+      return { scope: JSON.stringify([inbox.slug, inbox.filters, dataSphere]), slug: inbox.slug,
+        records: inbox.records.filter(row => facetIncludes({ collection: 'mail', id: `${inbox.slug}:${row.record_id}` })),
+        ready: inbox.pages > 0 && !inbox.loading && !inbox.error && !explorerLoading && !loading };
+    },
+    get: opts.collectionGetCaller,
+    mail: opts.mailMessageCallers,
+    render: () => render(),
+    begin: () => { mailInbox.cancel(); loadGeneration += 1; explorerSeq += 1; loading = false; explorerLoading = false; },
+    confirmed: record => mailInbox.reconcile(record),
+  });
+  const focusMailBatch = (): void => {
+    routeRoot.querySelector<HTMLElement>(`[${MAIL_BULK_FOCUS}="results"], [${MAIL_BULK_FOCUS}="selection"]`)?.focus();
+  };
+  const mailReaderNavigation = createMailReaderNavigation({
+    inbox: mailInbox,
+    records: () => (mailInbox.snapshot()?.records ?? []).filter(row => facetIncludes({ collection: 'mail', id: `${explorerSelectedSlug}:${row.record_id}` })),
+    scope: () => dataSphere,
+    // The sphere picker explicitly filters loaded records. Keep that boundary
+    // instead of navigating into rows whose sphere has not been read.
+    canPage: () => dataSphere === 'all',
+    beforeLeave: () => mailMessageSurface.beforeLeave(),
+    isReading: () => explorerDetail?.loading === true || mailMessageSurface.isReading() || mailMessageSurface.hasInFlightWork(),
+    open: id => openExplorerRecord(id),
+    changed: () => { if (!disposed && activeLens === 'data' && activeTab === 'mail' && explorerDetail) render(); },
+  });
+  const resetMailReader = () => {
+    mailWorkReturn = null;
+    if (mailReaderNavigation.busy()) mailInbox.cancel();
+    mailReaderNavigation.reset(); mailMessageSurface.reset();
+  };
   const fileBatch = createFileBatchActions({
     files: () => savedFiles.snapshot().files,
     archived: () => savedFiles.snapshot().archived,
@@ -6520,11 +7860,12 @@ export const bootstrapDataRoute = (
       : null;
 
   const resetExplorerState = (): void => {
+    mailInbox.cancel(); pendingMailRestore = undefined;
     savedFiles.reset(); savedFileQueryInput = ''; savedFileReturn = pendingSavedFileRestore = null;
     calendarAgenda.cancel();
     calendarAgendaReturn = null; pendingCalendarAgendaRestore = null;
     calendarEventSurface.reset();
-    mailMessageSurface.reset();
+    resetMailReader();
     cloudSources = []; cloudSourcesError = ''; cloudFileCursor = undefined;
     cloudFileQuery = cloudFileQueryInput = ''; cloudLoadingMore = false; cloudBrowseError = '';
     cloudFilePage = 1;
@@ -7056,18 +8397,22 @@ export const bootstrapDataRoute = (
           : ''}`;
     const followWork = collectionName === 'mail' && detail?.record != null && explorerSelectedSlug !== null
       ? `<a class="data-button" href="${e(mailWorkFollowHref({ slug: explorerSelectedSlug, record_id: detail.record_id }))}">Follow this work</a>` : '';
-    const detailControls = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
+    const detailControls = (activeReminderMail() ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="mail-reminder-back">Back to reminder</button>` : '')
+      + (tab === 'mail' && detail ? mailReaderNavigation.render(DATA_ROUTE_ACTION_ATTR) : '') + previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
     const detailActions = tab === 'files' && detailControls !== ''
       ? `<div class="data-file-actions">${detailControls}</div>${lifecyclePanel}` : detailControls;
     const browsingSavedFiles = tab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller !== undefined;
     const savedFileSnapshot = savedFiles.snapshot();
     const savedFileState = { ...savedFileSnapshot, loading: savedFileSnapshot.loading || explorerLoading };
+    const mailState = tab === 'mail' && mailInbox.snapshot()?.slug === explorerSelectedSlug ? mailInbox.snapshot() : null;
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       ...(tab === 'files' && opts.filePreviewCallers ? { rowOpenAction: 'file-open-preview',
         rowSecondaryHtml: (record: CollectionRecord) => `<button type="button" class="col-explorer-file-details" ${DATA_ROUTE_ACTION_ATTR}="file-open-details" data-file-details-id="${e(record.record_id)}" aria-label="Details for ${e(String(record.hot_fields.filename ?? 'file'))}" title="File details"${fileBatch.busy() ? ' disabled' : ''}>Details</button>` } : {}),
       ...(browsingSavedFiles && !savedFileState.unsupported && fileBatch.enabled()
         ? { rowControlHtml: (record: CollectionRecord) => fileBatch.checkbox(record.record_id), disabled: fileBatch.busy() } : {}),
+      ...(mailState && !detail && mailBulk.enabled()
+        ? { rowControlHtml: (record: CollectionRecord) => mailBulk.checkbox(record), disabled: mailBulk.busy() } : {}),
       instances: explorerInstances,
       ...(tab === 'files' ? { instanceLabels: new Map([
         ['received', 'Saved files'], ...cloudSources.map(source => [cloudFileSourceSlug(source.source_id), source.label] as const),
@@ -7082,7 +8427,10 @@ export const bootstrapDataRoute = (
       selectedSlug: explorerSelectedSlug,
       records: (tab === 'calendar' || tab === 'mail') && explorerSelectedSlug ? explorerRecords.filter(row => facetIncludes({ collection: tab, id: `${explorerSelectedSlug}:${row.record_id}` })) : explorerRecords,
       detail,
-      loading: browsingSavedFiles && !savedFileState.unsupported ? savedFileState.loading : explorerLoading || loading,
+      loading: mailState ? mailState.pages === 0 && (mailState.loading || explorerLoading || loading)
+        : browsingSavedFiles && !savedFileState.unsupported ? savedFileState.loading : explorerLoading || loading,
+      ...(mailState ? { emptyCopy: mailState.error && mailState.pages === 0 ? 'Saved messages have not been loaded.'
+        : mailInboxHasFilters(mailState.filters) ? 'No saved messages match these filters.' : 'No saved messages in this mailbox.' } : {}),
       ...(browsingSavedFiles && !savedFileState.unsupported ? { emptyCopy: savedFileState.pages === 0 && savedFileState.error
         ? 'Saved files have not been loaded.' : savedFileState.query ? 'No saved files match this filename.' : 'No saved files yet.' } : {}),
       ...(explorerError !== undefined ? { error: explorerError } : {}),
@@ -7094,17 +8442,26 @@ export const bootstrapDataRoute = (
       actionAttr: DATA_ROUTE_ACTION_ATTR,
       ...(detailActions !== '' ? { detailActionsHtml: detailActions } : {}),
       ...(collectionName === 'calendar' && detail?.record != null
-        ? { ...(calendarEventSurface.hasSnapshot() ? { detailBodyHtml: calendarEventSurface.render() } : {}),
+        ? { ...(calendarEventSurface.hasSnapshot() ? { detailBodyHtml:
+              calendarCreateSurface.render({ slug: explorerSelectedSlug ?? '', recordId: detail.record_id })
+              + (!calendarCreateSurface.isOpen() && calendarDuplicateReturn?.slug === explorerSelectedSlug && calendarDuplicateReturn.recordId === detail.record_id
+                ? `<p class="calendar-event-notice"><a class="data-button" ${DATA_ROUTE_ACTION_ATTR}="calendar-duplicate-original" href="${e(calendarEventContextHref(calendarDuplicateReturn.origin.context))}">Back to original event</a></p>` : '')
+              + (!calendarCreateSurface.isOpen() && calendarMailReturn?.slug === explorerSelectedSlug && calendarMailReturn.recordId === detail.record_id
+                ? `<p class="calendar-event-notice"><a class="data-button" href="${e(draftOriginHash(calendarMailReturn.origin))}">Back to email</a></p>` : '')
+              + (!calendarCreateSurface.isOpen() && calendarTaskReturn?.slug === explorerSelectedSlug && calendarTaskReturn.recordId === detail.record_id
+                ? `<p class="calendar-event-notice"><a class="data-button" href="${e(calendarTaskHref(calendarTaskReturn.origin))}">Back to task</a></p>` : '')
+              + calendarEventSurface.render() } : {}),
             detailTimelineHtml: (calendarEventSurface.hasSnapshot() ? '' : calendarEventSurface.render()) + detailTimelineHtml }
         : detailTimelineHtml !== '' ? { detailTimelineHtml } : {}),
       ...(collectionName === 'mail' && detail?.record != null
-        ? { ...(mailMessageSurface.hasSnapshot() ? { detailBodyHtml: mailMessageSurface.render() } : {}),
+        ? { ...(mailMessageSurface.hasSnapshot() ? { detailBodyHtml: calendarCreateSurface.render({ kind: 'mail', slug: mailMessageSurface.recentSnapshot()?.slug ?? explorerSelectedSlug ?? '', recordId: mailMessageSurface.recentSnapshot()?.record_id ?? detail.record_id }) + mailMessageSurface.render() } : {}),
             detailTimelineHtml: (mailMessageSurface.hasSnapshot() ? '' : mailMessageSurface.render()) + detailTimelineHtml }
         : {}),
       // Provenance collections (annotation / link) are single global collections
       // — no instances, no "connected" empty state.
       ...(isSingleCollectionTab(tab) ? { singleCollection: true } : {}),
     });
+    if (tab === 'mail' && mailState && !detail) return `${renderMailInboxControls(mailState, DATA_ROUTE_ACTION_ATTR, mailBulk.busy())}${mailBulk.render()}${explorer}${renderMailInboxFooter(mailState, DATA_ROUTE_ACTION_ATTR, mailBulk.busy())}`;
     if (tab !== 'files') return explorer;
     const uploadShell = uploadDepsReady()
       ? Upload.renderUploadWidget({ widgetId: UPLOAD_WIDGET_ID })
@@ -7116,9 +8473,9 @@ export const bootstrapDataRoute = (
       <p>These files stay in the connected source. Import saves a separate copy in Files.</p>
       ${cloudSource.authentication_connection && CONNECTION_NAME_REGEX.test(cloudSource.authentication_connection)
         ? `<p><a class="data-button" href="${e(connectionsFileAuthenticationAddress(cloudSource.authentication_connection).hash)}">Manage authentication</a></p>` : ''}
-      ${!detail ? `<label>Search file names and paths <input class="data-input" type="search" maxlength="200"
+      ${!detail ? `<div class="data-file-search"><label>Search file names and paths <input class="data-input" type="search" maxlength="200"
         aria-label="Search cloud files" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-query" value="${e(cloudFileQueryInput)}" /></label>
-        <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search">Search files</button>` : ''}` : '';
+        <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search">Search files</button></div>` : ''}` : '';
     return `<section ${DATA_ROUTE_MIRROR_ATTR}="files">
       ${opts.fileAttachmentReturn ? `<aside data-yours-file-return><p>Upload a file, then return to attach it to ${e(opts.fileAttachmentReturn.assetName)}.</p>
         <a class="data-button" href="#yours/asset/${e(encodeURIComponent(opts.fileAttachmentReturn.assetId))}/view/files">Return to ${e(opts.fileAttachmentReturn.assetName)}</a></aside>` : ''}
@@ -7223,18 +8580,23 @@ export const bootstrapDataRoute = (
   };
 
   /** Capture only the active list's settings; edit drafts and result bodies never enter a view. */
-  const currentView = (): SavedDataViewDefinition | null => {
+  const currentView = (includeWorkReader = false): SavedDataViewDefinition | null => {
     // Archived-file browsing is transient and has no saved-view representation.
     if (activeLens === 'data' && activeTab === 'files' && showArchivedFiles) return null;
     if (activeLens === 'memory') {
       if (memoryDetail !== null || memoryCompose.open || memoryImport.open) return null;
       return { tab: 'memory', origin: memoryOriginFilter };
     }
-    if (calendarCreateSurface.isOpen() || contactDialog !== null || workEntityState.dialog !== null
-      || contactImport !== null || contactScan !== null || currentDeepLinkEntity() !== undefined) return null;
+    const readingWork = includeWorkReader && activeWorkReader() !== null;
+    if (calendarCreateSurface.isOpen() || contactDialog !== null || !readingWork && workEntityState.dialog !== null
+      || contactImport !== null || contactScan !== null || !readingWork && currentDeepLinkEntity() !== undefined) return null;
     if (activeTab === 'contact') return { tab: activeTab, query: contactSearch };
-    if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery };
+    if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery,
+      ...(universalSearchType !== 'all' ? { result_type: universalSearchType } : {}),
+      ...(universalReminderStatus !== 'all' ? { reminder_state: universalReminderStatus } : {}),
+      ...(reminderDates.definition() ? { reminder_dates: reminderDates.definition() } : {}) };
     if (activeTab === 'calendar') {
+      if (calendarAgenda.snapshot().query.trim()) return null;
       const slug = calendarAgenda.selectedSource();
       return calendarAgenda.isToday() && slug !== undefined ? { tab: activeTab, collection_slug: slug } : null;
     }
@@ -7262,6 +8624,50 @@ export const bootstrapDataRoute = (
   };
 
   const render = (): void => {
+    if (!disposed && activeLens === 'data' && activeTab === 'booking' && !loadingBookingDetail && bookingDetail?.entity?._kind === 'booking' && workEntityState.dialog === null) {
+      const entity = bookingDetail.entity, response = bookingDetail, seq = bookingDetailSeq, navigation = navigationGeneration, dialog = workEntityDialogOpenSeq;
+      bookingReader.bind(bookingIdentity(entity));
+      bookingActions.bind(response, JSON.stringify([seq, navigation, dialog]), () => !disposed && activeLens === 'data' && activeTab === 'booking'
+        && bookingDetail === response && bookingDetailSeq === seq && navigationGeneration === navigation && workEntityDialogOpenSeq === dialog && workEntityState.dialog === null);
+    } else bookingActions.reset();
+    workLinkedFrom.captureFocus();
+    const workLinkPreviewFocus = workLinkPreviews.captureFocus();
+    const recordLinkInsertFocus = recordLinkInsert.captureFocus();
+    const recordPinFocus = recordPins.captureFocus(doc.activeElement);
+    const sourceCopyOwner = sourceCopyRenderedKey;
+    const focusedSourceCopy = doc.activeElement?.getAttribute?.(SOURCE_COPY_FOCUS);
+    const sourceCopyField = doc.activeElement?.hasAttribute?.(SOURCE_COPY_VALUE) ? doc.activeElement as HTMLTextAreaElement : null;
+    const sourceCopySelection = sourceCopyField ? { value: sourceCopyField.value, start: sourceCopyField.selectionStart,
+      end: sourceCopyField.selectionEnd, direction: sourceCopyField.selectionDirection } : null;
+    if (opts.recentWorkRecords && !disposed && activeLens === 'data') {
+      const message = activeTab === 'mail' && explorerDetail?.record && !explorerDetail.loading ? mailMessageSurface.recentSnapshot() : null;
+      const event = activeTab === 'calendar' && explorerDetail?.record && !explorerDetail.loading ? calendarEventSurface.recentSnapshot() : null;
+      const contact = activeTab === 'contact' && !loadingContactDetail && !contactDialog && !openingContactEditEmail ? contactDetail?.contact : null;
+      const reading = message ?? event?.snapshot ?? contact ?? null;
+      if (reading && reading !== lastRecentSourceReader) {
+        const record = message ? recentSourceRecord(mailDraftOrigin(message), message.slug)
+          : event ? recentSourceRecord(calendarDraftOrigin(event.ref, event.snapshot), `${event.snapshot.event.calendar_name?.trim() || 'Calendar'} · ${event.ref.slug}`)
+          : contact && contact.merged_into === undefined ? recentSourceRecord(contactDraftOrigin(contact), contactAddress(contact.email)) : undefined;
+        if (record) { opts.recentWorkRecords.remember(record); opts.pinnedRecords?.remember(record); }
+      }
+      lastRecentSourceReader = reading;
+    }
+    const recentEntity = workEntityDialogEntity;
+    if (!disposed && activeLens === 'data' && activeWorkReader() && !pendingWorkEntityDialogOpen && !loadingWorkEntityDetail
+      && (recentEntity?._kind === 'task' || recentEntity?._kind === 'note')) {
+      if (lastRecentWorkReader?.entity !== recentEntity || lastRecentWorkReader.sequence !== workEntityDialogOpenSeq) {
+        opts.recentWorkRecords?.remember(recentWorkRecord(recentEntity, sources.find(source => source.id === recentEntity.source_id)?.source_label ?? 'Source unavailable'));
+        opts.pinnedRecords?.remember(pinWorkRecord(recentEntity));
+        lastRecentWorkReader = { entity: recentEntity, sequence: workEntityDialogOpenSeq };
+      }
+    } else if (activeLens !== 'data' || !activeWorkReader()) lastRecentWorkReader = null;
+    const copyInput = doc.activeElement as HTMLTextAreaElement | null;
+    const copyHost = copyInput?.hasAttribute?.('data-work-copy-value') ? copyInput.closest('.work-entity-dialog[data-mode="read"], .work-entity-booking-detail[data-booking-id], .project-overview[data-project-overview]') : null;
+    const copySelection = copyHost && copyInput ? { kind: copyHost.getAttribute('data-kind'),
+      id: copyHost.getAttribute(`data-${copyHost.getAttribute('data-kind')}-id`), value: copyInput.value,
+      start: copyInput.selectionStart, end: copyInput.selectionEnd, direction: copyInput.selectionDirection } : null;
+    const blockerFocus = taskBlockers.captureFocus();
+    if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null && calendarAgenda.isComposing()) return;
     if (activeLens !== 'data' || activeTab !== 'files' || explorerSelectedSlug !== SAVED_FILES_SLUG || explorerDetail !== null) fileBatch.reset();
     if (activeLens !== 'data' || activeTab !== 'contact' || !contactScan) contactRecovery.close();
     const focusedRecovery = (doc.activeElement as HTMLElement | null)?.getAttribute?.('data-merge-recovery-focus');
@@ -7273,11 +8679,20 @@ export const bootstrapDataRoute = (
     let searchFocusFallback = false;
     let agendaFocusFallback = false;
     const savedFileListVisible = activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && explorerDetail === null && opts.fileListCaller !== undefined;
+    const mailListVisible = activeLens === 'data' && activeTab === 'mail' && explorerDetail === null;
+    const mailFieldFocus = mailListVisible ? doc.activeElement?.getAttribute?.('data-mail-inbox-field') : null;
+    const mailActionFocus = mailListVisible ? doc.activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) : null;
+    const mailRowFocus = mailListVisible ? doc.activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) : null;
+    const mailListScroll = mailListVisible ? mailListScrollOverride ?? pendingMailRestore?.scrollTop
+      ?? (routeRoot.querySelector?.('[data-mail-inbox]') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
+    mailListScrollOverride = undefined;
     const savedFileScroll = savedFileListVisible ? pendingSavedFileRestore?.scrollTop
       ?? (renderedActiveTab === 'files' && routeRoot.querySelector?.('[data-saved-file-search]') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const focusedSavedFileAction = savedFileListVisible ? (doc.activeElement as HTMLElement | null)?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) : undefined;
     const agendaVisible = activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null;
     const agendaFocus = agendaVisible ? (doc.activeElement as HTMLElement | null)?.getAttribute?.(AGENDA_FOCUS) : null;
+    const agendaSearch = agendaFocus === 'search' ? doc.activeElement as HTMLInputElement : null;
+    const agendaSelection = agendaSearch ? { start: agendaSearch.selectionStart, end: agendaSearch.selectionEnd, direction: agendaSearch.selectionDirection } : null;
     const agendaSourcesOpen = agendaVisible
       ? routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open : undefined;
     const agendaScroll = agendaVisible ? pendingCalendarAgendaRestore?.scrollTop
@@ -7289,22 +8704,30 @@ export const bootstrapDataRoute = (
     const projectRead = activeTab === 'project' && projectWork !== null && !projectEditing;
     const projectFocus = projectRead ? pendingProjectRestore?.key
       ?? doc.activeElement?.closest?.('[data-project-focus]')?.getAttribute('data-project-focus') : undefined;
+    const projectSearchSelection = projectRead && !pendingProjectRestore && doc.activeElement?.hasAttribute?.('data-project-search-input')
+      ? { start: (doc.activeElement as HTMLInputElement).selectionStart, end: (doc.activeElement as HTMLInputElement).selectionEnd } : undefined;
     const projectScroll = projectRead ? pendingProjectRestore?.scrollTop
       ?? (routeRoot.querySelector?.('.project-overview') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
     const oldProjectLinkReview = routeRoot.querySelector?.<HTMLElement>('[data-project-link-review]');
     const oldProjectLinkFocus = oldProjectLinkReview?.contains(doc.activeElement) ? doc.activeElement : null;
     const projectLinkFocus = oldProjectLinkFocus?.getAttribute('data-action');
-    const revealAssetSearchFocus = pendingAssetSearchRestore?.reveal === true;
-    const searchScrollTop = activeTab === 'search' ? pendingDocumentSearchRestore?.scrollTop ?? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
+    const revealAssetSearchFocus = pendingAssetSearchRestore?.reveal === true || pendingDraftSearchRestore?.reveal === true || pendingChatSearchRestore?.reveal === true || pendingReminderSearchRestore?.reveal === true;
+    const searchScrollTop = activeTab === 'search' ? pendingNavigationSearchRestore?.scrollTop ?? pendingReminderSearchRestore?.scrollTop ?? pendingChatSearchRestore?.scrollTop ?? pendingDraftSearchRestore?.scrollTop ?? pendingDocumentSearchRestore?.scrollTop ?? pendingAssetSearchRestore?.scrollTop ?? pendingContactSearchRestore?.scrollTop ?? pendingRecentSourceRestore?.scrollTop ?? pendingWorkSearchRestore?.scrollTop
       ?? (renderedActiveTab === 'search' && routeRoot.querySelector?.('.rq-search') ? workSearchScrollHost()?.scrollTop : undefined) : undefined;
-    const oldNoteReader = routeRoot.querySelector?.<HTMLElement>('.work-entity-note-reader');
-    const oldNoteFocus = oldNoteReader?.contains(doc.activeElement) ? doc.activeElement : null;
-    const noteFocus = oldNoteFocus?.getAttribute('data-action');
-    const noteFocusSection = oldNoteFocus?.tagName === 'SUMMARY' ? oldNoteFocus.parentElement?.getAttribute('data-note-section') : null;
-    const noteSections = new Map(Array.from(oldNoteReader?.querySelectorAll<HTMLDetailsElement>('details[data-note-section]') ?? [])
-      .map(section => [section.getAttribute('data-note-section'), section.open]));
-    const noteScroll = oldNoteReader ? { id: oldNoteReader.getAttribute('data-note-id'),
-      top: oldNoteReader.querySelector<HTMLElement>('.work-entity-note-content')?.scrollTop ?? 0 } : null;
+    const contactActivityPosition = activeLens === 'data' && activeTab === 'contact' && contactDetail?.email === contactActivity.email()
+      ? contactActivity.capture(routeRoot, workSearchScrollHost(), doc.activeElement) : undefined;
+    noteReader.capture(routeRoot);
+    taskReader.capture(routeRoot);
+    commitmentReader.capture(routeRoot); bookingReader.capture(routeRoot, workSearchScrollHost());
+    noteFind.capture(); taskFind.capture();
+    mailMessageSurface.captureFind();
+    const workListKind = activeLens === 'data' && isWorkEntityTab(activeTab) && workEntityState.kind === activeTab && workEntityState.dialog === null
+      && !(activeTab === 'booking' && bookingDetailId !== null) && !(activeTab === 'project' && projectWork !== null) ? activeTab : undefined;
+    const compactWorkEntityLayout = workListKind !== undefined;
+    const compactTaskLayout = compactWorkEntityLayout && activeTab === 'task';
+    const compactContactLayout = activeLens === 'data' && activeTab === 'contact' && contactDetail === null && contactScan === null && contactImport === null;
+    routeRoot.setAttribute('data-task-list-layout', String(compactTaskLayout));
+    routeRoot.setAttribute('data-compact-list-layout', String(compactWorkEntityLayout || compactContactLayout));
     const canFacet = !projectWork && !spheresUnsupported && opts.spheres?.readMany && activeLens === 'data' && (isWorkEntityTab(activeTab) || ['contact', 'calendar', 'mail'].includes(activeTab));
     // A filter over no loaded records filters nothing, so it shows once there are
     // records (or while a chosen sphere needs a way back to all).
@@ -7343,23 +8766,56 @@ export const bootstrapDataRoute = (
     // captures the live owner again, so moving to another control while a read
     // is pending cancels the restoration naturally.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
-    const focusedSearchControl = activeTab === 'search' && (activeElement?.tagName === 'BUTTON' || activeElement?.tagName === 'A')
+    const workDraftFocus = activeLens === 'data' && renderedActiveTab === activeTab && isWorkDraftKind(activeTab)
+      ? activeElement?.getAttribute?.('data-work-draft-focus') : null;
+    const workDraftSelection = workDraftFocus && activeElement?.tagName === 'TEXTAREA'
+      ? { start: (activeElement as HTMLTextAreaElement).selectionStart, end: (activeElement as HTMLTextAreaElement).selectionEnd,
+          direction: (activeElement as HTMLTextAreaElement).selectionDirection } : null;
+    const recentFocusOwner = activeLens === 'data' && renderedActiveTab === 'search'
+      ? activeElement?.getAttribute?.(SEARCH_RECENT_FOCUS_ATTR) : null;
+    const focusedRecentSearch = recentFocusOwner ? { action: recentFocusOwner,
+      query: activeElement?.getAttribute?.(SEARCH_RECENT_QUERY_ATTR) ?? null } : null;
+    const oldContactDetail = routeRoot.querySelector?.(`[${DATA_ROUTE_CONTACT_DETAIL_ATTR}]`);
+    if (contactDetail && oldContactDetail?.getAttribute(DATA_ROUTE_CONTACT_DETAIL_ATTR) === contactDetail.email) {
+      contactDetail.more_open = oldContactDetail.querySelector<HTMLDetailsElement>('[data-contact-more]')?.open ?? false;
+    }
+    const contactQuickFocus = activeLens === 'data' && activeTab === 'contact' && renderedActiveTab === 'contact'
+      && routeRoot.querySelector?.(`[${DATA_ROUTE_CONTACT_DETAIL_ATTR}]`)?.getAttribute(DATA_ROUTE_CONTACT_DETAIL_ATTR) === contactDetail?.email
+      ? activeElement?.getAttribute?.('data-contact-quick-focus') : null;
+    const contactQuickOwner = contactQuickFocus ? contactDetail?.email : null;
+    const contactQuickScroll = contactQuickFocus ? workSearchScrollHost()?.scrollTop : undefined;
+    const focusedReminderStatus = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_REMINDER_STATUS_ATTR) === true;
+    const focusedReminderDate = activeTab === 'search' ? activeElement?.getAttribute?.(REMINDER_DATE_FOCUS) : null;
+    const focusedReminderTriage = activeTab === 'search' ? activeElement?.getAttribute?.(SEARCH_TRIAGE_FOCUS) : null;
+    const focusedPromptBulk = activeTab === 'search' ? activeElement?.getAttribute?.(SEARCH_PROMPT_BULK_FOCUS) : null;
+    const focusedDecision = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_DECISION_FOCUS);
+    const focusedSearchType = activeTab === 'search' && activeElement?.hasAttribute?.(SEARCH_TYPE_ATTR) === true;
+    const focusedSearchControl = activeTab === 'search' && !focusedReminderDate && !focusedReminderTriage && !focusedPromptBulk && (activeElement?.tagName === 'BUTTON' || activeElement?.tagName === 'A')
       && activeElement.closest?.('.rq-search') ? [DATA_ROUTE_ACTION_ATTR, SEARCH_WORK_KIND_ATTR, SEARCH_WORK_ID_ATTR,
+        RECENT_WORK_KIND, RECENT_WORK_ID, PINNED_WORK_KIND, PINNED_WORK_ID, RECORD_PIN_KEY,
         SEARCH_GROUP_PLATFORM_ATTR, SEARCH_GROUP_SLUG_ATTR, SEARCH_RECORD_ID_ATTR, SEARCH_RECIPE_ID_ATTR,
-        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR, SEARCH_ASSET_ID_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
+        SEARCH_PACK_SLUG_ATTR, SEARCH_DID_YOU_MEAN_QUERY_ATTR, SEARCH_CONTACT_EMAIL_ATTR, SEARCH_ASSET_ID_ATTR, SEARCH_DRAFT_ID_ATTR, SEARCH_RECOVERY_DRAFT_KEY, SEARCH_CHAT_SESSION_ATTR, SEARCH_CHAT_MESSAGE_ATTR, SEARCH_REMINDER_ID_ATTR, SEARCH_DECISION_KEY, EXACT_LINK_KEY_ATTR].map(attribute => [attribute, activeElement.getAttribute(attribute)] as const) : null;
     // D-315 — Mail facts keys each focusable control; restored after the repaint.
     const focusedMailFactsKey = renderedActiveTab === 'mail_fact'
       ? mailFacts.captureFocus(activeElement)
       : null;
     const focusedCalendarEvent = renderedActiveTab === 'calendar' ? calendarEventSurface.captureFocus(activeElement) : null;
-    const focusedCalendarCreate = renderedActiveTab === 'calendar' ? calendarCreateSurface.captureFocus(activeElement) : null;
+    const focusedCalendarCreate = renderedActiveTab === 'calendar' || renderedActiveTab === 'mail' ? calendarCreateSurface.captureFocus(activeElement) : null;
     const focusedMailMessage = renderedActiveTab === 'mail' ? mailMessageSurface.captureFocus(activeElement) : null;
+    const focusedMailReader = renderedActiveTab === 'mail' ? mailReaderNavigation.captureFocus(activeElement) : null;
     // D-324 — so does the Reminders tab.
+    const focusedMailBulk = renderedActiveTab === 'mail' ? activeElement?.getAttribute?.(MAIL_BULK_FOCUS) ?? null : null;
     const focusedTaskBulk = renderedActiveTab === 'task' ? activeElement?.getAttribute?.(TASK_BULK_FOCUS) ?? null : null;
+    const focusedNoteBulk = renderedActiveTab === 'note' ? activeElement?.getAttribute?.(NOTE_BULK_FOCUS) ?? null : null;
     const focusedFileBatch = renderedActiveTab === 'files' ? activeElement?.getAttribute?.(FILE_BATCH_FOCUS) ?? null : null;
+    const reminderScrollTop = activeLens === 'data' && activeTab === 'reminder' && renderedActiveTab === 'reminder'
+      && routeRoot.querySelector?.('[data-recued-reminders]') ? workSearchScrollHost()?.scrollTop : undefined;
+    let revealReminderFocus = false;
     const focusedRemindersKey = renderedActiveTab === 'reminder'
       ? remindersSurface.captureFocus(activeElement)
       : null;
+    workReminder.capture(activeElement ?? null);
+    mailReminders.capture(activeElement ?? null);
     const fileAction = activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR);
     const focusedFileLifecycleKey = renderedActiveTab !== 'files' ? null
       : activeElement?.getAttribute?.('data-file-lifecycle') === '' ? 'panel'
@@ -7716,8 +9172,10 @@ export const bootstrapDataRoute = (
       }
     }
     const commitmentFocused = activeTab === 'commitment' && activeElement?.closest?.('.work-entity-commitment-reader')
+      && !activeElement.hasAttribute?.('data-commitment-focus') && activeElement.tagName !== 'SUMMARY'
       ? { id: activeElement.closest('.work-entity-commitment-reader')?.getAttribute('data-commitment-id'), action: activeElement.getAttribute?.(SHARED_ACTION_ATTR),
           status: activeElement.hasAttribute?.('data-commitment-status'), notice: activeElement.hasAttribute?.('data-commitment-notice') } : null;
+    const focusedTaskFilterToggle = activeElement?.getAttribute?.(SHARED_ACTION_ATTR) === 'toggle-task-filters';
     const focusedTaskFilter = activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment')
       && renderedActiveTab === activeTab
       && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)?.startsWith(`filter-${activeTab}-`)
@@ -7866,7 +9324,8 @@ export const bootstrapDataRoute = (
           contactSearch,
           contactDialog,
           contactDiscardGuardOpen,
-          contactDetail,
+          contactDetail ? { ...contactDetail, quick_actions: { ...contactDetail.quick_actions, copy_blocked: sourceRecordCopy.busy() },
+            ...(contactActivity.email() === contactDetail.email ? { activity_html: contactActivity.render(contactDetail.response ? 5 : 4) } : {}) } : null,
           loadingContactDetail,
           openingContactEditEmail,
           contactScan,
@@ -7902,7 +9361,7 @@ export const bootstrapDataRoute = (
             exportingFormResponseFormat,
           )
       : isWorkEntityTab(activeTab)
-        ? renderWorkEntitySurface(
+        ? (activeTab === 'note' && opts.noteRecovery ? `<style>${NOTE_DRAFT_RECOVERY_STYLES}</style>${workEntityState.dialog ? '' : noteDraftPanel()}` : '') + workDraftSurface() + renderWorkEntitySurface(
             workEntityState,
             sources,
             defaultsByKind,
@@ -7923,6 +9382,8 @@ export const bootstrapDataRoute = (
             opts.manageRescheduleLinkCaller !== undefined,
             bookingManageLinkBusy,
             bookingManageLinkNotice,
+            bookingActions.view(), workReaderCopy.state(), bookingDetail?.entity?._kind === 'booking' ? bookingChat.view(bookingDetail.entity) : undefined,
+            bookingReaderReturn ? 'Back to original booking' : relatedWorkReturn?.workLink?.tab === 'booking' ? `Back to ${relatedWorkReturn.entity._kind}` : workSearchReturn || exactSearchReturn ? 'Back to search' : undefined,
             workEntityDiscardGuardOpen,
             // ⛔ Matched to the dialog on screen HERE, not inside the renderer:
             // a feed from a previously-open entity would attribute one row's
@@ -7977,32 +9438,80 @@ export const bootstrapDataRoute = (
               const entity = workEntityDialogEntity;
               if (activeTab !== 'note' || entity?._kind !== 'note'
                 || workEntityState.dialog?.mode !== 'edit' || workEntityState.dialog.entity_id !== entity.id) return undefined;
-              return { entity, mode: noteMode, can_edit: canEditNote(entity),
-                copying: noteCopying, opening: pendingWorkEntityDialogOpen?.id === entity.id,
-                ...(noteNotice ? { notice: noteNotice } : {}) };
+              const copy = workReaderCopy.state();
+              return { entity, mode: noteMode, can_edit: canEditNote(entity), related: noteRelated.view(), duplicate: duplicateControls(), format: noteReader.format(), find: noteFind.state(), navigation_html: workReaderNavigation.render(),
+                task: { can_create: Boolean(opts.workEntityGetCaller && opts.workEntitySourceListCaller && opts.workEntityUpsertCaller),
+                  busy: noteTaskPreparing?.note === entity && noteTaskPreparing.sequence === workEntityDialogOpenSeq ? noteTaskPreparing.action : undefined,
+                  disabled: hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null || noteCopying || workReaderCopy.busy(),
+                  created: noteTaskCreated && sameNoteTaskRecord(noteTaskCreated.note, entity) ? { title: noteTaskCreated.task.title } : undefined },
+                copy, copying: noteCopying, opening: pendingWorkEntityDialogOpen?.id === entity.id,
+                notice: copy?.notice ?? noteNotice };
             })(),
             (() => {
               const entity = workEntityDialogEntity;
               if (activeTab !== 'commitment' || entity?._kind !== 'commitment' || workEntityState.dialog?.mode !== 'edit'
                 || workEntityState.dialog.entity_id !== entity.id) return undefined;
               return { entity, mode: commitmentMode, can_edit: canEditCommitment(entity),
+                reminder_html: commitmentMode === 'read' ? workReminder.render(entity, workReminderContext(entity)) : undefined,
                 counterparty_label: commitmentCounterpartyLabel(entity, commitmentContactLabels),
+                follow_up: commitmentMode === 'read' ? commitmentFollowUp.view(entity) : undefined,
+                related: commitmentMode === 'read' ? commitmentRelated.view() : undefined,
+                copy: commitmentMode === 'read' ? workReaderCopy.state() : undefined,
+                chat: commitmentMode === 'read' ? commitmentChat.view(entity) : undefined,
                 opening: pendingWorkEntityDialogOpen?.id === entity.id, notice: commitmentNotice,
                 ...(projectChildReturn?.linking && projectWork ? { project_link: {
                   title: projectWork.project.title, linked: entity.blocks_project_ids.includes(projectWork.project.id),
                 } } : {}) };
             })(),
-            projectChildReturn?.linking ? `Back to ${projectChildReturn.kind === 'task' ? 'tasks' : projectChildReturn.kind === 'note' ? 'notes' : 'commitments'}` : projectChildReturn ? 'Back to project' : workSearchReturn ? 'Back to search' : undefined,
+            activeSelectionNote() ? `Back to ${activeSelectionNote()!.subject.kind === 'mail' ? 'email' : 'note'}` : activeReminderWork() ? 'Back to reminder' : activeRecoveredDraftReturn() ? `Back to ${draftOriginNoun(activeRecoveredDraftReturn()!.origin)}` : activeContactWork() ? 'Back to contact' : activeNoteTask() ? 'Back to note' : isRelatedWorkReader() ? `Back to ${relatedWorkReturn!.entity._kind}`
+              : taskBlockerReturn && workEntityState.dialog?.entity_id === taskBlockerReturn.dependency ? 'Back to tasks'
+              : workEntityState.dialog?.entity_id && opts.taskBlockerNavigation?.owns(workEntityState.dialog.entity_id) ? 'Back to Today'
+              : activeCalendarWork() ? 'Back to event' : activeMailWork() ? 'Back to email' : activeDuplicate() ? `Back to original ${workEntityState.kind}` : projectChildReturn?.linking ? `Back to ${projectChildReturn.kind === 'task' ? 'tasks' : projectChildReturn.kind === 'note' ? 'notes' : 'commitments'}` : projectChildReturn ? 'Back to project' : exactSearchReturn ? 'Back to search' : workSearchReturn ? 'Back to search' : undefined,
             projectOverviewProps(),
             activeTab === 'task' && !workEntityState.dialog && taskBulk.enabled()
-              ? { selection: taskBulk.selection(), html: taskBulk.render() } : undefined,
+              ? { selection: taskBulk.selection(), html: taskBulk.render() }
+              : activeTab === 'note' && !workEntityState.dialog && noteBulk.enabled() ? { kind: 'note', selection: noteBulk.selection(), html: noteBulk.render() } : undefined,
             projectLinkReviewProps(),
+            duplicateControls(),
+            (() => {
+              const entity = workEntityDialogEntity;
+              if (activeTab !== 'task' || entity?._kind !== 'task' || workEntityState.dialog?.mode !== 'edit' || workEntityState.dialog.entity_id !== entity.id) return undefined;
+              const dependencies = taskRelated.dependencies();
+              return { entity, mode: taskMode, can_edit: canEditTask(entity), related: taskRelated.view(), notice: taskNotice, find: taskFind.state(), navigation_html: workReaderNavigation.render(),
+                reminder_html: taskMode === 'read' ? workReminder.render(entity, workReminderContext(entity)) : undefined,
+                calendar: { available: taskMode === 'read' && calendarCreateSurface.available() && Boolean(opts.workEntityGetCaller) && canScheduleTask(entity),
+                  busy: taskCalendarPreparing?.id === entity.id && taskCalendarPreparing.navigation === navigationGeneration && taskCalendarPreparing.sequence === workEntityDialogOpenSeq },
+                copy: workReaderCopy.state(),
+                dependency_summary: dependencies.summary, dependency_list_uncertain: dependencies.uncertain,
+                opening: pendingWorkEntityDialogOpen?.id === entity.id && pendingWorkEntityDialogOpen.intent !== 'read' };
+            })(),
+            compactTaskLayout ? {
+              scope_filter_html: canFacet && (facetHasRecords || dataSphere !== 'all') ? renderDataSpherePicker(dataSphere) : '',
+              scope_label: dataSphere === 'all' ? '' : `${dataSphere === 'personal' ? 'Personal' : dataSphere === 'professional' ? 'Work' : 'Unsorted'} (loaded records)`,
+              active_scope_filters: Number(dataSphere !== 'all'),
+              filters_open: taskFiltersOpen,
+            } : undefined,
+            compactWorkEntityLayout,
           )
         : activeTab === 'search'
           ? renderUniversalSearch({
-              query: universalSearchQuery,
+              query: universalSearchQuery, exactLink: universalExactLink, exactLinkOpening: universalExactOpening, exactLinkError: universalExactError, resultType: universalSearchType, debouncing: universalSearchTimer !== null,
+              recordSearchAvailable: opts.collectionSearchAllCaller !== undefined, workSearchAvailable: opts.workEntitySearchCaller !== undefined,
+              ...(opts.recentSearches ? { recentSearches: opts.recentSearches.list() } : {}),
+              recentWorkHtml: pinnedWorkPanel.render(DATA_ROUTE_ACTION_ATTR, universalSearchType) + recentWorkPanel.render(DATA_ROUTE_ACTION_ATTR, universalSearchType),
+              ...(recentSearchNotice ? { recentSearchNotice } : {}),
               ...(documentSearch.available() ? { documentSearch: documentSearch.state() } : {}),
               ...(opts.assetSearchCaller ? { assetSearch: assetSearch.state() } : {}),
+              ...(opts.chatSearchCaller ? { chatSearch: chatSearch.state() } : {}),
+              ...(opts.reminderCallers?.list ? { reminderSearch: reminderDates.view().readError ? { ...reminderSearch.state(), error: reminderDates.view().readError } : reminderSearch.state(),
+                reminderStatus: universalReminderStatus, reminderTriage: { ...searchReminderTriage.view(), writing: searchWriting() },
+                reminderDatesHtml: renderReminderDateSearch(reminderDates.view(), DATA_ROUTE_ACTION_ATTR, searchWriting()) } : {}),
+              ...(opts.promptSchedulesCaller ? { promptSearch: promptSearch.state(), promptOpening, promptOpenError } : {}),
+              searchWriting: searchWriting(),
+              ...(opts.decisionSearchCallers ? { decisionSearch: decisionSearch.state(), decisionOpening, decisionOpenError } : {}),
+              ...(opts.mailCompose?.drafts ? { draftSearch: draftSearch.state(), draftOpeningId: universalDraftOpening, draftOpenError: universalDraftOpenError } : {}),
+              recoveryDraftSearch: recoveryDraftSearch(), recoveryDraftError,
+              recoveryDraftOpening: recoveryDraftOpening?.navigation === navigationGeneration ? recoveryDraftOpening.key : undefined,
               ...(opts.contactListCaller ? { contactSearch: { contacts: universalSearchContacts,
                 total: universalSearchContactTotal, loading: universalSearchContactLoading, more: universalSearchContactMore,
                 ...(universalSearchContactError ? { error: universalSearchContactError } : {}),
@@ -8187,15 +9696,26 @@ export const bootstrapDataRoute = (
             verificationItemLoading,
             verificationItemReady,
           );
+    const collectionNavigationLocked = savingFormResponse || formResponseDiscardGuardOpen
+      || hasRecordsInFlightWork() || contactRecovery.busy() || fileBatch.busy();
     const markup = `
       ${opts.hideHeading ? '' : `<header class="data-header">
         <h1 class="data-title" ${DATA_ROUTE_HEADING_ATTR}>Data</h1>
       </header>`}
       ${routeReturn}
+      ${activeTab === 'task' && opts.taskBlockerNavigation?.target() && !workEntityState.dialog ? '<aside class="task-blocker-return"><button type="button" data-task-blocker-back-today>Back to Today</button></aside>' : ''}
+      ${relatedWorkReturn && !workEntityState.dialog && !contactDetail
+        ? `<aside class="project-link-context"><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-note-related">Back to ${relatedWorkReturn.entity._kind}</button></aside>` : ''}
       ${projectChildReturn && workEntityState.dialog === null
         ? `<aside class="project-link-context"><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-project-overview">Back to project</button>
           ${projectChildReturn.linking && projectWork ? `<p>Choose a saved ${projectChildReturn.kind} to link to <strong>${e(projectWork.project.title)}</strong>. ${projectChildReturn.kind === 'commitment' ? 'Open it and choose Link to project.' : 'Open it to review the project link before saving.'}</p>` : ''}</aside>` : ''}
-      ${!projectChildReturn && workSearchReturn && workEntityState.dialog === null
+      ${activeMailWork()?.opening || activeCalendarWork()?.opening ? `<aside class="project-link-context"><button type="button" ${DATA_ROUTE_ACTION_ATTR}="source-linked-back">Back to ${activeMailWork() ? 'email' : 'event'}</button><span role="status">Opening linked record…</span></aside>` : ''}
+      ${activeSourceDetour() ? `<aside class="project-link-context"><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="source-detour-back">Back to ${sourceDetour!.origin.kind === 'mail' ? 'email' : 'event'}</button></aside>` : ''}
+      ${exactSearchReturn && activeTab !== 'search' && activeTab !== 'task' && activeTab !== 'note' && activeTab !== 'booking' && exactSearchReturn.result.match.target.tab === activeTab
+        ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="exact-link-back-search">Back to search</button></p>` : ''}
+      ${!relatedWorkReturn && recentSourceReturn?.record.kind === activeTab && (activeTab === 'mail' || activeTab === 'calendar')
+        ? `<p><button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="return-recent-source-search">Back to search</button></p>` : ''}
+      ${activeTab !== 'booking' && !projectChildReturn && workSearchReturn && workEntityState.dialog === null
         ? `<p><button type="button" ${DATA_ROUTE_ACTION_ATTR}="return-work-search">Back to search</button></p>` : ''}
       ${renderLensSwitcher(
         activeLens,
@@ -8205,18 +9725,15 @@ export const bootstrapDataRoute = (
           || hasRecordsInFlightWork()
           || contactRecovery.busy() || fileBatch.busy(),
       )}
-      ${activeLens === 'memory'
-        ? ''
-        : renderTabs(
-            activeTab,
-            savingFormResponse
-              || formResponseDiscardGuardOpen
-              || hasRecordsInFlightWork()
-              || contactRecovery.busy() || fileBatch.busy(),
-          )}
+      <div class="data-collection-workspace${activeLens === 'data' ? ' data-collection-workspace--split' : ''}">
+      ${activeLens === 'memory' ? '' : renderTabs(activeTab, collectionNavigationLocked, collectionRailBreakpoint?.matches === true)}
+      <div class="data-collection-content">
+      ${activeLens === 'memory' ? '' : renderCollectionHeader(activeTab, collectionNavigationLocked,
+        workListKind ? { kind: workListKind, can_create: canCreateWorkEntity(workEntityState, sources) }
+          : compactContactLayout ? { kind: 'contact' } : undefined)}
       ${loading && activeLens !== 'memory' && activeTab !== 'calendar' ? '<p class="data-loading">Loading data...</p>' : ''}
-      ${renderErrors(errors)}
-      ${canFacet && (facetHasRecords || dataSphere !== 'all') ? `<label>Sphere (loaded records) <select data-data-sphere aria-label="Data sphere" style="min-height:44px">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([value, title]) => `<option value="${value}"${value === dataSphere ? ' selected' : ''}>${title}</option>`).join('')}</select></label>
+      ${renderErrors(activeLens === 'data' && activeTab === 'contact' && contactDetail && contactActivity.enabled() ? { ...errors, timeline: undefined } : errors)}
+      ${canFacet && (facetHasRecords || dataSphere !== 'all') ? `${compactTaskLayout ? '' : renderDataSpherePicker(dataSphere)}
         ${dataSphere === 'all' ? '' : '<p>This filter applies to loaded records. Load more to find further matches.</p>'}
         ${facetsLoading && dataSphere !== 'all' ? '<p role="status">Reading sphere placements…</p>' : ''}${facetError ? `<p role="status">${e(facetError)}</p>` : ''}` : ''}
       ${activeLens === 'memory'
@@ -8225,29 +9742,41 @@ export const bootstrapDataRoute = (
             role="tabpanel" aria-labelledby="recued-data-tab-${e(activeTab)}">
             ${lensBody}
           </div>`}
+      </div></div>
       ${verificationNext}
     `;
+    workReferencePreviews.beforeRender();
+    workContactPickers.captureBeforeRender();
+    workProjectPickers.captureBeforeRender();
+    workTaskPickers.captureBeforeRender();
     const picker = routeRoot.querySelector<HTMLSelectElement>(`[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`);
-    const pickerLabel = picker?.parentElement;
-    if (activeLens === 'data' && picker != null && pickerLabel?.parentElement === routeRoot) {
-      // Keep the native select connected and focused: replacing it resets its
-      // multi-letter typeahead and can close an open platform picker.
+    const reminderHost = workReminder.preservedHost() ?? mailReminders.preservedHost();
+    const preserved = reminderHost?.isConnected ? reminderHost : picker;
+    const previousCollectionRail = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`);
+    if (previousCollectionRail) collectionRailScrollTop = previousCollectionRail.scrollTop;
+    readerPassage.captureFocus();
+    if (activeLens === 'data' && preserved != null) {
+      // Keep a reminder editor connected through reader refreshes. Native date
+      // segments hold partial input outside value, just like selector typeahead.
       const nextRoot = doc.createElement('div');
+      for (const attribute of Array.from(routeRoot.attributes)) nextRoot.setAttribute(attribute.name, attribute.value);
       nextRoot.innerHTML = markup;
-      const nextPicker = nextRoot.querySelector<HTMLSelectElement>(`[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`)!;
-      const nextLabel = nextPicker.parentElement!;
-      for (const child of Array.from(routeRoot.childNodes)) {
-        if (child !== pickerLabel) child.remove();
-      }
-      while (nextRoot.firstChild !== nextLabel) {
-        routeRoot.insertBefore(nextRoot.firstChild!, pickerLabel);
-      }
-      nextLabel.remove();
-      routeRoot.append(...nextRoot.childNodes);
-      if (picker.value !== activeTab) picker.value = activeTab;
-      picker.disabled = nextPicker.disabled;
-    } else {
-      routeRoot.innerHTML = markup;
+      const nextControl = nextRoot.querySelector(preserved === reminderHost
+        ? `[${reminderHost?.hasAttribute(MAIL_REMINDER_CREATE_HOST) ? MAIL_REMINDER_CREATE_HOST : RECORD_REMINDER_HOST}]`
+        : `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`);
+      if (nextControl && reconcileNativeField(routeRoot, nextRoot, preserved, nextControl)) {
+        if (preserved === picker && picker) {
+          if (picker.value !== activeTab) picker.value = activeTab;
+          picker.disabled = (nextControl as HTMLSelectElement).disabled;
+        }
+      } else routeRoot.innerHTML = markup;
+    } else routeRoot.innerHTML = markup;
+    searchPromptBulk.mount(routeRoot);
+    const collectionRail = routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`);
+    if (collectionRail) {
+      collectionRail.scrollTop = collectionRailScrollTop;
+      if (renderedCollectionTab !== activeTab) revealCollectionTab(collectionNavigationTarget(activeTab));
+      renderedCollectionTab = activeTab;
     }
     sphereControl?.dispose(); sphereControl = undefined;
     if (opts.spheres && activeLens === 'data' && !projectLinkReviewProps()) {
@@ -8269,23 +9798,37 @@ export const bootstrapDataRoute = (
         dialog.querySelector('[data-sphere-placement]')?.setAttribute('data-note-section', 'sphere');
       }
     }
-    if (noteScroll) {
-      const reader = routeRoot.querySelector<HTMLElement>('.work-entity-note-reader');
-      const content = reader?.querySelector<HTMLElement>('.work-entity-note-content');
-      if (content && reader?.getAttribute('data-note-id') === noteScroll.id) {
-        let focusedSummary: HTMLElement | null = null;
-        reader.querySelectorAll<HTMLDetailsElement>('details[data-note-section]').forEach(section => {
-          const key = section.getAttribute('data-note-section');
-          if (noteSections.has(key)) section.open = noteSections.get(key)!;
-          if (key === noteFocusSection) focusedSummary = section.querySelector('summary');
-        });
-        content.scrollTop = noteScroll.top;
-        const focusTarget = noteFocus ? reader.querySelector<HTMLElement>(`[data-action="${noteFocus}"]`)
-          : oldNoteFocus?.hasAttribute('data-note-notice') ? reader.querySelector<HTMLElement>('[data-note-notice]')
-          : oldNoteFocus?.classList.contains('work-entity-dialog-title') ? reader.querySelector<HTMLElement>('.work-entity-dialog-title')
-          : focusedSummary;
-        focusTarget?.focus({ preventScroll: true });
+    mountNoteDraftRecovery();
+    mountWorkDraftRecovery();
+    mountRecoveredDraftOrigin();
+    mountRecordPins();
+    mountSourceRecordCopy();
+    workLinkPreviews.mount();
+    recordLinkInsert.mount(); searchRecordPreviews.mount();
+    workLinkedFrom.mount();
+    noteReader.restore(routeRoot);
+    taskReader.restore(routeRoot, { pending: pendingWorkEntityDialogOpen?.kind === 'task' || workReminder.initialReadPending() });
+    commitmentReader.restore(routeRoot); bookingReader.restore(routeRoot, workSearchScrollHost());
+    noteFind.mount(); taskFind.mount();
+    mountedWorkReading();
+    readerPassage.mount();
+    selectionNotePicker.mount();
+    recordPins.restoreFocus(routeRoot, recordPinFocus);
+    workLinkPreviews.restoreFocus(workLinkPreviewFocus);
+    recordLinkInsert.restoreFocus(recordLinkInsertFocus);
+    if (copySelection) {
+      const input = routeRoot.querySelector<HTMLTextAreaElement>('[data-work-copy-value]');
+      const host = input?.closest('.work-entity-dialog[data-mode="read"], .work-entity-booking-detail[data-booking-id], .project-overview[data-project-overview]');
+      if (input && host?.getAttribute('data-kind') === copySelection.kind
+        && host.getAttribute(`data-${copySelection.kind}-id`) === copySelection.id && input.value === copySelection.value) {
+        input.focus({ preventScroll: true }); input.setSelectionRange(copySelection.start, copySelection.end, copySelection.direction);
       }
+    }
+    if (pendingWorkReaderListReturn && activeTab === pendingWorkReaderListReturn.kind && !workEntityState.dialog && !loading) {
+      const origin = pendingWorkReaderListReturn; pendingWorkReaderListReturn = null;
+      const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
+      workEntityDialogReturnFocus = { mode: 'edit', kind: origin.kind, id: origin.id };
+      focusWorkEntityDialogReturnTarget();
     }
     if (oldProjectLinkFocus) {
       const review = routeRoot.querySelector<HTMLElement>('[data-project-link-review]');
@@ -8298,31 +9841,58 @@ export const bootstrapDataRoute = (
     if (agendaVisible) {
       const disclosure = routeRoot.querySelector?.<HTMLDetailsElement>('details[data-calendar-agenda-sources]');
       if (disclosure) disclosure.open = pendingCalendarAgendaRestore?.sourcesOpen ?? agendaSourcesOpen ?? false;
-      const key = pendingCalendarAgendaRestore?.key ?? agendaFocus;
+      const requestedFocus = calendarAgenda.takeFocus();
+      const key = requestedFocus ?? pendingCalendarAgendaRestore?.key ?? agendaFocus;
       if (key) {
         const controls = [...routeRoot.querySelectorAll<HTMLElement>(`[${AGENDA_FOCUS}]`)];
         const target = controls.find(control => control.getAttribute(AGENDA_FOCUS) === key);
-        agendaFocusFallback = target === undefined;
-        (target ?? controls.find(control => control.getAttribute(AGENDA_FOCUS) === 'date'))?.focus({ preventScroll: !agendaFocusFallback });
+        if (target || !pendingCalendarAgendaRestore || !calendarAgenda.isBusy()) {
+          agendaFocusFallback = target === undefined || requestedFocus !== null;
+          const fallback = calendarAgenda.snapshot().query.trim() ? 'search' : 'date';
+          const focused = target ?? controls.find(control => control.getAttribute(AGENDA_FOCUS) === fallback);
+          focused?.focus({ preventScroll: !agendaFocusFallback });
+          if (target?.getAttribute(AGENDA_FOCUS) === 'search' && agendaSelection && agendaSelection.start !== null && agendaSelection.end !== null) {
+            (target as HTMLInputElement).setSelectionRange(agendaSelection.start, agendaSelection.end, agendaSelection.direction ?? undefined);
+          }
+          pendingCalendarAgendaRestore = null;
+        }
       }
-      pendingCalendarAgendaRestore = null;
     }
-    if (activeTab === 'search' && (focusedSearchControl || pendingWorkSearchRestore || pendingContactSearchRestore || pendingAssetSearchRestore) && !documentFocus && !pendingDocumentSearchRestore) {
-      const origin = pendingWorkSearchRestore;
-      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button, .rq-search a')).find(element => pendingAssetSearchRestore
+    if (activeTab === 'search' && (focusedSearchControl || pendingRecentSourceRestore || pendingWorkSearchRestore || pendingContactSearchRestore || pendingAssetSearchRestore || pendingDraftSearchRestore || pendingChatSearchRestore || pendingReminderSearchRestore || pendingNavigationSearchRestore) && !documentFocus && !pendingDocumentSearchRestore
+      && !(pendingNavigationSearchRestore?.focus.action === EXACT_LINK_OPEN_ACTION && universalExactLink?.state === 'loading')) {
+      const origin = pendingRecentSourceRestore ?? pendingWorkSearchRestore;
+      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('.rq-search button, .rq-search a')).find(element => pendingNavigationSearchRestore
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === pendingNavigationSearchRestore.focus.action
+          && element.getAttribute(pendingNavigationSearchRestore.focus.attribute) === pendingNavigationSearchRestore.focus.id
+        : pendingReminderSearchRestore
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_REMINDER_ACTION && element.getAttribute(SEARCH_REMINDER_ID_ATTR) === pendingReminderSearchRestore.id
+        : pendingChatSearchRestore
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_CHAT_ACTION
+          && element.getAttribute(SEARCH_CHAT_SESSION_ATTR) === pendingChatSearchRestore.sessionId && element.getAttribute(SEARCH_CHAT_MESSAGE_ATTR) === pendingChatSearchRestore.messageId
+        : pendingDraftSearchRestore
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_DRAFT_ACTION
+          && element.getAttribute(SEARCH_DRAFT_ID_ATTR) === pendingDraftSearchRestore.id
+        : pendingAssetSearchRestore
         ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_ASSET_ACTION
           && element.getAttribute(SEARCH_ASSET_ID_ATTR) === pendingAssetSearchRestore.id
         : pendingContactSearchRestore
         ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_CONTACT_ACTION
           && element.getAttribute(SEARCH_CONTACT_EMAIL_ATTR) === pendingContactSearchRestore.email
         : origin
-        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === SEARCH_OPEN_WORK_ACTION
-          && element.getAttribute(SEARCH_WORK_KIND_ATTR) === origin.kind && element.getAttribute(SEARCH_WORK_ID_ATTR) === origin.id
+        ? element.getAttribute(DATA_ROUTE_ACTION_ATTR) === (origin.pinned ? 'pinned-work-open' : origin.recent ? 'recent-work-open' : SEARCH_OPEN_WORK_ACTION)
+          && element.getAttribute(origin.pinned ? PINNED_WORK_KIND : origin.recent ? RECENT_WORK_KIND : SEARCH_WORK_KIND_ATTR) === origin.kind
+          && element.getAttribute(origin.pinned ? PINNED_WORK_ID : origin.recent ? RECENT_WORK_ID : SEARCH_WORK_ID_ATTR) === origin.id
         : focusedSearchControl?.every(([attribute, value]) => element.getAttribute(attribute) === value));
       (target ?? routeRoot.querySelector<HTMLElement>(`[${SEARCH_INPUT_ATTR}]`))?.focus({ preventScroll: true });
       searchFocusFallback = target === undefined;
-      pendingWorkSearchRestore = null; pendingContactSearchRestore = null; pendingAssetSearchRestore = null;
+      pendingRecentSourceRestore = null; pendingWorkSearchRestore = null; pendingContactSearchRestore = null; pendingAssetSearchRestore = null; pendingDraftSearchRestore = null; pendingChatSearchRestore = null; pendingReminderSearchRestore = null; pendingNavigationSearchRestore = null;
     }
+    if (focusedReminderStatus && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_REMINDER_STATUS_ATTR}]`)?.focus({ preventScroll: true });
+    if (focusedReminderDate && activeTab === 'search') Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${REMINDER_DATE_FOCUS}]`))
+      .find(el => el.getAttribute(REMINDER_DATE_FOCUS) === focusedReminderDate)?.focus({ preventScroll: true });
+    if (focusedSearchType && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_TYPE_ATTR}]`)?.focus({ preventScroll: true });
+    searchReminderTriage.restoreFocus(routeRoot, focusedReminderTriage);
+    if (focusedDecision && activeTab === 'search') routeRoot.querySelector<HTMLElement>(`[${SEARCH_DECISION_FOCUS}]`)?.focus({ preventScroll: true });
     if (activeLens === 'data' && activeTab === 'search' && (documentFocus || pendingDocumentSearchRestore)) {
       const key = pendingDocumentSearchRestore?.fileId ?? documentFocus;
       const owner = [...routeRoot.querySelectorAll<HTMLElement>(`[${DOCUMENT_SEARCH_FOCUS}]`)].find(element => element.getAttribute(DOCUMENT_SEARCH_FOCUS) === key)
@@ -8397,6 +9967,7 @@ export const bootstrapDataRoute = (
         : commitmentFocused.action ? reader?.querySelector<HTMLElement>(`[data-action="${commitmentFocused.action}"]`) : null;
       (target ?? reader?.querySelector<HTMLElement>('[data-commitment-status]'))?.focus?.({ preventScroll: true });
     }
+    if (focusedTaskFilterToggle && activeTab === 'task') routeRoot.querySelector<HTMLElement>('[data-action="toggle-task-filters"]')?.focus?.({ preventScroll: true });
     if (focusedTaskFilter !== null && activeLens === 'data' && (activeTab === 'task' || activeTab === 'commitment')) {
       routeRoot.querySelector<HTMLElement>(`select[${SHARED_ACTION_ATTR}="${focusedTaskFilter}"]`)
         ?.focus?.({ preventScroll: true });
@@ -8444,6 +10015,15 @@ export const bootstrapDataRoute = (
           focusedSearch.selectionDirection ?? undefined,
         );
       }
+    }
+    const recentFocus = pendingRecentSearchFocus ?? focusedRecentSearch;
+    searchPromptBulk.restoreFocus(routeRoot, focusedPromptBulk);
+    pendingRecentSearchFocus = null;
+    if (recentFocus && activeLens === 'data' && activeTab === 'search') {
+      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[${SEARCH_RECENT_FOCUS_ATTR}]`))
+        .find(node => node.getAttribute(SEARCH_RECENT_FOCUS_ATTR) === recentFocus.action
+          && node.getAttribute(SEARCH_RECENT_QUERY_ATTR) === recentFocus.query);
+      (target ?? routeRoot.querySelector<HTMLElement>(`[${SEARCH_INPUT_ATTR}]`))?.focus({ preventScroll: true });
     }
     if (
       focusedWorkEntityRow !== null
@@ -8498,6 +10078,12 @@ export const bootstrapDataRoute = (
     }
     if (focusedContactEmail !== null && activeLens === 'data' && activeTab === 'contact'
       && contactDetail?.email === focusedContactEmail) focusContactEmail(focusedContactEmail);
+    if (contactQuickFocus && contactQuickOwner === contactDetail?.email && activeTab === 'contact' && contactDialog === null) {
+      Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-contact-quick-focus]'))
+        .find(control => control.getAttribute('data-contact-quick-focus') === contactQuickFocus)?.focus({ preventScroll: true });
+      const scroller = workSearchScrollHost();
+      if (scroller && contactQuickScroll !== undefined) scroller.scrollTop = contactQuickScroll;
+    }
     if (
       focusedContactDetailEmail !== null
       && activeLens === 'data'
@@ -8914,19 +10500,49 @@ export const bootstrapDataRoute = (
         pendingLoadedFormResponseIds = [];
       }
     }
+    if (activeLens === 'data' && activeTab === 'mail') mailBulk.restoreFocus(routeRoot, focusedMailBulk);
     if (activeLens === 'data' && activeTab === 'task') taskBulk.restoreFocus(routeRoot, focusedTaskBulk);
+    taskBulk.mountProjectPicker(routeRoot);
+    if (activeLens === 'data' && activeTab === 'note') noteBulk.restoreFocus(routeRoot, focusedNoteBulk);
+    noteBulk.mount(routeRoot);
     if (activeLens === 'data' && activeTab === 'files') fileBatch.restoreFocus(routeRoot, focusedFileBatch);
     if (activeLens === 'data' && activeTab === 'mail_fact') {
       mailFacts.restoreFocus(routeRoot, focusedMailFactsKey);
     }
     if (activeLens === 'data' && activeTab === 'reminder') {
-      remindersSurface.restoreFocus(routeRoot, focusedRemindersKey);
+      revealReminderFocus = remindersSurface.restoreFocus(routeRoot, focusedRemindersKey) === true;
     }
+    workReminder.restore();
+    mailReminders.restore();
     if (activeLens === 'data' && activeTab === 'calendar') calendarEventSurface.restoreFocus(routeRoot, focusedCalendarEvent);
-    if (activeLens === 'data' && activeTab === 'calendar') calendarCreateSurface.restoreFocus(routeRoot, focusedCalendarCreate);
     if (activeLens === 'data' && activeTab === 'mail') {
       mailMessageSurface.restoreScroll(routeRoot, mailIndexScroll);
       mailMessageSurface.restoreFocus(routeRoot, focusedMailMessage);
+      mailMessageSurface.mountFind();
+      mailReaderNavigation.restoreFocus(routeRoot, focusedMailReader);
+    }
+    // A draft can intentionally take focus from the email action that opened it.
+    if (activeLens === 'data' && (activeTab === 'calendar' || activeTab === 'mail')) calendarCreateSurface.restoreFocus(routeRoot, focusedCalendarCreate);
+    if (pendingCalendarWorkRestore?.navigation !== navigationGeneration) pendingCalendarWorkRestore = null;
+    if (pendingCalendarWorkRestore && activeTab === 'calendar' && explorerDetail && !explorerDetail.loading
+      && calendarEventSurface.hasSnapshot() && !calendarEventSurface.isLoading()
+      && explorerSelectedSlug === pendingCalendarWorkRestore.slug && explorerDetail.record_id === pendingCalendarWorkRestore.recordId) {
+      const origin = pendingCalendarWorkRestore.origin; pendingCalendarWorkRestore = null;
+      const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
+      if (origin.focus) restoreLinkedSourceFocus(origin.focus);
+      else routeRoot.querySelector<HTMLElement>(`[data-calendar-event-focus="create-${origin.kind}"]`)?.focus({ preventScroll: true });
+    }
+    if (pendingMailWorkRestore?.navigation !== navigationGeneration) pendingMailWorkRestore = null;
+    if (pendingMailWorkRestore && activeTab === 'mail' && explorerDetail && !explorerDetail.loading && !mailMessageSurface.isReading()) {
+      const target = taskNoteSource(pendingMailWorkRestore.origin.hash, doc.defaultView?.location.href ?? '');
+      if (target && explorerSelectedSlug === target.collectionSlug && explorerDetail.record_id === target.recordId) {
+        const origin = pendingMailWorkRestore.origin; pendingMailWorkRestore = null;
+        mailMessageSurface.restoreScroll(routeRoot, origin.indexScroll);
+        const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
+        if (origin.focus) restoreLinkedSourceFocus(origin.focus);
+        else (routeRoot.querySelector<HTMLElement>(`[data-mail-focus="create-${origin.kind}"]`)
+          ?? routeRoot.querySelector<HTMLElement>('[data-recued-data-action="return-note-related"]'))?.focus({ preventScroll: true });
+      }
     }
     if (activeLens === 'data' && activeTab === 'files' && focusedFileLifecycleKey !== null) {
       const panel = routeRoot.querySelector<HTMLElement>('[data-file-lifecycle]');
@@ -8939,9 +10555,20 @@ export const bootstrapDataRoute = (
       }
       target?.focus({ preventScroll: focusedFileLifecycleKey !== 'file-usage' && !(target === notice && focusedFileLifecycleKey !== 'notice') });
     }
-    // Attach live pickers to any `data.contact` ref shells the work-entity
+    if (focusedSourceCopy && sourceCopyOwner !== null && sourceCopyOwner === sourceCopyRenderedKey) {
+      const control = [...routeRoot.querySelectorAll<HTMLElement>(`[${SOURCE_COPY_FOCUS}]`)]
+        .find(node => node.getAttribute(SOURCE_COPY_FOCUS) === focusedSourceCopy);
+      control?.focus({ preventScroll: true });
+      if (focusedSourceCopy === 'value' && control?.tagName === 'TEXTAREA' && sourceCopySelection
+        && (control as HTMLTextAreaElement).value === sourceCopySelection.value && sourceCopySelection.start !== null && sourceCopySelection.end !== null) {
+        (control as HTMLTextAreaElement).setSelectionRange(sourceCopySelection.start, sourceCopySelection.end, sourceCopySelection.direction ?? undefined);
+      }
+    }
+    // Attach live pickers to contact and project shells the work-entity
     // dialog just painted (no-op otherwise).
     mountWorkEntityRefPickers();
+    taskBlockers.mount(routeRoot, refreshTaskBlockers); refreshTaskBlockers = false;
+    if (blockerFocus && !workEntityState.dialog && !pendingWorkEntityDialogOpen) taskBlockers.focus(blockerFocus);
     // Attach (or rewire) the Files-tab upload widget (no-op elsewhere).
     mountUploadWidget();
     if (memoryFilteringOrigin !== null) {
@@ -8977,22 +10604,49 @@ export const bootstrapDataRoute = (
       const owner = doc.activeElement as HTMLElement | null;
       if ((owner?.tagName === 'BUTTON' || searchFocusFallback || revealAssetSearchFocus) && owner?.closest?.('.rq-search')) owner.scrollIntoView?.({ block: 'nearest' });
     }
+    if (activeLens === 'data' && activeTab === 'reminder' && reminderScrollTop !== undefined) {
+      const host = workSearchScrollHost(); if (host) host.scrollTop = reminderScrollTop;
+      const owner = doc.activeElement as HTMLElement | null;
+      if (revealReminderFocus && owner?.hasAttribute?.('data-recued-reminders-focus')) owner.scrollIntoView?.({ block: 'nearest' });
+    }
     if (agendaVisible && agendaScroll !== undefined && !agendaFocusFallback) {
       const host = workSearchScrollHost();
       if (host) host.scrollTop = agendaScroll;
     }
     if (projectRead) {
-      const target = projectFocus ? Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-project-focus]')).find(node => node.getAttribute('data-project-focus') === projectFocus)
+      const target = projectFocus ? Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-project-focus]:not(:disabled)')).find(node => node.getAttribute('data-project-focus') === projectFocus)
+        ?? (projectFocus.startsWith('attention-item:') ? routeRoot.querySelector<HTMLElement>('[data-project-focus="attention-list"]') : null)
+        ?? (projectFocus.startsWith('task-action:') ? routeRoot.querySelector<HTMLElement>('[data-project-focus="task-status"]') : null)
         ?? routeRoot.querySelector<HTMLElement>('[data-project-focus="heading"]') : undefined;
       target?.focus({ preventScroll: true });
+      if (target?.hasAttribute('data-project-search-input') && projectSearchSelection?.start != null && projectSearchSelection.end != null)
+        (target as HTMLInputElement).setSelectionRange(projectSearchSelection.start, projectSearchSelection.end);
       const host = workSearchScrollHost();
       if (host && projectScroll !== undefined) host.scrollTop = projectScroll;
-      if (target) target.scrollIntoView?.({ block: 'nearest' });
+      if (target && (pendingProjectRestore || target.getAttribute('data-project-focus') !== projectFocus)) target.scrollIntoView?.({ block: 'nearest' });
       pendingProjectRestore = null;
     }
     if (activeLens === 'data' && activeTab === 'mail' && mailScrollTop !== undefined) {
       const host = workSearchScrollHost();
       if (host) host.scrollTop = mailScrollTop;
+    }
+    if (mailListVisible) {
+      const origin = pendingMailRestore ?? (mailRowFocus ? mailInbox.position() : undefined);
+      const rows = [...routeRoot.querySelectorAll<HTMLElement>(`[${COLLECTION_RECORD_ID_ATTR}]`)];
+      if (origin && (!mailInbox.snapshot()?.loading || (mailInbox.snapshot()?.pages ?? 0) > 0)) {
+        const ids = [origin.recordId, ...origin.nearby];
+        const row = ids.map(id => rows.find(row => row.getAttribute(COLLECTION_RECORD_ID_ATTR) === id)).find(Boolean);
+        (row ?? routeRoot.querySelector<HTMLElement>('[data-mail-inbox-status]'))?.focus({ preventScroll: true });
+        pendingMailRestore = undefined;
+      } else if (mailFieldFocus) {
+        routeRoot.querySelector<HTMLElement>(`[data-mail-inbox-field="${mailFieldFocus}"]`)?.focus({ preventScroll: true });
+      } else if (mailActionFocus?.startsWith('mail-inbox-')) {
+        (routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${mailActionFocus}"]`)
+          ?? routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="mail-inbox-retry"]`)
+          ?? routeRoot.querySelector<HTMLElement>('[data-mail-inbox-status]'))?.focus({ preventScroll: true });
+      }
+      const host = workSearchScrollHost();
+      if (host && mailListScroll !== undefined) host.scrollTop = mailListScroll;
     }
     if (savedFileListVisible) {
       const origin = pendingSavedFileRestore;
@@ -9011,6 +10665,30 @@ export const bootstrapDataRoute = (
     }
     if (focusedRecovery && contactRecovery.isOpen() && activeLens === 'data' && activeTab === 'contact') {
       Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-merge-recovery-focus]')).find(element => element.getAttribute('data-merge-recovery-focus') === focusedRecovery && !element.hasAttribute('disabled'))?.focus?.({ preventScroll: true });
+    }
+    if (workDraftFocus && activeLens === 'data' && isWorkDraftKind(activeTab)) {
+      const target = Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-work-draft-focus]'))
+        .find(element => element.getAttribute('data-work-draft-focus') === workDraftFocus && !element.hasAttribute('disabled'));
+      target?.focus({ preventScroll: true });
+      if (target?.tagName === 'TEXTAREA' && workDraftSelection) {
+        (target as HTMLTextAreaElement).setSelectionRange(workDraftSelection.start, workDraftSelection.end, workDraftSelection.direction);
+      }
+    }
+    if (activeLens === 'data' && activeTab === 'contact' && contactDialog === null && contactDetail?.email === contactActivity.email())
+      contactActivity.restore(routeRoot, workSearchScrollHost(), contactActivityPosition);
+    workLinkedFrom.restoreFocus();
+    if (pendingSourceRestore?.navigation !== navigationGeneration) pendingSourceRestore = null;
+    if (pendingSourceRestore && (explorerSelectedSlug !== pendingSourceRestore.origin.origin.source.collectionSlug
+      || explorerDetail?.record_id !== pendingSourceRestore.origin.origin.record.record_id)) pendingSourceRestore = null;
+    if (pendingSourceRestore && explorerDetail && !explorerDetail.loading
+      && (activeTab === 'mail' ? !mailMessageSurface.isReading() : activeTab === 'calendar' && !calendarEventSurface.isLoading())) {
+      const entry = pendingSourceRestore.origin; pendingSourceRestore = null;
+      if (activeTab === 'mail' && mailMessageSurface.restoreFindState(entry.mailFind)) render();
+      mailMessageSurface.restoreScroll(routeRoot, entry.indexScroll);
+      const host = workSearchScrollHost(); if (host) host.scrollTop = entry.scrollTop;
+      const focus = entry.focus;
+      const control = focus ? [...routeRoot.querySelectorAll<HTMLElement>('[' + focus.attribute + ']')].find(element => element.getAttribute(focus.attribute) === focus.key) : null;
+      (control ?? routeRoot.querySelector<HTMLElement>('[data-recued-collection-detail-heading], [role="alert"]'))?.focus({ preventScroll: true });
     }
     opts.onViewChange?.(currentView());
   };
@@ -9096,7 +10774,9 @@ export const bootstrapDataRoute = (
   const refreshWorkEntities = async (
     nextErrors: DataLoadErrors,
     generation: number,
+    retainRowsOnError = false,
   ): Promise<void> => {
+    if (disposed || generation !== loadGeneration) return;
     // Retain the exact saved Source even after it disconnects. A select with no
     // matching option must not show All while the query still names that Source.
     const selectedSource = workEntityState.selected_source_id;
@@ -9116,12 +10796,15 @@ export const bootstrapDataRoute = (
       const response = await opts.workEntityListCaller(workEntityListRequest(0));
       if (disposed || generation !== loadGeneration) return;
       workEntities = [...response.entities];
+      taskBlockerSources.clear(); for (const fresh of response.source_freshness ?? []) taskBlockerSources.set(fresh.source_id, fresh);
+      refreshTaskBlockers = true;
       workEntityTotal = response.total;
       if (response.counterparty_labels) commitmentContactLabels = { ...commitmentContactLabels, ...response.counterparty_labels };
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
-      workEntities = [];
-      workEntityTotal = 0;
+      // A batch has already installed confirmed note rows. Keep that evidence
+      // usable if its follow-up read fails; explicit refresh still starts over.
+      if (!retainRowsOnError) { workEntities = []; workEntityTotal = 0; }
       nextErrors.work_entities = errMessage(err);
     }
   };
@@ -9154,6 +10837,7 @@ export const bootstrapDataRoute = (
             )
             .map((entity) => ({ kind: entity._kind, id: entity.id }));
       workEntities = [...workEntities, ...response.entities];
+      for (const fresh of response.source_freshness ?? []) taskBlockerSources.set(fresh.source_id, fresh);
       workEntityTotal = response.total;
       if (response.counterparty_labels) commitmentContactLabels = { ...commitmentContactLabels, ...response.counterparty_labels };
       if (errors.work_entities !== undefined) {
@@ -9460,6 +11144,14 @@ export const bootstrapDataRoute = (
       return;
     }
     try {
+      if (platform === 'mail') {
+        await mailInbox.select(slug);
+        if (disposed || seq !== explorerSeq) return;
+        explorerRecords = [...(mailInbox.snapshot()?.records ?? [])];
+        explorerError = mailInbox.snapshot()?.pages === 0 ? mailInbox.snapshot()?.error : undefined;
+        explorerErrorRetryable = explorerError !== undefined;
+        return;
+      }
       if (saved) {
         await savedFiles.search(savedFiles.snapshot().query, showArchivedFiles);
         if (disposed || seq !== explorerSeq) return;
@@ -9696,7 +11388,8 @@ export const bootstrapDataRoute = (
     if (isSingleCollectionTab(tab)) return loadSingleCollection(tab);
     const platform = EXPLORER_TAB_PLATFORM[tab];
     const seq = ++explorerSeq;
-    const requestedSlug = preferredSourceSlug ?? initialExplorerSlug ?? savedExplorerScopes.get(tab) ?? null;
+    const requestedSlug = preferredSourceSlug ?? initialExplorerSlug ?? savedExplorerScopes.get(tab)
+      ?? (tab === 'mail' ? mailInbox.selectedSlug() : null) ?? null;
     initialExplorerSlug = null;
     const previouslySelectedSlug = explorerSelectedSlug;
     // Keep the intended source through a failed roster read, so Retry cannot
@@ -9818,12 +11511,15 @@ export const bootstrapDataRoute = (
   const selectExplorerInstance = async (slug: string): Promise<void> => {
     const platform = EXPLORER_TAB_PLATFORM[activeTab];
     if (platform === undefined || slug === explorerSelectedSlug) return;
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (!beforeLeaveFileRename()) return;
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
     if (!calendarCreateSurface.beforeLeave(() => { void selectExplorerInstance(slug); })) return;
     calendarEventSurface.reset();
-    mailMessageSurface.reset();
+    mailBulk.reset();
+    resetMailReader();
+    mailInbox.cancel(); pendingMailRestore = undefined;
     savedFiles.reset(); savedFileQueryInput = ''; savedFileReturn = pendingSavedFileRestore = null;
     cloudFileQuery = cloudFileQueryInput = ''; cloudFileCursor = undefined; cloudBrowseError = '';
     explorerSelectedSlug = slug;
@@ -9865,6 +11561,7 @@ export const bootstrapDataRoute = (
     if (
       explorerRetrying
       || !explorerErrorRetryable
+      || activeTab === 'mail' && mailInbox.snapshot()?.loading
       || activeLens !== 'data'
       || (!isExplorerTab(activeTab) && !isSingleCollectionTab(activeTab))
     ) {
@@ -9907,6 +11604,9 @@ export const bootstrapDataRoute = (
     try {
       const { record } = await caller({ platform, slug, record_id });
       if (disposed || seq !== explorerSeq) return;
+      const linkedSource = relatedWorkReturn?.source;
+      if (record && linkedSource?.tab === tab && linkedSource.collectionSlug === slug && linkedSource.recordId === record_id
+        && record.record_id !== record_id) throw new Error('The linked record could not be confirmed. Try again.');
       explorerDetail = { record_id, loading: false, record };
       explorerDetailRetryable = false;
       explorerDetailRetrying = false;
@@ -9964,6 +11664,7 @@ export const bootstrapDataRoute = (
     calendarAgenda.cancel();
     calendarAgendaReturn = { key, scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash,
       sourcesOpen: routeRoot.querySelector<HTMLDetailsElement>('details[data-calendar-agenda-sources]')?.open ?? false };
+    calendarContinuity.returnTo = calendarAgendaReturn;
     explorerCollection = 'calendar';
     explorerInstances = calendarAgenda.snapshot().sources.map(source => source.instance);
     explorerSelectedSlug = slug;
@@ -9972,15 +11673,30 @@ export const bootstrapDataRoute = (
   };
 
   const openExplorerRecord = async (record_id: string): Promise<void> => {
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (!beforeLeaveFileRename()) return;
     if (fileBatch.busy()) { focusFileBatch(); return; }
     fileBatch.reset();
     if (!calendarCreateSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => { void openExplorerRecord(record_id); })) return;
+    if (sourceDetour && (activeTab !== sourceDetour.destination.tab || explorerSelectedSlug !== sourceDetour.destination.collectionSlug || record_id !== sourceDetour.destination.recordId)) sourceDetour = null;
     calendarDeletionNotice = '';
     calendarEventSurface.reset();
-    mailMessageSurface.reset();
+    mailBulk.reset();
+    const mailVisit = activeTab === 'mail' && explorerDetail !== null && explorerSelectedSlug !== null
+      && mailReaderNavigation.owns(explorerSelectedSlug, record_id);
+    if (mailVisit) { mailMessageSurface.reset(); mailReaderNavigation.select(record_id); }
+    else resetMailReader();
+    if (activeTab === 'mail' && explorerDetail === null) {
+      if (explorerSelectedSlug !== null && doc.activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) === record_id)
+        mailReaderNavigation.start(explorerSelectedSlug, record_id);
+      const ids = explorerRecords.map(row => row.record_id), index = ids.indexOf(record_id);
+      if (index >= 0 && doc.activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) === record_id) mailInbox.rememberPosition({ recordId: record_id,
+        nearby: [...ids.slice(index + 1), ...ids.slice(0, index).reverse()],
+        scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash });
+      mailInbox.cancel(); explorerLoading = false;
+    }
     if (activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && opts.fileListCaller) {
       if (explorerDetail === null) savedFileReturn = { recordId: record_id, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
         details: (doc.activeElement as HTMLElement | null)?.getAttribute('data-file-details-id') === record_id };
@@ -10069,12 +11785,17 @@ export const bootstrapDataRoute = (
   };
 
   const closeExplorerDetail = (alreadyNavigated = false): void => {
+    if (activeSourceDetour()) { returnToSourceDetour(alreadyNavigated); return; }
     if (!beforeLeaveFileRename()) return;
+    if (!calendarCreateSurface.beforeLeave(() => closeExplorerDetail(alreadyNavigated))) return;
+    if (relatedWorkReturn?.source?.tab === activeTab) { returnToRelatedWork(alreadyNavigated); return; }
     if (activeTab === 'files' && documentSearchReturn) { returnToDocumentSearch(alreadyNavigated); return; }
+    if (recentSourceReturn?.record.kind === activeTab) { returnToRecentSourceSearch(alreadyNavigated); return; }
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(() => closeExplorerDetail(alreadyNavigated))) return;
     calendarEventSurface.reset();
-    mailMessageSurface.reset();
+    resetMailReader();
+    if (activeTab === 'mail') pendingMailRestore = mailInbox.position();
     if (activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG && savedFileReturn) {
       pendingSavedFileRestore = savedFileReturn; savedFileReturn = null;
     }
@@ -10108,8 +11829,11 @@ export const bootstrapDataRoute = (
       pendingLoadPromise = calendarAgenda.refresh({ silent: true });
       return;
     }
+    if (activeTab === 'mail' && alreadyNavigated) {
+      dataHistory.adopt(dataAddress(pendingMailRestore?.hash ?? '#data/mail', undefined));
+    }
     render();
-    if (returnRecordId !== null) {
+    if (returnRecordId !== null && activeTab !== 'mail') {
       const attribute = activeTab === 'files' && opts.filePreviewCallers ? 'data-file-details-id' : COLLECTION_RECORD_ID_ATTR;
       const row = Array.from(
         routeRoot.querySelectorAll<HTMLElement>(
@@ -11010,6 +12734,7 @@ export const bootstrapDataRoute = (
     explorerScope?: { tab: DataTabId; slug: string },
   ): Promise<void> => {
     const generation = ++loadGeneration;
+    workLinkedFrom.refresh();
     if (activeTab === 'commitment') {
       commitmentListFilter = { ...commitmentViewFilters };
       commitmentListSearch = workEntityState.search_query.trim();
@@ -11063,7 +12788,7 @@ export const bootstrapDataRoute = (
       // contacts, accepted forms, and connected mirrors usable when the Source
       // management slice is absent or recovering.
       await refreshSources(nextErrors, generation);
-      await refreshWorkEntities(nextErrors, generation);
+      await refreshWorkEntities(nextErrors, generation, silent && activeTab === 'note' && noteBulk.holdsList());
       if (!disposed && generation === loadGeneration && activeTab === 'project' && projectWork && !projectEditing
         && workEntityState.dialog?.entity_id === projectWork.project.id) {
         await openEditWorkEntityDialog('project', projectWork.project.id, 'read', true);
@@ -11103,15 +12828,22 @@ export const bootstrapDataRoute = (
   };
 
   const startRefresh = (): void => {
+    if (searchWriting()) return;
+    searchReminderTriage.reset(); searchPromptBulk.resetSelection();
+    if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
     if (!beforeLeaveFileRename()) return;
     if (fileBatch.busy()) { focusFileBatch(); return; }
     fileBatch.reset();
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (noteBulk.busy()) { focusNoteBatch(); return; }
+    noteBulk.reset();
     if (!mailMessageSurface.beforeLeave()) return;
     if (!calendarEventSurface.beforeLeave(startRefresh)) return;
     calendarEventSurface.reset();
     retireContactEmailOpen();
-    mailMessageSurface.reset();
+    mailBulk.reset();
+    resetMailReader();
     pendingLoadPromise = refreshActive();
   };
 
@@ -11190,8 +12922,43 @@ export const bootstrapDataRoute = (
 
   /** Retire replies at the edit/navigation boundary, before the next debounce.
    * A query comparison alone misses an edit away and back to the same words. */
-  const retireUniversalSearch = (): void => {
-    assetSearch.reset();
+  const rememberSearchNavigation = (destinationHash: string, action: string, attribute: string, id: string, destinationAliases?: readonly string[], scrollTop?: number): void => {
+    saveSearchNavigationReturn(doc, searchContinuityOwner, { destinationHash, ...(destinationAliases ? { destinationAliases } : {}),
+      returnHash: doc.defaultView?.location.hash ?? '#data/search', state: captureSearchState(),
+      focus: { action, attribute, id }, scrollTop: scrollTop ?? workSearchScrollHost()?.scrollTop ?? 0 });
+  };
+
+  const selectUniversalSearchType = (type: UniversalSearchResultType): void => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'search' || type === universalSearchType || searchWriting()) return;
+    searchReminderTriage.reset(); searchPromptBulk.resetSelection();
+    universalSearchType = type; universalSearchTypeGeneration++;
+    promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
+    if (type === 'scheduled_prompt' && !universalSearchQuery.trim()) void promptSearch.load('');
+    decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
+    if (type === 'decision') void decisionSearch.load(universalSearchQuery.trim());
+    if (type === 'reminder' && !universalSearchQuery.trim()) void loadReminderSearch();
+    mailMessageSurface.cancelCreateOpen(); universalDraftOpening = undefined; universalDraftOpenError = undefined;
+    if (recoveryDraftOpening?.mail) recoveryDraftOpening = undefined;
+    recoveryDraftError = undefined;
+    pendingWorkSearchRestore = null; pendingContactSearchRestore = null;
+    pendingAssetSearchRestore = null; pendingDraftSearchRestore = null; pendingChatSearchRestore = null; pendingReminderSearchRestore = null; pendingNavigationSearchRestore = null;
+    render(); routeRoot.querySelector<HTMLElement>(`[${SEARCH_TYPE_ATTR}]`)?.focus({ preventScroll: true });
+    opts.onViewChange?.(currentView());
+  };
+
+  const retireUniversalSearch = (finishHistory = true, promptQuery?: string): void => {
+    decisionSearch.reset(); decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
+    searchReminderTriage.reset(); searchPromptBulk.resetSelection();
+    searchRecordPreviews.reset(false);
+    if (finishHistory) finishRecentSearch();
+    universalExactLink = undefined; universalExactOpening = false; universalExactError = undefined;
+    assetSearch.reset(); chatSearch.reset(); reminderSearch.reset();
+    if (promptQuery !== undefined) promptSearch.setQuery(promptQuery); else promptSearch.reset();
+    promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
+    draftSearch.reset(); mailMessageSurface.cancelCreateOpen();
+    if (recoveryDraftOpening?.mail) recoveryDraftOpening = undefined;
+    universalDraftOpening = undefined; universalDraftOpenError = undefined;
+    recoveryDraftError = undefined;
     universalSearchSeq += 1;
     universalSearchMarketSeq += 1;
     if (universalSearchTimer !== null) clearTimeout(universalSearchTimer);
@@ -11220,16 +12987,45 @@ export const bootstrapDataRoute = (
     universalSearchError = undefined;
   };
 
-  const runUniversalSearch = async (resume = { records: true, work: true, contacts: true, capabilities: true }): Promise<void> => {
+  const runUniversalSearch = async (resume = { records: true, work: true, contacts: true, capabilities: true, drafts: true, chats: true, reminders: true, prompts: false, decisions: false }): Promise<void> => {
     if (disposed || activeLens !== 'data' || activeTab !== 'search') return;
     const caller = opts.collectionSearchAllCaller;
     const query = universalSearchQuery.trim();
+    decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
+    promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
     if (query === '') {
+      const prompts = promptSearch.snapshot();
+      const reminders = reminderSearch.snapshot();
+      const decisions = decisionSearch.snapshot();
       retireUniversalSearch();
+      if (universalSearchType === 'scheduled_prompt') { promptSearch.restore(prompts); await promptSearch.load('', resume.prompts); }
+      if (universalSearchType === 'reminder') { reminderSearch.restore(reminders); await loadReminderSearch(); }
+      if (universalSearchType === 'decision') { decisionSearch.restore(decisions); await decisionSearch.load('', resume.decisions); }
       render();
       return;
     }
+    const parsed = parseRecordLinkQuery(query, doc.defaultView?.location.href ?? doc.URL);
+    if (parsed.kind !== 'text') {
+      retireUniversalSearch(false); recentSearchCandidate = null;
+      const sequence = universalSearchSeq, navigation = navigationGeneration;
+      const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && sequence === universalSearchSeq
+        && navigation === navigationGeneration && query === universalSearchQuery.trim();
+      if (parsed.kind === 'invalid') { universalExactLink = { state: 'invalid', message: parsed.message }; render(); return; }
+      universalExactLink = { state: 'loading' }; render();
+      try {
+        const result = await readExactRecordLink(parsed.target, exactLinkReaders, doc.defaultView?.location.href ?? doc.URL);
+        if (!current()) return;
+        universalExactLink = result;
+      } catch {
+        if (!current()) return;
+        universalExactLink = { state: 'error', message: 'This record could not be checked. Try again.' };
+      }
+      render(); return;
+    }
+    universalExactLink = undefined;
     const seq = ++universalSearchSeq;
+    recentSearchCandidate = query;
+    recentSearchNotice = undefined;
     universalSearchNavigation = navigationGeneration;
     const isCurrent = (): boolean => !disposed
       && seq === universalSearchSeq && universalSearchNavigation === navigationGeneration
@@ -11292,14 +13088,15 @@ export const bootstrapDataRoute = (
         const result = await opts.workEntitySearchCaller({ query });
         if (!isCurrent()) return;
         universalSearchWorkUnsupported = false;
-        universalSearchWorkGroups = result.groups;
+        universalSearchWorkGroups = result.groups.some(group => group.kind === 'booking') ? result.groups
+          : [...result.groups, { kind: 'booking', matches: [], more: false, offset: 0, error: 'Bookings search is unavailable on this server. Update your Recued server to search bookings.' }];
         for (const group of result.groups) universalSearchWorkOffsets.set(group.kind, group.offset + group.matches.length);
       } catch (error) {
         if (!isCurrent()) return;
         // A server before 26.10.28 cannot search these kinds. Retrying cannot help, so it is not a
         // failure: the box says to update the server, and the rest completes the search.
         if (classifyRpcError(error).code === 'unknown_method') universalSearchWorkUnsupported = true;
-        else universalSearchWorkError = `Tasks, notes, projects and commitments could not be searched. ${humanizeRpcError(error)}`;
+        else universalSearchWorkError = `Tasks, notes, projects, commitments and bookings could not be searched. ${humanizeRpcError(error)}`;
       } finally {
         if (isCurrent()) {
           universalSearchWorkLoading = false;
@@ -11389,7 +13186,7 @@ export const bootstrapDataRoute = (
       universalSearchCapabilitiesError = capabilityErrors.length > 0 ? capabilityErrors.join(' ') : undefined;
       if (activeTab === 'search') render();
     })();
-    await Promise.all([recordSearch, workSearch, capabilitySearch, resume.contacts ? loadUniversalContactSearch(true) : Promise.resolve(), assetSearch.load(query)]);
+    await Promise.all([recordSearch, workSearch, capabilitySearch, resume.contacts ? loadUniversalContactSearch(true) : Promise.resolve(), assetSearch.load(query), resume.drafts ? draftSearch.load(query) : Promise.resolve(), (resume.chats || savedChatSearch) ? chatSearch.load(query) : Promise.resolve(), resume.reminders ? loadReminderSearch() : Promise.resolve(), promptSearch.load(query, resume.prompts), decisionSearch.load(query, resume.decisions)]);
   };
 
   const loadUniversalContactSearch = async (replace = false): Promise<void> => {
@@ -11495,9 +13292,14 @@ export const bootstrapDataRoute = (
     const caller = opts.marketplacePackSearchCaller;
     const query = universalSearchQuery.trim();
     if (disposed || activeLens !== 'data' || activeTab !== 'search'
-      || caller === undefined || query === '' || universalSearchMarketLoading
+      || universalSearchType !== 'all' || caller === undefined || query === '' || universalSearchMarketLoading
       || universalSearchLoading || universalSearchCapabilitiesLoading
       || universalSearchCapabilitiesError !== undefined
+      || promptSearch.state().loading || promptSearch.state().error !== undefined || promptSearch.state().unsupported || promptSearch.state().matches.length > 0
+      || opts.decisionSearchCallers && (decisionSearch.state().loading || !decisionSearch.state().loaded || decisionSearch.state().incomplete || decisionSearch.state().matches.length > 0)
+      || reminderSearch.state().loading || reminderSearch.state().error !== undefined || reminderSearch.state().unsupported || reminderSearch.state().next_cursor || reminderSearch.state().matches.length > 0
+      || chatSearch.state().loading || chatSearch.state().error !== undefined || chatSearch.state().unsupported || chatSearch.state().incomplete || chatSearch.state().next_cursor || chatSearch.state().matches.length > 0
+      || draftSearch.state().loading || draftSearch.state().error !== undefined || draftSearch.state().unsupported || draftSearch.state().matches.length > 0
       || assetSearch.state().loading || assetSearch.state().error !== undefined || assetSearch.state().unsupported
       || assetSearch.state().matches.length > 0
       || universalSearchContactLoading || universalSearchContactError !== undefined || universalSearchContactUnsupported
@@ -11655,12 +13457,12 @@ export const bootstrapDataRoute = (
   });
   let savedViewLinked = opts.savedView !== undefined;
   let savedViewBinding = opts.savedView;
-  const syncDataHash = (): void => {
+  const syncDataHash = (forcePush = false): void => {
     if (activeTab === 'files' && documentSearchOpening && documentSearchOpening === documentSearchReturn) return;
     const definition = currentView();
     if (savedViewLinked && savedViewBinding !== undefined && definition !== null
       && sameSavedDataViewDefinition(definition, savedViewBinding.definition)) {
-      dataHistory.navigate(dataAddress(serializeShellRoute('views', savedViewBinding.id), undefined));
+      dataHistory.navigate(dataAddress(serializeShellRoute('views', savedViewBinding.id), undefined), forcePush ? { intent: 'push' } : undefined);
       return;
     }
     // D-198 Slice 1b — the Memory lens addresses as `#data/memory` (no entity
@@ -11728,12 +13530,28 @@ export const bootstrapDataRoute = (
                   : {}),
               })
             : serializeShellRoute('data', activeTab, deepLinkEntity);
+    const fromBookingSearch = workSearchReturn?.kind === 'booking' && deepLinkEntity === workSearchReturn.id && dataHistory.current().hash === workSearchReturn.hash;
+    const fromRecentWork = workSearchReturn?.recent && activeTab === workSearchReturn.kind && deepLinkEntity === workSearchReturn.id
+      && dataHistory.current().hash === serializeShellRoute('data', 'search');
+    const fromRecentSource = recentSourceReturn?.record.kind === activeTab && dataHistory.current().hash === recentSourceReturn.hash;
     const fromSearch = activeTab === 'contact' && contactSearchReturn
-      && deepLinkEntity === contactSearchReturn.email && dataHistory.current().hash === contactSearchReturn.hash;
+      && (deepLinkEntity === contactSearchReturn.email || contactSearchReturn.lookupId !== undefined && contactDetail?.contact?.contact_id === contactSearchReturn.lookupId) && dataHistory.current().hash === contactSearchReturn.hash;
     const fromAgenda = activeTab === 'calendar' && calendarAgendaReturn
       && explorerDetail !== null && dataHistory.current().hash === calendarAgendaReturn.hash;
     const fromDocumentSearch = activeTab === 'files' && documentSearchReturn && dataHistory.current().hash === documentSearchReturn.hash;
-    dataHistory.navigate(dataAddress(hash, deepLinkEntity), fromSearch || fromAgenda || fromDocumentSearch ? { intent: 'push' } : undefined);
+    const fromProject = projectChildReturn && !projectChildReturn.linking && projectChildReturn.id === deepLinkEntity
+      && activeTab === projectChildReturn.kind && dataHistory.current().hash === projectChildReturn.hash;
+    const fromNote = relatedWorkReturn && (activeTab === 'contact' || activeTab === 'project'
+      || isRelatedWorkReader()
+      || relatedWorkReturn.source?.tab === activeTab)
+      && dataHistory.current().hash === relatedWorkReturn.hash;
+    const fromBooking = bookingReaderReturn && dataHistory.current().hash === bookingReaderReturn.hash;
+    const fromReminder = activeReminderWork() && dataHistory.current().hash === reminderWorkReturn?.hash;
+    const readerView = currentView(true);
+    const fromSavedView = deepLinkEntity !== undefined && savedViewLinked && savedViewBinding !== undefined && readerView !== null
+      && sameSavedDataViewDefinition(readerView, savedViewBinding.definition)
+      && dataHistory.current().hash === serializeShellRoute('views', savedViewBinding.id);
+    dataHistory.navigate(dataAddress(hash, deepLinkEntity), forcePush || fromBookingSearch || fromRecentWork || fromRecentSource || fromSearch || fromAgenda || fromDocumentSearch || fromProject || fromNote || fromBooking || fromReminder || fromSavedView ? { intent: 'push' } : undefined);
   };
 
   const cancelContactEditOpen = (): void => {
@@ -11747,16 +13565,23 @@ export const bootstrapDataRoute = (
     focusActivatedTab = false,
     sourceSlug?: string,
     preserveWorkSearch = false,
+    searchQuery?: string,
+    deferAddress = false,
+    deferLoad = false,
   ): Promise<void> => {
+    if (workReminder.block()) return;
     if (contactRecovery.busy()) return;
     if (projectLinkReviewProps()?.busy) { focusWorkEntityDialog(); return; }
     if (fileBatch.busy()) { focusFileBatch(); return; }
+    if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
     if (activeTab === tab && sourceSlug === undefined) return;
     if (!beforeLeaveFileRename()) return;
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (noteBulk.busy()) { focusNoteBatch(); return; }
     if (!mailMessageSurface.beforeLeave()) return;
-    if (!calendarEventSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch); })) return;
-    if (!calendarCreateSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch); })) return;
+    if (!calendarEventSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch, searchQuery, deferAddress); })) return;
+    if (!calendarCreateSurface.beforeLeave(() => { void selectTab(tab, focusActivatedTab, sourceSlug, preserveWorkSearch, searchQuery, deferAddress); })) return;
     if (activeTab === 'reminder' && !remindersSurface.beforeLeave()) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
@@ -11778,16 +13603,32 @@ export const bootstrapDataRoute = (
       showFormResponseDiscardGuard(tab);
       return;
     }
+    if (tab === 'search' && exactSearchReturn && !preserveWorkSearch) { returnToExactLinkSearch(); return; }
+    if (tab === 'search' && recentSourceReturn?.record.kind === activeTab && !preserveWorkSearch) { returnToRecentSourceSearch(); return; }
     if (tab === 'search' && activeTab === 'contact' && contactSearchReturn && !preserveWorkSearch) { returnToContactSearch(); return; }
+    // Commit the broader query only after the current editor's navigation guards accept leaving.
+    if (tab === 'search' && searchQuery !== undefined) {
+      const query = searchQuery.trim();
+      if (!query) return;
+      retireUniversalSearch(); universalSearchType = 'all'; universalSearchTypeGeneration++; universalSearchQuery = query; documentSearch.setQuery(query);
+      workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    }
+    selectionNotePicker.reset(); selectionNoteReturn = null; noteWriteRevision = undefined;
     if (focusActivatedTab) pendingCollectionTabFocus = tab;
+    flushWorkReading();
     if (activeTab === 'search' && !preserveWorkSearch) retireUniversalSearch();
     if (!preserveWorkSearch) {
+      bookingReaderReturn = null; bookingActions.reset(); bookingReader.reset();
+      recentSourceReturn = null; pendingRecentSourceRestore = null;
+      discardRelatedWorkReturn();
       documentSearchReturn = null; documentSearchOpening = null;
       workSearchReturn = null; contactSearchReturn = null; pendingContactSearchRestore = null;
       projectWork?.dispose(); projectWork = null; projectChildReturn = null; pendingProjectRestore = null;
     }
     navigationGeneration += 1;
     if (preserveWorkSearch) universalSearchNavigation = navigationGeneration;
+    calendarWorkReturn = null;
+    duplicateContext = null; duplicatePreparing = null;
     timelineLoadGeneration += 1;
     loadingTimeline = false;
     retireRunVerification();
@@ -11797,6 +13638,10 @@ export const bootstrapDataRoute = (
     loadingWorkEntityDetail = false;
     cancelContactEditOpen();
     taskBulk.reset();
+    noteBulk.reset();
+    mailBulk.reset();
+    if (tab !== activeTab) rememberContactActivity();
+    sourceDetour = null; pendingSourceRestore = null;
     activeTab = tab;
     contactDialog = null;
     contactDialogReturnFocus = null;
@@ -11832,17 +13677,20 @@ export const bootstrapDataRoute = (
     // leave focus on that control so the owner can keep changing collections.
     // Claiming the search box there ejected a keyboard user from navigation.
     if (tab === 'search' && !focusActivatedTab) pendingUniversalSearchFocus = true;
+    // An exact source link installs its own detail, without browsing an account.
+    if (deferLoad) { loadGeneration++; loading = false; pendingLoadPromise = Promise.resolve(); return; }
     if (tab === 'contact' && preserveWorkSearch && contactSearchReturn) {
       // A search hit already addresses the profile. The list and Source-health
       // reads behind it are independent and must not delay opening it.
       loadGeneration += 1;
       loading = false;
-      pendingLoadPromise = openContactDetail(contactSearchReturn.email, true);
+      pendingLoadPromise = openContactDetail(contactSearchReturn.lookupId ?? contactSearchReturn.email, true);
     } else {
-      syncDataHash();
+      if (!deferAddress) syncDataHash(tab === 'search' && searchQuery !== undefined);
       const scope = sourceSlug === undefined ? undefined : { tab, slug: sourceSlug };
       pendingLoadPromise = refreshActive(false, scope);
     }
+    if (tab === 'search' && searchQuery !== undefined) finishRecentSearch();
     await pendingLoadPromise;
   };
 
@@ -11858,11 +13706,53 @@ export const bootstrapDataRoute = (
     return doc.scrollingElement;
   };
 
+  const returnToExactLinkSearch = (alreadyNavigated = false, afterLeave = false): boolean => {
+    const origin = exactSearchReturn;
+    if (!origin || disposed || hasDataInFlightWork() || contactDialog !== null || openingContactEditEmail !== null || !afterLeave && hasUnsavedWorkEntityDialog()) return false;
+    if (afterLeave) flushEditorDrafts();
+    if (afterLeave && (!mailMessageSurface.releaseComposeAfterLeave() || !calendarCreateSurface.releaseAfterLeave())) return false;
+    if (!mailMessageSurface.beforeLeave()) return false;
+    if (!afterLeave && (!calendarEventSurface.beforeLeave(() => { returnToExactLinkSearch(alreadyNavigated); })
+      || !calendarCreateSurface.beforeLeave(() => { returnToExactLinkSearch(alreadyNavigated); }))) return false;
+    exactSearchReturn = null; discardRelatedWorkReturn(); calendarWorkReturn = null;
+    workEntityDialogOpenSeq++; pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    suspendContactActivity(); cancelContactEditOpen(); pendingContactDetailFocusEmail = null;
+    contactDetail = null; loadingContactDetail = false;
+    loadGeneration++; navigationGeneration++; explorerSeq++;
+    resetExplorerState(); retireUniversalSearch(false);
+    activeTab = 'search'; loading = false; errors = {}; universalSearchNavigation = navigationGeneration;
+    universalSearchQuery = origin.query; universalSearchType = origin.type; universalExactLink = origin.result;
+    pendingNavigationSearchRestore = { focus: { action: EXACT_LINK_OPEN_ACTION, attribute: EXACT_LINK_KEY_ATTR, id: origin.result.match.key }, scrollTop: origin.scrollTop };
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, undefined)); else syncDataHash();
+    render(); return true;
+  };
+
+  const returnToRecentSourceSearch = (alreadyNavigated = false, afterLeave = false): boolean => {
+    const origin = recentSourceReturn;
+    if (!origin || disposed || hasDataInFlightWork() || contactDialog !== null || openingContactEditEmail !== null || !afterLeave && hasUnsavedWorkEntityDialog()) return false;
+    if (afterLeave) flushEditorDrafts();
+    if (afterLeave && (!mailMessageSurface.releaseComposeAfterLeave() || !calendarCreateSurface.releaseAfterLeave())) return false;
+    if (!mailMessageSurface.beforeLeave()) return false;
+    if (!afterLeave && (!calendarEventSurface.beforeLeave(() => { returnToRecentSourceSearch(alreadyNavigated); })
+      || !calendarCreateSurface.beforeLeave(() => { returnToRecentSourceSearch(alreadyNavigated); }))) return false;
+    recentSourceReturn = null;
+    discardRelatedWorkReturn(); calendarWorkReturn = null;
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    suspendContactActivity(); cancelContactEditOpen(); pendingContactDetailFocusEmail = null;
+    contactDetail = null; loadingContactDetail = false;
+    loadGeneration++; navigationGeneration++; universalSearchNavigation = navigationGeneration; explorerSeq++;
+    resetExplorerState(); activeTab = 'search'; loading = false; errors = {}; universalSearchQuery = '';
+    pendingRecentSourceRestore = { kind: origin.record.kind, id: origin.record.id, scrollTop: origin.scrollTop, recent: true, pinned: origin.pinned };
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, undefined)); else syncDataHash();
+    render(); return true;
+  };
+
   const returnToContactSearch = (alreadyNavigated = false): void => {
     const origin = contactSearchReturn;
     if (!origin || disposed) return;
     if (!mailMessageSurface.beforeLeave()) return;
-    mailMessageSurface.reset();
+    resetMailReader();
     contactSearchReturn = null; contactDetail = null; loadingContactDetail = false;
     cancelContactEditOpen(); pendingContactDetailFocusEmail = null;
     loadGeneration += 1; navigationGeneration += 1; universalSearchNavigation = navigationGeneration;
@@ -11874,10 +13764,10 @@ export const bootstrapDataRoute = (
     void loadUniversalContactSearch(true);
   };
 
-  const openContactSearchResult = async (email: string): Promise<void> => {
-    if (activeTab !== 'search' || !universalSearchContacts.some(contact => contact.email === email)) return;
+  const openContactSearchResult = async (email: string, lookupId?: string): Promise<void> => {
+    if (activeTab !== 'search' || !universalSearchContacts.some(contact => contact.email === email && (lookupId === undefined || (contact.contact_id || contact.email) === lookupId))) return;
     const sequence = universalSearchSeq;
-    contactSearchReturn = { sequence, query: universalSearchQuery, email,
+    contactSearchReturn = { sequence, query: universalSearchQuery, email, ...(lookupId ? { lookupId } : {}),
       scrollTop: workSearchScrollHost()?.scrollTop ?? 0, hash: dataHistory.current().hash };
     const previousNavigation = navigationGeneration;
     const opening = selectTab('contact', false, undefined, true);
@@ -11885,9 +13775,15 @@ export const bootstrapDataRoute = (
     await opening;
   };
 
-  const returnToWorkSearch = (): void => {
+  const returnToWorkSearch = (alreadyNavigated = false, afterLeave = false): boolean => {
     const origin = workSearchReturn;
-    if (!origin || disposed) return;
+    if (!origin || disposed || hasDataInFlightWork() || !afterLeave && (hasUnsavedWorkEntityDialog() || contactDialog !== null)) return false;
+    if (afterLeave) { flushEditorDrafts(); if (!mailMessageSurface.releaseComposeAfterLeave()) return false; }
+    if (!mailMessageSurface.beforeLeave()) return false;
+    if (afterLeave && contactDialog !== null) { contactDialog = null; retireContactDialogDraft(); }
+    contactDetail = null; loadingContactDetail = false; cancelContactEditOpen(); suspendContactActivity();
+    bookingDetailSeq++; bookingDetail = null; bookingDetailId = null; loadingBookingDetail = false;
+    bookingReaderReturn = null; bookingActions.reset(); bookingReader.reset(); bookingChat.reset();
     workSearchReturn = null;
     loadGeneration += 1;
     workEntityDialogOpenSeq += 1;
@@ -11901,8 +13797,9 @@ export const bootstrapDataRoute = (
     universalSearchQuery = origin.query;
     errors = {};
     pendingWorkSearchRestore = origin;
-    syncDataHash(); render();
-    void loadMoreWorkSearch(origin.kind, true);
+    if (alreadyNavigated && origin.hash) dataHistory.adopt(dataAddress(origin.hash, undefined)); else syncDataHash(); render();
+    if (!origin.recent) void loadMoreWorkSearch(origin.kind, true);
+    return true;
   };
 
   const openWorkSearchResult = async (kind: WorkEntitySearchKind, id: string): Promise<void> => {
@@ -11911,14 +13808,40 @@ export const bootstrapDataRoute = (
       && group.matches.some(match => match.id === id))) return;
     const sequence = universalSearchSeq;
     const scrollTop = workSearchScrollHost()?.scrollTop ?? 0;
-    workSearchReturn = { sequence, query: universalSearchQuery, kind, id, scrollTop };
+    const origin = { hash: dataHistory.current().hash, sequence, query: universalSearchQuery, kind, id, scrollTop };
+    workSearchReturn = origin;
     const previousNavigation = navigationGeneration;
-    const opening = selectTab(kind, false, undefined, true);
+    const opening = selectTab(kind, false, undefined, true, undefined, kind === 'booking');
     const navigation = navigationGeneration;
     if (navigation === previousNavigation) { workSearchReturn = null; return; }
     await opening;
-    if (disposed || navigation !== navigationGeneration || workSearchReturn?.sequence !== sequence || !atDestination()) return;
+    if (disposed || navigation !== navigationGeneration || workSearchReturn !== origin || !atDestination()) return;
+    if (kind === 'task' || kind === 'note') workReaderNavigation.start(kind, id, scrollTop);
+    if (kind === 'booking') { await openBookingDetail(id); return; }
     await openEditWorkEntityDialog(kind, id);
+    if (disposed || navigation !== navigationGeneration || workSearchReturn !== origin || !atDestination()
+      || workEntityDialogEntity?._kind !== kind || workEntityDialogEntity.id !== id) return;
+    if (kind === 'task' && taskMode === 'read') taskFind.find(origin.query.trim());
+    if (kind === 'note' && noteMode === 'read') noteFind.find(origin.query.trim());
+  };
+
+  const openWorkReaderNeighbor = async (kind: WorkReaderKind, id: string): Promise<boolean> => {
+    const from = activeWorkReader(), owner = workReaderNavigation, navigation = navigationGeneration;
+    if (!from || from.kind !== kind || !canLeaveWorkReader()) return false;
+    const origin = workSearchReturn, source = origin ? null : workEntityState.selected_source_id;
+    const find = kind === 'task' ? taskFind.state() : noteFind.state();
+    const query = origin?.query.trim() ?? (find.open ? find.query : undefined);
+    const response = opts.workEntityGetCaller ? await opts.workEntityGetCaller({ kind, id })
+      : { entity: workEntities.find(entity => entity._kind === kind && entity.id === id) ?? null };
+    if (owner !== workReaderNavigation || navigation !== navigationGeneration || activeWorkReader()?.id !== from.id || !canLeaveWorkReader()) return false;
+    const entity = response.entity;
+    if (!entity || entity._kind !== kind || entity.id !== id) throw new Error(`This ${kind} is no longer available. Return to the list to refresh it.`);
+    if (source !== null && entity.source_id !== source) throw new Error(`This ${kind} is no longer in the selected source. Return to the list to refresh it.`);
+    await openEditWorkEntityDialog(kind, id, 'read', false, entity, 'source_freshness' in response ? response.source_freshness : undefined);
+    if (owner !== workReaderNavigation || navigation !== navigationGeneration || activeWorkReader()?.id !== id) return false;
+    if (origin && workSearchReturn === origin) origin.id = id;
+    if (query !== undefined) (kind === 'task' ? taskFind : noteFind).find(query);
+    return true;
   };
 
   /** Search names an exact source. Let the explorer load its roster and that
@@ -11968,11 +13891,13 @@ export const bootstrapDataRoute = (
       if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
     });
   };
-  const previewListedFile = (fileId: string): void => {
+  const previewListedFile = (fileId: string, opener: HTMLElement): void => {
     const record = explorerRecords.find(row => row.record_id === fileId);
     if (!record || activeTab !== 'files' || explorerDetail !== null || !opts.filePreviewCallers || fileBatch.busy()) return;
     filePreviewAbort?.abort(); const abort = new AbortController(); filePreviewAbort = abort;
     filePreviewRecord = { id: fileId, slug: explorerSelectedSlug, fromList: true };
+    // WebKit pointer clicks need not focus a button; the viewer returns to this row when it closes.
+    opener.focus({ preventScroll: true });
     void openFilePreview(doc, { record_id: fileId, filename: String(record.hot_fields.filename ?? 'File preview') }, opts.filePreviewCallers, abort.signal).finally(() => {
       if (filePreviewAbort === abort) { filePreviewAbort = null; filePreviewRecord = null; }
     });
@@ -12001,10 +13926,14 @@ export const bootstrapDataRoute = (
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
   // Data lens preserves its active tab + open detail when you come back.
   const selectLens = async (lens: 'data' | 'memory'): Promise<void> => {
+    if (workReminder.block()) return;
+    if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
     if (lens !== activeLens && !beforeLeaveFileRename()) return;
     if (projectLinkReviewProps()?.busy) { focusWorkEntityDialog(); return; }
     if (fileBatch.busy()) { focusFileBatch(); return; }
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (noteBulk.busy()) { focusNoteBatch(); return; }
     if (lens !== activeLens && !mailMessageSurface.beforeLeave()) return;
     if (lens !== activeLens && !calendarEventSurface.beforeLeave(() => { void selectLens(lens); })) return;
     if (lens !== activeLens && !calendarCreateSurface.beforeLeave(() => { void selectLens(lens); })) return;
@@ -12052,6 +13981,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (activeTab === 'search') retireUniversalSearch();
+    discardRelatedWorkReturn();
     workSearchReturn = null; contactSearchReturn = null; pendingContactSearchRestore = null;
     projectWork?.dispose(); projectWork = null; projectChildReturn = null; pendingProjectRestore = null;
     pendingWorkSearchRestore = null;
@@ -12064,8 +13994,13 @@ export const bootstrapDataRoute = (
     cancelContactEditOpen();
     if (lens === 'memory') closeFormResponseRunModal();
     taskBulk.reset();
+    noteBulk.reset();
+    mailBulk.reset();
     retireContactEmailOpen();
+    rememberContactActivity();
     activeLens = lens;
+    recentSourceReturn = null; pendingRecentSourceRestore = null;
+    calendarWorkReturn = null;
     syncDataHash();
     pendingLoadPromise = refreshActive();
     await pendingLoadPromise;
@@ -13191,6 +15126,295 @@ export const bootstrapDataRoute = (
     }
   };
 
+  const workDraftEditing = (): WorkDraftKind | null => isWorkDraftKind(activeTab) && workEntityState.kind === activeTab
+    && workEntityState.dialog && !(activeTab === 'task' && workEntityState.dialog.mode === 'edit' && taskMode === 'read') && !(activeTab === 'project' && projectWork && !projectEditing) && !projectLinkReviewProps() ? activeTab : null;
+  const updateWorkDraftStatus = (): void => {
+    const kind = workDraftEditing(), status = routeRoot.querySelector?.<HTMLElement>('[data-work-recovery-status]');
+    if (kind && status && status.textContent !== workDrafts[kind].message()) status.textContent = workDrafts[kind].message();
+  };
+  const beginWorkDraft = (entity?: WorkDraftEntity): void => {
+    const kind = workDraftEditing(), dialog = workEntityState.dialog;
+    if (kind && dialog) workDrafts[kind].begin(dialog.source_id, dialog.values, entity ? workDraftOriginal(entity) : null);
+  };
+  const captureWorkDraft = (): void => {
+    const kind = workDraftEditing(), dialog = workEntityState.dialog;
+    if (kind && dialog && !dialog.submitting) workDrafts[kind].capture(dialog.source_id, {
+      ...dialog.values, ...(kind === 'task' && taskDueShortcutAnchor !== undefined ? { due_at: taskDueShortcutAnchor } : {}),
+    });
+  };
+  const workDraftPanel = (kind: WorkDraftKind, entityId?: string): string => renderWorkDraftRecoveries({
+    kind, entries: opts.workRecovery?.[kind]?.list().filter(entry => entry.id !== workDrafts[kind].id()
+      && (entityId === undefined || (entry.savedId ?? entry.original?.id) === entityId)) ?? [],
+    busy: workDraftBusy, preview: workDraftPreview, discard: workDraftDiscard, notice: workDraftNotice,
+    sourceLabel: id => sources.find(source => source.id === id)?.source_label ?? 'Source unavailable',
+  });
+  const workDraftSurface = (): string => isWorkDraftKind(activeTab) && opts.workRecovery?.[activeTab]
+    ? `<style>${WORK_DRAFT_RECOVERY_STYLES}</style>${!workEntityState.dialog || activeTab === 'project' && projectWork && !projectEditing ? workDraftPanel(activeTab) : ''}` : '';
+  const mountWorkDraftRecovery = (): void => {
+    if (activeTab === 'task' && taskMode === 'read' && workEntityState.dialog?.mode === 'edit' && opts.workRecovery?.task) {
+      routeRoot.querySelector<HTMLElement>('.work-entity-task-reader-content')?.insertAdjacentHTML('afterbegin', workDraftPanel('task', workEntityState.dialog.entity_id));
+      return;
+    }
+    const kind = workDraftEditing();
+    if (!kind || !opts.workRecovery?.[kind]) return;
+    const form = routeRoot.querySelector?.<HTMLElement>('.work-entity-dialog-form');
+    if (!form) return;
+    const status = doc.createElement('p'); status.setAttribute('data-work-recovery-status', '');
+    status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.textContent = workDrafts[kind].message(); form.prepend(status);
+    const id = workEntityState.dialog?.entity_id;
+    if (id) form.insertAdjacentHTML('afterbegin', workDraftPanel(kind, id));
+  };
+  const focusWorkDraft = (id: string, action?: string): void => {
+    const row = Array.from(routeRoot.querySelectorAll?.<HTMLElement>('[data-work-draft-id]') ?? [])
+      .filter(element => element.getAttribute('data-work-draft-id') === id).at(-1);
+    const control = action ? row?.querySelector<HTMLElement>(`[data-action="${WORK_DRAFT_ACTION}${action}"]`)
+      : row?.querySelector<HTMLElement>('[data-work-draft-notice]') ?? row?.querySelector<HTMLElement>('button:not(:disabled)');
+    (control ?? routeRoot.querySelector?.<HTMLElement>('[data-action="open-create-work-entity-dialog"]'))?.focus({ preventScroll: true });
+  };
+  const canResumeWorkDraft = (entity: WorkDraftEntity): boolean => Boolean(opts.workEntityGetCaller && opts.workEntityUpsertCaller
+    && opts.workEntitySourceListCaller && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
+    && sources.some(source => source.id === entity.source_id && source.top_tier_kind === entity._kind
+      && source.write_capable && source.sync_posture !== 'read_through'));
+  const handleWorkDraftAction = async (action: string, target: HTMLElement | string): Promise<void> => {
+    if (disposed || activeLens !== 'data' || !isWorkDraftKind(activeTab) || workDraftBusy) return;
+    const kind = activeTab, store = opts.workRecovery?.[kind];
+    const id = typeof target === 'string' ? target : target.closest('[data-work-draft-id]')?.getAttribute('data-work-draft-id');
+    const entry = id ? store?.get(id) : null;
+    if (!entry || !store) return;
+    if (action === 'preview' || action === 'review') { workDraftPreview = action === 'review' || workDraftPreview !== entry.id ? entry.id : null; render(); focusWorkDraft(entry.id, 'preview'); return; }
+    if (action === 'discard' || action === 'keep') { workDraftDiscard = action === 'discard' ? entry.id : null; render(); focusWorkDraft(entry.id, action === 'discard' ? 'keep' : 'discard'); return; }
+    if (action === 'remove' && workDraftDiscard === entry.id) {
+      if (!store.remove(entry.id)) workDraftNotice = { id: entry.id, text: 'The recovery copy could not be discarded. Try again.' };
+      workDraftDiscard = null; render(); focusWorkDraft(entry.id); return;
+    }
+    if (action !== 'open' && action !== 'resume' || action === 'resume' && entry.status !== 'editing') return;
+    if (workEntityState.dialog?.submitting || hasUnsavedWorkEntityDialog()) {
+      workDraftNotice = { id: entry.id, text: 'Save or discard your current edits before opening another draft.' }; render(); focusWorkDraft(entry.id); return;
+    }
+    if (action === 'open') {
+      const savedId = entry.savedId ?? entry.original?.id;
+      if (savedId) await openEditWorkEntityDialog(kind, savedId);
+      return;
+    }
+    const resume = ++workDraftResumeSequence, navigation = navigationGeneration, openSequence = workEntityDialogOpenSeq;
+    const stillHere = () => !disposed && resume === workDraftResumeSequence && navigation === navigationGeneration
+      && activeTab === kind && activeLens === 'data' && store.get(entry.id)?.revision === entry.revision;
+    workDraftBusy = entry.id; workDraftNotice = null; render();
+    let resumed = false, opened = false;
+    try {
+      if (entry.original) {
+        // A failed fresh read must never leave an older dialog entity eligible
+        // to approve restoration of this draft.
+        workEntityDialogEntity = null;
+        await openEditWorkEntityDialog(kind, entry.original.id, 'edit');
+        if (!stillHere() || workEntityDialogOpenSeq !== openSequence + 1) return;
+        opened = true;
+        const saved = workEntityDialogEntity as WorkEntity | null;
+        if (!saved || !isWorkDraftKind(saved._kind) || saved._kind !== kind || !canResumeWorkDraft(saved as WorkDraftEntity)) {
+          throw new Error(`This ${kind} cannot be reopened for editing. Your recovery copy is still here.`);
+        }
+        if (!workDraftMatchesOriginal(entry.original, saved as WorkDraftEntity)) {
+          throw new Error(`The saved ${kind} changed since this draft began. Review the saved item and copy the draft fields you want to keep.`);
+        }
+      } else {
+        if (!opts.workEntitySourceListCaller || !opts.workEntityUpsertCaller) throw new Error(`The ${kind} source cannot be checked. Your recovery copy is still here.`);
+        const registered = await opts.workEntitySourceListCaller();
+        if (!stillHere() || workEntityDialogOpenSeq !== openSequence) return;
+        sources = [...registered.sources];
+        if (!sources.some(source => source.id === entry.sourceId && source.top_tier_kind === kind && source.write_capable && source.sync_posture !== 'read_through')) {
+          throw new Error(`This ${kind} source is not available for writing. Your recovery copy is still here.`);
+        }
+        projectChildReturn = null; workSearchReturn = null;
+        if (kind === 'project') { projectWork?.dispose(); projectWork = null; projectEditing = false; }
+        openCreateWorkEntityDialog(entry.sourceId); opened = true;
+      }
+      if (!stillHere() || !workEntityState.dialog || workEntityState.dialog.source_id !== entry.sourceId) return;
+      const fields = new Set(activeWorkEntityDefinition().fields.map(field => field.name));
+      if (Object.keys(entry.values).some(key => !fields.has(key))) {
+        throw new Error('Some draft fields are no longer available in this editor. Review the draft and copy the fields you want to keep.');
+      }
+      workDrafts[kind].begin(entry.sourceId, workEntityState.dialog.values, entry.original, entry);
+      workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog.values, ...entry.values });
+      if (kind === 'task') { taskDetailsOpen = true; taskDueShortcutAnchor = typeof entry.values.due_at === 'number' ? entry.values.due_at : undefined; }
+      if (kind === 'task' && entry.origin && entry.original === null) recoveredDraftReturn = { origin: entry.origin, kind, draftId: entry.id, sequence: workEntityDialogOpenSeq, navigation, busy: false, check: 0 };
+      resumed = true;
+    } catch (error) {
+      if (!stillHere()) return;
+      if (opened && workEntityDialogOpenSeq === openSequence + 1) {
+        workDrafts[kind].suspend(); workEntityState = closeDialogTransition(workEntityState);
+        workEntityDialogBaseline = null; if (kind === 'project') projectEditing = false;
+        syncDataHash();
+      }
+      workDraftPreview = entry.id; workDraftNotice = { id: entry.id, text: errMessage(error) };
+    } finally {
+      if (resume === workDraftResumeSequence) {
+        workDraftBusy = null;
+        if (!disposed && navigation === navigationGeneration) { render(); if (resumed) focusWorkEntityDialog(); else focusWorkDraft(entry.id); }
+      }
+    }
+  };
+
+  const mountRecoveredDraftOrigin = (): void => {
+    const owner = activeRecoveredDraftReturn();
+    const form = owner ? routeRoot.querySelector<HTMLElement>('.work-entity-dialog-form') : null;
+    if (!owner || !form?.insertAdjacentHTML) return;
+    form.insertAdjacentHTML('afterbegin', `<aside data-draft-origin><p class="data-row-subtle">Started from ${e(draftOriginNoun(owner.origin))}: ${e(owner.origin.label)}</p>
+      ${owner.error ? `<p role="alert" tabindex="-1" data-draft-origin-error>${e(owner.error)}</p>` : owner.busy ? '<p role="status">Checking the original record…</p>' : ''}</aside>`);
+    for (const button of routeRoot.querySelectorAll<HTMLButtonElement>('[data-action="close-work-entity-dialog"]')) {
+      if (owner.busy) { button.setAttribute('aria-disabled', 'true'); button.setAttribute('aria-busy', 'true'); }
+    }
+  };
+
+  const prepareRecoveredDraftReturn = async (owner: RecoveredDraftReturn, discard: boolean): Promise<void> => {
+    if (owner.busy || owner !== activeRecoveredDraftReturn() || hasDataInFlightWork()) return;
+    const check = ++owner.check;
+    const current = () => !disposed && owner === activeRecoveredDraftReturn() && owner.check === check && !workEntityState.dialog?.submitting;
+    owner.busy = true; owner.error = undefined; render();
+    let continued = false;
+    try {
+      const checked = await checkDraftOrigin(owner.origin, {
+        ...(opts.contactGetCaller ? { contact: (id: string) => opts.contactGetCaller!({ email: id }) } : {}),
+        ...(opts.workEntityGetCaller ? { note: (id: string) => opts.workEntityGetCaller!({ kind: 'note', id }) } : {}),
+        mail: opts.mailMessageCallers?.get, calendar: opts.calendarEventCallers?.get,
+      });
+      if (!current()) return;
+      let mailRecord: CollectionRecord | undefined;
+      if (owner.origin.kind === 'mail') {
+        const result = await getExplorerRecord({ platform: 'mail', slug: owner.origin.slug, record_id: owner.origin.recordId });
+        if (!current()) return;
+        if (!result.record || result.record.record_id !== owner.origin.recordId) throw new Error('The original email is no longer available. Your draft is still here.');
+        mailRecord = result.record;
+      }
+      owner.busy = false; owner.prepared = { checked, ...(mailRecord ? { mailRecord } : {}) };
+      render(); continued = true; closeWorkEntityDialog(discard);
+    } catch (error) {
+      if (current()) {
+        owner.error = `Could not reopen the original ${draftOriginNoun(owner.origin)}. ${humanizeRpcError(error)}`;
+        workEntityDiscardGuardOpen = false; workEntityDiscardReturnFocus = null;
+      }
+    } finally {
+      if (owner.check === check) {
+        owner.busy = false;
+        if (!continued && current()) { render(); if (owner.error) routeRoot.querySelector<HTMLElement>('[data-draft-origin-error]')?.focus({ preventScroll: true }); }
+      }
+    }
+  };
+
+  const openRecoveredDraftOrigin = async (origin: DraftOrigin, prepared: NonNullable<RecoveredDraftReturn['prepared']>): Promise<void> => {
+    const tab = origin.kind, before = navigationGeneration;
+    await selectTab(tab, false, undefined, false, undefined, true, true);
+    const visit = navigationGeneration;
+    if (disposed || visit !== before + 1 || activeTab !== tab) return;
+    workEntities = []; workEntityTotal = 0;
+    if (prepared.checked.kind === 'contact') {
+      const { contact, identifiers } = prepared.checked.reply;
+      await openContactDetail(contact.email, true, { kind: 'contact', contact, ...(identifiers ? { identifiers } : {}),
+        identity: JSON.stringify([contact.contact_id, contact.created_at]) });
+    } else if (prepared.checked.kind === 'note') {
+      const reply = prepared.checked.reply;
+      await openEditWorkEntityDialog('note', reply.entity.id, 'read', false, reply.entity, reply.source_freshness);
+    } else if (origin.kind === 'mail' || origin.kind === 'calendar') {
+      const record = prepared.checked.kind === 'calendar' ? prepared.checked.snapshot.record : prepared.mailRecord!;
+      explorerCollection = origin.kind; explorerSelectedSlug = origin.slug;
+      explorerDetail = { record_id: origin.recordId, loading: false, record };
+      dataHistory.navigate(dataAddress(draftOriginHash(origin), origin.recordId), { intent: 'push' }); render();
+      if (origin.kind === 'mail') void mailMessageSurface.open({ slug: origin.slug, record_id: origin.recordId, ...(origin.conversation ? { conversation: origin.conversation } : {}) });
+      else void calendarEventSurface.open({ slug: origin.slug, source_id: origin.sourceId }, origin.recordId);
+    }
+  };
+
+  const updateNoteDraftStatus = (): void => {
+    const status = routeRoot.querySelector?.<HTMLElement>('[data-note-recovery-status]');
+    if (status && status.textContent !== noteDraft.message()) status.textContent = noteDraft.message();
+  };
+  const noteDraftPanel = (entityId?: string): string => !opts.noteRecovery ? '' : renderNoteDraftRecoveries({
+    entries: opts.noteRecovery.list().filter(entry => entry.id !== noteDraft.id()
+      && (entityId === undefined || (entry.savedId ?? entry.original?.id) === entityId)),
+    busy: noteDraftBusy, preview: noteDraftPreview, discard: noteDraftDiscard, notice: noteDraftNotice,
+    sourceLabel: id => sources.find(source => source.id === id)?.source_label ?? 'Source unavailable',
+  });
+  const mountNoteDraftRecovery = (): void => {
+    if (activeTab !== 'note' || !opts.noteRecovery) return;
+    const form = routeRoot.querySelector?.<HTMLElement>('.work-entity-note-form');
+    if (form) {
+      const status = doc.createElement('p'); status.setAttribute('data-note-recovery-status', '');
+      status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.textContent = noteDraft.message(); form.prepend(status);
+    }
+    const reader = routeRoot.querySelector?.<HTMLElement>('.work-entity-note-reader');
+    const id = reader?.getAttribute('data-note-id');
+    if (id) reader?.querySelector('.work-entity-note-content')?.insertAdjacentHTML('afterbegin', noteDraftPanel(id));
+  };
+  const focusNoteDraft = (id: string, action?: string): void => {
+    const rows = routeRoot.querySelectorAll?.<HTMLElement>('[data-note-draft-id]');
+    const row = Array.from(rows ?? []).filter(element => element.getAttribute('data-note-draft-id') === id).at(-1);
+    const target = action ? row?.querySelector<HTMLElement>(`[data-action="${NOTE_DRAFT_ACTION}${action}"]`)
+      : row?.querySelector<HTMLElement>('[data-note-draft-notice]') ?? row?.querySelector<HTMLElement>('button:not(:disabled)');
+    (target ?? routeRoot.querySelector?.<HTMLElement>('[data-action="open-create-work-entity-dialog"]'))?.focus({ preventScroll: true });
+  };
+  const handleNoteDraftAction = async (action: string, target: HTMLElement | string): Promise<void> => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'note' || !opts.noteRecovery || noteDraftBusy) return;
+    const id = typeof target === 'string' ? target : target.closest('[data-note-draft-id]')?.getAttribute('data-note-draft-id');
+    const entry = id ? opts.noteRecovery.get(id) : null;
+    if (!entry) return;
+    if (action === 'preview' || action === 'review') { noteDraftPreview = action === 'review' || noteDraftPreview !== entry.id ? entry.id : null; render(); focusNoteDraft(entry.id, 'preview'); return; }
+    if (action === 'discard' || action === 'keep') { noteDraftDiscard = action === 'discard' ? entry.id : null; render(); focusNoteDraft(entry.id, action === 'discard' ? 'keep' : 'discard'); return; }
+    if (action === 'remove' && noteDraftDiscard === entry.id) {
+      if (!opts.noteRecovery.remove(entry.id)) noteDraftNotice = { id: entry.id, text: 'The recovery copy could not be discarded. Try again.' };
+      noteDraftDiscard = null; render(); focusNoteDraft(entry.id); return;
+    }
+    if (action !== 'open' && action !== 'resume' || action === 'resume' && entry.status !== 'editing') return;
+    if (workEntityState.dialog && noteMode === 'edit') {
+      noteDraftNotice = { id: entry.id, text: 'Close the note editor before opening another draft.' }; render(); focusNoteDraft(entry.id); return;
+    }
+    if (action === 'open') {
+      const savedId = entry.savedId ?? entry.original?.id;
+      if (savedId) await openEditWorkEntityDialog('note', savedId);
+      return;
+    }
+    const resume = ++noteDraftResumeSequence, navigation = navigationGeneration;
+    const openSequence = workEntityDialogOpenSeq;
+    const stillHere = () => !disposed && resume === noteDraftResumeSequence && navigation === navigationGeneration
+      && activeTab === 'note' && activeLens === 'data' && opts.noteRecovery?.get(entry.id)?.revision === entry.revision;
+    noteDraftBusy = entry.id; noteDraftNotice = null; render();
+    let resumed = false;
+    try {
+      if (entry.original) {
+        await openEditWorkEntityDialog('note', entry.original.id, 'edit');
+        if (!stillHere() || workEntityDialogOpenSeq !== openSequence + 1) return;
+        const saved = workEntityDialogEntity;
+        if (saved?._kind !== 'note' || noteMode !== 'edit' || !canEditNote(saved)) throw new Error('This note cannot be reopened for editing. Your recovery copy is still here.');
+        if (!noteDraftMatchesOriginal(entry.original, saved)) {
+          noteMode = 'read'; noteDraft.suspend();
+          throw new Error('The saved note changed since this draft began. Review the saved note and copy the draft text you want to keep.');
+        }
+      } else {
+        if (!opts.workEntitySourceListCaller || !opts.workEntityUpsertCaller) throw new Error('The note source cannot be checked. Your recovery copy is still here.');
+        const registered = await opts.workEntitySourceListCaller();
+        if (!stillHere() || workEntityDialogOpenSeq !== openSequence) return;
+        sources = [...registered.sources];
+        if (!sources.some(source => source.id === entry.sourceId && source.top_tier_kind === 'note' && source.write_capable && source.sync_posture !== 'read_through')) {
+          throw new Error('This note source is not available for writing. Your recovery copy is still here.');
+        }
+        openCreateWorkEntityDialog(entry.sourceId);
+      }
+      if (!stillHere() || !workEntityState.dialog || workEntityState.dialog.source_id !== entry.sourceId) return;
+      noteWriteRevision = entry.original?.editRevision;
+      noteDraft.begin(entry.sourceId, workEntityState.dialog.values, entry.original, entry);
+      workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog.values, ...entry.values });
+      if (entry.origin && entry.original === null) recoveredDraftReturn = { origin: entry.origin, kind: 'note', draftId: entry.id, sequence: workEntityDialogOpenSeq, navigation, busy: false, check: 0 };
+      noteDetailsOpen = true; resumed = true;
+    } catch (error) {
+      if (!stillHere()) return;
+      noteDraftPreview = entry.id; noteDraftNotice = { id: entry.id, text: errMessage(error) };
+    } finally {
+      if (resume === noteDraftResumeSequence) {
+        noteDraftBusy = null;
+        if (!disposed && navigation === navigationGeneration) { render(); if (resumed) focusWorkEntityDialog(); else focusNoteDraft(entry.id); }
+      }
+    }
+  };
+  const flushEditorDrafts = (): void => { syncWorkEntityDialogFromDom(); noteDraft.flush(); workDrafts.task.flush(); workDrafts.project.flush(); calendarCreateSurface.flush(); calendarEventSurface.flush(); };
+
   const activeWorkEntityDefinition = (): FormDefinition => {
     const activeSourceId =
       workEntityState.dialog?.source_id ?? workEntityState.selected_source_id;
@@ -13246,6 +15470,10 @@ export const bootstrapDataRoute = (
   };
 
   const focusWorkEntityDialogReturnTarget = (): void => {
+    if (taskBlockerReturn && !workEntityState.dialog) {
+      const origin = taskBlockerReturn; taskBlockerReturn = null;
+      if (taskBlockers.focus(origin)) { workEntityDialogReturnFocus = null; return; }
+    }
     const origin = workEntityDialogReturnFocus;
     workEntityDialogReturnFocus = null;
     if (origin === null) return;
@@ -13291,6 +15519,14 @@ export const bootstrapDataRoute = (
   };
 
   const retireWorkEntityDialogDraft = (): void => {
+    flushWorkReading();
+    recoveredDraftReturn = null;
+    workReaderCopy.reset();
+    workReaderNavigation.reset(); pendingWorkReaderListReturn = null;
+    commitmentReader.reset(); commitmentRelated.reset();
+    noteRelated.reset(); taskRelated.reset(); taskReader.reset(); taskFind.reset(); taskMode = 'read'; taskNotice = undefined; taskDiscardToReader = false;
+    duplicateContext = null; duplicatePreparing = null;
+    noteDraft.suspend(); suspendWorkDrafts();
     workEntityDialogBaseline = null;
     workEntityDialogEntity = null;
     taskCompletionNotice = null;
@@ -13299,6 +15535,7 @@ export const bootstrapDataRoute = (
     commitmentMode = 'read'; commitmentNotice = undefined; commitmentDiscardToReader = false;
     noteMode = 'read'; noteDetailsOpen = false; noteCopying = false;
     noteCopySequence += 1; noteNotice = undefined; noteDiscardToReader = false;
+    noteReader.reset(); noteFind.reset();
   };
 
   const captureWorkEntityDiscardReturnFocus = (): void => {
@@ -13356,6 +15593,7 @@ export const bootstrapDataRoute = (
   const closeWorkEntityDiscardGuard = (): void => {
     if (!workEntityDiscardGuardOpen) return;
     workEntityDiscardGuardOpen = false;
+    if (recoveredDraftReturn) { recoveredDraftReturn.check++; recoveredDraftReturn.busy = false; recoveredDraftReturn.prepared = undefined; }
     render();
     focusWorkEntityDiscardReturnTarget();
   };
@@ -13372,6 +15610,7 @@ export const bootstrapDataRoute = (
   };
 
   const hasUnsavedWorkEntityDialog = (): boolean => {
+    if (activeTab === 'task' && workEntityState.dialog?.mode === 'edit' && taskMode === 'read') return false;
     if (activeTab === 'project' && projectWork && !projectEditing) return false;
     if (projectLinkReviewProps()) return false;
     syncWorkEntityDialogFromDom();
@@ -13381,7 +15620,71 @@ export const bootstrapDataRoute = (
         !== workEntityDialogBaseline;
   };
 
-  const closeWorkEntityDialog = (discardChanges = false, returnToNote = false, returnToCommitment = false): void => {
+  const openReminderRecord = async (response: WorkEntityGetRpcResponse): Promise<void> => {
+    const record = response.entity, id = remindersSurface.detailId();
+    if (disposed || activeTab !== 'reminder' || !id || !record || (record._kind !== 'task' && record._kind !== 'commitment')
+      || hasDataInFlightWork() || !remindersSurface.beforeLeave()) return;
+    const origin = { hash: dataHistory.current().hash, id, kind: record._kind, recordId: record.id,
+      scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+    const previous = navigationGeneration;
+    await selectTab(record._kind, false, undefined, false, undefined, true);
+    if (disposed || navigationGeneration !== previous + 1 || (activeTab as DataTabId) !== record._kind) return;
+    reminderWorkReturn = origin;
+    opts.todayReminderNavigation?.follow(id, serializeShellRoute('data', record._kind, record.id));
+    await openEditWorkEntityDialog(record._kind, record.id, 'read', false, record, response.source_freshness);
+  };
+  const openReminderMail = async (message: MailMessageSnapshot, ref: ReminderMailReference): Promise<void> => {
+    const id = remindersSurface.detailId(), navigation = navigationGeneration;
+    if (disposed || activeTab !== 'reminder' || !id || !opts.collectionGetCaller || !remindersSurface.beforeLeave()) return;
+    const response = await opts.collectionGetCaller({ platform: 'mail', slug: ref.slug, record_id: ref.record_id });
+    if (disposed || activeTab !== 'reminder' || navigation !== navigationGeneration || remindersSurface.detailId() !== id) return;
+    const record = response.record;
+    if (!record || record.record_id !== ref.record_id || record.source_id !== ref.source_id || record.received_at !== ref.received_at)
+      throw new Error('This email was removed or replaced. Reopen it from Mail.');
+    const origin = { hash: dataHistory.current().hash, id, slug: ref.slug, recordId: ref.record_id,
+      scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+    await selectTab('mail', false, ref.slug, false, undefined, true);
+    if (disposed || navigationGeneration !== navigation + 1 || (activeTab as DataTabId) !== 'mail') return;
+    reminderMailReturn = origin;
+    explorerSelectedSlug = ref.slug; explorerDetail = { record_id: ref.record_id, record, loading: false };
+    syncDataHash(true);
+    opts.todayReminderNavigation?.follow(id, serializeSourceRecordAddress({ tab: 'mail', collectionSlug: ref.slug, recordId: ref.record_id }));
+    await mailMessageSurface.open({ slug: ref.slug, record_id: ref.record_id, expected_reminder_ref: ref }, message);
+    if (!disposed && activeReminderMail()) render();
+  };
+  const returnToMailReminder = (alreadyNavigated = false, afterLeave = false): boolean => {
+    const origin = reminderMailReturn;
+    if (!origin || !activeReminderMail() || disposed || hasDataInFlightWork()) return false;
+    if (afterLeave && !mailMessageSurface.releaseComposeAfterLeave() || !mailMessageSurface.beforeLeave()) return false;
+    mailMessageSurface.reset(); reminderMailReturn = null;
+    loadGeneration++; navigationGeneration++; explorerSeq++;
+    explorerDetail = null; activeTab = 'reminder'; loading = false;
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, origin.id)); else syncDataHash();
+    render();
+    const scroll = workSearchScrollHost(); if (scroll) scroll.scrollTop = origin.scrollTop;
+    routeRoot.querySelector<HTMLElement>('[data-recued-reminders-focus="linked-mail"]')?.focus({ preventScroll: true });
+    return true;
+  };
+  const returnToReminder = (alreadyNavigated = false, afterLeave = false): boolean => {
+    const origin = reminderWorkReturn;
+    if (!origin || !activeReminderWork() || disposed || hasDataInFlightWork()
+      || !afterLeave && (hasUnsavedWorkEntityDialog() || workReminder.hasDraft())) return false;
+    if (afterLeave) flushEditorDrafts();
+    workReminder.reset(); reminderWorkReturn = null;
+    loadGeneration++; navigationGeneration++; workEntityDialogOpenSeq++;
+    pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    activeTab = 'reminder'; loading = false;
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, origin.id)); else syncDataHash();
+    render();
+    const scroll = workSearchScrollHost(); if (scroll) scroll.scrollTop = origin.scrollTop;
+    routeRoot.querySelector<HTMLElement>('[data-recued-reminders-focus="linked-record"]')?.focus({ preventScroll: true });
+    return true;
+  };
+  const closeWorkEntityDialog = (discardChanges = false, returnToNote = false, returnToCommitment = false, returnToTask = false): void => {
+    if (activeSelectionNote()?.returning) return;
+    if (workReminder.block()) return;
+    if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
     if (
       workEntityState.dialog === null
       || workEntityState.dialog.submitting === true
@@ -13390,21 +15693,43 @@ export const bootstrapDataRoute = (
       closeWorkEntityDiscardGuard();
       return;
     }
+    const recovered = activeRecoveredDraftReturn();
+    if (recovered && !recovered.prepared) { void prepareRecoveredDraftReturn(recovered, discardChanges); return; }
     if (!discardChanges && hasUnsavedWorkEntityDialog()) {
+      if (recovered) recovered.prepared = undefined;
+      taskDiscardToReader = returnToTask;
       noteDiscardToReader = returnToNote;
       commitmentDiscardToReader = returnToCommitment;
       showWorkEntityDiscardGuard();
       return;
     }
+    if (workDraftEditing() && isWorkDraftKind(workEntityState.kind) && !workDrafts[workEntityState.kind].discard()) {
+      workEntityState = setDialogSubmitErrorTransition(workEntityState, 'The recovery copy could not be discarded. Keep the editor open and try again.');
+      render(); return;
+    }
+    if (workEntityState.kind === 'note' && noteMode === 'edit' && !noteDraft.discard()) {
+      workEntityState = setDialogSubmitErrorTransition(workEntityState, 'The recovery copy could not be discarded. Keep the note open and try again.');
+      render(); return;
+    }
     retireRunVerification();
     workEntityDialogOpenSeq += 1;
     pendingWorkEntityDialogOpen = null;
     loadingWorkEntityDetail = false;
+    if (activeSelectionNote()) { returnToSelectionNoteOrigin(false, false, true); return; }
+    if (returnToTask && workEntityState.kind === 'task' && workEntityDialogEntity?._kind === 'task') {
+      workEntityState = openEditDialogTransition(workEntityState, workEntityDialogEntity, getCanonicalSchema('task'));
+      workEntityDialogOriginal = { ...workEntityState.dialog!.values };
+      taskMode = 'read'; taskNotice = undefined; taskDiscardToReader = false; taskDetailsOpen = false;
+      workEntityDiscardGuardOpen = false; render(); captureWorkEntityDialogBaseline();
+      routeRoot.querySelector<HTMLElement>('[data-action="edit-task"]')?.focus({ preventScroll: true });
+      loadWorkEntityTimeline('task', workEntityDialogEntity.id, workEntityDialogOpenSeq); return;
+    }
     if (returnToCommitment && workEntityState.kind === 'commitment' && workEntityDialogEntity?._kind === 'commitment') {
       workEntityState = openEditDialogTransition(workEntityState, workEntityDialogEntity, getCanonicalSchema('commitment'));
       workEntityDialogOriginal = { ...workEntityState.dialog!.values };
       commitmentMode = 'read'; commitmentNotice = undefined; commitmentDiscardToReader = false;
       workEntityDiscardGuardOpen = false;
+      bindCommitmentFollowUp(workEntityDialogEntity); commitmentRelated.open(workEntityDialogEntity);
       render(); captureWorkEntityDialogBaseline();
       (routeRoot.querySelector<HTMLElement>('[data-action="edit-commitment"]')
         ?? routeRoot.querySelector<HTMLElement>('.work-entity-dialog-title'))?.focus?.();
@@ -13423,8 +15748,35 @@ export const bootstrapDataRoute = (
       loadWorkEntityTimeline('note', workEntityDialogEntity.id, workEntityDialogOpenSeq);
       return;
     }
+    if (recovered?.prepared) {
+      const prepared = recovered.prepared;
+      workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+      void openRecoveredDraftOrigin(recovered.origin, prepared); return;
+    }
+    if (activeReminderWork()) { returnToReminder(false, discardChanges); return; }
+    const mailWork = activeMailWork();
+    const calendarWork = activeCalendarWork();
+    if (activeContactWork()) { returnToContactWork(false, false, undefined, true); return; }
+    if (activeNoteTask()) { returnToNoteTaskOrigin(false, false, undefined, true); return; }
+    const duplicate = activeDuplicate();
+    const blockerToday = workEntityState.dialog?.entity_id;
+    const returnToRelated = relatedWorkReturn && (activeTab === 'project' && !projectEditing && !projectChildReturn
+      || isRelatedWorkReader());
+    if (returnToRelated) {
+      if (discardChanges && activeTab === 'task') taskMode = 'read';
+      if (discardChanges && activeTab === 'note') { noteMode = 'read'; workEntityDialogBaseline = null; }
+      returnToRelatedWork(); return;
+    }
+    const readerReturn = workSearchReturn ? null : workReaderNavigation.returnPosition();
     workEntityState = closeDialogTransition(workEntityState);
     retireWorkEntityDialogDraft();
+    if (blockerToday && opts.taskBlockerNavigation?.back(blockerToday)) return;
+    if (mailWork) { returnToMailWorkOrigin(); return; }
+    if (calendarWork) { returnToCalendarWorkOrigin(); return; }
+    if (duplicate) {
+      void openEditWorkEntityDialog(duplicate.original._kind, duplicate.original.id);
+      return;
+    }
     if (projectChildReturn?.linking && activeTab === projectChildReturn.kind) {
       syncDataHash(); render(); focusWorkEntityDialogReturnTarget(); return;
     }
@@ -13438,19 +15790,44 @@ export const bootstrapDataRoute = (
       return;
     }
     if (activeTab === 'project') { projectWork?.dispose(); projectWork = null; }
+    if (exactSearchReturn) { returnToExactLinkSearch(); return; }
     if (workSearchReturn) { returnToWorkSearch(); return; }
+    pendingWorkReaderListReturn = readerReturn;
     syncDataHash();
     render();
     focusWorkEntityDialogReturnTarget();
   };
 
-  const openCreateWorkEntityDialog = (sourceOverride?: string): void => {
+  const openCreateWorkEntityDialog = (sourceOverride?: string, duplicate?: DuplicateEntity): void => {
+    if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (noteBulk.busy()) { focusNoteBatch(); return; }
+    const sourceId = resolveCreateDialogSourceId(
+      workEntityState.kind, sourceOverride ?? workEntityState.selected_source_id,
+      enabledSourcesForKind(sources, workEntityState.kind),
+    );
+    if (sourceId === null) return;
+    selectionNoteReturn = null; noteWriteRevision = undefined;
+    recoveredDraftReturn = null;
+    contactWorkReturn = null;
+    mailWorkReturn = null;
+    duplicateContext = duplicate ? { original: duplicate, attempted: false } : null;
+    calendarWorkReturn = null;
+    noteTaskReturn = null;
+    duplicatePreparing = null;
+    taskBlockerReturn = null;
     taskBulk.reset();
+    noteBulk.reset();
+    mailBulk.reset();
+    noteDraft.suspend(); suspendWorkDrafts();
     workEntityDialogOriginal = {};
     workEntityDialogEntity = null;
+    taskMode = 'edit'; taskNotice = undefined; taskDiscardToReader = false; taskReader.reset(); taskFind.reset(); taskRelated.reset();
     commitmentMode = 'edit'; commitmentNotice = undefined; commitmentDiscardToReader = false;
     noteMode = 'edit'; noteDetailsOpen = false; noteNotice = undefined;
+    noteReader.reset(); noteFind.reset();
+    noteRelated.reset();
     noteCopying = false; noteCopySequence += 1; noteDiscardToReader = false;
     taskDetailsOpen = false;
     taskDueShortcutAnchor = undefined;
@@ -13458,13 +15835,7 @@ export const bootstrapDataRoute = (
     loadingWorkEntityDetail = false;
     pendingWorkEntityDialogOpen = null;
     workEntityDialogReturnFocus = null;
-    const sourceId = resolveCreateDialogSourceId(
-      workEntityState.kind,
-      sourceOverride ?? workEntityState.selected_source_id,
-      enabledSourcesForKind(sources, workEntityState.kind),
-    );
-    if (sourceId === null) return;
-    if (!projectChildReturn) workSearchReturn = null;
+    if (!projectChildReturn && !duplicate) workSearchReturn = null;
     // Bump the open sequence so an edit fetch still in flight (its dialog not
     // yet installed) can't resolve later and clobber this create dialog.
     workEntityDialogOpenSeq += 1;
@@ -13484,7 +15855,629 @@ export const bootstrapDataRoute = (
     syncDataHash(); // create has no entity id → drops any prior edit id
     render();
     captureWorkEntityDialogBaseline();
+    if (workEntityState.kind === 'note' && workEntityState.dialog) noteDraft.begin(sourceId, workEntityState.dialog.values, null);
+    beginWorkDraft();
+    if (duplicate && workEntityState.dialog) {
+      // Begin recovery as a NEW empty form before seeding it. A refresh must
+      // recover a create draft, with no authority to edit the original.
+      workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog.values, ...duplicateWorkValues(duplicate) });
+      taskDetailsOpen = duplicate._kind === 'task'; noteDetailsOpen = duplicate._kind === 'note';
+      if (duplicate._kind === 'note') { noteDraft.capture(sourceId, workEntityState.dialog!.values); noteDraft.flush(); }
+      else { captureWorkDraft(); workDrafts.task.flush(); }
+      render();
+    }
     focusWorkEntityDialog();
+    if (duplicate) routeRoot.querySelector<HTMLInputElement>('[data-form-field="title"]')?.select();
+  };
+
+  const scheduleTaskCalendar = async (): Promise<void> => {
+    const original = workEntityDialogEntity;
+    if (disposed || activeLens !== 'data' || activeWorkReader()?.kind !== 'task' || original?._kind !== 'task'
+      || !canScheduleTask(original) || !calendarCreateSurface.available() || !opts.workEntityGetCaller
+      || taskCalendarPreparing && taskCalendarPreparing.navigation === navigationGeneration && taskCalendarPreparing.sequence === workEntityDialogOpenSeq
+      || hasDataInFlightWork() || pendingWorkEntityDialogOpen) return;
+    if (calendarCreateSurface.isOpen()) {
+      taskNotice = 'Your existing calendar draft is still open. Finish or cancel it before scheduling another task.'; render(); return;
+    }
+    const navigation = navigationGeneration, sequence = workEntityDialogOpenSeq, preparation = { id: original.id, navigation, sequence };
+    const current = () => !disposed && taskCalendarPreparing === preparation && activeLens === 'data'
+      && navigationGeneration === navigation && workEntityDialogOpenSeq === sequence && activeWorkReader()?.id === original.id
+      && sameCalendarTask(original, workEntityDialogEntity) && canScheduleTask(workEntityDialogEntity) && !hasDataInFlightWork();
+    taskCalendarPreparing = preparation; taskNotice = undefined; render();
+    try {
+      const reply = await opts.workEntityGetCaller({ kind: 'task', id: original.id });
+      if (!current()) return;
+      const seed = calendarTaskSeed(original, reply.entity, doc.defaultView!.location.href);
+      const opening = selectTab('calendar', false, undefined, false, undefined, false, true);
+      const nextNavigation = navigationGeneration;
+      if (nextNavigation === navigation) return;
+      await opening;
+      if (disposed || taskCalendarPreparing !== preparation || navigationGeneration !== nextNavigation || (activeTab as DataTabId) !== 'calendar') return;
+      syncDataHash(true);
+      calendarCreateSurface.openFromTask(seed);
+      void calendarAgenda.refresh();
+    } catch (cause) {
+      if (current()) {
+        taskNotice = errMessage(cause); render();
+        routeRoot.querySelector<HTMLElement>('[data-task-focus="schedule"]')?.focus({ preventScroll: true });
+      }
+    } finally {
+      if (taskCalendarPreparing === preparation) {
+        taskCalendarPreparing = null;
+        if (activeWorkReader()?.id === original.id) render();
+      }
+    }
+  };
+
+  const openMailWorkDraft = async (message: MailMessageSnapshot, isCurrent: () => boolean, kind: 'task' | 'note' = 'task', selected?: string): Promise<void> => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'mail' || !isCurrent() || !opts.workEntitySourceListCaller) return;
+    const navigation = navigationGeneration;
+    const registered = await opts.workEntitySourceListCaller();
+    if (disposed || navigation !== navigationGeneration || activeTab !== 'mail' || !isCurrent() || !mailMessageSurface.beforeLeave()) return;
+    const writable = registered.sources.filter(source => source.top_tier_kind === kind && source.write_capable && source.sync_posture !== 'read_through');
+    const sourceId = resolveCreateDialogSourceId(kind, null, writable);
+    if (!sourceId) throw new Error(`No writable ${kind} Source is available. Check Connections in Settings, then try again.`);
+    const values = kind === 'task' ? mailTaskValues(message, doc.defaultView!.location.href, selected) : mailNoteValues(message, doc.defaultView!.location.href);
+    // Keep the mounted conversation, Find, inbox pages and navigation visit.
+    // Only the task editor and its reads change while this return is active.
+    syncDataHash();
+    mailMessageSurface.captureFind();
+    const origin: MailWorkOrigin = { kind, hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+      indexScroll: mailMessageSurface.captureScroll(routeRoot), projectReturn: projectChildReturn, searchReturn: workSearchReturn, attempted: false };
+    loadGeneration++; navigationGeneration++; explorerSeq++;
+    timelineLoadGeneration++; loadingTimeline = false; loading = false; explorerLoading = false;
+    sources = [...registered.sources];
+    activeTab = kind; workEntityState = selectKindTransition(workEntityState, kind);
+    projectChildReturn = null;
+    workEntities = []; workEntityTotal = 0;
+    // A create has no entity id; give it a separate visit so browser Back
+    // reaches this email rather than replacing the email's history entry.
+    syncDataHash(true);
+    openCreateWorkEntityDialog(sourceId);
+    mailWorkReturn = origin; if (kind === 'note') noteDraft.setOrigin(mailDraftOrigin(message)); else workDrafts.task.setOrigin(mailDraftOrigin(message));
+    workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog!.values, ...values });
+    // Seed after the empty baseline so leaving requires an explicit discard,
+    // and an untouched prefilled task survives a reload as a new draft.
+    if (kind === 'note') { noteDraft.capture(sourceId, workEntityState.dialog!.values); noteDraft.flush(); }
+    else { captureWorkDraft(); workDrafts.task.flush(); }
+    render(); focusWorkEntityDialog();
+    routeRoot.querySelector<HTMLInputElement>('[data-form-field="title"]')?.select();
+  };
+
+  const restoreLinkedSourceFocus = (key: string): void => {
+    ([...routeRoot.querySelectorAll<HTMLElement>('[data-source-linked-focus]')]
+      .find(control => control.getAttribute('data-source-linked-focus') === key)
+      ?? routeRoot.querySelector<HTMLElement>('[data-source-linked-from] summary'))?.focus({ preventScroll: true });
+  };
+
+  const sourceVisit = (): SourceVisit | null => {
+    const record = explorerDetail?.record, slug = explorerSelectedSlug;
+    if (!record || !slug || activeTab !== 'mail' && activeTab !== 'calendar') return null;
+    const source = taskNoteSource(serializeSourceRecordAddress({ tab: activeTab, collectionSlug: slug, recordId: record.record_id }), doc.URL);
+    if (!source) return null;
+    if (activeTab === 'mail') {
+      const message = mailMessageSurface.recentSnapshot();
+      return message?.slug === slug && message.record_id === record.record_id ? { source, record, kind: 'mail', message,
+        incarnation: mailMessageSurface.linkedFromIncarnation(), resume: mailMessageSurface.captureReading() } : null;
+    }
+    const event = calendarEventSurface.recentSnapshot();
+    return event?.ref.slug === slug && event.snapshot.record.record_id === record.record_id
+      ? { source, record, kind: 'calendar', ...event } : null;
+  };
+  const displaySourceVisit = async (visit: SourceVisit, navigation: number): Promise<void> => {
+    const current = () => !disposed && navigationGeneration === navigation && activeTab === visit.kind
+      && explorerSelectedSlug === visit.source.collectionSlug && explorerDetail?.record_id === visit.record.record_id;
+    try {
+      if (visit.kind === 'calendar') {
+        explorerDetail = { record_id: visit.record.record_id, record: visit.record, loading: false };
+        await calendarEventSurface.open(visit.ref, visit.record.record_id, visit.snapshot,
+          visit.linkedFrom ? value => verifyLinkedCalendarEvent(visit.linkedFrom!.row, visit.linkedFrom!.target, value, doc.URL) : undefined);
+      } else {
+        const result = await getExplorerRecord({ platform: 'mail', slug: visit.source.collectionSlug, record_id: visit.record.record_id });
+        if (!current()) return;
+        const record = result.record;
+        if (!record || record.record_id !== visit.record.record_id || record.source_id !== visit.record.source_id
+          || record.received_at !== visit.record.received_at) throw new Error('This email is no longer available with the same identity.');
+        if (visit.incarnation && opts.workEntityLinkedFromCaller) {
+          const checked = await opts.workEntityLinkedFromCaller({ url: recordLink(doc.URL, visit.source.hash)!,
+            source_identity: { source_id: record.source_id, received_at: record.received_at, incarnation: visit.incarnation }, limit: 1 });
+          if (!current()) return;
+          if (!checked.source_target || checked.source_target.source_id !== record.source_id
+            || checked.source_target.received_at !== record.received_at || checked.source_target.incarnation !== visit.incarnation)
+            throw new Error('This mailbox could not confirm the original email. Reopen it from Mail.');
+        }
+        explorerDetail = { record_id: record.record_id, record, loading: false };
+        if (visit.resume) await visit.resume();
+        else await mailMessageSurface.open({ slug: visit.source.collectionSlug, record_id: record.record_id,
+          ...(visit.message.reminder_ref ? { expected_reminder_ref: visit.message.reminder_ref } : {}) }, visit.message);
+      }
+      if (current()) render();
+    } catch (cause) {
+      if (current()) { explorerDetail = { record_id: visit.record.record_id, loading: false, error: errMessage(cause) }; render(); }
+    }
+  };
+  const enterSourceVisit = async (visit: SourceVisit, trigger: HTMLElement | null): Promise<void> => {
+    if (disposed || activeLens !== 'data' || hasDataInFlightWork() || !mailMessageSurface.beforeLeave()) return;
+    if (!calendarEventSurface.beforeLeave(() => { void enterSourceVisit(visit, trigger); })
+      || !calendarCreateSurface.beforeLeave(() => { void enterSourceVisit(visit, trigger); })) return;
+    if (activeSourceDetour()?.origin.source.hash === visit.source.hash) { returnToSourceDetour(); return; }
+    const origin = sourceVisit(); if (!origin) return;
+    trigger?.focus({ preventScroll: true }); mailMessageSurface.captureFind();
+    const attribute = trigger?.hasAttribute('data-source-linked-focus') ? 'data-source-linked-focus' : 'data-calendar-event-focus';
+    const focus = trigger?.getAttribute(attribute);
+    const entry: SourceDetour = { parent: activeSourceDetour(), origin, destination: visit.source, hash: dataHistory.current().hash,
+      scrollTop: workSearchScrollHost()?.scrollTop ?? 0, indexScroll: mailMessageSurface.captureScroll(routeRoot),
+      records: explorerRecords, mailFind: mailMessageSurface.captureFindState(), ...(focus ? { focus: { attribute, key: focus } } : {}) };
+    loadGeneration++; navigationGeneration++; explorerSeq++; timelineLoadGeneration++;
+    retireRunVerificationForDifferentItem(visit.kind, visit.record.record_id);
+    calendarAgenda.cancel(); loadingTimeline = false; loading = false; explorerLoading = false;
+    calendarEventSurface.reset(); mailMessageSurface.reset(); sourceDetour = entry;
+    activeTab = visit.kind; explorerCollection = visit.kind; explorerSelectedSlug = visit.source.collectionSlug;
+    explorerRecords = []; explorerDetail = { record_id: visit.record.record_id, loading: true };
+    dataHistory.navigate(dataAddress(visit.source.hash, visit.record.record_id), { intent: 'push' }); render();
+    await displaySourceVisit(visit, navigationGeneration);
+  };
+  const returnToSourceDetour = (alreadyNavigated = false, afterLeave = false): boolean => {
+    const entry = activeSourceDetour();
+    if (!entry || disposed || hasDataInFlightWork()) return false;
+    if (!afterLeave && (!mailMessageSurface.beforeLeave()
+      || !calendarEventSurface.beforeLeave(() => { returnToSourceDetour(alreadyNavigated); })
+      || !calendarCreateSurface.beforeLeave(() => { returnToSourceDetour(alreadyNavigated); }))) return false;
+    if (afterLeave && !mailMessageSurface.releaseComposeAfterLeave()) return false;
+    mailMessageSurface.captureFind(); mailMessageSurface.reset(); calendarEventSurface.reset();
+    loadGeneration++; navigationGeneration++; explorerSeq++; timelineLoadGeneration++;
+    calendarAgenda.cancel(); loadingTimeline = false; loading = false; explorerLoading = false;
+    sourceDetour = entry.parent; const visit = entry.origin;
+    activeTab = visit.kind; explorerCollection = visit.kind; explorerSelectedSlug = visit.source.collectionSlug;
+    explorerRecords = entry.records; explorerDetail = { record_id: visit.record.record_id, loading: true };
+    pendingSourceRestore = { origin: entry, navigation: navigationGeneration };
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(entry.hash, visit.record.record_id));
+    else dataHistory.navigate(dataAddress(entry.hash, visit.record.record_id));
+    render(); void displaySourceVisit(visit, navigationGeneration); return true;
+  };
+  const openLinkedCalendarEvent = async (trigger: HTMLElement, row: LinkedCalendarEvent, target: import('@recued/contracts').SavedWorkAddress): Promise<void> => {
+    const origin = sourceVisit(), navigation = navigationGeneration;
+    if (!origin || origin.kind !== 'mail' || !opts.calendarEventCallers?.get || !opts.workEntityLinkedFromCaller) return;
+    const current = () => !disposed && navigationGeneration === navigation && activeTab === 'mail'
+      && explorerSelectedSlug === origin.source.collectionSlug && explorerDetail?.record_id === origin.record.record_id;
+    const snapshot = await opts.calendarEventCallers.get({ slug: row.slug, source_id: row.source_id });
+    if (!current()) return;
+    verifyLinkedCalendarEvent(row, target, snapshot, doc.URL);
+    const checked = await opts.workEntityLinkedFromCaller({ url: recordLink(doc.URL, origin.source.hash)!,
+      source_identity: { source_id: origin.record.source_id, received_at: origin.record.received_at, incarnation: origin.incarnation }, limit: 1 });
+    if (!current()) return;
+    if (!checked.source_target || checked.source_target.source_id !== origin.record.source_id
+      || checked.source_target.received_at !== origin.record.received_at || checked.source_target.incarnation !== origin.incarnation)
+      throw new Error('This mailbox could not confirm the selected email. Reopen it from Mail.');
+    const source = taskNoteSource(serializeSourceRecordAddress({ tab: 'calendar', collectionSlug: row.slug, recordId: row.record_id }), doc.URL)!;
+    await enterSourceVisit({ kind: 'calendar', source, ref: { slug: row.slug, source_id: row.source_id }, record: snapshot.record, snapshot, linkedFrom: { row, target } }, trigger);
+  };
+  const openCalendarSourceEmail = async (source: TaskNoteSource, ref: CalendarEventRef, snapshot: CalendarEventSnapshot, isCurrent: () => boolean): Promise<void> => {
+    if (!isCurrent() || activeTab !== 'calendar' || !opts.mailMessageCallers?.get || !opts.calendarEventCallers?.get) return;
+    const navigation = navigationGeneration;
+    const current = () => !disposed && navigation === navigationGeneration && isCurrent();
+    const [message, result] = await Promise.all([opts.mailMessageCallers.get({ slug: source.collectionSlug, record_id: source.recordId }),
+      getExplorerRecord({ platform: 'mail', slug: source.collectionSlug, record_id: source.recordId })]);
+    if (!current()) return;
+    const record = result.record;
+    if (!record || record.record_id !== source.recordId || message.record_id !== record.record_id
+      || message.slug !== source.collectionSlug || message.received_at !== record.received_at)
+      throw new Error('The original email is no longer available with the same identity.');
+    const fresh = await opts.calendarEventCallers.get(ref); if (!current()) return;
+    if (fresh.incarnation !== snapshot.incarnation || fresh.record.received_at !== snapshot.record.received_at
+      || fresh.event.source_id !== ref.source_id || fresh.event.record_id !== snapshot.event.record_id
+      || fresh.refresh_error || !calendarEmailLinks(fresh, doc.URL).some(link => link.hash === source.hash))
+      throw new Error('This event or its email link changed. Refresh its details.');
+    const index = calendarEmailLinks(snapshot, doc.URL).findIndex(link => link.hash === source.hash);
+    await enterSourceVisit({ kind: 'mail', source, record, message, incarnation: message.reminder_ref?.incarnation ?? null },
+      routeRoot.querySelector<HTMLElement>('[data-calendar-event-focus="email-' + index + '"]'));
+  };
+
+  const returnToMailWorkOrigin = (alreadyNavigated = false, afterLeave = false): boolean => {
+    const origin = mailWorkReturn;
+    if (!origin || disposed || activeTab !== origin.kind || hasDataInFlightWork() || !afterLeave && hasUnsavedWorkEntityDialog()) return false;
+    if (afterLeave) flushEditorDrafts();
+    mailWorkReturn = null;
+    loadGeneration++; navigationGeneration++; workEntityDialogOpenSeq++;
+    pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    projectChildReturn = origin.projectReturn; workSearchReturn = origin.searchReturn;
+    activeTab = 'mail'; loading = false;
+    // Another context visit may have retired the retained reader. Reopen only
+    // this saved mailbox-qualified address, rather than leaving an empty view.
+    const source = taskNoteSource(origin.hash, doc.defaultView?.location.href ?? '');
+    const reload = source?.tab === 'mail' && (explorerSelectedSlug !== source.collectionSlug
+      || explorerDetail?.record_id !== source.recordId || !explorerDetail.record);
+    if (reload) {
+      explorerCollection = 'mail'; explorerSelectedSlug = source.collectionSlug;
+      explorerDetail = { record_id: source.recordId, loading: true };
+      pendingMailWorkRestore = { origin, navigation: navigationGeneration };
+    }
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, explorerDetail?.record_id)); else syncDataHash();
+    render();
+    if (reload) void openExplorerRecord(source.recordId);
+    if (!reload) {
+      mailMessageSurface.restoreScroll(routeRoot, origin.indexScroll);
+      const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
+      if (origin.focus) restoreLinkedSourceFocus(origin.focus);
+      else routeRoot.querySelector<HTMLElement>(`[data-mail-focus="create-${origin.kind}"]`)?.focus({ preventScroll: true });
+      readerPassage.focus();
+    }
+    return true;
+  };
+
+  const openCalendarWorkDraft = async (ref: CalendarEventRef, snapshot: CalendarEventSnapshot, isCurrent: () => boolean, kind: 'task' | 'note' = 'task'): Promise<void> => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'calendar' || !isCurrent() || !opts.workEntitySourceListCaller) return;
+    const navigation = navigationGeneration;
+    const registered = await opts.workEntitySourceListCaller();
+    if (disposed || navigation !== navigationGeneration || activeTab !== 'calendar' || !isCurrent()) return;
+    const writable = registered.sources.filter(source => source.top_tier_kind === kind && source.write_capable && source.sync_posture !== 'read_through');
+    const sourceId = resolveCreateDialogSourceId(kind, null, writable);
+    if (!sourceId) throw new Error(`No writable ${kind} Source is available. Check Connections in Settings, then try again.`);
+    const values = kind === 'task' ? calendarTaskValues(ref, snapshot, doc.defaultView!.location.href) : calendarNoteValues(ref, snapshot, doc.defaultView!.location.href);
+    syncDataHash();
+    const origin: CalendarWorkOrigin = { kind, hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+      projectReturn: projectChildReturn, searchReturn: workSearchReturn, attempted: false };
+    loadGeneration++; navigationGeneration++; explorerSeq++;
+    calendarAgenda.cancel(); timelineLoadGeneration++; loadingTimeline = false; loading = false; explorerLoading = false;
+    sources = [...registered.sources]; activeTab = kind; workEntityState = selectKindTransition(workEntityState, kind);
+    projectChildReturn = null; workEntities = []; workEntityTotal = 0;
+    syncDataHash(true); openCreateWorkEntityDialog(sourceId); calendarWorkReturn = origin; if (kind === 'note') noteDraft.setOrigin(calendarDraftOrigin(ref, snapshot)); else workDrafts.task.setOrigin(calendarDraftOrigin(ref, snapshot));
+    workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog!.values, ...values });
+    if (kind === 'note') { noteDraft.capture(sourceId, workEntityState.dialog!.values); noteDraft.flush(); }
+    else { captureWorkDraft(); workDrafts.task.flush(); } render(); focusWorkEntityDialog();
+    routeRoot.querySelector<HTMLInputElement>('[data-form-field="title"]')?.select();
+  };
+
+  const returnToCalendarWorkOrigin = (alreadyNavigated = false, afterLeave = false, notice?: string): boolean => {
+    const origin = calendarWorkReturn;
+    if (!origin || disposed || activeTab !== origin.kind || hasDataInFlightWork() || !afterLeave && hasUnsavedWorkEntityDialog()) return false;
+    if (afterLeave) flushEditorDrafts();
+    calendarWorkReturn = null; loadGeneration++; navigationGeneration++; workEntityDialogOpenSeq++;
+    pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    projectChildReturn = origin.projectReturn; workSearchReturn = origin.searchReturn; activeTab = 'calendar'; loading = false;
+    const source = taskNoteSource(origin.hash, doc.defaultView?.location.href ?? '');
+    const reload = source?.tab === 'calendar' && (explorerSelectedSlug !== source.collectionSlug
+      || explorerDetail?.record_id !== source.recordId || !explorerDetail.record || !calendarEventSurface.hasSnapshot());
+    if (reload) {
+      explorerCollection = 'calendar'; explorerSelectedSlug = source.collectionSlug;
+      explorerDetail = { record_id: source.recordId, loading: true };
+      pendingCalendarWorkRestore = { origin, navigation: navigationGeneration, recordId: source.recordId, slug: source.collectionSlug };
+    }
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, explorerDetail?.record_id)); else syncDataHash();
+    if (notice && !reload) calendarEventSurface.notify(notice, `create-${origin.kind}`); else render();
+    if (reload) { void openExplorerRecord(source.recordId); return true; }
+    const host = workSearchScrollHost(); if (host) host.scrollTop = origin.scrollTop;
+    if (origin.focus) restoreLinkedSourceFocus(origin.focus);
+    else routeRoot.querySelector<HTMLElement>(`[data-calendar-event-focus="create-${origin.kind}"]`)?.focus({ preventScroll: true });
+    return true;
+  };
+
+  const prepareNoteTask = async (action: 'create' | 'open', selected?: string, selectedCurrent?: () => boolean): Promise<void> => {
+    const note = workEntityDialogEntity;
+    if (disposed || activeLens !== 'data' || activeTab !== 'note' || noteMode !== 'read' || note?._kind !== 'note'
+      || workEntityState.dialog?.mode !== 'edit' || pendingWorkEntityDialogOpen || workEntityDiscardGuardOpen
+      || hasDataInFlightWork() || noteCopying || workReaderCopy.busy() || !opts.workEntityGetCaller
+      || !opts.workEntitySourceListCaller || !opts.workEntityUpsertCaller) return;
+    if (noteTaskPreparing?.note === note && noteTaskPreparing.sequence === workEntityDialogOpenSeq) return;
+    const created = noteTaskCreated && sameNoteTaskRecord(noteTaskCreated.note, note) ? noteTaskCreated.task : null;
+    if (action === 'open' && !created) return;
+    const preparation = { note, sequence: workEntityDialogOpenSeq, navigation: navigationGeneration, action };
+    const reading = () => !disposed && activeLens === 'data' && activeTab === 'note' && noteMode === 'read'
+      && workEntityDialogEntity === note && workEntityDialogOpenSeq === preparation.sequence && navigationGeneration === preparation.navigation
+      && !pendingWorkEntityDialogOpen && !hasDataInFlightWork();
+    const current = () => noteTaskPreparing === preparation && reading() && (!selectedCurrent || selectedCurrent());
+    noteTaskPreparing = preparation; noteNotice = undefined; render();
+    try {
+      const [registered, response] = await Promise.all([opts.workEntitySourceListCaller(),
+        created ? opts.workEntityGetCaller({ kind: 'task', id: created.id }) : Promise.resolve(undefined)]);
+      if (!current()) return;
+      let sourceId: string | null = null;
+      if (action === 'create') {
+        sourceId = resolveCreateDialogSourceId('task', null, registered.sources.filter(source => source.top_tier_kind === 'task'
+          && source.write_capable && source.sync_posture !== 'read_through'));
+        if (!sourceId) throw new Error('No writable task Source is available. Check Connections in Settings, then try Create task again.');
+      } else if (response?.entity?._kind !== 'task' || !created || !sameNoteTaskRecord(created, response.entity)) {
+        throw new Error('The created task is no longer available with the same identity. Check Tasks or try opening it again.');
+      }
+      const values = action === 'create' ? noteTaskValues(note, doc.defaultView?.location.href ?? doc.URL, selected) : null;
+      noteReader.capture(routeRoot); noteFind.capture();
+      const origin = pushRelatedReader(note);
+      if (action === 'open') origin.taskDependency = created!.id;
+      sources = [...registered.sources];
+      const previousNavigation = navigationGeneration;
+      await selectTab('task', false, undefined, true, undefined, true, true);
+      if (disposed || relatedWorkReturn !== origin || navigationGeneration !== previousNavigation + 1 || (activeTab as DataTabId) !== 'task') return;
+      if (action === 'open') {
+        await openEditWorkEntityDialog('task', created!.id, 'read', false, response!.entity!, response!.source_freshness); return;
+      }
+      workEntities = []; workEntityTotal = 0;
+      syncDataHash(true); openCreateWorkEntityDialog(sourceId!);
+      noteTaskReturn = { reader: origin, attempted: false }; workDrafts.task.setOrigin(noteDraftOrigin(note));
+      workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog!.values, ...values });
+      captureWorkDraft(); workDrafts.task.flush(); render(); focusWorkEntityDialog();
+      routeRoot.querySelector<HTMLInputElement>('[data-form-field="title"]')?.select();
+    } catch (error) {
+      if (current()) {
+        const carryFocus = doc.activeElement?.getAttribute('data-action') === (action === 'create' ? 'create-note-task' : 'open-note-created-task');
+        noteNotice = { kind: 'error', text: `Could not ${action === 'create' ? 'prepare' : 'open'} the task. ${errMessage(error)}` };
+        render(); if (carryFocus) focusNoteNotice();
+      }
+    } finally {
+      if (noteTaskPreparing === preparation) { noteTaskPreparing = null; if (reading()) render(); }
+    }
+  };
+
+  const returnToNoteTaskOrigin = (alreadyNavigated = false, afterLeave = false,
+    created?: Extract<WorkEntity, { _kind: 'task' }>, discarded = false): boolean => {
+    const origin = activeNoteTask();
+    if (!origin || disposed || hasDataInFlightWork() || !afterLeave && !created && !discarded && hasUnsavedWorkEntityDialog()) return false;
+    if (afterLeave) flushEditorDrafts();
+    noteTaskReturn = null;
+    if (created && origin.reader.entity._kind === 'note') noteTaskCreated = { note: origin.reader.entity, task: created };
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    if (!returnToRelatedWork(alreadyNavigated, afterLeave)) return false;
+    routeRoot.querySelector<HTMLElement>('[data-note-focus="create-task"]')?.focus({ preventScroll: true });
+    readerPassage.focus();
+    return true;
+  };
+
+  const openSelectionNoteDraft = async (passage: ReaderPassage, current: () => boolean): Promise<void> => {
+    if (hasDataInFlightWork() || !opts.workEntitySourceListCaller || !opts.workEntityGetCaller || !opts.workEntityUpsertCaller || !mailMessageSurface.beforeLeave()) return;
+    const view = capturePassageView();
+    if (!await checkPassage(passage, current) || !current()) return;
+    const destination = await selectionNotePicker.open(current);
+    if (!destination || !current()) { if (current()) readerPassage.focus(); return; }
+    const checked = await checkPassage(passage, current); if (!checked || !current() || !mailMessageSurface.beforeLeave()) return;
+    const subject = checked.subject, values = selectionNoteValues(passage.text, subject.origin, doc.defaultView?.location.href ?? doc.URL, destination.existing?.note);
+    const origin: SelectionNoteOrigin = { hash: dataHistory.current().hash, subject, view, existing: !!destination.existing,
+      attempted: false, returning: false, ...(destination.existing ? { noteId: destination.existing.note.id } : {}) };
+    if (subject.kind === 'note') origin.related = pushRelatedReader(subject.note);
+    else origin.mail = { kind: 'note', hash: origin.hash, scrollTop: view.scrollTop, indexScroll: mailMessageSurface.captureScroll(routeRoot),
+      projectReturn: projectChildReturn, searchReturn: workSearchReturn, attempted: false };
+    loadGeneration++; navigationGeneration++; explorerSeq++; timelineLoadGeneration++; loadingTimeline = false; loading = false; explorerLoading = false;
+    sources = [...destination.sources]; activeTab = 'note'; workEntityState = selectKindTransition(workEntityState, 'note');
+    workEntities = []; workEntityTotal = 0; projectChildReturn = null; syncDataHash(true);
+    const navigation = navigationGeneration;
+    if (destination.existing) {
+      await openEditWorkEntityDialog('note', destination.existing.note.id, 'edit', false, { _kind: 'note', ...destination.existing.note });
+      if (disposed || navigation !== navigationGeneration || !workEntityState.dialog || noteMode !== 'edit' || workEntityDialogEntity?._kind !== 'note') return;
+      noteWriteRevision = destination.existing.revision;
+      noteDraft.begin(destination.sourceId, workEntityState.dialog.values, { ...noteDraftOriginal(destination.existing.note), editRevision: noteWriteRevision });
+    } else {
+      openCreateWorkEntityDialog(destination.sourceId); if (!workEntityState.dialog) return;
+      noteDraft.setOrigin(subject.origin);
+    }
+    selectionNoteReturn = origin;
+    workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog!.values, ...values });
+    noteDraft.capture(destination.sourceId, workEntityState.dialog!.values); noteDraft.flush(); render(); focusWorkEntityDialog();
+    const target = routeRoot.querySelector<HTMLInputElement | HTMLTextAreaElement>(destination.existing ? '[data-form-field="body"]' : '[data-form-field="title"]');
+    target?.focus({ preventScroll: true });
+    if (destination.existing && target) { target.setSelectionRange(target.value.length, target.value.length); target.scrollTop = target.scrollHeight; }
+    else target?.select();
+  };
+
+  const returnToSelectionNoteOrigin = (alreadyNavigated = false, afterLeave = false, discarded = false): boolean => {
+    const origin = activeSelectionNote();
+    if (!origin || disposed || hasDataInFlightWork() || !afterLeave && !discarded && hasUnsavedWorkEntityDialog()) return false;
+    if (origin.returning) return true;
+    if (afterLeave) flushEditorDrafts();
+    const sequence = workEntityDialogOpenSeq, navigation = navigationGeneration;
+    const current = () => !disposed && selectionNoteReturn === origin && navigation === navigationGeneration && sequence === workEntityDialogOpenSeq;
+    origin.returning = true;
+    void (async () => {
+      try {
+        const checked = await checkDraftOrigin(origin.subject.origin, { mail: opts.mailMessageCallers?.get,
+          ...(opts.workEntityGetCaller ? { note: (id: string) => opts.workEntityGetCaller!({ kind: 'note', id }) } : {}) });
+        if (!current()) return;
+        workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft(); noteWriteRevision = undefined;
+        if (origin.related && checked.kind === 'note') {
+          origin.related.entity = checked.reply.entity;
+          origin.related.page = openEditDialogTransition(origin.related.page, checked.reply.entity, getCanonicalSchema('note'));
+          if (relatedWorkReturn !== origin.related || !returnToRelatedWork(alreadyNavigated, afterLeave)) throw new Error('The original note could not be reopened.');
+          if (origin.view.kind === 'note' && checked.reply.entity.body === origin.view.revision) { noteReader.resume(origin.view.reading); noteFind.resume(origin.view.find); }
+        } else if (origin.mail && checked.kind === 'mail') {
+          mailWorkReturn = origin.mail;
+          if (!returnToMailWorkOrigin(alreadyNavigated, afterLeave)) throw new Error('The original email could not be reopened.');
+          if (origin.view.kind === 'mail' && origin.view.reading) {
+            await mailMessageSurface.resumeReading(origin.view.reading);
+            if (disposed || selectionNoteReturn !== origin || (activeTab as DataTabId) !== 'mail') return;
+            if (passageSubject()?.revision === origin.view.revision) mailMessageSurface.restoreFindState(origin.view.find);
+            mailMessageSurface.restoreScroll(routeRoot, origin.view.index);
+          }
+        } else throw new Error('The original source could not be reopened.');
+        if (selectionNoteReturn !== origin || disposed) return;
+        selectionNoteReturn = null; render();
+        const scroll = workSearchScrollHost(); if (scroll) scroll.scrollTop = origin.view.scrollTop;
+        readerPassage.focus();
+      } catch (error) {
+        if (selectionNoteReturn !== origin || disposed) return;
+        workEntityState = setDialogSubmitErrorTransition(setDialogSubmittingTransition(workEntityState, false), humanizeRpcError(error));
+        noteNotice = { kind: 'error', text: humanizeRpcError(error) }; render(); focusTaskCompletionError();
+      } finally { origin.returning = false; }
+    })();
+    return true;
+  };
+
+  const prepareContactWork = async (action: ContactFollowUpKind | 'open'): Promise<void> => {
+    const detail = contactDetail, contact = detail?.contact, controls = detail?.work;
+    if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !detail || !contact || !controls || controls.busy
+      || loadingContactDetail || contactDialog !== null || openingContactEditEmail !== null || detail.mail?.opening
+      || hasDataInFlightWork() || !opts.contactGetCaller || !opts.workEntityGetCaller || !opts.workEntitySourceListCaller || !opts.workEntityUpsertCaller) return;
+    const created = controls.created;
+    if (action === 'open' && !created) return;
+    const navigation = navigationGeneration, editSequence = contactEditOpenSeq, preparation = {};
+    const reading = () => !disposed && activeLens === 'data' && activeTab === 'contact' && contactDetail === detail
+      && navigationGeneration === navigation && !loadingContactDetail && contactDialog === null && openingContactEditEmail === null;
+    const current = () => reading() && editSequence === contactEditOpenSeq && controls.preparation === preparation;
+    const position = contactActivity.capture(routeRoot, workSearchScrollHost(), doc.activeElement);
+    const scrollTop = workSearchScrollHost()?.scrollTop ?? 0;
+    controls.preparation = preparation; controls.busy = action; controls.error = undefined; render();
+    try {
+      const [fresh, registered, response] = await Promise.all([
+        opts.contactGetCaller({ email: contact.contact_id! }), opts.workEntitySourceListCaller(),
+        action === 'open' ? opts.workEntityGetCaller({ kind: created!._kind, id: created!.id }) : Promise.resolve(undefined),
+      ]);
+      if (!current()) return;
+      const confirmed = requireFollowUpContact(contact, fresh.contact);
+      const kind = action === 'open' ? created!._kind : action;
+      let sourceId: string | null = null;
+      if (action === 'open') {
+        if (!response || !sameNoteTaskRecord(created!, response.entity) || response.entity.deleted_at != null)
+          throw new Error(`The created ${kind} is no longer available with the same identity. Check the saved items or try opening it again.`);
+      } else {
+        sourceId = resolveCreateDialogSourceId(kind, null, registered.sources.filter(source => source.top_tier_kind === kind
+          && source.write_capable && source.sync_posture !== 'read_through'));
+        if (!sourceId) throw new Error(`No writable ${kind} Source is available. Check Connections in Settings, then try again.`);
+      }
+      const values = action === 'open' ? undefined : contactFollowUpValues(kind, confirmed, doc.defaultView?.location.href ?? doc.URL);
+      const origin: ContactWorkOrigin = { parent: contactWorkReturn, detail, contact: confirmed, kind, hash: dataHistory.current().hash, scrollTop, position,
+        related: relatedWorkReturn, project: projectWork, projectReturn: projectChildReturn, searchReturn: workSearchReturn,
+        attempted: false, ...(action === 'open' ? { createdId: created!.id } : {}), focus: action === 'open' ? 'open-created' : `create-${kind}` };
+      sources = [...registered.sources];
+      const before = navigationGeneration;
+      await selectTab(kind, false, undefined, true, undefined, true, true);
+      if (disposed || navigationGeneration !== before + 1 || (activeTab as DataTabId) !== kind) return;
+      // The contact's outer reader/project visit is retained, but none of its
+      // relationships is inferred for this new item.
+      projectWork = null; projectChildReturn = null; workSearchReturn = null;
+      workEntities = []; workEntityTotal = 0;
+      if (action === 'open') {
+        contactWorkReturn = origin;
+        await openEditWorkEntityDialog(kind, created!.id, 'read', false, response!.entity!, response!.source_freshness);
+      } else {
+        syncDataHash(true); openCreateWorkEntityDialog(sourceId!); contactWorkReturn = origin;
+        if (kind === 'note') noteDraft.setOrigin(contactDraftOrigin(confirmed)); else workDrafts.task.setOrigin(contactDraftOrigin(confirmed));
+        workEntityState = setDialogValuesTransition(workEntityState, { ...workEntityState.dialog!.values, ...values });
+        if (kind === 'note') { noteDraft.capture(sourceId!, workEntityState.dialog!.values); noteDraft.flush(); noteDetailsOpen = true; }
+        else { captureWorkDraft(); workDrafts.task.flush(); }
+        render(); focusWorkEntityDialog(); routeRoot.querySelector<HTMLInputElement>('[data-form-field="title"]')?.select();
+      }
+    } catch (error) {
+      if (current()) { controls.error = `Could not ${action === 'open' ? 'open the saved item' : 'prepare the draft'}. ${errMessage(error)}`; render();
+        routeRoot.querySelector<HTMLElement>('[data-contact-work-error]')?.focus({ preventScroll: true }); }
+    } finally {
+      if (controls.preparation === preparation) {
+        delete controls.preparation; delete controls.busy;
+        if (reading()) render();
+      }
+    }
+  };
+
+  const openSourceLinkedFrom = async (tab: 'mail' | 'calendar', trigger: HTMLElement,
+    row: import('@recued/contracts').WorkEntityLinkedFromItem, target: import('@recued/contracts').SavedWorkAddress): Promise<boolean> => {
+    const record = explorerDetail?.record, slug = explorerSelectedSlug;
+    if (disposed || activeLens !== 'data' || activeTab !== tab || !record || !slug || target.kind !== tab
+      || target.collection_slug !== slug || target.id !== record.record_id || hasDataInFlightWork()
+      || !opts.workEntityGetCaller || !opts.workEntityLinkedFromCaller || !mailMessageSurface.beforeLeave()) return false;
+    if (!calendarEventSurface.beforeLeave(() => { void openSourceLinkedFrom(tab, trigger, row, target); })) return false;
+    const incarnation = tab === 'mail' ? mailMessageSurface.linkedFromIncarnation() : calendarEventSurface.recentSnapshot()?.snapshot.incarnation;
+    if (incarnation === undefined) return false;
+    const source_identity = { source_id: record.source_id, received_at: record.received_at, incarnation };
+    trigger.focus({ preventScroll: true }); syncDataHash(); mailMessageSurface.captureFind();
+    const common = { kind: row.kind, createdId: row.id, hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+      projectReturn: projectChildReturn, searchReturn: workSearchReturn, attempted: false, opening: true,
+      focus: trigger.getAttribute('data-source-linked-focus') ?? 'linked-from:summary' };
+    const origin = { ...common, indexScroll: tab === 'mail' ? mailMessageSurface.captureScroll(routeRoot) : null };
+    loadGeneration++; navigationGeneration++; explorerSeq++; workEntityDialogOpenSeq++;
+    calendarAgenda.cancel(); timelineLoadGeneration++; loadingTimeline = false; loading = false; explorerLoading = false;
+    const visit = navigationGeneration; let sequence = workEntityDialogOpenSeq;
+    activeTab = row.kind; workEntityState = selectKindTransition(workEntityState, row.kind);
+    workEntities = []; workEntityTotal = 0; projectChildReturn = null; workSearchReturn = null;
+    if (tab === 'mail') mailWorkReturn = origin; else calendarWorkReturn = origin;
+    dataHistory.navigate(dataAddress(serializeShellRoute('data', row.kind, row.id), row.id), { intent: 'push' }); render();
+    const current = () => !disposed && navigationGeneration === visit && workEntityDialogOpenSeq === sequence
+      && (activeTab as DataTabId) === row.kind && (tab === 'mail' ? mailWorkReturn === origin : calendarWorkReturn === origin);
+    try {
+      const response = await opts.workEntityGetCaller({ kind: row.kind, id: row.id });
+      if (!current()) return false;
+      if (opts.workEntitySourceListCaller) {
+        const registered = await opts.workEntitySourceListCaller(); if (!current()) return false; sources = [...registered.sources];
+      }
+      // Recheck the account and target after the potentially slow source read.
+      const confirmed = await opts.workEntityLinkedFromCaller({ url: target.client + serializeSourceRecordAddress({ tab, collectionSlug: slug, recordId: record.record_id }), source_identity, limit: 1 });
+      if (!current()) return false;
+      if (!confirmed.source_target || confirmed.source_target.source_id !== source_identity.source_id
+        || confirmed.source_target.received_at !== source_identity.received_at || confirmed.source_target.incarnation !== incarnation) throw new Error('This source changed. Reopen the record to check its links.');
+      verifyLinkedFromSource(row, target, response);
+      const opening = openEditWorkEntityDialog(row.kind, row.id, 'read', false, response.entity!, response.source_freshness);
+      sequence = workEntityDialogOpenSeq; await opening;
+      if (!current()) return false;
+      origin.opening = false; render(); return true;
+    } catch (error) {
+      if (!current()) return false;
+      if (tab === 'mail') returnToMailWorkOrigin(); else returnToCalendarWorkOrigin();
+      workLinkedFrom.failure(errMessage(error)); return false;
+    }
+  };
+
+  const openContactLinkedSource = async (trigger: HTMLElement, row: import('@recued/contracts').WorkEntityLinkedFromItem,
+    target: import('@recued/contracts').SavedWorkAddress): Promise<readonly string[] | null> => {
+    const detail = contactDetail, contact = detail?.contact;
+    if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !detail || !contact?.contact_id || contact.merged_into !== undefined
+      || loadingContactDetail || contactDialog !== null || openingContactEditEmail !== null || hasDataInFlightWork()
+      || !opts.workEntityGetCaller || !opts.workEntityLinkedFromCaller) return null;
+    trigger.focus({ preventScroll: true });
+    const origin: ContactWorkOrigin = { parent: contactWorkReturn, detail, contact, kind: row.kind,
+      hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+      position: contactActivity.capture(routeRoot, workSearchScrollHost(), trigger), related: relatedWorkReturn,
+      project: projectWork, projectReturn: projectChildReturn, searchReturn: workSearchReturn,
+      attempted: false, createdId: row.id, opening: true, focus: trigger.getAttribute('data-contact-quick-focus') ?? 'activity-heading' };
+    const before = navigationGeneration;
+    const switching = selectTab(row.kind, false, undefined, true, undefined, true, true);
+    if (navigationGeneration === before) return null;
+    const visit = navigationGeneration;
+    contactWorkReturn = origin;
+    dataHistory.navigate(dataAddress(serializeShellRoute('data', row.kind, row.id), row.id), { intent: 'push' });
+    await switching;
+    const current = () => !disposed && navigationGeneration === visit && contactWorkReturn === origin && (activeTab as DataTabId) === row.kind;
+    if (!current()) return null;
+    projectWork = null; projectChildReturn = null; workSearchReturn = null;
+    try {
+      const response = await opts.workEntityGetCaller({ kind: row.kind, id: row.id });
+      if (!current()) return null;
+      // A provider read can be slow. Resolve the contact group AFTER it lands,
+      // so a merge, split or alias withdrawal during that read cannot reuse old references.
+      const linked = await opts.workEntityLinkedFromCaller({ url: target.client + serializeShellRoute('data', 'contact', contact.contact_id), limit: 1,
+        contact_identity: { id: contact.contact_id, created_at: contact.created_at } });
+      if (!current()) return null;
+      const resolved = linked.contact_target;
+      if (!resolved || resolved.id !== contact.contact_id || resolved.created_at !== contact.created_at
+        || !Array.isArray(resolved.reference_ids) || !resolved.reference_ids.includes(contact.contact_id)
+        || resolved.reference_ids.some(id => typeof id !== 'string' || !id.trim())) throw new Error('This contact changed. Reopen the contact to check its links.');
+      verifyLinkedFromSource(row, target, response, resolved.reference_ids);
+      await openEditWorkEntityDialog(row.kind, row.id, 'read', false, response.entity!, response.source_freshness);
+      if (!current()) return null;
+      origin.opening = false;
+      return resolved.reference_ids;
+    } catch (error) {
+      if (!current()) return null;
+      returnToContactWork(); workLinkedFrom.failure(errMessage(error)); return null;
+    }
+  };
+
+  const returnToContactWork = (alreadyNavigated = false, afterLeave = false,
+    created?: Extract<WorkEntity, { _kind: 'task' | 'note' }>, discarded = false): boolean => {
+    const origin = activeContactWork();
+    if (!origin || disposed || hasDataInFlightWork() || !afterLeave && !created && !discarded && hasUnsavedWorkEntityDialog()) return false;
+    if (afterLeave) flushEditorDrafts();
+    contactWorkReturn = origin.parent;
+    loadGeneration++; navigationGeneration++; universalSearchNavigation = navigationGeneration; workEntityDialogOpenSeq++;
+    pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false; loading = false;
+    workEntityState = closeDialogTransition(workEntityState); retireWorkEntityDialogDraft();
+    workEntityDiscardGuardOpen = false; noteDraft.suspend(); suspendWorkDrafts();
+    noteRelated.reset(); noteReader.reset(); noteFind.reset(); taskRelated.reset(); taskReader.reset(); taskFind.reset(); workReaderNavigation.reset();
+    projectWork?.dispose(); projectWork = origin.project; projectChildReturn = origin.projectReturn; workSearchReturn = origin.searchReturn;
+    activeTab = 'contact'; contactDetail = origin.detail; loadingContactDetail = false; contactDialog = null;
+    if (created && contactDetail.work) { contactDetail.work.created = created; contactDetail.work.error = undefined; }
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, contactDetail.email)); else syncDataHash();
+    if (contactActivity.email() !== origin.detail.email && contactActivity.enabled()) void contactActivity.open(origin.detail.email, origin.detail.response);
+    render();
+    contactActivity.restore(routeRoot, workSearchScrollHost(), origin.position);
+    if (origin.position?.offset === undefined && workSearchScrollHost()) workSearchScrollHost()!.scrollTop = origin.scrollTop;
+    routeRoot.querySelector<HTMLElement>(`[data-contact-quick-focus="${origin.focus}"]`)?.focus({ preventScroll: true });
+    return true;
   };
 
   /** The values the open EDIT dialog started from. */
@@ -13505,16 +16498,34 @@ export const bootstrapDataRoute = (
   const projectOverviewProps = (): ProjectOverviewProps | undefined => {
     if (activeTab !== 'project' || !projectWork || workEntityState.dialog?.mode !== 'edit'
       || workEntityState.dialog.entity_id !== projectWork.project.id) return undefined;
-    return { project: projectWork.project, sections: projectWork.sections, editing: projectEditing,
+    return { project: projectWork.project, sections: projectWork.sections, editing: projectEditing, attention: projectWork.attention?.view(), communication: projectWork.communication?.view(),
       source_label: sources.find(source => source.id === projectWork!.project.source_id)?.source_label ?? 'Source unavailable',
       stale: projectWork.project.sync_state === 'stale_unreachable'
         || projectWork.freshness !== undefined && !['fresh', 'local'].includes(projectWork.freshness.state),
       source_incomplete: projectWork.freshness?.list_complete === false,
+      task_completion: projectWork.taskCompletion, task_busy: projectWork.taskActions.busy() || projectWork.communication?.busy() === true,
+      search_query: projectWork.query, search_draft: projectWork.draftQuery, search_error: projectWork.searchError,
+      ...(projectWork.taskActions.enabled() ? { task_controls: projectWork.taskActions.controls(),
+        task_feedback: projectWork.taskActions.feedback() } : {}),
+      now: (opts.now ?? Date.now)(),
       can_edit: canEditProject(projectWork.project), can_create_task: projectCreateSource('task') !== null,
       can_create_note: projectCreateSource('note') !== null, can_create_commitment: projectCreateSource('commitment') !== null,
       can_link_task: canLinkProjectWork('task'), can_link_note: canLinkProjectWork('note'),
       can_link_commitment: canLinkProjectWork('commitment'), commitment_status: projectWork.commitmentStatus,
-      close_label: workSearchReturn ? 'Back to search' : 'Back to projects' };
+      close_label: relatedWorkReturn ? `Back to ${relatedWorkReturn.entity._kind}` : workSearchReturn ? 'Back to search' : 'Back to projects' };
+  };
+
+  const focusProjectAttention = (key: string): void => { Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-project-focus]')).find(node => node.getAttribute('data-project-focus') === key)?.focus({ preventScroll: true }); };
+  const selectProjectAttentionCopy = (): void => { const input = routeRoot.querySelector<HTMLTextAreaElement>('#project-attention-copy-value'); input?.focus({ preventScroll: true }); input?.select(); input?.scrollIntoView({ block: 'nearest' }); };
+  const openProjectAttentionItem = async (kind: 'task' | 'commitment', id: string, response: WorkEntityGetRpcResponse, key: string): Promise<void> => {
+    const overview = projectWork;
+    if (!overview || activeLens !== 'data' || activeTab !== 'project' || projectEditing || pendingWorkEntityDialogOpen || hasDataInFlightWork()) return;
+    projectChildReturn = { attention: true, focus: 'attention-item:' + key, kind, id, hash: dataHistory.current().hash,
+      scrollTop: workSearchScrollHost()?.scrollTop ?? 0, page: workEntityState, entities: [...workEntities], total: workEntityTotal };
+    const origin = projectChildReturn, prior = navigationGeneration;
+    await selectTab(kind, false, undefined, true, undefined, true);
+    if (disposed || navigationGeneration !== prior + 1 || projectWork !== overview || projectChildReturn !== origin || (activeTab as DataTabId) !== kind) return;
+    await openEditWorkEntityDialog(kind, id, 'read', false, response.entity!, response.source_freshness);
   };
 
   const openProjectWorkItem = async (kind: 'task' | 'note' | 'commitment', id?: string): Promise<void> => {
@@ -13523,16 +16534,21 @@ export const bootstrapDataRoute = (
     if (id !== undefined && !overview.sections[kind].items.some(item => item.id === id)) return;
     const createSource = id === undefined ? projectCreateSource(kind) : null;
     if (id === undefined && createSource === null) return;
-    projectChildReturn = { kind, ...(id !== undefined ? { id } : {}), scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+    projectChildReturn = { kind, ...(id !== undefined ? { id } : {}), hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
       page: workEntityState, entities: [...workEntities], total: workEntityTotal };
     const previousNavigation = navigationGeneration;
-    const opening = selectTab(kind, false, undefined, true);
+    const opening = selectTab(kind, false, undefined, true, undefined, id !== undefined);
     const navigation = navigationGeneration;
     if (navigation === previousNavigation) { projectChildReturn = null; return; }
     await opening;
     if (disposed || navigation !== navigationGeneration || projectWork !== overview || !projectChildReturn) return;
     if (id === undefined) openCreateWorkEntityDialog(createSource!);
-    else await openEditWorkEntityDialog(kind, id);
+    else {
+      await openEditWorkEntityDialog(kind, id);
+      // A failed detail read still leaves a correctly addressed child list.
+      if (!disposed && navigation === navigationGeneration && projectWork === overview && (activeTab as DataTabId) === kind
+        && workEntityState.dialog?.entity_id !== id) syncDataHash(true);
+    }
   };
 
   const canLinkProjectWork = (kind: 'task' | 'note' | 'commitment'): boolean => !!(opts.workEntityListCaller && opts.workEntityUpsertCaller && opts.workEntityGetCaller
@@ -13541,7 +16557,7 @@ export const bootstrapDataRoute = (
   const openProjectWorkList = async (kind: 'task' | 'note' | 'commitment'): Promise<void> => {
     const overview = projectWork, tabAtStart = activeTab;
     if (!overview || tabAtStart !== 'project' || projectEditing || pendingWorkEntityDialogOpen || !canLinkProjectWork(kind)) return;
-    projectChildReturn = { kind, linking: true, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
+    projectChildReturn = { kind, linking: true, hash: dataHistory.current().hash, scrollTop: workSearchScrollHost()?.scrollTop ?? 0,
       page: workEntityState, entities: [...workEntities], total: workEntityTotal };
     const origin = projectChildReturn;
     const before = navigationGeneration;
@@ -13568,7 +16584,7 @@ export const bootstrapDataRoute = (
       || current?._kind !== 'commitment' || current.id !== selected.id || !workEntityState.dialog
       || commitmentMode !== 'edit' || !canEditCommitment(current)) return;
     if (current.blocks_project_ids.includes(overview.project.id)) {
-      commitmentMode = 'read'; commitmentNotice = 'This commitment is already linked to the project.'; render();
+      commitmentMode = 'read'; commitmentNotice = 'This commitment is already linked to the project.'; bindCommitmentFollowUp(current); render();
       routeRoot.querySelector<HTMLElement>('[data-commitment-notice]')?.focus({ preventScroll: true }); return;
     }
     // The existing editor owns Save and discard. Its baseline still describes
@@ -13578,10 +16594,15 @@ export const bootstrapDataRoute = (
     render(); focusWorkEntityDialogField('blocks_project');
   };
 
-  const returnToProjectOverview = (): void => {
+  const returnToProjectOverview = (alreadyNavigated = false, afterLeave = false): boolean => {
     const origin = projectChildReturn;
     const overview = projectWork;
-    if (!origin || !overview || disposed || workEntityState.dialog?.submitting) return;
+    if (!origin || !overview || disposed || workEntityState.dialog?.submitting) return false;
+    if (origin.attention) {
+      if (hasDataInFlightWork() || !afterLeave && hasUnsavedWorkEntityDialog()) return false;
+      if (afterLeave) { flushEditorDrafts(); if (!mailMessageSurface.releaseComposeAfterLeave()) return false; }
+      if (!mailMessageSurface.beforeLeave()) return false;
+    }
     projectChildReturn = null;
     loadGeneration += 1; navigationGeneration += 1; universalSearchNavigation = navigationGeneration;
     workEntityDialogOpenSeq += 1; pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
@@ -13593,9 +16614,22 @@ export const bootstrapDataRoute = (
     workEntityDialogOriginal = { ...workEntityState.dialog!.values };
     workEntityDialogReturnFocus = { mode: 'edit', kind: 'project', id: overview.project.id };
     projectEditing = false;
-    pendingProjectRestore = { key: origin.linking ? `link-${origin.kind}` : origin.id ? `${origin.kind}:${origin.id}` : `new-${origin.kind}`, scrollTop: origin.scrollTop };
-    syncDataHash(); render(); captureWorkEntityDialogBaseline();
-    void openEditWorkEntityDialog('project', overview.project.id, 'read', true);
+    pendingProjectRestore = { key: origin.focus ?? (origin.linking ? `link-${origin.kind}` : origin.id ? `${origin.kind}:${origin.id}` : `new-${origin.kind}`), scrollTop: origin.scrollTop };
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, overview.project.id)); else syncDataHash();
+    render(); captureWorkEntityDialogBaseline();
+    if (!origin.attention) { void openEditWorkEntityDialog('project', overview.project.id, 'read', true); return true; }
+    const navigation = navigationGeneration, sequence = workEntityDialogOpenSeq, expected = projectAttentionIdentity(overview.project);
+    const current = () => !disposed && navigationGeneration === navigation && workEntityDialogOpenSeq === sequence && activeTab === 'project' && projectWork === overview && !projectEditing;
+    void (async () => {
+      try {
+        if (!opts.workEntityGetCaller) throw new Error('This server cannot refresh the original project.');
+        const reply = await opts.workEntityGetCaller({ kind: 'project', id: overview.project.id }); if (!current()) return;
+        const p = reply.entity;
+        if (p?._kind !== 'project' || projectAttentionIdentity(p) !== expected || p.deleted_at != null || p.sync_state === 'tombstoned' || p.sync_state === 'orphaned') throw new Error('This project was removed or replaced. Reopen it from Projects.');
+        await openEditWorkEntityDialog('project', p.id, 'read', true, p, reply.source_freshness);
+      } catch (error) { if (current()) { overview.attention?.invalidate('Could not return to this project. ' + humanizeRpcError(error)); focusProjectAttention('attention-error'); } }
+    })();
+    return true;
   };
 
   const commitmentWritable = (entity: Extract<WorkEntity, { _kind: 'commitment' }>): boolean =>
@@ -13608,6 +16642,10 @@ export const bootstrapDataRoute = (
     opts.commitmentCloseCaller !== undefined && commitmentWritable(entity)
     && (entity.lifecycle_state === 'pending' || entity.lifecycle_state === 'expired'
       && (outcome === 'cancel' || entity.expiry_policy !== 'strict_expire'));
+
+  const canEditTask = (entity: Extract<WorkEntity, { _kind: 'task' }>): boolean => Boolean(opts.workEntityGetCaller && opts.workEntityUpsertCaller
+    && opts.workEntitySourceListCaller && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
+    && sources.some(source => source.id === entity.source_id && source.top_tier_kind === 'task' && source.write_capable && source.sync_posture !== 'read_through'));
 
   const canEditNote = (entity: Extract<WorkEntity, { _kind: 'note' }>): boolean =>
     opts.workEntityUpsertCaller !== undefined && opts.workEntityGetCaller !== undefined
@@ -13745,7 +16783,8 @@ export const bootstrapDataRoute = (
 
   const copyNoteText = async (): Promise<void> => {
     const entity = workEntityDialogEntity;
-    if (disposed || activeTab !== 'note' || noteMode !== 'read' || entity?._kind !== 'note' || noteCopying) return;
+    if (disposed || activeTab !== 'note' || noteMode !== 'read' || entity?._kind !== 'note' || noteCopying || workReaderCopy.state()?.disabled) return;
+    workReaderCopy.reset();
     const sequence = ++noteCopySequence;
     const opened = workEntityDialogOpenSeq;
     const stillHere = () => !disposed && sequence === noteCopySequence && opened === workEntityDialogOpenSeq
@@ -13772,14 +16811,297 @@ export const bootstrapDataRoute = (
     render(); if (carryFocus) focusNoteNotice();
   };
 
+  const focusCommitmentRelated = (key: string, action = 'preview'): void => {
+    Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-commitment-related-key]'))
+      .find(control => control.getAttribute('data-action') === `${action}-commitment-related`
+        && control.getAttribute('data-commitment-related-key') === key)?.focus({ preventScroll: true });
+  };
+  let commitmentReadingInteraction = 0;
+  const refreshRelatedReader = (kind: 'note' | 'task' | 'commitment', id: string, relatedKey?: string): void => {
+    errors = { ...errors, work_entities: undefined };
+    if (kind === 'commitment' && workEntityDialogEntity?._kind === 'commitment') {
+      const expected = workEntityDialogEntity, navigation = navigationGeneration, sequence = ++workEntityDialogOpenSeq;
+      const reader = commitmentReader, related = commitmentRelated, position = reader.snapshot(), interaction = commitmentReadingInteraction;
+      const current = () => !disposed && navigation === navigationGeneration && activeTab === 'commitment'
+        && workEntityDialogOpenSeq === sequence && workEntityDialogEntity === expected && workEntityState.dialog?.entity_id === id;
+      pendingWorkEntityDialogOpen = { kind, id, intent: 'read' }; loadingWorkEntityDetail = true; render();
+      void (async () => {
+        try {
+          if (!opts.workEntityGetCaller) throw new Error('This server cannot check the commitment.');
+          const [reply, registered] = await Promise.all([opts.workEntityGetCaller({ kind, id }),
+            opts.workEntitySourceListCaller?.().catch(() => undefined)]);
+          if (!current()) return;
+          const entity = reply.entity;
+          if (entity?._kind !== 'commitment' || commitmentRelatedIdentity(entity) !== commitmentRelatedIdentity(expected))
+            throw new Error('This commitment is no longer available with the same identity.');
+          if (registered) sources = [...registered.sources];
+          if (reply.counterparty_labels) commitmentContactLabels = { ...commitmentContactLabels, ...reply.counterparty_labels };
+          pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+          await openEditWorkEntityDialog('commitment', id, 'read', true, entity, reply.source_freshness);
+          const opened = workEntityDialogOpenSeq;
+          const stillReading = () => !disposed && navigation === navigationGeneration && opened === workEntityDialogOpenSeq
+            && commitmentRelated === related && activeTab === 'commitment' && commitmentMode === 'read'
+            && workEntityDialogEntity === entity;
+          if (!stillReading()) return;
+          void refreshActive(true); related.refresh(); await related.load();
+          if (!stillReading() || interaction !== commitmentReadingInteraction) return;
+          const active = doc.activeElement as HTMLElement | null;
+          const ownsFocus = active === doc.body || active?.getAttribute('data-commitment-related-key') === relatedKey;
+          if (!ownsFocus) return;
+          reader.resume(position); render();
+          const target = relatedKey ? Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-commitment-related-key]'))
+            .find(control => control.getAttribute('data-action') === 'open-commitment-related'
+              && control.getAttribute('data-commitment-related-key') === relatedKey && !control.hasAttribute('disabled')) : null;
+          (target ?? routeRoot.querySelector<HTMLElement>('[data-commitment-section="related"] summary')
+            ?? routeRoot.querySelector<HTMLElement>('.work-entity-dialog-title'))?.focus({ preventScroll: true });
+        } catch (error) {
+          if (!current()) return;
+          pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+          workEntityState = closeDialogTransition(workEntityState); workEntityDialogEntity = null; workEntityDialogOpenSeq++;
+          commitmentReader.reset(); commitmentRelated.reset();
+          errors = { ...errors, work_entities: `Could not return to this commitment. ${errMessage(error)}` }; render();
+          const notice = routeRoot.querySelector<HTMLElement>('[role="alert"]');
+          notice?.setAttribute('tabindex', '-1'); notice?.focus({ preventScroll: true });
+        }
+      })();
+      return;
+    }
+    const sequence = workEntityDialogOpenSeq + 1;
+    errors = { ...errors, work_entities: undefined };
+    void openEditWorkEntityDialog(kind, id, 'read', true).then(() => {
+      if (!disposed && workEntityDialogOpenSeq === sequence && activeTab === kind && errors.work_entities) {
+        if (kind === 'note') noteNotice = { kind: 'error', text: `Could not refresh this note. ${errors.work_entities}` };
+        else if (kind === 'task') taskNotice = `Could not refresh this task. ${errors.work_entities}`;
+        render();
+      }
+    });
+  };
+
+  const returnToRelatedWork = (alreadyNavigated = false, afterLeave = false): boolean => {
+    flushWorkReading();
+    const origin = relatedWorkReturn;
+    if (!origin || disposed || hasDataInFlightWork() || contactDialog !== null && !(afterLeave && (origin.workLink?.tab === 'contact' || origin.linkedRecord?.kind === 'contact'))
+      || hasUnsavedWorkEntityDialog() && !(afterLeave && isRelatedWorkReader(origin))) return false;
+    if (afterLeave && contactDialog !== null) { contactDialog = null; retireContactDialogDraft(); }
+    if (afterLeave && hasUnsavedWorkEntityDialog()) flushEditorDrafts();
+    if (afterLeave && !mailMessageSurface.releaseComposeAfterLeave()) return false;
+    if (!mailMessageSurface.beforeLeave()) return false;
+    if (origin.source) {
+      if (!afterLeave && alreadyNavigated && (calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges())) return false;
+      if (afterLeave) { if (!calendarCreateSurface.releaseAfterLeave()) return false; }
+      else if (!calendarEventSurface.beforeLeave(() => { returnToRelatedWork(alreadyNavigated); })
+        || !calendarCreateSurface.beforeLeave(() => { returnToRelatedWork(alreadyNavigated); })) return false;
+    }
+    const retainMail = origin.source?.tab === 'mail' && origin.mailWork?.hash === dataHistory.current().hash
+      && explorerDetail?.record != null && !explorerDetail.loading;
+    if (origin.source && !retainMail) resetExplorerState();
+    else if (retainMail) explorerSeq++;
+    else resetMailReader();
+    if (origin.source) calendarEventSurface.reset();
+    loadGeneration++; navigationGeneration++; universalSearchNavigation = navigationGeneration;
+    workEntityDialogOpenSeq++; pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false;
+    cancelContactEditOpen(); pendingContactDetailFocusEmail = null;
+    suspendContactActivity(); contactDetail = null; loadingContactDetail = false;
+    noteDraft.suspend(); suspendWorkDrafts();
+    noteRelated.reset(); noteReader.reset(); noteFind.reset(); taskRelated.reset(); taskReader.reset(); taskFind.reset(); workReaderNavigation.reset();
+    if (projectWork && projectWork !== origin.project) projectWork.dispose();
+    projectWork = origin.project; projectChildReturn = origin.projectReturn; projectEditing = false;
+    workSearchReturn = origin.searchReturn; duplicateContext = origin.duplicate;
+    noteReader = origin.reader; noteFind = origin.find; noteRelated = origin.related;
+    taskReader = origin.taskReader; taskFind = origin.taskFind; taskRelated = origin.taskRelated; mailWorkReturn = origin.mailWork; calendarWorkReturn = origin.calendarWork; taskBlockerReturn = origin.taskBlocker;
+    workReaderNavigation = origin.readerNavigation;
+    commitmentReader.reset(); commitmentRelated.reset();
+    commitmentReader = origin.commitmentReader; commitmentRelated = origin.commitmentRelated;
+    commitmentViewFilters = { ...origin.commitmentFilters }; commitmentListFilter = { ...origin.commitmentAppliedFilters };
+    if (origin.entity._kind !== 'commitment' && (origin.taskDependency || origin.source || origin.workLink)) taskRelated.refreshTasks({ owner: true });
+    opts.taskBlockerNavigation?.restore(origin.todayReturn);
+    relatedWorkReturn = origin.parent;
+    bookingReaderReturn = null; bookingActions.reset(); bookingReader.reset(); bookingChat.reset(); bookingDetailSeq++;
+    const kind = origin.entity._kind;
+    activeTab = kind; loading = false; errors = {};
+    workEntityState = origin.page; workEntities = origin.entities; workEntityTotal = origin.total;
+    workEntityDialogEntity = origin.entity; workEntityDialogOriginal = { ...origin.page.dialog!.values };
+    workEntityDialogReturnFocus = { mode: 'edit', kind, id: origin.entity.id };
+    workEntityDiscardGuardOpen = false; noteMode = taskMode = commitmentMode = 'read'; noteDetailsOpen = taskDetailsOpen = false;
+    taskNotice = undefined; taskDiscardToReader = false;
+    noteNotice = undefined; noteCopying = false; noteCopySequence++; noteDiscardToReader = false;
+    if (kind !== 'commitment') workReaderNavigation.resume(kind, origin.entity.id);
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, origin.entity.id)); else syncDataHash();
+    render(); captureWorkEntityDialogBaseline();
+    if (kind !== 'commitment' && (origin.taskDependency || origin.source || origin.workLink)) { void taskRelated.load(); void refreshActive(true); }
+    // Restore the reader immediately, then refresh without taking its focus.
+    refreshRelatedReader(kind, origin.entity.id, origin.linkedRecord?.key);
+    return true;
+  };
+
+  const pushRelatedReader = (entity: RelatedWorkOrigin['entity']): RelatedWorkOrigin => {
+    flushWorkReading();
+    workReaderCopy.reset();
+    const origin: RelatedWorkOrigin = { parent: relatedWorkReturn, entity, hash: dataHistory.current().hash,
+      page: workEntityState, entities: [...workEntities], total: workEntityTotal, project: projectWork,
+      projectReturn: projectChildReturn, searchReturn: workSearchReturn, duplicate: duplicateContext,
+      reader: noteReader, find: noteFind, related: noteRelated, taskReader, taskFind, taskRelated, readerNavigation: workReaderNavigation, mailWork: mailWorkReturn, calendarWork: calendarWorkReturn, taskBlocker: taskBlockerReturn,
+      commitmentReader, commitmentRelated, commitmentFilters: { ...commitmentViewFilters }, commitmentAppliedFilters: { ...commitmentListFilter },
+      todayReturn: opts.taskBlockerNavigation?.snapshot() };
+    relatedWorkReturn = origin;
+    workReaderNavigation.suspend(); workReaderNavigation = makeWorkReaderNavigation();
+    noteReader = createNoteReaderContinuity(); noteFind = makeNoteFind(); noteRelated = makeNoteRelated();
+    taskReader = createTaskReaderContinuity(); taskFind = makeNoteFind('task'); taskRelated = makeNoteRelated('task');
+    commitmentReader = createCommitmentReaderContinuity(); commitmentRelated = makeCommitmentRelated();
+    projectWork = null; projectChildReturn = null; workSearchReturn = null;
+    workEntityState = closeDialogTransition(workEntityState);
+    return origin;
+  };
+
+  const openWorkNoteSource = async (kind: 'task' | 'note', link: HTMLElement, source: TaskNoteSource): Promise<void> => {
+    const entity = workEntityDialogEntity;
+    if (disposed || activeLens !== 'data' || activeTab !== kind || (kind === 'task' ? taskMode : noteMode) !== 'read' || entity?._kind !== kind
+      || workEntityState.dialog?.mode !== 'edit' || pendingWorkEntityDialogOpen || workEntityDiscardGuardOpen || hasDataInFlightWork()) return;
+    link.focus({ preventScroll: true });
+    if (kind === 'note') { noteReader.capture(routeRoot); noteFind.capture(); } else { taskReader.capture(routeRoot); taskFind.capture(); }
+    const origin = pushRelatedReader(entity); origin.source = source;
+    const navigation = navigationGeneration;
+    const switching = selectTab(source.tab, false, undefined, true, undefined, true, true);
+    if (navigation === navigationGeneration) { returnToRelatedWork(); return; }
+    const visit = navigationGeneration;
+    const current = () => !disposed && navigationGeneration === visit && relatedWorkReturn === origin && activeTab === source.tab;
+    await switching;
+    if (!current()) return;
+    explorerCollection = source.tab; explorerSelectedSlug = source.collectionSlug;
+    await openExplorerRecord(source.recordId);
+  };
+
+  const openWorkRecordLink = async (kind: 'note' | 'task', link: HTMLElement, target: WorkRecordLink, verify?: (response: WorkEntityGetRpcResponse) => void): Promise<boolean> => {
+    const entity = workEntityDialogEntity;
+    if (disposed || activeLens !== 'data' || activeTab !== kind || (kind === 'task' ? taskMode : noteMode) !== 'read' || entity?._kind !== kind
+      || workEntityState.dialog?.mode !== 'edit' || pendingWorkEntityDialogOpen || workEntityDiscardGuardOpen || hasDataInFlightWork()) return false;
+    link.focus({ preventScroll: true });
+    if (target.tab === kind && target.id === entity.id) return false;
+    noteReader.capture(routeRoot); noteFind.capture(); taskReader.capture(routeRoot); taskFind.capture();
+    const origin = pushRelatedReader(entity); origin.workLink = target;
+    const navigation = navigationGeneration, sameTab = target.tab === activeTab;
+    if (sameTab) { loadGeneration++; navigationGeneration++; universalSearchNavigation = navigationGeneration; }
+    const switching = sameTab ? Promise.resolve() : selectTab(target.tab, false, undefined, true, undefined, true);
+    if (navigation === navigationGeneration) { returnToRelatedWork(); return false; }
+    const visit = navigationGeneration;
+    // Install the address before the read, so browser Back also cancels a slow
+    // same-kind open. Each regular reader owns its own stale-response checks.
+    dataHistory.navigate(dataAddress(target.hash, target.id), { intent: 'push' });
+    await switching;
+    if (disposed || navigationGeneration !== visit || relatedWorkReturn !== origin || (activeTab as DataTabId) !== target.tab) return false;
+    if (target.tab === 'contact') await openContactDetail(target.id, true);
+    else if (!verify) { if (target.tab === 'booking') await openBookingDetail(target.id); else await openEditWorkEntityDialog(target.tab, target.id); }
+    else {
+      try {
+        if (!opts.workEntityGetCaller) throw new Error('Linked records cannot be opened here.');
+        const response = await opts.workEntityGetCaller({ kind: target.tab, id: target.id });
+        if (disposed || navigationGeneration !== visit || relatedWorkReturn !== origin || (activeTab as DataTabId) !== target.tab) return false;
+        verify(response);
+        if (target.tab === 'booking') await openBookingDetail(target.id, response); else await openEditWorkEntityDialog(target.tab, target.id, 'read', false, response.entity!, response.source_freshness);
+      } catch (error) {
+        if (disposed || navigationGeneration !== visit || relatedWorkReturn !== origin) return false;
+        returnToRelatedWork(); workLinkedFrom.failure(errMessage(error));
+        return false;
+      }
+    }
+    return !disposed && navigationGeneration === visit && relatedWorkReturn === origin
+      && (activeTab as DataTabId) === target.tab && (target.tab === 'booking' ? bookingDetailId === target.id : workEntityState.dialog?.entity_id === target.id);
+  };
+
+  const openWorkRelatedRecord = async (kind: 'note' | 'task' | 'commitment', key: string): Promise<void> => {
+    const entity = workEntityDialogEntity;
+    const currentController = () => kind === 'note' ? noteRelated : kind === 'task' ? taskRelated : commitmentRelated;
+    const currentMode = () => kind === 'note' ? noteMode : kind === 'task' ? taskMode : commitmentMode;
+    const controller = currentController();
+    if (disposed || activeTab !== kind || currentMode() !== 'read' || entity?._kind !== kind
+      || workEntityState.dialog?.mode !== 'edit' || workEntityDiscardGuardOpen || pendingWorkEntityDialogOpen || hasDataInFlightWork()) return;
+    const opened = workEntityDialogOpenSeq, navigation = navigationGeneration;
+    if (kind === 'commitment' && (!opts.workEntityGetCaller || !mailMessageSurface.beforeLeave())) return;
+    const target = await controller.activate(key);
+    if (!target || disposed || opened !== workEntityDialogOpenSeq || navigation !== navigationGeneration
+      || controller !== currentController() || activeTab !== kind || currentMode() !== 'read' || hasDataInFlightWork()) return;
+    const control = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[data-${kind}-related-key]`))
+      .find(element => element.getAttribute('data-action') === `open-${kind}-related` && element.getAttribute(`data-${kind}-related-key`) === key);
+    control?.focus({ preventScroll: true });
+    noteReader.capture(routeRoot); noteFind.capture(); taskReader.capture(routeRoot); taskFind.capture(); commitmentReader.capture(routeRoot);
+    const origin = pushRelatedReader(entity);
+    if (kind === 'commitment') origin.linkedRecord = { kind: target.kind, id: target.kind === 'contact' ? target.contact.contact_id ?? target.contact.email : target.kind === 'project' ? target.project.id : target.task.id, key };
+    if (target.kind === 'task') origin.taskDependency = target.task.id;
+    // Same-kind dependencies need their own navigation generation and address.
+    const sameTaskTab = target.kind === 'task' && activeTab === 'task';
+    if (sameTaskTab) { loadGeneration++; navigationGeneration++; universalSearchNavigation = navigationGeneration; }
+    const switching = sameTaskTab ? Promise.resolve() : selectTab(target.kind, false, undefined, true, undefined, true);
+    if (navigationGeneration === navigation) { returnToRelatedWork(); return; }
+    const detail = target.kind === 'contact'
+      ? openContactDetail(target.contact.email, true, target)
+      : target.kind === 'project' ? openEditWorkEntityDialog('project', target.project.id, 'read', false, target.project, target.source_freshness)
+      : openEditWorkEntityDialog('task', target.task.id, 'read', false, target.task, target.source_freshness);
+    await Promise.all([switching, detail]);
+  };
+
+  const duplicateWorkEntity = async (): Promise<void> => {
+    const original = workEntityDialogEntity;
+    if (!duplicateControls().can_duplicate || !isDuplicateEntity(original) || workEntityState.dialog?.submitting
+      || duplicatePreparing !== null || pendingWorkEntityDialogOpen || workEntityDiscardGuardOpen
+      || original._kind === 'note' && noteMode !== 'read') return;
+    const report = (message: string) => {
+      if (original._kind === 'note') noteNotice = { kind: 'error', text: message };
+      else workEntityState = setDialogSubmitErrorTransition(workEntityState, message);
+      render(); if (original._kind === 'note') focusNoteNotice(); else focusTaskCompletionError();
+    };
+    if (original._kind === 'task' && hasUnsavedWorkEntityDialog()) {
+      report('Save or discard your changes before duplicating this task.'); return;
+    }
+    const opened = workEntityDialogOpenSeq, navigation = navigationGeneration;
+    const stillHere = () => !disposed && opened === workEntityDialogOpenSeq && navigation === navigationGeneration
+      && workEntityState.dialog?.mode === 'edit' && workEntityState.dialog.entity_id === original.id
+      && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
+      && workEntityDialogEntity === original && (original._kind !== 'note' || noteMode === 'read');
+    duplicatePreparing = opened; render();
+    try {
+      const [response, registered] = await Promise.all([
+        opts.workEntityGetCaller!({ kind: original._kind, id: original.id }), opts.workEntitySourceListCaller!(),
+      ]);
+      if (!stillHere()) return;
+      if (original._kind === 'task' && hasUnsavedWorkEntityDialog()) throw new Error('Save or discard your changes before duplicating this task.');
+      if (!sameDuplicateEntity(original, response.entity)) throw new Error('This item is no longer available to duplicate. Close and reopen it to check its source.');
+      sources = [...registered.sources];
+      const writable = duplicateDestinations(sources, original._kind);
+      const target = writable.find(source => source.id === original.source_id)?.id
+        ?? resolveCreateDialogSourceId(original._kind, null, writable);
+      if (!target) throw new Error(`No writable Source is available for a new ${original._kind}. Check Connections in Settings.`);
+      openCreateWorkEntityDialog(target, response.entity);
+    } catch (error) {
+      if (stillHere()) { duplicatePreparing = null; report(errMessage(error)); }
+    } finally {
+      if (duplicatePreparing === opened) duplicatePreparing = null;
+    }
+  };
+
   const openEditWorkEntityDialog = async (
     kind: WorkEntityKind,
     id: string,
     noteIntent: 'read' | 'edit' | 'details' = 'read',
     preserveFocus = false,
+    // A verified create or related-record read can skip a second fetch.
+    // Recovery data never enters here as a confirmed entity.
+    confirmed?: WorkEntity,
+    confirmedFreshness?: WorkEntityGetRpcResponse['source_freshness'],
   ): Promise<void> => {
+    flushWorkReading();
+    if (taskBlockerReturn && (kind !== 'task' || id !== taskBlockerReturn.dependency)) taskBlockerReturn = null;
+    opts.taskBlockerNavigation?.route(serializeShellRoute('data', kind, id));
+    if (projectWork?.taskActions.busy()) { focusProjectTaskStatus(); return; }
+    if (mailBulk.busy()) { focusMailBatch(); return; }
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (noteBulk.busy()) { focusNoteBatch(); return; }
+    duplicatePreparing = null;
+    if (kind !== mailWorkReturn?.kind || id !== mailWorkReturn?.createdId) mailWorkReturn = null;
+    if (kind !== calendarWorkReturn?.kind || id !== calendarWorkReturn?.createdId) calendarWorkReturn = null;
+    if (duplicateContext && (kind !== duplicateContext.original._kind || id !== duplicateContext.createdId)) duplicateContext = null;
     taskBulk.reset();
+    noteBulk.reset();
+    mailBulk.reset();
     if (kind === 'asset') {
       const view = doc.defaultView;
       if (view) view.location.hash = `#yours/asset/${encodeURIComponent(id)}`;
@@ -13790,8 +17112,13 @@ export const bootstrapDataRoute = (
       pendingWorkEntityDialogOpen?.kind === kind
       && pendingWorkEntityDialogOpen.id === id && pendingWorkEntityDialogOpen.intent === noteIntent
     ) return;
+    noteWriteRevision = undefined;
+    if (selectionNoteReturn && (kind !== 'note' || id !== selectionNoteReturn.noteId)) selectionNoteReturn = null;
+    noteDraft.suspend(); suspendWorkDrafts();
     retireRunVerificationForDifferentItem(kind, id);
     const seq = ++workEntityDialogOpenSeq;
+    const taskBeingRead = kind === 'task' && taskMode === 'read' && workEntityDialogEntity?._kind === 'task' && workEntityDialogEntity.id === id ? workEntityDialogEntity : null;
+    if (kind === 'task') taskNotice = undefined;
     if (kind === 'note') { noteCopying = false; noteCopySequence += 1; noteNotice = undefined; }
     if (kind !== 'booking') {
       bookingDetailSeq += 1;
@@ -13809,14 +17136,14 @@ export const bootstrapDataRoute = (
     workEntityDialogReturnFocus = { mode: 'edit', kind, id };
     loadingWorkEntityDetail = true;
     render();
-    let entity: WorkEntity | null =
+    let entity: WorkEntity | null = confirmed ??
       workEntities.find((row) => row._kind === kind && row.id === id) ?? null;
-    let openedFreshness: WorkEntityGetRpcResponse['source_freshness'];
-    if (opts.workEntityGetCaller !== undefined) {
+    let openedFreshness: WorkEntityGetRpcResponse['source_freshness'] = confirmedFreshness;
+    if (!confirmed && opts.workEntityGetCaller !== undefined) {
       try {
         const [response, registered] = await Promise.all([
           opts.workEntityGetCaller({ kind, id }),
-          (kind === 'note' || kind === 'commitment' || kind === 'project' && noteIntent !== 'read') && opts.workEntitySourceListCaller
+          (kind === 'task' || kind === 'note' || kind === 'commitment' || isWorkDraftKind(kind) && noteIntent !== 'read') && opts.workEntitySourceListCaller
             ? opts.workEntitySourceListCaller().catch(error => {
                 if (noteIntent === 'read') return undefined;
                 throw error;
@@ -13832,10 +17159,12 @@ export const bootstrapDataRoute = (
         pendingWorkEntityDialogOpen = null;
         loadingWorkEntityDetail = false;
         errors = { ...errors, work_entities: errMessage(err) };
+        if (kind === 'task' && noteIntent !== 'read') taskNotice = `Could not open the editor. ${errMessage(err)}`;
         if (kind === 'note' && noteIntent !== 'read') noteNotice = { kind: 'error', text: `Could not open the editor. ${errMessage(err)}` };
         if (kind === 'commitment' && noteIntent !== 'read') commitmentNotice = `Could not open the editor. ${errMessage(err)}`;
         render();
-        if (kind === 'note' && noteIntent !== 'read') routeRoot.querySelector<HTMLElement>('[data-note-notice]')?.focus();
+        if (kind === 'task' && noteIntent !== 'read') routeRoot.querySelector<HTMLElement>('[data-task-notice]')?.focus();
+        else if (kind === 'note' && noteIntent !== 'read') routeRoot.querySelector<HTMLElement>('[data-note-notice]')?.focus();
         else if (kind === 'commitment' && noteIntent !== 'read') routeRoot.querySelector<HTMLElement>('[data-commitment-notice]')?.focus();
         else if (!preserveFocus) focusWorkEntityDialogReturnTarget();
         return;
@@ -13852,26 +17181,65 @@ export const bootstrapDataRoute = (
       if (!preserveFocus) focusWorkEntityDialogReturnTarget();
       return;
     }
+    if (taskBeingRead && noteIntent !== 'read' && (entity.source_id !== taskBeingRead.source_id || entity.source_record_id !== taskBeingRead.source_record_id || entity.created_at !== taskBeingRead.created_at)) {
+      pendingWorkEntityDialogOpen = null; loadingWorkEntityDetail = false; taskNotice = 'This task changed identity. Close and reopen it before editing.'; render(); return;
+    }
     workEntityState = openEditDialogTransition(
       workEntityState,
       entity,
       getCanonicalSchema(kind),
     );
     workEntityDialogEntity = entity;
+    if (kind === 'task' || kind === 'note') workReaderNavigation.resume(kind, id);
     noteCopying = false; noteCopySequence += 1; noteNotice = undefined; noteDiscardToReader = false;
+    if (entity._kind === 'task') {
+      bindWorkReading(entity, taskReader, taskFind, Boolean(confirmed || opts.workEntityGetCaller)); bindTaskRelated(entity, { source_freshness: openedFreshness });
+      taskMode = noteIntent !== 'read' && canEditTask(entity) ? 'edit' : 'read'; taskNotice = undefined; taskDiscardToReader = false;
+      if (noteIntent !== 'read' && taskMode === 'read') taskNotice = 'This task cannot be edited now. Check its source or pending changes.';
+    }
     if (entity._kind === 'commitment') {
+      commitmentReader.open(entity); commitmentRelated.open(entity, { source_freshness: openedFreshness });
       commitmentMode = noteIntent !== 'read' && canEditCommitment(entity) ? 'edit' : 'read'; commitmentNotice = undefined; commitmentDiscardToReader = false;
     }
     if (entity._kind === 'note') {
+      bindWorkReading(entity, noteReader, noteFind, Boolean(confirmed || opts.workEntityGetCaller));
+      noteRelated.open(entity);
       noteMode = noteIntent !== 'read' && canEditNote(entity) ? 'edit' : 'read';
       noteDetailsOpen = noteIntent === 'details';
       if (noteIntent !== 'read' && noteMode === 'read') noteNotice = { kind: 'error', text: 'This note cannot be edited now. Check its source or pending changes.' };
     }
+    let resumeProjectView: ProjectViewState | undefined;
     if (entity._kind === 'project') {
-      if (projectWork?.project.id !== entity.id) {
+      if (opts.projectViewMemory?.value?.identity === projectAttentionIdentity(entity)) { resumeProjectView = opts.projectViewMemory.value; opts.projectViewMemory.value = undefined; }
+      // The form names this relationship `related_contacts`; the record and
+      // upsert contract use `related_contact_ids`.
+      if (workEntityState.dialog) workEntityState = setDialogValuesTransition(workEntityState, {
+        ...workEntityState.dialog.values, related_contacts: [...entity.related_contact_ids],
+      });
+      if (!projectWork || projectAttentionIdentity(projectWork.project) !== projectAttentionIdentity(entity)) {
         projectWork?.dispose();
         projectWork = createProjectWork(entity, opts.projectItemsCaller, () => {
           if (!disposed && activeTab === 'project' && !projectEditing) render();
+        }, { sources: () => sources, get: opts.workEntityGetCaller,
+          listSources: opts.workEntitySourceListCaller, complete: opts.taskMarkDoneCaller }, opts.projectAttentionCaller ? {
+          caller: opts.projectAttentionCaller, get: opts.workEntityGetCaller,
+          zone: () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+          active: () => !disposed && activeLens === 'data' && activeTab === 'project' && !projectEditing && projectWork?.project.id === entity.id,
+          blocked: () => hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null || projectWork?.taskActions.busy() === true || projectWork?.communication?.busy() === true,
+          beforeLeave: () => mailMessageSurface.beforeLeave(),
+          open: (kind, item, response, key) => openProjectAttentionItem(kind, item.id, response, key),
+          write: value => copyText(doc, value), focus: focusProjectAttention,
+          focused: key => doc.activeElement?.getAttribute('data-project-focus') === key,
+          selectFallback: selectProjectAttentionCopy,
+        } : undefined, {
+          get: opts.workEntityGetCaller, contact: opts.contactGetCaller, openChat: opts.onAskProject,
+          openMail: request => mailMessageSurface.openCreate(request),
+          active: () => !disposed && activeLens === 'data' && activeTab === 'project' && !projectEditing
+            && projectWork?.project.id === entity.id && workEntityState.dialog?.entity_id === entity.id,
+          blocked: () => hasDataInFlightWork() || pendingWorkEntityDialogOpen !== null
+            || projectWork?.attention?.busy() === true,
+          beforeLeave: () => mailMessageSurface.beforeLeave(), href: () => doc.defaultView?.location?.href ?? doc.URL ?? '',
+          focus: focusProjectAttention, focused: key => doc.activeElement?.getAttribute('data-project-focus') === key,
         });
       } else projectWork.project = entity;
       projectWork.freshness = openedFreshness;
@@ -13897,19 +17265,102 @@ export const bootstrapDataRoute = (
     pendingWorkEntityDialogOpen = null;
     loadingWorkEntityDetail = false;
     syncDataHash(); // the edit dialog's entity is now the addressable id
+    if (entity._kind === 'commitment' && commitmentMode === 'read') bindCommitmentFollowUp(entity);
     render();
     captureWorkEntityDialogBaseline();
+    if (kind === 'note' && noteMode === 'edit' && entity._kind === 'note' && workEntityState.dialog) {
+      noteDraft.begin(entity.source_id, workEntityState.dialog.values, noteDraftOriginal(entity));
+    }
+    if (isWorkDraftKind(kind) && isWorkDraftKind(entity._kind) && (kind === 'task' && taskMode === 'edit' || projectEditing)) beginWorkDraft(entity as WorkDraftEntity);
     if (kind === 'note' && noteNotice?.kind === 'error') focusNoteNotice();
     else if (!preserveFocus) focusWorkEntityDialog();
     if (kind === 'booking') opts.onOwnerRecordOpened?.({ collection: kind, id });
     loadWorkEntityTimeline(kind, id, seq);
     loadProjectLinkParentLabel(entity, seq);
+    if (kind === 'task' && taskMode === 'read') void taskRelated.load();
+    if (kind === 'note' && routeRoot.querySelector<HTMLDetailsElement>('[data-note-section="related"]')?.open) void noteRelated.load();
+    if (kind === 'commitment' && routeRoot.querySelector<HTMLDetailsElement>('[data-commitment-section="related"]')?.open) void commitmentRelated.load();
     if (entity._kind === 'project' && projectWork && !projectEditing) {
-      void projectWork.load('task', true); void projectWork.load('note', true); void projectWork.load('commitment', true);
+      if (resumeProjectView) {
+        const model = projectWork, saved = resumeProjectView, navigation = navigationGeneration, interaction = projectInteraction;
+        projectViewLoad = model.restore(saved).then(() => {
+          if (disposed || projectWork !== model || activeTab !== 'project' || projectEditing || navigationGeneration !== navigation || projectInteraction !== interaction) return;
+          const focus = doc.activeElement?.getAttribute('data-project-focus');
+          if (focus && focus !== 'heading') return;
+          pendingProjectRestore = { key: saved.focus, scrollTop: saved.top }; render();
+        });
+      } else { void projectWork.load('task', true); void projectWork.load('note', true); void projectWork.load('commitment', true); void projectWork.attention?.refresh(); }
     }
   };
 
-  const openBookingDetail = async (id: string): Promise<void> => {
+  const captureBookingReturn = (target: BookingReaderReturn['target'], focus: string): BookingReaderReturn | null => {
+    if (bookingDetail?.entity?._kind !== 'booking') return null;
+    bookingReader.capture(routeRoot, workSearchScrollHost());
+    return { parent: bookingReaderReturn, response: bookingDetail, hash: dataHistory.current().hash,
+      state: workEntityState, entities: [...workEntities], total: workEntityTotal, errors: { ...errors },
+      position: { ...bookingReader.snapshot(), focus }, target, search: workSearchReturn, lifecycle: bookingLifecycleFilter };
+  };
+  const openBookingCustomer = async (contact: ContactRecord): Promise<void> => {
+    if (!mailMessageSurface.beforeLeave()) return;
+    const origin = captureBookingReturn({ kind: 'contact', id: contact.contact_id ?? contact.email }, 'customer'); if (!origin) return;
+    bookingReaderReturn = origin; const navigation = navigationGeneration;
+    await selectTab('contact', false, undefined, true, undefined, true);
+    if (disposed || navigationGeneration === navigation || bookingReaderReturn !== origin || (activeTab as DataTabId) !== 'contact') return;
+    await openContactDetail(contact.email, true, { kind: 'contact', contact, identity: JSON.stringify([contact.contact_id ?? contact.email, contact.created_at]) });
+  };
+  const openPreviousBooking = async (entry: import('@recued/contracts').BookingHistoryEntry, response: WorkEntityGetRpcResponse): Promise<void> => {
+    const origin = captureBookingReturn({ kind: 'booking', id: entry.id }, 'history:' + JSON.stringify([entry.id, entry.created_at])); if (!origin) return;
+    bookingReaderReturn = origin;
+    await openBookingDetail(entry.id, response, true);
+    if (!disposed && activeTab === 'booking' && bookingDetail?.entity === response.entity) focusBooking('heading');
+  };
+  const findBookingReturn = (hash: string): BookingReaderReturn | null => {
+    for (let origin = bookingReaderReturn; origin; origin = origin.parent) if (origin.hash === hash) return origin;
+    return null;
+  };
+  const returnToBookingReader = (alreadyNavigated = false, afterLeave = false, hash?: string): boolean => {
+    const origin = hash ? findBookingReturn(hash) : bookingReaderReturn;
+    if (!origin || disposed || hasDataInFlightWork() || (!afterLeave && (contactDialog !== null || hasUnsavedWorkEntityDialog()))) return false;
+    if (afterLeave && hasUnsavedWorkEntityDialog()) flushEditorDrafts();
+    if (afterLeave && !mailMessageSurface.releaseComposeAfterLeave()) return false;
+    if (!mailMessageSurface.beforeLeave()) return false;
+    const expected = origin.response.entity; if (expected?._kind !== 'booking') return false;
+    suspendContactActivity(); cancelContactEditOpen();
+    if (afterLeave && contactDialog) { contactDialog = null; retireContactDialogDraft(); }
+    contactDetail = null; loadingContactDetail = false;
+    workEntityDialogOpenSeq++; pendingWorkEntityDialogOpen = null; workEntityDialogEntity = null; workEntityDiscardGuardOpen = false;
+    loadingWorkEntityDetail = false;
+    navigationGeneration++; loadGeneration++;
+    bookingReaderReturn = origin.parent; activeTab = 'booking';
+    workEntityState = origin.state; workEntities = origin.entities; workEntityTotal = origin.total; errors = { ...origin.errors };
+    workSearchReturn = origin.search; bookingLifecycleFilter = origin.lifecycle;
+    bookingActions.reset(); bookingReader.reset();
+    bookingDetailId = expected.id; bookingDetail = null; bookingDetailError = null; loadingBookingDetail = true;
+    resetBookingManageLinkState(); const sequence = ++bookingDetailSeq, navigation = navigationGeneration, interaction = bookingReadingInteraction;
+    if (alreadyNavigated) dataHistory.adopt(dataAddress(origin.hash, expected.id)); else syncDataHash();
+    render();
+    const current = () => !disposed && activeTab === 'booking' && navigation === navigationGeneration && sequence === bookingDetailSeq && bookingDetailId === expected.id;
+    void (async () => {
+      try {
+        if (!opts.workEntityGetCaller) throw new Error('This server cannot check the original booking.');
+        const reply = await opts.workEntityGetCaller({ kind: 'booking', id: expected.id }); if (!current()) return;
+        const entity = requireSameBooking(expected, reply);
+        bookingDetail = reply; loadingBookingDetail = false;
+        const position = interaction === bookingReadingInteraction ? origin.position : { top: workSearchScrollHost()?.scrollTop ?? 0,
+          focus: (doc.activeElement as HTMLElement | null)?.getAttribute('data-booking-focus') ?? undefined };
+        bookingReader.bind(bookingIdentity(entity)); bookingReader.resume(position); render();
+      } catch (error) {
+        if (!current()) return; loadingBookingDetail = false; bookingDetail = null;
+        bookingDetailError = `Could not return to this booking. ${errMessage(error)}`; render();
+        const notice = routeRoot.querySelector<HTMLElement>('.work-entity-booking-detail [role="alert"]'); notice?.setAttribute('tabindex', '-1'); notice?.focus({ preventScroll: true });
+      }
+    })();
+    return true;
+  };
+
+  const openBookingDetail = async (id: string, confirmed?: WorkEntityGetRpcResponse, preserveReturn = false): Promise<void> => {
+    if (!preserveReturn && bookingDetailId !== id) bookingReaderReturn = null;
+    bookingActions.reset(); bookingReader.reset();
     retireRunVerificationForDifferentItem('booking', id);
     const seq = ++bookingDetailSeq;
     if (activeTab !== 'booking') {
@@ -13926,13 +17377,14 @@ export const bootstrapDataRoute = (
     syncDataHash();
     render();
     try {
-      const response = opts.workEntityGetCaller !== undefined
+      const response = confirmed ?? (opts.workEntityGetCaller !== undefined
         ? await opts.workEntityGetCaller({ kind: 'booking', id })
         : {
             entity:
               workEntities.find((entity) => entity._kind === 'booking' && entity.id === id)
               ?? null,
-          };
+          });
+      if (response.entity && (response.entity._kind !== 'booking' || response.entity.id !== id)) throw new Error('This booking could not be confirmed.');
       if (
         disposed
         || seq !== bookingDetailSeq
@@ -13966,7 +17418,13 @@ export const bootstrapDataRoute = (
   };
 
   const closeBookingDetail = (): void => {
+    if (bookingReaderReturn) { returnToBookingReader(); return; }
+    if (relatedWorkReturn?.workLink?.tab === 'booking') { returnToRelatedWork(); return; }
+    if (exactSearchReturn) { returnToExactLinkSearch(); return; }
+    if (workSearchReturn) { returnToWorkSearch(); return; }
+    if (!mailMessageSurface.beforeLeave()) return;
     retireRunVerification();
+    bookingActions.reset(); bookingReader.reset();
     bookingDetailSeq += 1;
     bookingDetailId = null;
     bookingDetail = null;
@@ -14056,6 +17514,8 @@ export const bootstrapDataRoute = (
     values: Record<string, unknown>,
   ): void => {
     workEntityState = setDialogValuesTransition(workEntityState, values);
+    if (workEntityState.kind === 'note' && noteMode === 'edit' && workEntityState.dialog) noteDraft.capture(workEntityState.dialog.source_id, values);
+    captureWorkDraft();
     render();
   };
 
@@ -14078,6 +17538,8 @@ export const bootstrapDataRoute = (
       if (title) values.title = title.value === displayedTitle ? original.title : title.value.trim();
     }
     workEntityState = setDialogValuesTransition(workEntityState, values);
+    if (workEntityState.kind === 'note' && noteMode === 'edit') noteDraft.capture(workEntityState.dialog!.source_id, values);
+    captureWorkDraft();
   };
 
   const focusWorkEntityArrayItem = (
@@ -14151,6 +17613,9 @@ export const bootstrapDataRoute = (
     if (!Array.isArray(current)) return;
     if (index >= current.length) return;
     const next = current.filter((_, i) => i !== index);
+    workContactPickers.removeArrayItem(field, index);
+    workProjectPickers.removeArrayItem(field, index);
+    workTaskPickers.removeArrayItem(field, index);
     setWorkEntityDialogValues({
       ...workEntityState.dialog.values,
       [field]: next,
@@ -14272,6 +17737,7 @@ export const bootstrapDataRoute = (
         ...sourceExtensionValuesFromEntity(activeWorkEntityDefinition(), result.entity),
       });
       taskCompletionNotice = done ? 'Task completed.' : 'Task reopened.';
+      if (taskMode === 'edit') beginWorkDraft(result.entity);
       render();
       captureWorkEntityDialogBaseline();
       routeRoot.querySelector<HTMLElement>('[data-task-completion-status]')?.focus?.({ preventScroll: true });
@@ -14289,6 +17755,7 @@ export const bootstrapDataRoute = (
     } finally {
       if (taskCompletionPending === mutation) taskCompletionPending = null;
       opaqueMutationsInFlight -= 1;
+      if (stillHere()) render();
     }
   };
 
@@ -14298,6 +17765,7 @@ export const bootstrapDataRoute = (
       || workEntityState.dialog.submitting === true
     ) return;
     if (activeTab === 'project' && projectWork && !projectEditing) return;
+    if (workEntityState.kind === 'task' && workEntityState.dialog.mode === 'edit' && taskMode === 'read') return;
     if (workEntityState.kind === 'note' && workEntityState.dialog.mode === 'edit' && noteMode === 'read') return;
     if (workEntityState.kind === 'commitment' && workEntityState.dialog.mode === 'edit' && commitmentMode === 'read') return;
     if (opts.workEntityUpsertCaller === undefined) {
@@ -14331,12 +17799,42 @@ export const bootstrapDataRoute = (
       && workEntityDialogEntity?._kind === 'note' ? workEntityDialogEntity : null;
     const editingCommitment = workEntityState.kind === 'commitment' && workEntityState.dialog.mode === 'edit'
       && workEntityDialogEntity?._kind === 'commitment' ? workEntityDialogEntity : null;
-    const editingEntity = editingTask ?? editingNote ?? editingCommitment;
+    const editingProject = workEntityState.kind === 'project' && workEntityState.dialog.mode === 'edit'
+      && workEntityDialogEntity?._kind === 'project' ? workEntityDialogEntity : null;
+    const editingEntity = editingTask ?? editingNote ?? editingCommitment ?? editingProject;
     const submittedSequence = workEntityDialogOpenSeq;
     const submittedProject = projectWork;
+    const submittedSelectionNote = activeSelectionNote();
+    const noteRevisionAtSave = editingNote ? noteWriteRevision : undefined;
+    const submittedDuplicate = workEntityState.dialog.mode === 'create' ? activeDuplicate() : null;
+    const submittedMailWork = workEntityState.dialog.mode === 'create' ? activeMailWork() : null;
+    const submittedCalendarWork = workEntityState.dialog.mode === 'create' ? activeCalendarWork() : null;
+    const submittedNoteTask = workEntityState.dialog.mode === 'create' ? activeNoteTask() : null;
+    const submittedContactWork = workEntityState.dialog.mode === 'create' ? activeContactWork() : null;
+    const submittedFollowUpWork = submittedMailWork ?? submittedCalendarWork ?? submittedNoteTask;
     try {
-      if (projectChildReturn && workEntityState.dialog?.mode === 'create' && workEntityDialogEntity) {
+      if (submittedSelectionNote && !submittedSelectionNote.existing && submittedSelectionNote.attempted) throw new Error('The previous save was not confirmed. Check Notes before creating another. Your draft is still here.');
+      if (submittedContactWork?.attempted) throw new Error('The previous save was not confirmed. Check the saved items before creating another. Your draft is still here.');
+      if (submittedContactWork && !sources.some(source => source.id === workEntityState.dialog!.source_id
+        && source.top_tier_kind === submittedContactWork.kind && source.write_capable && source.sync_posture !== 'read_through')) {
+        throw new Error('Choose a writable Source before saving.');
+      }
+      if (submittedFollowUpWork?.attempted) throw new Error('The previous save was not confirmed. Check the saved items before creating another. Your draft is still here.');
+      if (submittedFollowUpWork && !sources.some(source => source.id === workEntityState.dialog!.source_id
+        && source.top_tier_kind === workEntityState.kind && source.write_capable && source.sync_posture !== 'read_through')) {
+        throw new Error('Choose a writable Source before saving.');
+      }
+      if (submittedDuplicate?.attempted) throw new Error('The previous save was not confirmed. Check the list before creating another copy. Your draft is still here.');
+      if (submittedDuplicate && !duplicateDestinations(sources, submittedDuplicate.original._kind)
+        .some(source => source.id === workEntityState.dialog!.source_id)) {
+        throw new Error('This Source cannot accept a copy now. Choose a writable Source before saving.');
+      }
+      if ((projectChildReturn || workEntityState.kind === 'note' || isWorkDraftKind(workEntityState.kind)) && workEntityState.dialog?.mode === 'create' && workEntityDialogEntity) {
         throw new Error('The source already returned an item. Your draft is still here. Check that item before creating another.');
+      }
+      if (isWorkDraftKind(workEntityState.kind) && workEntityState.dialog.mode === 'create'
+        && workDrafts[workEntityState.kind].status() !== undefined && workDrafts[workEntityState.kind].status() !== 'editing') {
+        throw new Error(`The previous save was not confirmed. Check the ${workEntityState.kind === 'task' ? 'Tasks' : 'Projects'} list before creating another copy. Your recovery copy is still here.`);
       }
       if (projectWork && projectEditing && !canEditProject(projectWork.project)) {
         throw new Error('This project cannot be changed now. Your draft is still here. Check its source or pending changes.');
@@ -14358,7 +17856,7 @@ export const bootstrapDataRoute = (
       if (editingEntity) {
         const patch = request as unknown as Record<string, unknown>;
         for (const key of Object.keys(patch)) {
-          if (key !== 'kind' && key !== 'id' && key !== 'clear_due_at'
+          if (key !== 'kind' && key !== 'id' && key !== 'clear_due_at' && key !== 'clear_parent_project' && key !== 'clear_assigned_contact'
             && workEntityEditFieldMatches(key, patch[key], (editingEntity as unknown as Record<string, unknown>)[key])) delete patch[key];
         }
       }
@@ -14372,15 +17870,137 @@ export const bootstrapDataRoute = (
       return;
     }
 
+    if (recoveredDraftReturn) { recoveredDraftReturn.check++; recoveredDraftReturn.busy = false; recoveredDraftReturn.prepared = undefined; }
     workEntityState = setDialogSubmittingTransition(workEntityState, true);
     workEntityState = setDialogSubmitErrorTransition(workEntityState, null);
+    const noteSourceId = workEntityState.dialog!.source_id;
+    if (submittedContactWork) {
+      render();
+      try {
+        const fresh = await opts.contactGetCaller!({ email: submittedContactWork.contact.contact_id! });
+        if (disposed || submittedSequence !== workEntityDialogOpenSeq || activeContactWork() !== submittedContactWork) return;
+        requireFollowUpContact(submittedContactWork.contact, fresh.contact);
+      } catch (error) {
+        if (disposed || submittedSequence !== workEntityDialogOpenSeq) return;
+        workEntityState = setDialogSubmittingTransition(workEntityState, false);
+        workEntityState = setDialogSubmitErrorTransition(workEntityState, errMessage(error));
+        render(); focusTaskCompletionError(); return;
+      }
+    }
+    const noteTicket = workEntityState.kind === 'note' ? noteDraft.startAttempt() : undefined;
+    const workDraftKind = isWorkDraftKind(request.kind) ? request.kind : null;
+    const workTicket = workDraftKind ? workDrafts[workDraftKind].startAttempt() : undefined;
+    if (noteTicket?.blocked || workTicket?.blocked) {
+      workEntityState = setDialogSubmittingTransition(workEntityState, false);
+      workEntityState = setDialogSubmitErrorTransition(workEntityState, 'This tab could not update the recovery copy before saving. Copy your latest text and try again when tab storage is available.');
+      render(); focusTaskCompletionError(); return;
+    }
     render();
     try {
       const unchanged = editingEntity && Object.keys(request).every(key => key === 'kind' || key === 'id');
+      if (submittedSelectionNote) submittedSelectionNote.attempted = true;
+      if (submittedContactWork) submittedContactWork.attempted = true;
+      if (submittedDuplicate) submittedDuplicate.attempted = true;
+      if (submittedFollowUpWork) submittedFollowUpWork.attempted = true;
       const result = unchanged
-        ? { entity: editingEntity } : await opts.workEntityUpsertCaller(request);
+        ? { entity: editingEntity } : await opts.workEntityUpsertCaller(request.kind === 'note' && noteRevisionAtSave ? { ...request, expected_revision: noteRevisionAtSave } : request);
+      if (submittedDuplicate) {
+        const saved = result.entity;
+        if (!isDuplicateEntity(saved) || saved._kind !== request.kind || !saved.id
+          || saved.id === submittedDuplicate.original.id || saved.source_id !== noteSourceId
+          || Object.entries(request).some(([key, value]) => !['kind', 'source_id'].includes(key)
+            && !workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]))) {
+          throw new Error('The source did not confirm this copy. Your draft is still here. Check the list before creating another.');
+        }
+      }
+      if (workDraftKind && workTicket) {
+        const saved = result.entity, original = editingTask ?? editingProject;
+        const sameIdentity = saved._kind === workDraftKind && Boolean(saved.id) && saved.source_id === noteSourceId
+          && (!original || saved.id === original.id && saved.source_record_id === original.source_record_id && saved.created_at === original.created_at);
+        const confirmed = sameIdentity && saved.sync_state === 'live' && saved.deleted_at == null && !saved.pending_write
+          && Object.entries(request).every(([key, value]) => {
+            if (['kind', 'id', 'source_id'].includes(key)) return true;
+            if (key === 'clear_due_at') return saved._kind === 'task' && saved.due_at == null;
+            if (key === 'clear_parent_project') return saved._kind === 'task' && saved.parent_project_id == null;
+            if (key === 'clear_assigned_contact') return saved._kind === 'task' && saved.assigned_contact_id == null;
+            return workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]);
+          });
+        workDrafts[workDraftKind].settle(workTicket, confirmed, sameIdentity ? saved.id : undefined);
+        if (!confirmed && !original) {
+          if (!disposed && submittedSequence === workEntityDialogOpenSeq && saved._kind === workDraftKind) workEntityDialogEntity = saved;
+          throw new Error(`The source did not confirm this ${workDraftKind}. Your draft is still here. Check the saved item before trying again.`);
+        }
+      }
+      if (request.kind === 'note') {
+        const saved = result.entity;
+        const confirmed = saved._kind === 'note' && saved.id && saved.source_id === noteSourceId && saved.sync_state === 'live'
+          && saved.deleted_at == null && !saved.pending_write
+          && (!editingNote || saved.id === editingNote.id && saved.source_record_id === editingNote.source_record_id && saved.created_at === editingNote.created_at)
+          && Object.entries(request).every(([key, value]) => ['kind', 'id', 'source_id'].includes(key)
+            || workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]));
+        noteDraft.settle(noteTicket, Boolean(confirmed), saved._kind === 'note' ? saved.id : undefined);
+        if (!confirmed && !editingNote) {
+          if (!disposed && submittedSequence === workEntityDialogOpenSeq && saved._kind === 'note') workEntityDialogEntity = saved;
+          throw new Error('The source did not confirm the new note. Your draft is still here. Check Notes before creating another copy.');
+        }
+      }
       if (disposed) return;
-      if ((editingNote || editingCommitment || submittedProject) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
+      if ((editingTask || editingNote || editingCommitment || submittedProject || workTicket || submittedDuplicate || submittedFollowUpWork || submittedContactWork) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
+      if (submittedSelectionNote) {
+        if (activeSelectionNote() !== submittedSelectionNote || submittedSequence !== workEntityDialogOpenSeq) return;
+        const saved = result.entity;
+        if (saved._kind !== 'note' || !saved.id || saved.source_id !== noteSourceId || saved.sync_state !== 'live' || saved.deleted_at != null || saved.pending_write
+          || editingNote && (saved.id !== editingNote.id || saved.source_record_id !== editingNote.source_record_id || saved.created_at !== editingNote.created_at)
+          || Object.entries(request).some(([key, value]) => !['kind', 'id', 'source_id'].includes(key) && !workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key])))
+          throw new Error('The source did not confirm this note. Your draft is still here. Check Notes before trying again.');
+        submittedSelectionNote.noteId = saved.id;
+        workEntityState = setDialogSubmittingTransition(workEntityState, false);
+        await openEditWorkEntityDialog('note', saved.id, 'read', false, saved); return;
+      }
+      if (submittedContactWork) {
+        const saved = result.entity;
+        // Recovery can be disabled. Confirmation must still independently
+        // establish the exact reviewed fields and writable destination.
+        if (saved._kind !== submittedContactWork.kind || !saved.id || saved.source_id !== noteSourceId
+          || saved.sync_state !== 'live' || saved.deleted_at != null || saved.pending_write
+          || Object.entries(request).some(([key, value]) => !['kind', 'source_id'].includes(key)
+            && !workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]))) {
+          throw new Error(`The source did not confirm this ${submittedContactWork.kind}. Your draft is still here. Check the saved item before creating another.`);
+        }
+        workEntityState = setDialogSubmittingTransition(workEntityState, false);
+        returnToContactWork(false, false, saved); return;
+      }
+      if (submittedFollowUpWork) {
+        const saved = result.entity;
+        if ((saved._kind !== 'task' && saved._kind !== 'note') || saved._kind !== request.kind || !saved.id || saved.source_id !== noteSourceId || saved.sync_state !== 'live' || saved.deleted_at != null || saved.pending_write
+          || Object.entries(request).some(([key, value]) => !['kind', 'source_id'].includes(key)
+            && !workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]))) {
+          throw new Error(`The source did not confirm the new ${request.kind}. Your draft is still here. Check the saved item before creating another.`);
+        }
+        if (submittedCalendarWork && saved._kind === 'task') {
+          workEntityState = closeDialogTransition(setDialogSubmittingTransition(workEntityState, false));
+          retireWorkEntityDialogDraft(); returnToCalendarWorkOrigin(false, false, `Task created: ${saved.title}`); return;
+        }
+        if (submittedNoteTask && saved._kind === 'task') {
+          workEntityState = setDialogSubmittingTransition(workEntityState, false);
+          returnToNoteTaskOrigin(false, false, saved); return;
+        }
+        (submittedMailWork ?? submittedCalendarWork)!.createdId = saved.id;
+        workEntities = [...workEntities, saved]; workEntityTotal += 1;
+        workEntityState = setDialogSubmittingTransition(workEntityState, false);
+        await openEditWorkEntityDialog(saved._kind, saved.id, 'read', false, saved);
+        return;
+      }
+      if (submittedDuplicate) {
+        const saved = result.entity;
+        submittedDuplicate.createdId = saved.id;
+        if (!workEntities.some(entity => entity._kind === saved._kind && entity.id === saved.id)) {
+          workEntities = [...workEntities, saved]; workEntityTotal += 1;
+        }
+        workEntityState = setDialogSubmittingTransition(workEntityState, false);
+        await openEditWorkEntityDialog(saved._kind, saved.id, 'read', false, saved);
+        return;
+      }
       if (request.kind === 'project' && projectWork && projectEditing) {
         const saved = result.entity;
         if (saved._kind !== 'project' || saved.id !== projectWork.project.id || saved.source_id !== projectWork.project.source_id
@@ -14423,8 +18043,19 @@ export const bootstrapDataRoute = (
         }
         if (saved.sync_state !== 'live' || saved.deleted_at != null
           || Object.entries(request).some(([key, value]) => key === 'clear_due_at'
-            ? saved.due_at != null : key !== 'kind' && key !== 'id'
+            ? saved.due_at != null : key === 'clear_parent_project' ? saved.parent_project_id != null
+              : key === 'clear_assigned_contact' ? saved.assigned_contact_id != null : key !== 'kind' && key !== 'id'
               && !workEntityEditFieldMatches(key, value, (saved as unknown as Record<string, unknown>)[key]))) throw unconfirmed();
+        workEntityDialogEntity = saved;
+        workEntityState = openEditDialogTransition(workEntityState, saved, getCanonicalSchema('task'));
+        workEntityDialogOriginal = { ...workEntityState.dialog!.values };
+        taskMode = 'read'; taskDetailsOpen = false; taskNotice = unchanged ? 'No changes to save.' : 'Task saved.';
+        taskFind.open(saved.id); bindTaskRelated(saved); workDrafts.task.suspend();
+        const sequence = ++workEntityDialogOpenSeq;
+        syncDataHash(); render(); captureWorkEntityDialogBaseline();
+        routeRoot.querySelector<HTMLElement>('[data-task-notice]')?.focus({ preventScroll: true });
+        void taskRelated.load(); loadWorkEntityTimeline('task', saved.id, sequence);
+        pendingLoadPromise = refreshActive(true); return;
       }
       if (editingNote) {
         const saved = result.entity;
@@ -14442,6 +18073,7 @@ export const bootstrapDataRoute = (
         }
         workEntityDialogEntity = saved;
         workEntityState = openEditDialogTransition(workEntityState, saved, getCanonicalSchema('note'));
+        noteRelated.open(saved);
         workEntityDialogOriginal = { ...workEntityState.dialog!.values };
         noteMode = 'read'; noteCopying = false; noteCopySequence += 1; noteDetailsOpen = false;
         noteNotice = { kind: 'ok', text: unchanged ? 'No changes to save.' : 'Note saved.' };
@@ -14470,12 +18102,13 @@ export const bootstrapDataRoute = (
         workEntityState = openEditDialogTransition(workEntityState, saved, getCanonicalSchema('commitment'));
         workEntityDialogOriginal = { ...workEntityState.dialog!.values };
         commitmentMode = 'read'; commitmentNotice = unchanged ? 'No changes to save.' : 'Commitment saved.';
+        bindCommitmentFollowUp(saved); commitmentRelated.open(saved);
         render(); captureWorkEntityDialogBaseline();
         routeRoot.querySelector<HTMLElement>('[data-commitment-notice]')?.focus?.({ preventScroll: true });
         pendingLoadPromise = refreshActive(true);
         return;
       }
-      if (projectChildReturn || projectWork && projectEditing || workSearchReturn) {
+      if (projectChildReturn || projectWork && projectEditing || workSearchReturn || request.kind === 'task' && 'id' in request && opts.taskBlockerNavigation?.owns(request.id)) {
         workEntityState = setDialogSubmittingTransition(workEntityState, false);
         closeWorkEntityDialog(true);
         return;
@@ -14492,7 +18125,9 @@ export const bootstrapDataRoute = (
       }
       if (!disposed) focusWorkEntityDialogReturnTarget();
     } catch (err) {
-      if (disposed || (editingNote || editingCommitment || submittedProject) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
+      noteDraft.settle(noteTicket, false);
+      if (workDraftKind) workDrafts[workDraftKind].settle(workTicket, false);
+      if (disposed || (editingTask || editingNote || editingCommitment || submittedProject || workTicket || submittedDuplicate || submittedFollowUpWork || submittedContactWork) && (submittedSequence !== workEntityDialogOpenSeq || submittedProject && submittedProject !== projectWork)) return;
       workEntityState = setDialogSubmittingTransition(workEntityState, false);
       workEntityState = setDialogSubmitErrorTransition(
         workEntityState,
@@ -14704,6 +18339,8 @@ export const bootstrapDataRoute = (
       errors: {},
       submitting: false,
       submit_error: null,
+      // D-336 (2026-11-17) — where the server can add one, a contact may be a name alone.
+      ...(opts.contactCreateByNameCaller !== undefined ? { name_alone: true } : {}),
     };
     render();
     captureContactDialogBaseline();
@@ -14847,7 +18484,8 @@ export const bootstrapDataRoute = (
       && original !== undefined && placeholder === undefined
       && canonicalizeEmail(contactDialog.values.email.trim()) !== original.email;
     const dialogErrors = validateContactDialog(contactDialog.values,
-      contactDialog.mode === 'create' || changesAddress ? 'new' : placeholder !== undefined ? 'optional' : 'kept');
+      contactDialog.mode === 'create' ? (contactDialog.name_alone === true ? 'create' : 'new')
+        : changesAddress ? 'new' : placeholder !== undefined ? 'optional' : 'kept');
     if (hasContactErrors(dialogErrors)) {
       contactDialog = { ...contactDialog, errors: dialogErrors };
       render();
@@ -14906,14 +18544,44 @@ export const bootstrapDataRoute = (
       }
       if (disposed) return;
     }
+    // D-336 (the owner, 2026-11-17) — a new contact with no email is added from its name first, as
+    // the Memory form's picker adds one (`contact.create_by_name`, slice H). It is keyed on a
+    // placeholder until it has an address, and the rest is saved under that below, as its own Edit
+    // form saves it (slice I).
+    let added: ContactRecord | undefined;
+    if (contactDialog.mode === 'create' && contactDialog.name_alone === true && editedEmail === ''
+      && opts.contactCreateByNameCaller !== undefined) {
+      try {
+        added = (await opts.contactCreateByNameCaller({ name: submittedValues.name.trim() })).contact;
+      } catch (err) {
+        if (disposed || contactDialog === null) return;
+        const older = (err as { code?: unknown } | null)?.code === 'unknown_method';
+        contactDialog = {
+          ...contactDialog,
+          submitting: false,
+          submit_error: older ? CONTACT_NAME_ALONE_UPDATE : errMessage(err),
+          // An older server adds no contact without an address: the form asks for one again.
+          ...(older ? { name_alone: false } : {}),
+        };
+        render();
+        return;
+      }
+      if (disposed) return;
+    }
     // An edit keeps the address the contact is keyed on, unless it was changed above.
-    const key = promoted?.email ?? placeholder ?? (contactDialog.mode === 'edit' && original !== undefined ? original.email : editedEmail);
+    const key = added?.email ?? promoted?.email ?? placeholder
+      ?? (contactDialog.mode === 'edit' && original !== undefined ? original.email : editedEmail);
     // Only the address changed: nothing else to save.
     const onlyTheAddress = promoted !== undefined && original !== undefined
       && contactDialogFingerprint({ ...submittedValues, email: '' })
         === contactDialogFingerprint({ ...contactValuesFromRecord(original), email: '' });
+    // Only a name was given, and the contact added from it has that: nothing else to save.
+    const onlyTheName = added !== undefined
+      && contactDialogFingerprint({ ...submittedValues, email: '', name: '' }) === contactDialogFingerprint(emptyContactValues());
     try {
-      if (!onlyTheAddress) await opts.contactUpsertCaller(contactUpsertArgs({ ...submittedValues, email: key }, promoted ?? previous));
+      if (!onlyTheAddress && !onlyTheName) {
+        await opts.contactUpsertCaller(contactUpsertArgs({ ...submittedValues, email: key }, added ?? promoted ?? previous));
+      }
       if (disposed) return;
       contactDialog = null;
       retireContactDialogDraft();
@@ -14945,6 +18613,11 @@ export const bootstrapDataRoute = (
         // The address was saved; Save again keeps the rest, under it.
         ...(promoted !== undefined
           ? { original: promoted, email_addable: false, values: { ...contactDialog.values, email: promoted.email } }
+          : {}),
+        // The contact was added from its name: Save again edits it, so a second one is never added.
+        ...(added !== undefined
+          ? { mode: 'edit' as const, original: added, values: { ...contactDialog.values, email: '' },
+            ...(added.contact_id && opts.contactAddEmailCaller !== undefined ? { email_addable: true } : {}) }
           : {}),
       };
       render();
@@ -15634,11 +19307,12 @@ export const bootstrapDataRoute = (
   // screen — that block is the reason the page exists, and it is exactly the case
   // where a user is most likely to be asking "where did this value come from?".
   // So both are settled, not raced, and each failure is reported in its own slot.
-  const openContactDetail = async (email: string, focusHeading = false): Promise<void> => {
+  const openContactDetail = async (email: string, focusHeading = false, confirmed?: Extract<NoteRelatedTarget, { kind: 'contact' }>): Promise<void> => {
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
     if (!mailMessageSurface.beforeLeave()) return;
-    mailMessageSurface.reset();
+    resetMailReader();
+    suspendContactActivity();
     cancelContactEditOpen();
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     pendingContactDetailFocusEmail =
@@ -15657,7 +19331,12 @@ export const bootstrapDataRoute = (
     const navigation = navigationGeneration;
     const pendingDetail: ContactDetailState = {
       email: trimmed,
-      from_search: contactSearchReturn?.email === trimmed,
+      from_search: contactSearchReturn?.email === trimmed || contactSearchReturn?.lookupId === trimmed
+        || contactSearchReturn?.lookupId !== undefined && confirmed?.contact.contact_id === contactSearchReturn.lookupId || recentSourceReturn?.record.kind === 'contact',
+      from_note: relatedWorkReturn?.entity._kind === 'note',
+      from_task: relatedWorkReturn?.entity._kind === 'task',
+      from_commitment: relatedWorkReturn?.entity._kind === 'commitment',
+      from_booking: bookingReaderReturn?.target.kind === 'contact',
       contact: null,
       response: null,
       contributions: [],
@@ -15683,6 +19362,7 @@ export const bootstrapDataRoute = (
     const fetchContact = async (): Promise<
       { ok: true; contact: ContactRecord | null; identifiers?: ContactAdditionalIdentifiers } | { ok: false; message: string }
     > => {
+      if (confirmed) return { ok: true, contact: confirmed.contact, ...(confirmed.identifiers ? { identifiers: confirmed.identifiers } : {}) };
       if (opts.contactGetCaller === undefined) {
         return {
           ok: true,
@@ -15743,7 +19423,19 @@ export const bootstrapDataRoute = (
     // by the contact's email, so its timeline and address are the usual ones.
     const byId = contactResult.ok ? contactResult.contact : null;
     // D-336 slice I — so does a placeholder the contact had before it got an address.
-    if ((!trimmed.includes('@') || isMentionOnlyEmail(trimmed)) && byId?.email && byId.email !== trimmed) { void openContactDetail(byId.email); return; }
+    if ((!trimmed.includes('@') || isMentionOnlyEmail(trimmed)) && byId?.email && byId.email !== trimmed) {
+      if (contactSearchReturn?.lookupId === trimmed) {
+        if (byId.contact_id !== trimmed) {
+          loadingContactDetail = false; contactDetail = { ...pendingDetail, contact: null };
+          errors = { ...errors, contact_detail: 'This contact could not be confirmed. Return to search and try again.' }; render(); return;
+        }
+        // Keep the canonical read through email normalization. A second lookup
+        // by the mutable address could open a different person after a change.
+        void openContactDetail(byId.email, focusHeading, { kind: 'contact', contact: byId,
+          ...(contactResult.ok && contactResult.identifiers ? { identifiers: contactResult.identifiers } : {}), identity: JSON.stringify([byId.contact_id, byId.created_at]) });
+      } else void openContactDetail(byId.email);
+      return;
+    }
     // D-336 slice R — and an address with no contact of its own that is a contact's second one,
     // such as the one it was changed from. `contact.get` still reads an address's own row only.
     if (contactResult.ok && contactResult.contact === null && trimmed.includes('@') && !isMentionOnlyEmail(trimmed)
@@ -15759,10 +19451,18 @@ export const bootstrapDataRoute = (
     if (!contributionsResult.ok) nextErrors.contact_contributions = contributionsResult.message;
     contactDetail = {
       email: trimmed,
-      from_search: contactSearchReturn?.email === trimmed,
+      from_search: contactSearchReturn?.email === trimmed || contactSearchReturn?.lookupId === trimmed
+        || contactSearchReturn?.lookupId !== undefined && confirmed?.contact.contact_id === contactSearchReturn.lookupId || recentSourceReturn?.record.kind === 'contact',
+      from_note: relatedWorkReturn?.entity._kind === 'note',
+      from_task: relatedWorkReturn?.entity._kind === 'task',
+      from_commitment: relatedWorkReturn?.entity._kind === 'commitment',
+      from_booking: bookingReaderReturn?.target.kind === 'contact',
       contact: contactResult.ok ? contactResult.contact : null,
+      can_chat: opts.onAskContact !== undefined,
+      ...(opts.contactGetCaller && opts.workEntityGetCaller && opts.workEntitySourceListCaller && opts.workEntityUpsertCaller
+        && contactResult.ok && contactResult.contact?.contact_id && contactResult.contact.merged_into === undefined ? { work: {} } : {}),
       ...(opts.mailCompose && contactResult.ok && contactResult.contact
-        && contactResult.contact.merged_into === undefined ? { mail: { opening: false } } : {}),
+        && contactResult.contact.merged_into === undefined && isMailboxAddress(trimmed) && !isMentionOnlyEmail(trimmed) ? { mail: { opening: false } } : {}),
       ...(contactResult.ok && contactResult.identifiers ? { identifiers: contactResult.identifiers } : {}),
       response: timelineResult.ok ? timelineResult.response : null,
       contributions: contributionsResult.ok ? contributionsResult.contributions : [],
@@ -15780,6 +19480,7 @@ export const bootstrapDataRoute = (
     };
     loadingContactDetail = false;
     errors = nextErrors;
+    if (contactActivity.enabled()) void contactActivity.open(trimmed, timelineResult.ok ? timelineResult.response : null, timelineResult.ok ? undefined : timelineResult.message);
     render();
     if (opts.contactHistoryCaller && contactDetail.contact) {
       const current = contactDetail;
@@ -15789,34 +19490,62 @@ export const bootstrapDataRoute = (
         const active = doc.activeElement as HTMLElement | null; const action = active?.getAttribute?.(DATA_ROUTE_ACTION_ATTR);
         const email = active?.getAttribute?.(DATA_ROUTE_CONTACT_EMAIL_ATTR);
         render();
-        if (action && active && !active.isConnected) routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${CSS.escape(action)}"]`
+        if (action && active && !active.isConnected && !active.hasAttribute('data-contact-quick-focus')) routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${CSS.escape(action)}"]`
           + (email ? `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${CSS.escape(email)}"]` : ''))?.focus({ preventScroll: true });
       };
       void opts.contactHistoryCaller(current.contact!.contact_id ?? current.contact!.email).then(history => {
-        if (disposed || contactDetail !== current || activeTab !== 'contact') return; current.history = history; paintKeepingFocus();
-      }).catch(error => { if (!disposed && contactDetail === current && activeTab === 'contact') {
-        if (classifyRpcError(error).code === 'unknown_method') delete current.history; else current.history_failed = true; paintKeepingFocus(); } });
+        if (disposed || contactDetail !== current) return; current.history = history; if (activeTab === 'contact') paintKeepingFocus();
+      }).catch(error => { if (!disposed && contactDetail === current) {
+        if (classifyRpcError(error).code === 'unknown_method') delete current.history; else current.history_failed = true; if (activeTab === 'contact') paintKeepingFocus(); } });
     }
     // D-336 slice D — the Relationships section, read after the page settles, like the
     // history. An older server has no `memory.claims`, so the page shows no section.
     if (opts.contactClaimsCaller && contactDetail.contact) {
       const current = contactDetail;
       void opts.contactClaimsCaller(current.contact!.contact_id ?? current.email).then(found => {
-        if (disposed || contactDetail !== current || activeTab !== 'contact') return;
+        if (disposed || contactDetail !== current) return;
         // A reply with no list (a server that answers wrongly) shows no section.
         current.relationships = { claims: Array.isArray(found?.claims) ? found.claims : [], ...(found?.more === true ? { more: true } : {}) };
-        render();
-      }).catch(error => { if (!disposed && contactDetail === current && activeTab === 'contact') {
+        if (activeTab === 'contact') render();
+      }).catch(error => { if (!disposed && contactDetail === current) {
         if (classifyRpcError(error).code === 'unknown_method') delete current.relationships; else current.relationships_failed = true;
-        render(); } });
+        if (activeTab === 'contact') render(); } });
     }
   };
+  const copyContactValue = async (key: string): Promise<void> => {
+    const current = contactDetail;
+    if (!current?.contact || loadingContactDetail || contactDialog !== null || activeTab !== 'contact') return;
+    const value = contactQuickValues(current.contact, current.identifiers, current.email).find(item => item.key === key);
+    if (!value || current.quick_actions?.copy?.busy || sourceRecordCopy.busy()) return;
+    const quick = current.quick_actions ??= {};
+    routeRoot.querySelector<HTMLElement>(`[data-contact-quick-focus="copy-${key}"]`)?.focus({ preventScroll: true });
+    quick.copy = { key, busy: true }; render();
+    const copied = await copyContactText(doc, value.value);
+    if (disposed || contactDetail !== current || activeTab !== 'contact' || current.quick_actions !== quick) return;
+    quick.copy = { key, busy: false, error: !copied,
+      text: copied ? 'Copied.' : 'Could not copy. Select this value and copy it.' };
+    if (contactDialog === null) render();
+  };
+
+  const downloadContact = (): void => {
+    const current = contactDetail;
+    if (!current?.contact || current.contact.merged_into !== undefined || loadingContactDetail || contactDialog !== null || activeTab !== 'contact') return;
+    const quick = current.quick_actions ??= {};
+    routeRoot.querySelector<HTMLElement>('[data-contact-quick-focus="download"]')?.focus({ preventScroll: true });
+    try {
+      downloadContactVCard(doc, createContactVCard(current.contact, current.identifiers));
+      quick.download = { error: false, text: 'Contact download started.' };
+    } catch { quick.download = { error: true, text: 'The contact could not be downloaded. Try again.' }; }
+    render();
+  };
+
   const openContactEmail = async (email: string): Promise<void> => {
     const current = contactDetail;
     if (!current?.mail || current.mail.opening || loadingContactDetail || !current.contact
       || current.email !== email || current.contact.merged_into !== undefined
       || contactDialog !== null || openingContactEditEmail !== null) return;
     const mail = current.mail;
+    const contactContext = selectedContactContext(current.contact);
     const navigation = navigationGeneration;
     const sequence = contactEmailOpenSeq;
     const isCurrent = (): boolean => !disposed && activeLens === 'data' && activeTab === 'contact'
@@ -15829,6 +19558,8 @@ export const bootstrapDataRoute = (
     try {
       const result = await mailMessageSurface.openCreate({
         to: [current.email], isCurrent,
+        focusAi: true,
+        ...(contactContext ? { contactContext: { ...contactContext, email: current.email } } : {}),
         onClosed: outcome => {
           if (!isCurrent()) return;
           delete mail.error;
@@ -16205,8 +19936,12 @@ export const bootstrapDataRoute = (
 
   const closeContactDetail = (): void => {
     if (contactDetail === null) return;
+    if (bookingReaderReturn?.target.kind === 'contact') { returnToBookingReader(); return; }
+    if (relatedWorkReturn) { returnToRelatedWork(); return; }
     if (!mailMessageSurface.beforeLeave()) return;
-    mailMessageSurface.reset();
+    resetMailReader();
+    suspendContactActivity();
+    if (recentSourceReturn?.record.kind === 'contact') { returnToRecentSourceSearch(); return; }
     if (contactSearchReturn) { returnToContactSearch(); return; }
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
     const returnEmail =
@@ -16777,9 +20512,81 @@ export const bootstrapDataRoute = (
     }
   };
 
+  const focusProjectTaskStatus = (): void => {
+    routeRoot.querySelector<HTMLElement>('[data-project-focus="task-status"]')?.focus({ preventScroll: true });
+  };
   const onClick = (ev: Event): void => {
+    if (searchWriting() && (ev.target as Element | null)?.closest?.('button, a, summary')) {
+      ev.preventDefault(); return;
+    }
+    if (mailReminders.hasDraft() && !(ev.target as Element | null)?.closest?.('[data-mail-reminders]')
+      && (ev.target as Element | null)?.closest?.('button, a, summary')) {
+      ev.preventDefault(); mailReminders.beforeLeave(); return;
+    }
+    if (workReminder.hasDraft() && !(ev.target as Element | null)?.closest?.('[data-work-reminder-slot], [data-work-linked-reminders]')
+      && (ev.target as Element | null)?.closest?.('button, a, [data-action], [data-data-route-action]')) {
+      ev.preventDefault(); workReminder.block(); return;
+    }
+    if (workLinkedFrom.handleClick(ev) || recordLinkInsert.handleClick(ev) || workLinkPreviews.handleClick(ev)) return;
+    const noteLink = (ev.target as HTMLElement | null)?.closest?.<HTMLAnchorElement>('a[data-task-note-link],a[data-note-note-link]');
+    if (noteLink && (activeTab === 'task' && taskMode === 'read' || activeTab === 'note' && noteMode === 'read')) {
+      const click = ev as MouseEvent;
+      const source = workReaderLink(noteLink.getAttribute('href') ?? '', doc.defaultView?.location.href ?? '');
+      if (source && !click.ctrlKey && !click.metaKey && !click.shiftKey && !click.altKey && (click.button === undefined || click.button === 0)) {
+        ev.preventDefault();
+        if ('id' in source) void openWorkRecordLink(activeTab as 'task' | 'note', noteLink, source);
+        else void openWorkNoteSource(activeTab as 'task' | 'note', noteLink, source);
+        return;
+      }
+    }
+    if ((ev.target as HTMLElement | null)?.closest?.('[data-task-blocker-back-today]')) {
+      ev.preventDefault(); const id = opts.taskBlockerNavigation?.target(); if (id) opts.taskBlockerNavigation?.back(id); return;
+    }
+    if (activeTab === 'contact' && contactDetail) contactActivity.cancelRestore();
+    rememberContactActivity();
     const batchTarget = targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR) ?? targetWithAttr(ev, SHARED_ACTION_ATTR);
     const batchAction = batchTarget?.getAttribute(DATA_ROUTE_ACTION_ATTR) ?? batchTarget?.getAttribute(SHARED_ACTION_ATTR);
+    if (batchAction === 'mail-reminder-back') { ev.preventDefault(); returnToMailReminder(); return; }
+    if (batchTarget && (batchAction?.startsWith('record-reminders-') || batchAction?.startsWith('reminders-'))
+      && (ev.target as Element | null)?.closest?.('[data-work-linked-reminders]')) {
+      ev.preventDefault(); batchTarget.focus({ preventScroll: true });
+      if (activeTab === 'mail' && mailReminders.handle(batchAction, batchTarget)) return;
+      if (workReminder.handle(batchAction, batchTarget)) return;
+    }
+    if (batchAction === 'remind-work-record') {
+      ev.preventDefault();
+      const record = workEntityDialogEntity, sequence = workEntityDialogOpenSeq, navigation = navigationGeneration;
+      const current = () => !disposed && activeLens === 'data' && record === workEntityDialogEntity
+        && navigationGeneration === navigation && workEntityDialogOpenSeq === sequence && !pendingWorkEntityDialogOpen
+        && (!hasDataInFlightWork() || workReminder.pending()) && (activeTab === 'task' && taskMode === 'read' || activeTab === 'commitment' && commitmentMode === 'read');
+      if (record && (record._kind === 'task' || record._kind === 'commitment')) void workReminder.open(record, current);
+      return;
+    }
+    if (activeLens === 'data' && activeTab === 'contact' && contactDetail && batchAction?.startsWith('contact-activity-')) {
+      batchTarget?.focus({ preventScroll: true }); contactActivity.handleAction(batchAction); return;
+    }
+    if (activeLens === 'data' && activeTab === 'project' && projectWork && !projectEditing
+      && (batchAction === 'project-task-change' || batchAction === 'project-task-retry' || batchAction === 'project-task-check')) {
+      batchTarget?.focus({ preventScroll: true });
+      if (projectWork.communication?.busy()) return;
+      if (batchAction === 'project-task-change') void projectWork.taskActions.change(batchTarget?.getAttribute('data-project-task-id') ?? '', batchTarget?.getAttribute('data-project-task-done') === 'true');
+      else void projectWork.taskActions.retry(batchAction === 'project-task-check');
+      return;
+    }
+    if (projectWork?.taskActions.busy()) { ev.preventDefault(); focusProjectTaskStatus(); return; }
+    if (activeLens === 'data' && activeTab === 'mail' && explorerDetail === null && batchAction?.startsWith('mail-bulk-')) {
+      batchTarget?.focus({ preventScroll: true }); mailBulk.handleAction(batchAction); return;
+    }
+    if (mailBulk.busy()) { ev.preventDefault(); focusMailBatch(); return; }
+    if (activeLens === 'data' && activeTab === 'mail' && explorerDetail === null && batchAction?.startsWith('mail-inbox-')) {
+      batchTarget?.focus({ preventScroll: true });
+      if (batchAction !== 'mail-inbox-more') mailBulk.reset();
+      if (batchAction === 'mail-inbox-reset') { mailListScrollOverride = 0; void mailInbox.filter(defaultMailInboxFilters()); }
+      else if (batchAction === 'mail-inbox-more') void mailInbox.more();
+      else if (batchAction === 'mail-inbox-retry') void mailInbox.retry();
+      else if (batchAction === 'mail-inbox-refresh') void mailInbox.refresh();
+      return;
+    }
     if (activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG
       && batchAction?.startsWith(FILE_BATCH_ACTION)) { fileBatch.handleAction(batchAction); return; }
     if (fileBatch.busy()) { ev.preventDefault(); focusFileBatch(); return; }
@@ -16834,22 +20641,65 @@ export const bootstrapDataRoute = (
       ?? target.getAttribute(SHARED_ACTION_ATTR)
       ?? '';
     if (activeLens === 'data' && activeTab === 'task' && taskBulk.handleAction(action)) return;
+    if (activeLens === 'data' && activeTab === 'note' && noteBulk.handleAction(action)) return;
     if (taskBulk.busy()) { focusTaskBatch(); return; }
+    if (noteBulk.busy()) { focusNoteBatch(); return; }
     if (contactRecovery.busy()) return;
+    if (activeLens === 'data' && activeTab === 'task' && action === 'toggle-task-filters') {
+      taskFiltersOpen = !taskFiltersOpen; render();
+      routeRoot.querySelector<HTMLElement>('[data-action="toggle-task-filters"]')?.focus?.({ preventScroll: true });
+      return;
+    }
     if (activeLens === 'data' && activeTab === 'contact' && contactScan && action.startsWith(MERGE_RECOVERY_PREFIX)) {
       if (action === 'merge-recovery-pending') { contactRecovery.close(); render(); }
       else contactRecovery.handle(action, target.getAttribute('data-merge-recovery-id') ?? undefined);
       return;
     }
-    if (activeLens === 'data' && activeTab === 'calendar' && calendarCreateSurface.handleAction(action)) return;
+    if (activeLens === 'data' && (activeTab === 'calendar' || activeTab === 'mail') && calendarCreateSurface.handleAction(action, target)) return;
     if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null
       && calendarAgenda.handleAction(action, target)) return;
+    if (action === 'calendar-duplicate-original') {
+      const target = calendarDuplicateReturn;
+      if (!target || activeTab !== 'calendar' || explorerSelectedSlug !== target.slug || explorerDetail?.record_id !== target.recordId) return;
+      const reopen = () => {
+        if (calendarDuplicateReturn !== target || activeTab !== 'calendar' || explorerSelectedSlug !== target.slug || explorerDetail?.record_id !== target.recordId) return;
+        const context = target.origin.context;
+        explorerSelectedSlug = context.slug; explorerRecords = [];
+        void openExplorerRecord(context.recordId);
+      };
+      if (calendarCreateSurface.beforeLeave(reopen) && calendarEventSurface.beforeLeave(reopen)) reopen();
+      return;
+    }
     if (action.startsWith(CALENDAR_EVENT_ACTION_PREFIX)) {
-      if (activeLens === 'data' && activeTab === 'calendar') calendarEventSurface.handleAction(action);
+      if (activeLens === 'data' && activeTab === 'calendar') {
+        const slug = explorerSelectedSlug, id = explorerDetail?.record_id;
+        const resume = () => { if (activeTab === 'calendar' && explorerSelectedSlug === slug && explorerDetail?.record_id === id) calendarEventSurface.handleAction(action); };
+        if (!['calendar-event-duplicate', 'calendar-event-copy', 'calendar-event-retry', 'calendar-event-check', 'calendar-event-response-check'].includes(action)
+          && !calendarCreateSurface.beforeLeave(resume)) return;
+        resume();
+      }
       return;
     }
     if (action.startsWith('mail-message-')) {
-      if (activeLens === 'data' && activeTab === 'mail') mailMessageSurface.handleAction(action, target);
+      if (activeLens === 'data' && activeTab === 'mail') {
+        const message = mailMessageSurface.recentSnapshot();
+        const resume = () => {
+          const current = mailMessageSurface.recentSnapshot();
+          if (activeTab === 'mail' && current?.slug === message?.slug && current?.record_id === message?.record_id)
+            mailMessageSurface.handleAction(action, target);
+        };
+        if (action !== 'mail-message-create-event' && !action.startsWith('mail-message-find')
+          && !calendarCreateSurface.beforeLeave(resume)) return;
+        resume();
+      }
+      return;
+    }
+    if (action.startsWith(MAIL_READER_ACTION)) {
+      if (activeLens === 'data' && activeTab === 'mail') {
+        if (!mailMessageSurface.beforeLeave()) return;
+        if (!calendarCreateSurface.beforeLeave(() => mailReaderNavigation.handle(action))) return;
+        target.focus({ preventScroll: true }); mailReaderNavigation.handle(action);
+      }
       return;
     }
     if (action.startsWith(MAIL_FACTS_ACTION_PREFIX)) {
@@ -17306,13 +21156,14 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'file-open-preview') {
-      const id = target.getAttribute(COLLECTION_RECORD_ID_ATTR); if (id) previewListedFile(id); return;
+      const id = target.getAttribute(COLLECTION_RECORD_ID_ATTR); if (id) previewListedFile(id, target); return;
     }
     if (action === 'file-open-details') {
       const id = target.getAttribute('data-file-details-id'); if (id) void openExplorerRecord(id); return;
     }
     if (action === COLLECTION_OPEN_RECORD_ACTION) {
       const recordId = target.getAttribute(COLLECTION_RECORD_ID_ATTR);
+      if (activeTab === 'mail') target.focus({ preventScroll: true });
       const agendaSource = target.getAttribute(AGENDA_SOURCE), agendaKey = target.getAttribute(AGENDA_FOCUS);
       if (activeTab === 'calendar' && explorerDetail === null && agendaSource && agendaKey && recordId) {
         void openCalendarAgendaEvent(agendaSource, recordId, agendaKey);
@@ -17324,9 +21175,269 @@ export const bootstrapDataRoute = (
       return;
     }
     // ── UNIVERSAL SEARCH ────────────────────────────────────────────────────
+    if (action.startsWith(SEARCH_TRIAGE_ACTION)) {
+      ev.preventDefault();
+      if (activeLens === 'data' && activeTab === 'search') searchReminderTriage.handleAction(action);
+      return;
+    }
+    if (action === 'return-recent-source-search') { returnToRecentSourceSearch(); return; }
     if (action === 'return-project-overview') { returnToProjectOverview(); return; }
     if (action === 'return-work-search') {
       if (workEntityState.dialog) closeWorkEntityDialog(); else returnToWorkSearch();
+      return;
+    }
+    if (action === SEARCH_CLEAR_TYPE_ACTION) { selectUniversalSearchType('all'); return; }
+    if (action === SEARCH_REFRESH_DECISIONS) {
+      if (activeTab === 'search' && !decisionSearch.state().loading) {
+        decisionOpenSequence++; decisionOpening = undefined; decisionOpenError = undefined;
+        void decisionSearch.load(universalSearchQuery.trim(), true);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_DECISION) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      if (activeTab !== 'search' || decisionOpening || decisionSearch.state().loading || universalSearchTimer !== null
+        || universalSearchType !== 'all' && universalSearchType !== 'decision') return;
+      const key = target.getAttribute(SEARCH_DECISION_KEY), selected = decisionSearch.state().matches.find(row => row.key === key);
+      if (!selected) return;
+      const sequence = ++decisionOpenSequence, navigation = navigationGeneration, typeGeneration = universalSearchTypeGeneration;
+      const originScroll = workSearchScrollHost()?.scrollTop ?? 0;
+      const query = universalSearchQuery;
+      const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && sequence === decisionOpenSequence
+        && navigation === navigationGeneration && typeGeneration === universalSearchTypeGeneration && query === universalSearchQuery;
+      decisionOpening = selected.key; decisionOpenError = undefined; render();
+      routeRoot.querySelector<HTMLElement>(`[${SEARCH_DECISION_FOCUS}]`)?.focus({ preventScroll: true });
+      void (async () => {
+        try {
+          const confirmed = await decisionSearch.resolve(selected);
+          if (!current() || !confirmed) return;
+          const href = decisionSearchHref(selected.id);
+          rememberSearchNavigation(href, SEARCH_OPEN_DECISION, SEARCH_DECISION_KEY, selected.key, undefined, originScroll);
+          opts.openPendingDecision?.(selected.id);
+        } catch (failure) { if (current()) decisionOpenError = humanizeRpcError(failure); }
+        finally { if (current()) { decisionOpening = undefined; render(); } }
+      })();
+      return;
+    }
+    if (action === CLEAR_REMINDER_DATES) {
+      if (activeLens !== 'data' || activeTab !== 'search' || searchWriting()) return;
+      searchReminderTriage.reset();
+      reminderDates.setField('range', 'all'); reminderDates.apply(); pendingReminderSearchRestore = null;
+      if (universalSearchTimer === null) void loadReminderSearch(); else { reminderSearch.reset(); render(); }
+      routeRoot.querySelector<HTMLElement>(`[${REMINDER_DATE_FOCUS}="range"]`)?.focus({ preventScroll: true });
+      opts.onViewChange?.(currentView()); return;
+    }
+    if (activeTab === 'search' && universalSearchType !== 'all') {
+      const type = action === SEARCH_OPEN_PROMPT || action === SEARCH_REFRESH_PROMPTS ? 'scheduled_prompt'
+        : action === SEARCH_OPEN_REMINDER_ACTION || action === SEARCH_MORE_REMINDERS_ACTION ? 'reminder'
+        : action === SEARCH_OPEN_CHAT_ACTION || action === SEARCH_MORE_CHATS_ACTION ? 'chat'
+        : action === SEARCH_OPEN_DRAFT_ACTION || action === SEARCH_MORE_DRAFTS_ACTION || action === SEARCH_OPEN_RECOVERY_DRAFT || action === SEARCH_REFRESH_RECOVERY_DRAFTS ? 'draft'
+        : action === SEARCH_OPEN_ASSET_ACTION || action === SEARCH_MORE_ASSETS_ACTION ? 'asset'
+        : action === SEARCH_OPEN_CONTACT_ACTION || action === SEARCH_MORE_CONTACTS_ACTION ? 'contact'
+        : action === SEARCH_OPEN_WORK_ACTION || action === SEARCH_MORE_WORK_ACTION ? target.getAttribute(SEARCH_WORK_KIND_ATTR)
+        : action === SEARCH_OPEN_RECORD_ACTION || action === SEARCH_OPEN_GROUP_ACTION ? target.getAttribute(SEARCH_GROUP_PLATFORM_ATTR)
+        : action.startsWith(DOCUMENT_SEARCH_ACTION) ? 'file'
+        : action === SEARCH_OPEN_RECIPE_ACTION || action === SEARCH_OPEN_PACK_ACTION ? 'capability' : null;
+      if (type && type !== universalSearchType) { ev.preventDefault(); return; }
+    }
+    if (action.startsWith('universal-search-open-')) finishRecentSearch();
+    if (action === SEARCH_MORE_REMINDERS_ACTION) {
+      const state = reminderSearch.state(); target.focus({ preventScroll: true });
+      if (!state.loading) void loadReminderSearch(state.error ? state.retry_append === true : state.next_cursor !== null);
+      return;
+    }
+    if (action === SEARCH_REFRESH_PROMPTS) {
+      if (activeTab === 'search' && !searchWriting() && !promptSearch.state().loading) {
+        searchPromptBulk.resetSelection();
+        promptOpenSequence++; promptOpening = undefined; promptOpenError = undefined;
+        void promptSearch.load(universalSearchQuery.trim(), true);
+      }
+      return;
+    }
+    if (action === SEARCH_OPEN_PROMPT) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      if (activeTab !== 'search' || promptOpening || promptSearch.state().loading || universalSearchTimer !== null) return;
+      const id = target.getAttribute(SEARCH_PROMPT_ID), revision = Number(target.getAttribute(SEARCH_PROMPT_REVISION));
+      const selected = promptSearch.state().matches.find(row => row.schedule_id === id && row.revision === revision);
+      if (!selected) return;
+      const sequence = ++promptOpenSequence, query = universalSearchQuery, type = universalSearchTypeGeneration, navigation = navigationGeneration;
+      const current = () => !disposed && activeTab === 'search' && sequence === promptOpenSequence && query === universalSearchQuery
+        && type === universalSearchTypeGeneration && navigation === navigationGeneration;
+      promptOpening = selected.schedule_id; promptOpenError = undefined; render();
+      void (async () => {
+        try {
+          const fresh = await promptSearch.resolve(selected);
+          if (!current() || !fresh) return;
+          rememberSearchNavigation(promptScheduleHref(fresh.schedule_id), SEARCH_OPEN_PROMPT, SEARCH_PROMPT_ID, fresh.schedule_id);
+          if (!opts.openPromptSchedule?.({ id: fresh.schedule_id, identity: promptScheduleIdentity(fresh) })) throw Error('This scheduled prompt could not be opened. Refresh and try again.');
+        } catch (failure) {
+          if (current()) promptOpenError = humanizeRpcError(failure);
+        } finally {
+          if (sequence === promptOpenSequence) {
+            promptOpening = undefined;
+            if (current()) { render(); if (promptOpenError) routeRoot.querySelector<HTMLElement>('[data-prompt-search-error]')?.focus({ preventScroll: true }); }
+          }
+        }
+      })(); return;
+    }
+    if (action === SEARCH_OPEN_REMINDER_ACTION) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      const id = target.getAttribute(SEARCH_REMINDER_ID_ATTR);
+      if (!id || !reminderSearch.state().matches.some(row => row.reminder_id === id)) { ev.preventDefault(); return; }
+      rememberSearchNavigation(reminderDetailLink(id), SEARCH_OPEN_REMINDER_ACTION, SEARCH_REMINDER_ID_ATTR, id);
+      return;
+    }
+    if (action === SEARCH_MORE_CHATS_ACTION) {
+      const state = chatSearch.state(); target.focus({ preventScroll: true });
+      if (!state.loading) void chatSearch.load(universalSearchQuery, state.error ? state.retry_append === true : state.next_cursor !== undefined);
+      return;
+    }
+    if (action === SEARCH_OPEN_CHAT_ACTION) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      const sessionId = target.getAttribute(SEARCH_CHAT_SESSION_ATTR), messageId = target.getAttribute(SEARCH_CHAT_MESSAGE_ATTR);
+      if (!sessionId || !messageId || !chatSearch.state().matches.some(match => match.session_id === sessionId && match.message_id === messageId)) { ev.preventDefault(); return; }
+      saveSearchChatReturn(doc, searchContinuityOwner, { sessionId, messageId,
+        returnHash: doc.defaultView?.location.hash ?? '#data/search', state: captureSearchState(),
+        scroll: { top: workSearchScrollHost()?.scrollTop ?? 0, left: 0 } });
+      return;
+    }
+    if (action === SEARCH_MORE_DRAFTS_ACTION) {
+      const state = draftSearch.state(); target.focus({ preventScroll: true });
+      if (!state.loading) void draftSearch.load(universalSearchQuery, state.error ? state.retry_append === true : true);
+      return;
+    }
+    if (action === SEARCH_REFRESH_RECOVERY_DRAFTS) {
+      if (activeTab !== 'search' || recoveryDraftOpening?.navigation === navigationGeneration) return;
+      recoveryDraftEpoch++; recoveryDraftError = undefined; render();
+      routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${SEARCH_REFRESH_RECOVERY_DRAFTS}"]`)?.focus({ preventScroll: true });
+      return;
+    }
+    if (action === SEARCH_OPEN_RECOVERY_DRAFT) {
+      if (activeTab !== 'search' || universalSearchTimer !== null || recoveryDraftOpening?.navigation === navigationGeneration) return;
+      const key = target.getAttribute(SEARCH_RECOVERY_DRAFT_KEY);
+      const token = target.getAttribute(SEARCH_RECOVERY_DRAFT_TOKEN);
+      const match = recoveryDraftSearch().matches.find(row => row.key === key && row.token === token);
+      if (!match) return;
+      const fail = (message: string) => {
+        recoveryDraftError = message; recoveryDraftEpoch++; render();
+        routeRoot.querySelector<HTMLElement>('.rq-draft-group [role="alert"]')?.setAttribute('tabindex', '-1');
+        routeRoot.querySelector<HTMLElement>('.rq-draft-group [role="alert"]')?.focus({ preventScroll: true });
+      };
+      const resolved = resolveRecoveryDraft(recoveryDraftStores, match);
+      if (!resolved) {
+        fail('This recovery copy changed or is no longer available. The draft results have been refreshed.'); return;
+      }
+      if (calendarCreateSurface.isOpen() || hasUnsavedWorkEntityDialog() || hasDataInFlightWork() || pendingWorkEntityDialogOpen) {
+        fail('Finish or close your current draft before opening another recovery copy.'); return;
+      }
+      const ticket = { key: match.key, navigation: navigationGeneration, mail: match.kind === 'mail' };
+      const returning = { returnHash: doc.defaultView?.location.hash ?? '#data/search', state: captureSearchState(),
+        focus: { action: SEARCH_OPEN_RECOVERY_DRAFT, attribute: SEARCH_RECOVERY_DRAFT_KEY, id: match.key },
+        scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+      recoveryDraftOpening = ticket; recoveryDraftError = undefined; render();
+      if (match.kind === 'prompt') {
+        const entry = resolveRecoveryDraft(recoveryDraftStores, match);
+        if (!entry) { recoveryDraftOpening = undefined; fail('This recovery copy changed or is no longer available. The draft results have been refreshed.'); return; }
+        const draft = entry as PromptDraftEntry;
+        const destinationHash = draft.original ? promptScheduleHref(draft.original.schedule_id) : '#automation/schedules';
+        saveSearchNavigationReturn(doc, searchContinuityOwner, { ...returning, destinationHash, destinationAliases: [destinationHash] });
+        const opened = opts.openPromptDraft?.(entry as PromptDraftEntry);
+        recoveryDraftOpening = undefined;
+        if (!opened) fail('The scheduled prompt draft could not be opened. Your recovery copy is still here.');
+        else if (!disposed) render();
+        return;
+      }
+      const destination = match.kind;
+      if (match.kind === 'mail') {
+        const seq = universalSearchSeq, query = universalSearchQuery, typeGeneration = universalSearchTypeGeneration;
+        const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && ticket.navigation === navigationGeneration
+          && seq === universalSearchSeq && query === universalSearchQuery && typeGeneration === universalSearchTypeGeneration;
+        const entry = (resolved.values as { mail: MailRecoveryEntry }).mail;
+        void mailMessageSurface.openRecovery({ entry, isCurrent: current, onClosed: keptId => {
+          if (!current()) return;
+          recoveryDraftEpoch++; recoveryDraftError = undefined;
+          pendingNavigationSearchRestore = { focus: { ...returning.focus, id: JSON.stringify(['mail', keptId ?? match.id]) }, scrollTop: returning.scrollTop };
+          render();
+          void draftSearch.load(query);
+        } }).then(result => {
+          if (current() && !result.opened) fail(result.error ?? 'This recovery copy could not be opened. Refresh drafts and try again.');
+        }).finally(() => {
+          if (recoveryDraftOpening === ticket) { recoveryDraftOpening = undefined; if (current()) render(); }
+        });
+        return;
+      }
+      void (async () => {
+        const before = navigationGeneration;
+        const opening = selectTab(destination, false, undefined, true, undefined, true);
+        const navigation = navigationGeneration; ticket.navigation = navigation;
+        if (navigation !== before && activeLens === 'data' && (activeTab as DataTabId) === match.kind) syncDataHash(true);
+        const editorSequence = workEntityDialogOpenSeq;
+        const current = () => !disposed && recoveryDraftOpening === ticket && navigationGeneration === navigation && activeLens === 'data' && activeTab === match.kind;
+        const notice = (text: string) => {
+          if (match.kind === 'calendar') calendarCreateSurface.showRecoveryNotice(text);
+          else if (match.kind === 'reminder') remindersSurface.showRecoveryNotice(text);
+          else if (match.kind === 'note') noteDraftNotice = { id: match.id, text };
+          else workDraftNotice = { id: match.id, text };
+          render();
+        };
+        try {
+          await opening;
+          if (!current() || navigation === before || workEntityDialogOpenSeq !== editorSequence || calendarCreateSurface.isOpen()) return;
+          const recovered = resolveRecoveryDraft(recoveryDraftStores, match);
+          if (!recovered) {
+            // Leave the owning recovery panel available; never substitute a newer draft.
+            notice('This recovery copy changed or is no longer available. Review the current recovery copies before resuming.'); return;
+          }
+          if (match.kind === 'calendar') {
+            if (match.editingExisting) {
+              const entry = opts.calendarEditRecovery?.get(match.id);
+              if (!entry?.original || !sameRecoveryDraft(entry, match)) { notice('The kept event edits changed. Review the current recovery copies.'); return; }
+              if (doc.defaultView) doc.defaultView.location.hash = serializeSourceRecordAddress({ tab: 'calendar', collectionSlug: entry.original.slug, recordId: entry.original.event.record_id });
+            } else if (!calendarCreateSurface.resumeDraft(match.id)) notice('The calendar draft could not be opened. Your recovery copy is still here.');
+          }
+          else if (match.kind === 'reminder') {
+            if (!remindersSurface.resumeDraft(match.id, routeRoot, recovered as ReminderDraftEntry)) notice('The reminder draft could not be opened. Your recovery copy is still here.');
+          }
+          else if (match.kind === 'note') await handleNoteDraftAction(match.status === 'editing' ? 'resume' : 'review', match.id);
+          else await handleWorkDraftAction(match.status === 'editing' ? 'resume' : 'review', match.id);
+          if (current()) saveSearchNavigationReturn(doc, searchContinuityOwner, { ...returning,
+            destinationHash: doc.defaultView?.location.hash ?? serializeShellRoute('data', match.kind),
+            destinationAliases: [serializeShellRoute('data', match.kind)] });
+        } catch {
+          if (current()) notice('The draft could not be opened. Your recovery copy is still here. Try again from its recovery panel.');
+        } finally {
+          if (recoveryDraftOpening === ticket) { recoveryDraftOpening = undefined; if (!disposed && activeTab === 'search') render(); }
+        }
+      })();
+      return;
+    }
+    if (action === SEARCH_OPEN_DRAFT_ACTION) {
+      const id = target.getAttribute(SEARCH_DRAFT_ID_ATTR);
+      if (!id || universalDraftOpening || !draftSearch.state().matches.some(row => row.draft_id === id)) return;
+      const seq = universalSearchSeq, query = universalSearchQuery, typeGeneration = universalSearchTypeGeneration;
+      const current = (): boolean => typeGeneration === universalSearchTypeGeneration && !disposed && activeTab === 'search' && seq === universalSearchSeq && query === universalSearchQuery;
+      const scrollTop = workSearchScrollHost()?.scrollTop ?? 0;
+      universalDraftOpening = id; universalDraftOpenError = undefined; render();
+      void mailMessageSurface.openSaved({ draftId: id, isCurrent: current,
+        onClosed: () => {
+          if (!current()) return;
+          universalDraftOpenError = undefined;
+          pendingDraftSearchRestore = { id, scrollTop }; render();
+          void draftSearch.load(query);
+        },
+      }).then(result => {
+        if (!current()) return;
+        universalDraftOpening = undefined;
+        if (!result.opened) universalDraftOpenError = result.error;
+        // A background group completing must not move focus out of compose.
+        render();
+      });
       return;
     }
     if (action === SEARCH_OPEN_ASSET_ACTION) {
@@ -17357,12 +21468,13 @@ export const bootstrapDataRoute = (
     }
     if (action === SEARCH_MORE_ASSETS_ACTION) {
       const state = assetSearch.state();
+      target.focus({ preventScroll: true });
       if (!state.loading) void assetSearch.load(universalSearchQuery, state.error ? state.retry_append === true : true);
       return;
     }
     if (action === SEARCH_OPEN_CONTACT_ACTION) {
       const email = target.getAttribute(SEARCH_CONTACT_EMAIL_ATTR);
-      if (email) void openContactSearchResult(email);
+      if (email) { target.focus({ preventScroll: true }); void openContactSearchResult(email); }
       return;
     }
     if (action === SEARCH_MORE_CONTACTS_ACTION) {
@@ -17380,6 +21492,37 @@ export const bootstrapDataRoute = (
         const id = target.getAttribute(SEARCH_WORK_ID_ATTR);
         if (id) void openWorkSearchResult(kind, id);
       }
+      return;
+    }
+    if (action === 'exact-link-back-search') { returnToExactLinkSearch(); return; }
+    if (action === EXACT_LINK_RETRY_ACTION) { if (activeTab === 'search') void runUniversalSearch(); return; }
+    if (action === EXACT_LINK_OPEN_ACTION) {
+      const match = universalExactLink?.state === 'ready' ? universalExactLink.match : undefined;
+      if (activeLens !== 'data' || activeTab !== 'search' || !match || target.getAttribute(EXACT_LINK_KEY_ATTR) !== match.key) { ev.preventDefault(); return; }
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault(); if (universalExactOpening) return;
+      const sequence = universalSearchSeq, navigation = navigationGeneration, query = universalSearchQuery;
+      const current = () => !disposed && activeLens === 'data' && activeTab === 'search' && sequence === universalSearchSeq
+        && navigation === navigationGeneration && query === universalSearchQuery && universalExactLink?.state === 'ready' && universalExactLink.match === match;
+      universalExactOpening = true; universalExactError = undefined; render();
+      void (async () => {
+        try {
+          const checked = await readExactRecordLink(match.target, exactLinkReaders, doc.defaultView?.location.href ?? doc.URL);
+          const valid = checked.state === 'ready' && checked.match.identity === match.identity && checked.match.target.hash === match.target.hash;
+          if (!current()) return;
+          universalExactOpening = false;
+          if (!valid) { universalExactError = 'This record is no longer available with the same identity. Check the link again.'; render(); return; }
+          if (checked.state !== 'ready') return;
+          universalExactLink = checked;
+          rememberSearchNavigation(match.target.hash, EXACT_LINK_OPEN_ACTION, EXACT_LINK_KEY_ATTR, match.key, checked.match.routeAliases);
+          exactSearchReturn = { hash: dataHistory.current().hash, destination: match.target.hash, query, type: universalSearchType, result: checked, scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+          if (doc.defaultView) doc.defaultView.location.hash = match.target.hash;
+        } catch {
+          if (!current()) return;
+          universalExactOpening = false; universalExactError = 'The selected record could not be checked. Try opening it again.'; render();
+        }
+      })();
       return;
     }
     if (action === SEARCH_OPEN_RECORD_ACTION || action === SEARCH_OPEN_GROUP_ACTION) {
@@ -17402,8 +21545,9 @@ export const bootstrapDataRoute = (
       // in a list the owner is scanning.
       const recipeId = target.getAttribute(SEARCH_RECIPE_ID_ATTR);
       const view = doc.defaultView;
-      if (recipeId !== null && recipeId.length > 0 && view !== null && view !== undefined) {
-        view.location.hash = serializeShellRoute('recipes', recipeId);
+      if (recipeId !== null && universalSearchRecipes.some(recipe => recipe.recipe_id === recipeId) && view !== null && view !== undefined) {
+        const hash = serializeShellRoute('recipes', recipeId); rememberSearchNavigation(hash, action, SEARCH_RECIPE_ID_ATTR, recipeId);
+        view.location.hash = hash;
       }
       return;
     }
@@ -17412,8 +21556,9 @@ export const bootstrapDataRoute = (
       // permissions, so it can never be a click in a result list.
       const slug = target.getAttribute(SEARCH_PACK_SLUG_ATTR);
       const view = doc.defaultView;
-      if (slug !== null && slug.length > 0 && view !== null && view !== undefined) {
-        view.location.hash = serializeShellRoute('packs', slug);
+      if (slug !== null && universalSearchPacks.some(pack => pack.slug === slug) && view !== null && view !== undefined) {
+        const hash = serializeShellRoute('packs', slug); rememberSearchNavigation(hash, action, SEARCH_PACK_SLUG_ATTR, slug);
+        view.location.hash = hash;
       }
       return;
     }
@@ -17427,8 +21572,48 @@ export const bootstrapDataRoute = (
       // shown, whether the owner already has it or not.
       const slug = target.getAttribute(SEARCH_PACK_SLUG_ATTR);
       const view = doc.defaultView;
-      if (slug !== null && slug.length > 0 && view !== null && view !== undefined) {
-        view.location.hash = serializeShellRoute('packs', slug);
+      if (slug !== null && universalSearchMarket.some(pack => pack.slug === slug) && view !== null && view !== undefined) {
+        const hash = serializeShellRoute('packs', slug); rememberSearchNavigation(hash, action, SEARCH_PACK_SLUG_ATTR, slug);
+        view.location.hash = hash;
+      }
+      return;
+    }
+    if (action.startsWith(SOURCE_COPY_ACTION)) {
+      if (target.closest?.('.data-contact-toolbar, .data-mail-message-actions, .calendar-event-quick-actions')) sourceRecordCopy.handle(action);
+      return;
+    }
+    if (action === RECORD_PIN_ACTION) {
+      target.focus({ preventScroll: true }); void recordPins.toggle(target.getAttribute(RECORD_PIN_KEY)); return;
+    }
+    if (action.startsWith(PINNED_WORK_ACTION)) {
+      if (target.closest?.('[data-pinned-work-panel]')) pinnedWorkPanel.handle(action, target.getAttribute(PINNED_WORK_KIND), target.getAttribute(PINNED_WORK_ID), universalSearchType);
+      return;
+    }
+    if (action.startsWith(RECENT_WORK_ACTION)) {
+      if (target.closest?.('[data-recent-work-panel]')) recentWorkPanel.handle(action, target.getAttribute(RECENT_WORK_KIND), target.getAttribute(RECENT_WORK_ID), universalSearchType);
+      return;
+    }
+    if (action === SEARCH_RECENT_RUN_ACTION || action === SEARCH_RECENT_REMOVE_ACTION || action === SEARCH_RECENT_CLEAR_ACTION) {
+      if (activeLens !== 'data' || activeTab !== 'search' || universalSearchQuery.trim() !== '' || !opts.recentSearches) return;
+      const query = target.getAttribute(SEARCH_RECENT_QUERY_ATTR);
+      const before = opts.recentSearches.list();
+      if (action !== SEARCH_RECENT_CLEAR_ACTION && (query === null || !before.includes(query))) return;
+      if (action === SEARCH_RECENT_RUN_ACTION) {
+        retireUniversalSearch(); universalSearchQuery = query!;
+        documentSearch.setQuery(universalSearchQuery);
+        pendingUniversalSearchFocus = true;
+        opts.onViewChange?.(currentView());
+        void runUniversalSearch();
+        finishRecentSearch();
+      } else {
+        const clear = action === SEARCH_RECENT_CLEAR_ACTION;
+        const success = clear ? opts.recentSearches.clear() : opts.recentSearches.remove(query!);
+        recentSearchNotice = { error: !success, text: success ? clear ? 'Search history cleared.' : 'Recent search removed.' : 'Could not update search history. Try again.' };
+        const after = opts.recentSearches.list();
+        if (after.length) pendingRecentSearchFocus = { action: clear ? 'clear' : 'remove',
+          query: clear ? null : after[Math.min(before.indexOf(query!), after.length - 1)]! };
+        else pendingUniversalSearchFocus = true;
+        render();
       }
       return;
     }
@@ -17445,6 +21630,7 @@ export const bootstrapDataRoute = (
         universalSearchQuery = corrected;
         opts.onViewChange?.(currentView());
         void runUniversalSearch();
+        finishRecentSearch();
       }
       return;
     }
@@ -17457,7 +21643,34 @@ export const bootstrapDataRoute = (
       if (email !== null) void openEditContactDialog(email);
       return;
     }
+    if (action === 'copy-contact-value') {
+      const key = target.getAttribute('data-contact-quick-key');
+      if (key) void copyContactValue(key);
+      return;
+    }
+    if (action === 'download-contact-vcard') { downloadContact(); return; }
+    if (action === 'chat-about-contact') {
+      const contact = contactDetail?.contact;
+      if (contactDialog || loadingContactDetail || !contact || contact.merged_into !== undefined || !mailMessageSurface.beforeLeave()) return;
+      const context = selectedContactContext(contact);
+      if (context && opts.onAskContact) { mailMessageSurface.cancelCreateOpen(); opts.onAskContact(context); }
+      return;
+    }
+    if (action === 'view-contact-activity') {
+      if (contactDialog || loadingContactDetail) return;
+      const activity = routeRoot.querySelector<HTMLElement>('[data-contact-activity]');
+      const scroller = workSearchScrollHost();
+      activity?.focus({ preventScroll: true });
+      if (activity && scroller) scroller.scrollTop += activity.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16;
+      else activity?.scrollIntoView({ block: 'start' });
+      return;
+    }
+    if (action === 'contact-create-task' || action === 'contact-create-note' || action === 'contact-open-created') {
+      target.focus({ preventScroll: true });
+      void prepareContactWork(action === 'contact-open-created' ? 'open' : action === 'contact-create-task' ? 'task' : 'note'); return;
+    }
     if (action === 'contact-email') {
+      if (contactDetail?.work) { delete contactDetail.work.preparation; delete contactDetail.work.busy; }
       const email = target.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR);
       if (email !== null) void openContactEmail(email);
       return;
@@ -17587,6 +21800,15 @@ export const bootstrapDataRoute = (
           workEntityLoadMoreQueued = false;
         }
       });
+      return;
+    }
+    if (action === 'booking-open-customer' || action === 'booking-draft-email' || action === 'booking-open-history' || action === 'booking-retry-customer') {
+      if (activeLens !== 'data' || activeTab !== 'booking' || workEntityState.dialog || pendingWorkEntityDialogOpen || hasDataInFlightWork()) return;
+      target.focus({ preventScroll: true });
+      if (action === 'booking-open-customer') void bookingActions.contact();
+      else if (action === 'booking-draft-email') void bookingActions.draft();
+      else if (action === 'booking-open-history') void bookingActions.history(target.getAttribute('data-booking-history-key') ?? '');
+      else bookingActions.retryCustomer();
       return;
     }
     if (action === 'close-contact-detail') {
@@ -17823,6 +22045,30 @@ export const bootstrapDataRoute = (
       if (!downloadingFile) pendingLoadPromise = downloadFile();
       return;
     }
+    if (action.startsWith('project-communication-')) {
+      const controller = projectWork?.communication;
+      if (!controller || activeLens !== 'data' || activeTab !== 'project' || projectEditing || pendingWorkEntityDialogOpen || hasDataInFlightWork()) return;
+      target.focus({ preventScroll: true });
+      if (action === 'project-communication-mail') void controller.prepareMail();
+      else if (action === 'project-communication-chat') void controller.ask();
+      else if (action === 'project-communication-draft') void controller.draft();
+      else if (action === 'project-communication-close') controller.close();
+      return;
+    }
+    if (action.startsWith('project-attention-')) {
+      const controller = projectWork?.attention;
+      if (!controller || activeLens !== 'data' || activeTab !== 'project' || projectEditing || pendingWorkEntityDialogOpen || hasDataInFlightWork() || projectWork?.taskActions.busy()) return;
+      target.focus({ preventScroll: true });
+      if (action === 'project-attention-refresh') void controller.refresh();
+      else if (action === 'project-attention-scope') {
+        const scope = target.getAttribute('data-attention-scope'); if (scope === 'overdue_tasks' || scope === 'due_soon_tasks' || scope === 'blocking_commitments') void controller.show(scope);
+      } else if (action === 'project-attention-close') { const prior = controller.view()?.scope; controller.close(); focusProjectAttention('attention-' + (prior ?? 'overdue_tasks')); }
+      else if (action === 'project-attention-more') void controller.more();
+      else if (action === 'project-attention-open') void controller.open(target.getAttribute('data-attention-key') ?? '');
+      else if (action === 'project-attention-copy') void controller.copy();
+      else if (action === 'project-attention-copy-select') selectProjectAttentionCopy();
+      return;
+    }
     if (action === 'project-edit') {
       if (projectWork && canEditProject(projectWork.project)) void openEditWorkEntityDialog('project', projectWork.project.id, 'edit');
       return;
@@ -17833,6 +22079,19 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'confirm-project-work-link') { pendingLoadPromise = confirmProjectWorkLink(); return; }
+    if (action === 'project-work-search-clear') {
+      if (activeTab === 'project' && projectWork && !projectEditing && !projectWork.taskActions.busy()) {
+        projectWork.setDraftQuery('');
+        pendingProjectRestore = { key: 'search', scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+        void projectWork.applyQuery();
+      }
+      return;
+    }
+    if (action === 'project-task-scope') {
+      const status = target.getAttribute('data-project-status');
+      if (activeTab === 'project' && projectWork && !projectEditing && (status === 'open' || status === 'completed' || status === 'all')) projectWork.setTaskCompletion(status);
+      return;
+    }
     if (action === 'project-commitment-scope') {
       const status = target.getAttribute('data-project-status');
       if (activeTab === 'project' && projectWork && !projectEditing && (status === 'open' || status === 'all')) projectWork.setCommitmentStatus(status);
@@ -17847,18 +22106,25 @@ export const bootstrapDataRoute = (
     if (action === 'project-work-more' || action === 'project-work-retry') {
       const kind = target.getAttribute('data-project-kind');
       if ((kind === 'task' || kind === 'note' || kind === 'commitment') && projectWork && !projectWork.sections[kind].loading) {
-        void projectWork.load(kind, action === 'project-work-retry');
+        if (action === 'project-work-retry') void projectWork.retry(kind);
+        else void projectWork.load(kind);
       }
       return;
     }
+    if (action.startsWith(NOTE_DRAFT_ACTION)) { void handleNoteDraftAction(action.slice(NOTE_DRAFT_ACTION.length), target); return; }
+    if (action.startsWith(WORK_DRAFT_ACTION)) { void handleWorkDraftAction(action.slice(WORK_DRAFT_ACTION.length), target); return; }
     if (action === 'open-create-work-entity-dialog') {
       openCreateWorkEntityDialog();
       return;
     }
     if (action === 'open-edit-work-entity') {
+      if (mailWorkReturn?.opening) mailWorkReturn = null;
+      if (calendarWorkReturn?.opening) calendarWorkReturn = null;
       const kind = target.getAttribute('data-kind');
       const id = target.getAttribute('data-entity-id');
       if (kind !== null && id !== null && isWorkEntityTab(kind as DataTabId)) {
+        if ((kind === 'task' || kind === 'note') && !workEntityState.dialog)
+          workReaderNavigation.start(kind, id, workSearchScrollHost()?.scrollTop ?? 0);
         void openEditWorkEntityDialog(kind as WorkEntityKind, id);
       }
       return;
@@ -17887,16 +22153,129 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION) {
-      closeWorkEntityDialog(true, noteDiscardToReader, commitmentDiscardToReader);
+      closeWorkEntityDialog(true, noteDiscardToReader, commitmentDiscardToReader, taskDiscardToReader);
       return;
     }
+    if (action === 'source-linked-back') { if (activeMailWork()) returnToMailWorkOrigin(); else if (activeCalendarWork()) returnToCalendarWorkOrigin(); return; }
     if (action === 'close-work-entity-dialog') {
       closeWorkEntityDialog();
       return;
     }
+    if (action === 'return-task-reader') { closeWorkEntityDialog(false, false, false, true); return; }
+    if (action === 'source-detour-back') { returnToSourceDetour(); return; }
     if (action === 'return-note-reader') { closeWorkEntityDialog(false, true); return; }
     if (action === 'return-commitment-reader') { closeWorkEntityDialog(false, false, true); return; }
+    if (action.startsWith(WORK_READER_ACTION)) {
+      if (activeWorkReader() && target.closest?.('.work-reader-navigation')) {
+        target.focus({ preventScroll: true }); workReaderNavigation.handle(action);
+      }
+      return;
+    }
+    if (action.startsWith(WORK_COPY_ACTION)) {
+      const reading = activeWorkReader();
+      if (reading && target.closest?.(`.work-entity-${reading.kind}-reader`)
+        || activeTab === 'commitment' && commitmentMode === 'read' && target.closest?.('.work-entity-commitment-reader')
+        || activeTab === 'booking' && !workEntityState.dialog && target.closest?.('.work-entity-booking-detail')) workReaderCopy.handle(action);
+      return;
+    }
+    if (action === 'create-note-task' || action === 'open-note-created-task') {
+      target.focus({ preventScroll: true }); void prepareNoteTask(action === 'create-note-task' ? 'create' : 'open'); return;
+    }
     if (action === 'copy-note-text') { void copyNoteText(); return; }
+    if (action === 'chat-about-booking') {
+      const entity = bookingDetail?.entity, sequence = bookingDetailSeq, navigation = navigationGeneration;
+      if (activeLens !== 'data' || activeTab !== 'booking' || entity?._kind !== 'booking' || workEntityState.dialog || pendingWorkEntityDialogOpen || hasDataInFlightWork()) return;
+      target.focus({ preventScroll: true });
+      void bookingChat.ask(entity, () => !disposed && activeLens === 'data' && activeTab === 'booking' && !workEntityState.dialog
+        && bookingDetail?.entity === entity && bookingDetailSeq === sequence && navigationGeneration === navigation); return;
+    }
+    if (action === 'chat-about-commitment') {
+      const entity = workEntityDialogEntity, visit = navigationGeneration, sequence = workEntityDialogOpenSeq;
+      if (activeLens !== 'data' || activeTab !== 'commitment' || commitmentMode !== 'read' || entity?._kind !== 'commitment'
+        || pendingWorkEntityDialogOpen || workEntityDiscardGuardOpen || hasDataInFlightWork()) return;
+      target.focus({ preventScroll: true });
+      void commitmentChat.ask(entity, () => !disposed && activeLens === 'data' && activeTab === 'commitment' && commitmentMode === 'read'
+        && workEntityDialogEntity === entity && visit === navigationGeneration && sequence === workEntityDialogOpenSeq);
+      return;
+    }
+    if (action === 'open-commitment-related') { target.focus({ preventScroll: true }); void openWorkRelatedRecord('commitment', target.getAttribute('data-commitment-related-key') ?? ''); return; }
+    if (['preview-commitment-related', 'close-preview-commitment-related', 'retry-commitment-related', 'more-commitment-related'].includes(action)) {
+      if (activeLens !== 'data' || activeTab !== 'commitment' || commitmentMode !== 'read' || workEntityState.dialog?.submitting
+        || pendingWorkEntityDialogOpen || workEntityDiscardGuardOpen || hasDataInFlightWork()) return;
+      const key = target.getAttribute('data-commitment-related-key') ?? '';
+      target.focus({ preventScroll: true });
+      if (action === 'preview-commitment-related') {
+        void commitmentRelated.preview(key);
+        focusCommitmentRelated(key, commitmentRelated.expandedKey() === key ? 'close-preview' : 'preview');
+      } else if (action === 'close-preview-commitment-related') {
+        commitmentRelated.closePreview(); focusCommitmentRelated(key);
+      } else if (action === 'retry-commitment-related') commitmentRelated.retry(key);
+      else {
+        const previous = new Set(commitmentRelated.view().records.map(record => record.key));
+        commitmentRelated.more();
+        const added = commitmentRelated.view().records.find(record => !previous.has(record.key));
+        if (added) Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-commitment-related-row]'))
+          .find(row => row.getAttribute('data-commitment-related-row') === added.key)?.querySelector<HTMLElement>('h3')?.focus();
+      }
+      return;
+    }
+    if (action === 'open-note-related') { void openWorkRelatedRecord('note', target.getAttribute('data-note-related-key') ?? ''); return; }
+    if (action === 'open-task-related') { void openWorkRelatedRecord('task', target.getAttribute('data-task-related-key') ?? ''); return; }
+    if (action === 'retry-task-related' && activeTab === 'task' && taskMode === 'read' && !workEntityState.dialog?.submitting) { taskRelated.retry(target.getAttribute('data-task-related-key') ?? ''); return; }
+    if ((action === 'more-task-related' || action === 'refresh-task-dependencies') && activeTab === 'task' && taskMode === 'read'
+      && !pendingWorkEntityDialogOpen && !hasDataInFlightWork() && !workEntityState.dialog?.submitting) {
+      if (target.getAttribute('aria-disabled') === 'true') return;
+      target.focus({ preventScroll: true });
+      if (action === 'more-task-related') taskRelated.more();
+      else if (workEntityDialogEntity?._kind === 'task') {
+        taskRelated.refreshTasks({ owner: true }); render(); void taskRelated.load();
+        refreshRelatedReader('task', workEntityDialogEntity.id);
+      }
+      return;
+    }
+    if (action === 'schedule-task-calendar') { void scheduleTaskCalendar(); return; }
+    if (action === 'edit-task') {
+      if (taskMode === 'read' && workEntityDialogEntity?._kind === 'task' && !pendingWorkEntityDialogOpen && !workEntityState.dialog?.submitting && canEditTask(workEntityDialogEntity)) {
+        pendingLoadPromise = openEditWorkEntityDialog('task', workEntityDialogEntity.id, 'edit');
+      }
+      return;
+    }
+    if (action === 'retry-note-related' && activeTab === 'note' && noteMode === 'read') { noteRelated.retry(target.getAttribute('data-note-related-key') ?? ''); return; }
+    if (action === 'more-note-related' && activeTab === 'note' && noteMode === 'read') { noteRelated.more(); return; }
+    if (action === 'return-note-related') { returnToRelatedWork(); return; }
+    if (action === 'duplicate-work-entity') { void duplicateWorkEntity(); return; }
+    if (action.startsWith(NOTE_FIND_ACTION) && noteFind.handleAction(action, target)) return;
+    if (activeTab === 'task' && taskMode === 'read' && action.startsWith(TASK_FIND_ACTION)) {
+      if (action === 'task-find-everywhere' && (hasDataInFlightWork() || workEntityState.dialog?.submitting || pendingWorkEntityDialogOpen)) return;
+      if (taskFind.handleAction(action, target)) return;
+    }
+    if (action === 'reader-start-top') {
+      if ((activeTab === 'task' || activeTab === 'note') && (activeTab === 'note' ? noteMode : taskMode) === 'read' && !pendingWorkEntityDialogOpen) {
+        const reader = activeTab === 'note' ? noteReader : taskReader;
+        reader.startTop(routeRoot); flushWorkReading(); target.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (action === 'set-note-format') {
+      if (activeTab !== 'note' || noteMode !== 'read' || workEntityDialogEntity?._kind !== 'note') return;
+      const format = target.getAttribute('data-note-format');
+      if (format !== 'plain' && format !== 'formatted') return;
+      noteReader.setFormat(format); render();
+      routeRoot.querySelector<HTMLElement>(`[data-note-focus="format-${format}"]`)?.focus({ preventScroll: true });
+      return;
+    }
+    if (action === 'go-note-heading') {
+      const reader = routeRoot.querySelector<HTMLElement>('.work-entity-note-reader');
+      const content = reader?.querySelector<HTMLElement>('.work-entity-note-content');
+      const heading = Array.from(reader?.querySelectorAll<HTMLElement>('[data-note-heading]') ?? [])
+        .find(candidate => candidate.getAttribute('data-note-heading') === target.getAttribute('data-note-heading-target'));
+      if (content && heading) {
+        content.scrollTop += heading.getBoundingClientRect().top - content.getBoundingClientRect().top - 16;
+        heading.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (action === 'draft-commitment-follow-up') { void commitmentFollowUp.draft(); return; }
     if (action === 'edit-commitment') {
       if (workEntityDialogEntity?._kind === 'commitment' && !pendingWorkEntityDialogOpen
         && !workEntityState.dialog?.submitting && canEditCommitment(workEntityDialogEntity)) {
@@ -17960,6 +22339,16 @@ export const bootstrapDataRoute = (
     if (action === 'toggle-work-entity-task-details' || action.startsWith('work-entity-task-due-')) {
       const dialog = workEntityState.dialog;
       if (workEntityState.kind !== 'task' || !dialog || dialog.submitting || workEntityDiscardGuardOpen) return;
+      if (dialog.mode === 'edit' && taskMode === 'read') {
+        const task = workEntityDialogEntity;
+        if (task?._kind !== 'task' || pendingWorkEntityDialogOpen || !canEditTask(task)) return;
+        const navigation = navigationGeneration;
+        pendingLoadPromise = (async () => {
+          await openEditWorkEntityDialog('task', task.id, 'edit');
+          if (!disposed && navigation === navigationGeneration && activeTab === 'task' && workDraftEditing() === 'task' && workEntityDialogEntity?.id === task.id) onClick(ev);
+        })();
+        return;
+      }
       syncWorkEntityDialogFromDom();
       if (action === 'work-entity-task-due-pick') {
         const input = routeRoot.querySelector<HTMLInputElement>('[data-form-field="due_at"]');
@@ -18001,7 +22390,27 @@ export const bootstrapDataRoute = (
   };
 
   const onInput = (ev: Event): void => {
+    const dateInput = ev.target as HTMLInputElement | null;
+    if (activeLens === 'data' && activeTab === 'search' && dateInput?.getAttribute?.(SEARCH_TRIAGE_FIELD) === 'triage-at') {
+      searchReminderTriage.handleChange(dateInput); return;
+    }
+    const dateField = dateInput?.getAttribute?.(REMINDER_DATE_FIELD);
+    if (dateField && searchWriting()) { render(); return; }
+    if (activeLens === 'data' && activeTab === 'search' && dateField && reminderDates.setField(dateField, dateInput!.value)) return;
+    const reminderInput = ev.target as HTMLElement | null;
+    if (reminderInput?.closest?.('[data-mail-reminders]') && mailReminders.input(reminderInput)) return;
+    if (reminderInput?.closest?.('[data-work-linked-reminders]') && workReminder.input(reminderInput)) return;
+    const activityInput = ev.target as HTMLInputElement | null;
+    const activityField = activityInput?.getAttribute?.('data-contact-activity-field');
+    if (activeLens === 'data' && activeTab === 'contact' && contactDetail && activityField
+      && contactActivity.setField(activityField, activityInput!.value)) return;
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
+    if (activeTab === 'project' && projectWork && !projectEditing && target?.hasAttribute?.('data-project-search-input')) {
+      projectWork.setDraftQuery(target.value); return;
+    }
+    if (target && typeof target.hasAttribute === 'function' && noteFind.handleInput(target)) return;
+    if (target && activeTab === 'task' && taskMode === 'read' && typeof target.hasAttribute === 'function' && taskFind.handleInput(target)) return;
+    if (target && activeLens === 'data' && activeTab === 'mail' && mailMessageSurface.handleInput(target)) return;
     if (target === null) return;
     if (target.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-rename-input' && fileLifecycle?.rename && !fileLifecycle.busy) {
       fileLifecycle.rename.value = target.value;
@@ -18011,7 +22420,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (activeTab === 'calendar' && typeof target.getAttribute === 'function' && calendarAgenda.handleInput(target)) return;
-    if (activeTab === 'calendar' && calendarCreateSurface.handleInput(target as HTMLElement)) return;
+    if ((activeTab === 'calendar' || activeTab === 'mail') && calendarCreateSurface.handleInput(target as HTMLElement)) return;
     if (activeTab === 'calendar' && calendarEventSurface.handleInput(target as HTMLElement)) return;
     // D-315 — the Mail facts editor's text fields keep their draft without a repaint.
     if (activeTab === 'mail_fact' && typeof target.getAttribute === 'function'
@@ -18035,12 +22444,20 @@ export const bootstrapDataRoute = (
       typeof target.hasAttribute === 'function'
       && target.hasAttribute(SEARCH_INPUT_ATTR)
     ) {
+      if (searchWriting()) { target.value = universalSearchQuery; return; }
+      if (target.value.trim() === '') finishRecentSearch();
       if (universalSearchQuery.trim() !== target.value.trim()) {
-        retireUniversalSearch();
+        retireUniversalSearch(false, target.value); retireSearchTypeCounts(routeRoot);
+        const prompts = routeRoot.querySelector<HTMLElement>(`[${SEARCH_PROMPT_GROUP}]`);
+        prompts?.setAttribute('aria-busy', 'true');
+        for (const row of Array.from(prompts?.querySelectorAll<HTMLElement>(`[${SEARCH_PROMPT_ID}]`) ?? [])) row.setAttribute('aria-disabled', 'true');
         universalSearchLoading = target.value.trim() !== '';
       }
       universalSearchQuery = target.value;
       documentSearch.setQuery(universalSearchQuery);
+      // Hide the empty-screen shortcuts without replacing the input or its caret.
+      const recent = routeRoot.querySelector<HTMLElement>('.rq-recent');
+      if (recent) recent.hidden = universalSearchQuery.trim() !== '';
       // ⛔ NO `render()` HERE. Repainting on every keystroke replaces the input
       // element the owner is typing into, which drops the caret to the end and
       // makes editing mid-string impossible. The value is already on screen —
@@ -18126,9 +22543,13 @@ export const bootstrapDataRoute = (
     if (typeof target.getAttribute === 'function') {
       const action = target.getAttribute(SHARED_ACTION_ATTR);
       if (activeTab === 'task' && action === 'task-bulk-date') { taskBulk.setDate(target.value); return; }
+      if (activeTab === 'task' && action === 'task-bulk-priority') { taskBulk.setPriority(target.value); return; }
+      if (activeTab === 'task' && action === 'task-bulk-shift-days') { taskBulk.setShiftDays(target.value); return; }
       if (action === 'search-work-entities') {
         if (activeTab === 'task' && taskBulk.busy()) { target.value = workEntityState.search_query; return; }
         if (activeTab === 'task') taskBulk.reset();
+        if (activeTab === 'note' && noteBulk.busy()) { target.value = workEntityState.search_query; return; }
+        if (activeTab === 'note') noteBulk.reset();
         const kind = target.getAttribute('data-kind');
         if (isWorkEntityTab(activeTab) && kind === workEntityState.kind) {
           workEntityState = applySearchTransition(workEntityState, target.value);
@@ -18252,11 +22673,67 @@ export const bootstrapDataRoute = (
   };
 
   const onChange = (ev: Event): void => {
+    const reminderInput = ev.target as HTMLElement | null;
+    if (reminderInput?.closest?.('[data-mail-reminders]') && mailReminders.change(reminderInput)) return;
+    if (reminderInput?.closest?.('[data-work-linked-reminders]') && workReminder.change(reminderInput)) return;
+    const recipient = ev.target as HTMLSelectElement | null;
+    if (recipient?.hasAttribute?.('data-project-recipient')) {
+      if (activeTab === 'project' && !projectEditing && !hasDataInFlightWork()) projectWork?.communication?.choose(recipient.value);
+      return;
+    }
+    if (projectWork?.taskActions.busy()) { render(); focusProjectTaskStatus(); return; }
+    if (mailBulk.busy()) { render(); focusMailBatch(); return; }
     if (fileBatch.busy()) { render(); focusFileBatch(); return; }
     const target = ev.target as HTMLInputElement | HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    const reminderDateField = target.getAttribute(REMINDER_DATE_FIELD);
+    if (activeLens === 'data' && activeTab === 'search' && target.hasAttribute(SEARCH_TRIAGE_FIELD)) {
+      searchReminderTriage.handleChange(target); return;
+    }
+    if (searchWriting() && (reminderDateField || target.hasAttribute(SEARCH_REMINDER_STATUS_ATTR) || target.hasAttribute(SEARCH_TYPE_ATTR))) {
+      render(); return;
+    }
+    if (activeLens === 'data' && activeTab === 'search' && reminderDateField && reminderDates.setField(reminderDateField, target.value)) {
+      if (reminderDateField === 'range') render();
+      return;
+    }
+    if (activeLens === 'data' && activeTab === 'search' && target.hasAttribute(SEARCH_REMINDER_STATUS_ATTR)) {
+      const value = target.value;
+      if (value === 'all' || isReminderState(value)) {
+        searchReminderTriage.reset();
+        universalReminderStatus = value;
+        // The pending main query will use this status. Starting a separate
+        // lookup here would duplicate it and replace rows during a click.
+        if ((universalSearchQuery.trim() || universalSearchType === 'reminder') && universalSearchTimer === null) void loadReminderSearch();
+        else render();
+        opts.onViewChange?.(currentView());
+      }
+      return;
+    }
+    if (activeLens === 'data' && activeTab === 'search' && target.hasAttribute(SEARCH_TYPE_ATTR)) {
+      if (isUniversalSearchResultType(target.value)) selectUniversalSearchType(target.value); else render();
+      return;
+    }
+    const activityField = target.getAttribute('data-contact-activity-field');
+    if (activeLens === 'data' && activeTab === 'contact' && contactDetail && activityField
+      && contactActivity.setField(activityField, target.value)) { render(); return; }
+    const mailId = target.getAttribute('data-mail-bulk-id');
+    if (activeLens === 'data' && activeTab === 'mail' && explorerDetail === null && mailId) {
+      mailBulk.toggle(mailId, (target as HTMLInputElement).checked); return;
+    }
+    const mailField = target.getAttribute('data-mail-inbox-field');
+    if (activeLens === 'data' && activeTab === 'mail' && explorerDetail === null && mailField) {
+      const view = mailInbox.snapshot(); if (!view) return;
+      const filters = { ...view.filters };
+      if (mailField === 'status' && ['all', 'unread', 'starred'].includes(target.value)) filters.status = target.value as typeof filters.status;
+      else if (mailField === 'direction' && ['all', 'received', 'sent'].includes(target.value)) filters.direction = target.value as typeof filters.direction;
+      else if (mailField === 'attachments') filters.attachments = (target as HTMLInputElement).checked;
+      else return;
+      mailBulk.reset(); pendingMailRestore = undefined; mailListScrollOverride = 0;
+      void mailInbox.filter(filters); return;
+    }
     if (activeTab === 'calendar' && calendarAgenda.handleChange(target)) return;
-    if (activeTab === 'calendar' && calendarCreateSurface.handleInput(target as HTMLElement, true)) return;
+    if ((activeTab === 'calendar' || activeTab === 'mail') && calendarCreateSurface.handleInput(target as HTMLElement, true)) return;
     const importDateKey = target.getAttribute('data-contact-import-date');
     const importDateField = target.getAttribute('data-contact-import-date-field');
     if (importDateKey && importDateField && contactImport?.file && !contactImportFileApplyPending()) {
@@ -18275,7 +22752,9 @@ export const bootstrapDataRoute = (
       return;
     }
     if (target.getAttribute('data-data-sphere') !== null && ['all', 'personal', 'professional', 'unsorted'].includes(target.value)) {
-      dataSphere = target.value as typeof dataSphere; facetKey = ''; render(); routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus(); return;
+      if (noteBulk.busy()) { target.value = dataSphere; focusNoteBatch(); return; }
+      noteBulk.reset();
+      mailBulk.reset(); dataSphere = target.value as typeof dataSphere; facetKey = ''; render(); routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus(); return;
     }
     if (target.getAttribute(DATA_ROUTE_COLLECTION_PICKER_ATTR) !== null) {
       const next = target.value;
@@ -18292,6 +22771,13 @@ export const bootstrapDataRoute = (
     if (activeTab === 'reminder' && target.getAttribute(REMINDERS_FIELD_ATTR) !== null
       && remindersSurface.handleChange(target)) return;
     if (changeRecordsViewDraft(target)) return;
+    if ((activeTab === 'note' || isWorkDraftKind(activeTab)) && target.getAttribute(SHARED_ACTION_ATTR) === 'select-create-source') {
+      syncWorkEntityDialogFromDom();
+      workEntityState = setDialogSourceTransition(workEntityState, target.value);
+      if (activeTab === 'note' && workEntityState.dialog) noteDraft.capture(workEntityState.dialog.source_id, workEntityState.dialog.values);
+      captureWorkDraft();
+      render(); routeRoot.querySelector<HTMLElement>('[data-action="select-create-source"]')?.focus(); return;
+    }
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
       && target.closest?.('.work-entity-dialog-form') != null) {
       syncWorkEntityDialogFromDom();
@@ -18320,11 +22806,16 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'file-batch-toggle' && activeLens === 'data' && activeTab === 'files' && explorerSelectedSlug === SAVED_FILES_SLUG) { fileBatch.toggle(target.getAttribute('data-file-batch-id') ?? '', (target as HTMLInputElement).checked); return; }
+    if (action === 'note-bulk-toggle' && activeTab === 'note') { noteBulk.toggle(target.getAttribute('data-note-id') ?? '', (target as HTMLInputElement).checked); return; }
     if (action === 'task-bulk-toggle' && activeTab === 'task') { taskBulk.toggle(target.getAttribute('data-task-id') ?? '', (target as HTMLInputElement).checked); return; }
     if (action === 'task-bulk-date' && activeTab === 'task') { taskBulk.setDate(target.value); return; }
+    if (action === 'task-bulk-priority' && activeTab === 'task') { taskBulk.setPriority(target.value); return; }
+    if (action === 'task-bulk-shift-days' && activeTab === 'task') { taskBulk.setShiftDays(target.value); return; }
     if (taskBulk.busy()) { render(); focusTaskBatch(); return; }
+    if (noteBulk.busy()) { render(); focusNoteBatch(); return; }
     if (action === 'select-source') {
       taskBulk.reset();
+      noteBulk.reset();
       const options = sourceOptionsForKind(sources, workEntityState.kind);
       const valid = new Set(options.map((option) => option.id));
       workEntityState = selectSourceTransition(workEntityState, target.value, valid);
@@ -18352,6 +22843,7 @@ export const bootstrapDataRoute = (
     }
     if (activeTab === 'task' && action?.startsWith('filter-task-')) {
       taskBulk.reset();
+      noteBulk.reset();
       const field = action.slice('filter-task-'.length);
       if (field !== 'completion' && field !== 'due' && field !== 'sort') return;
       const next = parseTaskViewFilters({ ...taskViewFilters, [field]: target.value });
@@ -18369,7 +22861,32 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
+    if (ev.key === 'Escape' && !ev.isComposing && activeTab === 'task' && taskFiltersOpen
+      && (ev.target as HTMLElement | null)?.closest?.('#work-entity-task-filter-panel')) {
+      ev.preventDefault(); ev.stopPropagation(); taskFiltersOpen = false; render();
+      routeRoot.querySelector<HTMLElement>('[data-action="toggle-task-filters"]')?.focus?.({ preventScroll: true });
+      return;
+    }
+    if (ev.key === 'Escape' && !ev.isComposing && activeLens === 'data' && activeTab === 'commitment' && commitmentMode === 'read'
+      && !workEntityDiscardGuardOpen && commitmentRelated.expandedKey()) {
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest?.('[data-commitment-related-preview]') || target?.getAttribute('data-action') === 'preview-commitment-related') {
+        ev.preventDefault(); ev.stopPropagation(); const key = commitmentRelated.closePreview();
+        if (key) focusCommitmentRelated(key); return;
+      }
+    }
+    if (ev.key === 'Enter' && !ev.ctrlKey && !ev.metaKey && !ev.altKey && activeTab === 'contact' && contactDetail
+      && (ev.target as HTMLElement | null)?.tagName === 'INPUT'
+      && (ev.target as HTMLElement | null)?.hasAttribute?.('data-contact-activity-field')) {
+      ev.preventDefault();
+      routeRoot.querySelector<HTMLElement>('[data-contact-activity-focus="apply"]')?.focus({ preventScroll: true });
+      void contactActivity.apply(); return;
+    }
+    if (activeLens === 'data' && activeTab === 'mail' && mailMessageSurface.handleKeyDown(ev)) return;
+    if (activeTab === 'note' && noteMode === 'read' && !workEntityDiscardGuardOpen && noteFind.handleKeyDown(ev)) return;
+    if (activeTab === 'task' && taskMode === 'read' && !workEntityDiscardGuardOpen && taskFind.handleKeyDown(ev)) return;
     if (calendarCreateSurface.handleKeyDown(ev)) return;
+    if (activeLens === 'data' && activeTab === 'calendar' && explorerDetail === null && calendarAgenda.handleKeyDown(ev)) return;
     if (fileBatch.busy() && (ev.key === 'Escape' || targetWithAttr(ev, DATA_ROUTE_TAB_ATTR))) { ev.preventDefault(); return; }
     if (contactRecovery.busy() && (ev.key === 'Escape' || targetWithAttr(ev, DATA_ROUTE_TAB_ATTR))) { ev.preventDefault(); return; }
     if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-rename-input') {
@@ -18394,9 +22911,9 @@ export const bootstrapDataRoute = (
         )).filter((tab) => tab.getAttribute('aria-disabled') !== 'true');
         const currentIndex = tabs.indexOf(collectionTab);
         let nextIndex: number | null = null;
-        if (ev.key === 'ArrowRight') {
+        if (ev.key === 'ArrowRight' || collectionRailBreakpoint?.matches && ev.key === 'ArrowDown') {
           nextIndex = (currentIndex + 1) % tabs.length;
-        } else if (ev.key === 'ArrowLeft') {
+        } else if (ev.key === 'ArrowLeft' || collectionRailBreakpoint?.matches && ev.key === 'ArrowUp') {
           nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
         } else if (ev.key === 'Home') {
           nextIndex = 0;
@@ -18446,7 +22963,7 @@ export const bootstrapDataRoute = (
         }
       }
     }
-    if (ev.key === 'Escape' && !ev.isComposing && activeLens === 'data' && activeTab === 'calendar' && calendarCreateSurface.isOpen()) {
+    if (ev.key === 'Escape' && !ev.isComposing && activeLens === 'data' && (activeTab === 'calendar' || activeTab === 'mail') && calendarCreateSurface.isOpen()) {
       ev.preventDefault(); ev.stopPropagation(); calendarCreateSurface.handleAction('calendar-create-cancel'); return;
     }
     if (activeLens === 'data' && activeTab === 'calendar' && calendarEventSurface.guardKeyDown(ev, routeRoot)) return;
@@ -18539,8 +23056,57 @@ export const bootstrapDataRoute = (
   };
 
   routeRoot.addEventListener('click', onClick);
+  const onNoteRelatedToggle = (event: Event) => {
+    const section = event.target as HTMLDetailsElement;
+    if (section?.getAttribute?.('data-note-section') === 'related' && section.open && activeTab === 'note' && noteMode === 'read') void noteRelated.load();
+    if (section?.getAttribute?.('data-commitment-section') === 'related' && section.open && activeTab === 'commitment' && commitmentMode === 'read') void commitmentRelated.load();
+  };
+  routeRoot.addEventListener('toggle', onNoteRelatedToggle, true);
+  const onReadingActivity = (event: Event): void => {
+    const taskInteraction = (event.target as HTMLElement | null)?.closest?.('.work-entity-task-reader');
+    if (activeLens === 'data' && activeTab === 'task' && taskMode === 'read' && taskInteraction && routeRoot.contains(taskInteraction)
+      && ['pointerdown', 'keydown', 'wheel', 'touchstart', 'input'].includes(event.type)) taskReader.interact(routeRoot);
+    if (activeLens === 'data' && activeTab === 'project' && ['pointerdown', 'keydown', 'wheel', 'input', 'change'].includes(event.type)) projectInteraction++;
+    if (activeLens === 'data' && activeTab === 'booking' && ['pointerdown', 'keydown', 'wheel'].includes(event.type)
+      && (event.target as HTMLElement | null)?.closest?.('.work-entity-booking-detail')) { bookingReadingInteraction++; bookingReader.interact(); }
+    if (activeTab === 'commitment' && (event.type === 'wheel' || event.type === 'pointerdown' || event.type === 'keydown')
+      && (event.target as HTMLElement | null)?.closest?.('.work-entity-commitment-reader')) commitmentReadingInteraction++;
+    if ((event.target as HTMLElement | null)?.closest?.('.work-entity-note-reader, .work-entity-task-reader')) captureWorkReading();
+  };
   routeRoot.addEventListener('input', onInput);
+  routeRoot.addEventListener('input', onReadingActivity);
+  routeRoot.addEventListener('wheel', onReadingActivity, { passive: true });
+  routeRoot.addEventListener('touchstart', onReadingActivity, { passive: true });
+  routeRoot.addEventListener('pointerdown', onReadingActivity);
+  routeRoot.addEventListener('click', onReadingActivity);
+  routeRoot.addEventListener('keydown', onReadingActivity);
+  routeRoot.addEventListener('scroll', onReadingActivity, true);
+  routeRoot.addEventListener('toggle', onReadingActivity, true);
+  doc.defaultView?.addEventListener?.('pagehide', flushWorkReading);
+  doc.defaultView?.addEventListener?.('beforeunload', flushWorkReading);
+  doc.defaultView?.addEventListener?.('pagehide', finishRecentSearch);
+  doc.defaultView?.addEventListener?.('pagehide', flushEditorDrafts);
   const onRecordsViewSubmit = (event: Event): void => {
+    if ((event.target as HTMLElement | null)?.hasAttribute?.(REMINDER_DATE_FORM)) {
+      event.preventDefault();
+      if (activeLens !== 'data' || activeTab !== 'search' || searchWriting()) return;
+      if (!reminderDates.apply()) {
+        render(); routeRoot.querySelector<HTMLElement>(`[${REMINDER_DATE_FOCUS}="error"]`)?.focus({ preventScroll: true }); return;
+      }
+      searchReminderTriage.reset();
+      pendingReminderSearchRestore = null;
+      routeRoot.querySelector<HTMLElement>(`[${REMINDER_DATE_FOCUS}="apply"]`)?.focus({ preventScroll: true });
+      if (universalSearchTimer === null) void loadReminderSearch(); else { reminderSearch.reset(); render(); }
+      opts.onViewChange?.(currentView()); return;
+    }
+    if ((event.target as HTMLElement | null)?.hasAttribute?.('data-project-search-form')) {
+      event.preventDefault();
+      if (activeTab === 'project' && projectWork && !projectEditing && !projectWork.taskActions.busy()) {
+        pendingProjectRestore = { key: 'search', scrollTop: workSearchScrollHost()?.scrollTop ?? 0 };
+        void projectWork.applyQuery();
+      }
+      return;
+    }
     if (!(event.target as HTMLElement | null)?.hasAttribute?.('data-records-view-form')) return;
     event.preventDefault();
     applyRecordsView();
@@ -18549,6 +23115,19 @@ export const bootstrapDataRoute = (
   routeRoot.addEventListener('submit', calendarCreateSurface.handleSubmit);
   routeRoot.addEventListener('compositionstart', calendarCreateSurface.handleComposition);
   routeRoot.addEventListener('compositionend', calendarCreateSurface.handleComposition);
+  routeRoot.addEventListener('compositionstart', calendarAgenda.handleComposition);
+  routeRoot.addEventListener('compositionend', calendarAgenda.handleComposition);
+  const onContactActivityScrollIntent = (event: Event): void => {
+    if (event.type === 'keydown' && (!['PageDown', 'PageUp', 'Home', 'End', 'ArrowDown', 'ArrowUp', ' '].includes((event as KeyboardEvent).key)
+      || ['INPUT', 'SELECT', 'TEXTAREA'].includes((event.target as HTMLElement | null)?.tagName ?? ''))) return;
+    if (activeLens === 'data' && activeTab === 'contact' && contactDetail && routeRoot.contains(event.target as Node | null)) {
+      contactActivity.cancelRestore(); rememberContactActivity();
+    }
+  };
+  doc.addEventListener('keydown', onContactActivityScrollIntent, true);
+  doc.addEventListener('wheel', onContactActivityScrollIntent, { passive: true, capture: true });
+  doc.addEventListener('touchstart', onContactActivityScrollIntent, { passive: true, capture: true });
+  doc.addEventListener('scroll', rememberContactActivity, true);
   routeRoot.addEventListener('change', onChange);
   routeRoot.addEventListener('keydown', onKeyDown);
 
@@ -18560,6 +23139,7 @@ export const bootstrapDataRoute = (
   let collectionNavigationHasFocus = false;
   const onCollectionFocusIn = (event: FocusEvent): void => {
     collectionNavigationHasFocus = isCollectionNavigation(event.target);
+    if (collectionNavigationHasFocus) revealCollectionTab(event.target as HTMLElement);
   };
   const onCollectionFocusOut = (event: FocusEvent): void => {
     if (!isCollectionNavigation(event.target)) return;
@@ -18577,9 +23157,16 @@ export const bootstrapDataRoute = (
     if (focused !== null && focused !== doc.body && !isCollectionNavigation(focused)) return;
     collectionNavigationTarget(activeTab)?.focus({ preventScroll: true });
   };
+  const onCollectionRailBreakpointChange = (): void => {
+    if (disposed) return;
+    routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_TABLIST_ATTR}]`)
+      ?.setAttribute('aria-orientation', collectionRailBreakpoint?.matches ? 'vertical' : 'horizontal');
+    revealCollectionTab(collectionNavigationTarget(activeTab));
+  };
   doc.addEventListener('focusin', onCollectionFocusIn);
   doc.addEventListener('focusout', onCollectionFocusOut);
   collectionPickerBreakpoint?.addEventListener?.('change', onCollectionBreakpointChange);
+  collectionRailBreakpoint?.addEventListener?.('change', onCollectionRailBreakpointChange);
 
   startRefresh();
   // Bind the queued open to the route the user actually requested. Ordinary
@@ -18660,12 +23247,20 @@ export const bootstrapDataRoute = (
   let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const runLiveRefresh = (): void => {
     if (disposed) return;
+    if (activeLens === 'data' && activeTab === 'contact' && contactDetail && contactActivity.holdsList()) return;
     // A late upload/warehouse notification must not dismiss a record the
     // owner just opened, or erase the selection captured by the Run palette.
     if (activeLens === 'data' && (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab))
       && explorerDetail !== null) {
+      // Incoming Note/task links update independently of the retained message
+      // or event. Keep the source reader, filters and Find state mounted.
+      if (activeTab === 'mail' || activeTab === 'calendar') workLinkedFrom.refresh();
       explorerLiveRefreshPending = true;
       return;
+    }
+    if (activeLens === 'data' && activeTab === 'mail' && explorerSelectedSlug) {
+      if (mailBulk.holdsList()) return;
+      void mailInbox.refresh(); return;
     }
     // Import publishes a warehouse event before its receipt reaches this UI.
     // Keep that event (and unrelated writes) from retiring the active handoff.
@@ -18684,11 +23279,12 @@ export const bootstrapDataRoute = (
     // Refresh results explicitly starts a fresh read; idle first pages stay live.
     // D-315 — the same for Mail facts: a later page, or a load under way.
     if (activeLens === 'data' && activeTab === 'task' && taskBulk.holdsList()) return;
+    if (activeLens === 'data' && activeTab === 'note' && noteBulk.holdsList()) return;
     if (activeLens === 'data' && activeTab === 'mail_fact' && mailFacts.isBusy()) return;
     // D-324 — nor a time being changed or a cancel waiting for its answer.
     if (activeLens === 'data' && activeTab === 'reminder' && remindersSurface.isBusy()) return;
     if (activeLens === 'data' && activeTab === 'project' && projectWork
-      && Object.values(projectWork.sections).some(section => section.loading)) return;
+      && (projectWork.taskActions.holdsList() || Object.values(projectWork.sections).some(section => section.loading))) return;
     if (activeLens === 'data' && activeTab === 'records'
       && (recordsState.loading || recordsState.page > 1 || recordsViewHasDraft(recordsState)
         || recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
@@ -18799,7 +23395,9 @@ export const bootstrapDataRoute = (
     );
   }
 
-  const hasDataInFlightWork = (): boolean => contactRecovery.busy() || taskBulk.busy() || fileBatch.busy() || opaqueMutationsInFlight > 0
+  // Recently opened controls can render during startup, before this declaration.
+  function hasDataInFlightWork(): boolean {
+    return searchWriting() || contactRecovery.busy() || taskBulk.busy() || noteBulk.busy() || mailBulk.busy() || fileBatch.busy() || projectWork?.taskActions.busy() === true || opaqueMutationsInFlight > 0
     || workEntityState.dialog?.submitting === true
     || contactDialog?.submitting === true
     || contactDialog?.merging === true
@@ -18824,9 +23422,11 @@ export const bootstrapDataRoute = (
     || mailFacts.hasInFlightWork()
     // D-324 — a reminder being moved or cancelled.
     || remindersSurface.hasInFlightWork()
+    || workReminder.pending()
     || calendarEventSurface.hasInFlightWork()
     || calendarCreateSurface.hasInFlightWork()
     || mailMessageSurface.hasInFlightWork();
+  }
 
   return {
     currentView,
@@ -18882,15 +23482,22 @@ export const bootstrapDataRoute = (
     timeline: () => timeline,
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
-    hasUnsavedChanges: () => hasFileRenameChanges() || mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
-    unsavedChangesPrompt: () => (hasFileRenameChanges() ? 'Leave Data? Your filename change is not saved.' : mailMessageSurface.hasUnsavedChanges()
+    hasUnsavedChanges: () => ((activeTab === 'note' && noteMode === 'edit' || isWorkDraftKind(activeTab) || activeTab === 'booking') && hasUnsavedWorkEntityDialog())
+      || activeTab === 'contact' && (bookingReaderReturn?.target.kind === 'contact' || relatedWorkReturn?.workLink?.tab === 'contact' || relatedWorkReturn?.linkedRecord?.kind === 'contact') && hasUnsavedContactDialog()
+      || hasFileRenameChanges() || mailMessageSurface.hasUnsavedChanges() || calendarEventSurface.hasUnsavedChanges() || calendarCreateSurface.hasUnsavedChanges() || recordsImport.hasUnsavedChanges() || mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges() || workReminder.hasDraft(),
+    unsavedChangesPrompt: () => (hasFileRenameChanges() ? 'Leave Data? Your filename change is not saved.' : mailReminders.hasDraft()
+      ? 'Leave Data? Your reminder changes are not saved.' : mailMessageSurface.hasUnsavedChanges()
       ? 'Leave Data? Your email draft is not saved.' : calendarCreateSurface.hasUnsavedChanges()
       ? 'Leave Data? Your new event is not saved.' : calendarEventSurface.hasUnsavedChanges()
       ? 'Leave Data? Your event changes are not saved.' : recordsImport.hasUnsavedChanges()
       ? 'Leave Data? Your spreadsheet import is still open.' : mailFacts.hasUnsavedChanges()
       ? 'Leave Data? Your changes to a mail-fact template or kind of email are not saved.'
-      : remindersSurface.hasUnsavedChanges()
+      : remindersSurface.hasUnsavedChanges() || workReminder.hasDraft()
         ? 'Leave Data? Your reminder changes are not saved.'
+      : activeTab === 'contact' && (bookingReaderReturn?.target.kind === 'contact' || relatedWorkReturn?.workLink?.tab === 'contact' || relatedWorkReturn?.linkedRecord?.kind === 'contact') && hasUnsavedContactDialog() ? 'Leave Data? Your contact changes are not saved.'
+        : activeTab === 'booking' && hasUnsavedWorkEntityDialog() ? 'Leave Data? Your booking changes are not saved.'
+        : activeTab === 'note' && noteMode === 'edit' && hasUnsavedWorkEntityDialog() ? `Leave Data? Your note is not saved. ${noteDraft.message()}`
+        : isWorkDraftKind(activeTab) && hasUnsavedWorkEntityDialog() ? `Leave Data? Your ${activeTab} changes are not saved. ${workDrafts[activeTab].message()}`
         : null),
     inFlightWorkPrompt: () => hasRecordsInFlightWork()
       ? 'Something is still happening in Records. Leave Data anyway?'
@@ -18899,14 +23506,68 @@ export const bootstrapDataRoute = (
         : null,
     refresh: startRefresh,
     whenLoaded: async () => {
+      await contactActivity.whenLoaded();
+      await projectWork?.taskActions.whenSettled();
       await taskBulk.whenSettled();
+      await noteBulk.whenSettled();
+      await mailBulk.whenSettled();
       await fileBatch.whenSettled();
       await pendingLoadPromise;
-      if (activeTab === 'search') await assetSearch.whenLoaded();
+      await projectViewLoad;
+      if (activeTab === 'search') await Promise.all([assetSearch.whenLoaded(), draftSearch.whenLoaded(), chatSearch.whenLoaded(), reminderSearch.whenLoaded(), promptSearch.whenLoaded(), decisionSearch.whenLoaded(), searchReminderTriage.whenSettled(), searchPromptBulk.whenSettled()]);
       if (activeTab === 'calendar' && explorerDetail === null) await calendarAgenda.whenLoaded();
       if (activeTab === 'reminder') await remindersSurface.whenLoaded();
     },
+    navigateDeepLinkAfterLeave: hash => !disposed && activeLens === 'data' && (selectionNoteReturn?.hash === hash && returnToSelectionNoteOrigin(true, true)
+      || sourceDetour?.hash === hash && returnToSourceDetour(true, true)
+      || reminderMailReturn?.hash === hash && returnToMailReminder(true, true)
+      || reminderWorkReturn?.hash === hash && returnToReminder(true, true)
+      || projectChildReturn?.attention && projectChildReturn.hash === hash && returnToProjectOverview(true, true)
+      || workSearchReturn?.kind === 'booking' && workSearchReturn.hash === hash && returnToWorkSearch(true, true)
+      || findBookingReturn(hash) !== null && returnToBookingReader(true, true, hash)
+      || exactSearchReturn?.hash === hash && returnToExactLinkSearch(true, true)
+      || recentSourceReturn?.hash === hash && returnToRecentSourceSearch(true, true)
+      || contactWorkReturn?.hash === hash && returnToContactWork(true, true)
+      || noteTaskReturn?.reader.hash === hash && returnToNoteTaskOrigin(true, true)
+      || mailWorkReturn?.hash === hash && returnToMailWorkOrigin(true, true)
+      || calendarWorkReturn?.hash === hash && returnToCalendarWorkOrigin(true, true)
+      || relatedWorkReturn?.hash === hash && returnToRelatedWork(true, true)),
     navigateDeepLink: (hash) => {
+      if (!disposed && activeLens === 'data' && selectionNoteReturn?.hash === hash && returnToSelectionNoteOrigin(true)) return true;
+      if (!disposed && activeLens === 'data' && sourceDetour?.hash === hash && returnToSourceDetour(true)) return true;
+      if (!disposed && reminderMailReturn?.hash === hash && returnToMailReminder(true)) return true;
+      if (!disposed && reminderWorkReturn?.hash === hash && returnToReminder(true)) return true;
+      if (workReminder.hasDraft()) return false;
+      if (!disposed && activeLens === 'data' && workSearchReturn?.kind === 'booking' && workSearchReturn.hash === hash) return returnToWorkSearch(true);
+      if (!disposed && activeLens === 'data' && findBookingReturn(hash) && returnToBookingReader(true, false, hash)) return true;
+      if (exactSearchReturn && hash !== exactSearchReturn.hash && hash !== exactSearchReturn.destination
+        && !(exactSearchReturn.result.match.target.tab === 'contact' && contactDetail?.contact?.contact_id === exactSearchReturn.result.match.target.id
+          && hash === serializeShellRoute('data', 'contact', contactDetail.email))) exactSearchReturn = null;
+      if (!disposed && activeLens === 'data' && exactSearchReturn?.hash === hash) return returnToExactLinkSearch(true);
+      if (!disposed && activeLens === 'data' && recentSourceReturn?.hash === hash) return returnToRecentSourceSearch(true);
+      if (!disposed && activeLens === 'data' && contactWorkReturn?.hash === hash && returnToContactWork(true)) return true;
+      if (!disposed && activeLens === 'data' && noteTaskReturn?.reader.hash === hash && returnToNoteTaskOrigin(true)) return true;
+      if (!disposed && activeLens === 'data' && workSearchReturn?.recent && hash === serializeShellRoute('data', 'search')
+        && !hasDataInFlightWork() && !hasUnsavedWorkEntityDialog()) {
+        dataHistory.adopt(dataAddress(hash, undefined)); returnToWorkSearch(); return true;
+      }
+      if (!disposed && activeLens === 'data' && mailWorkReturn?.hash === hash && returnToMailWorkOrigin(true)) return true;
+      if (!disposed && activeLens === 'data' && calendarWorkReturn?.hash === hash && returnToCalendarWorkOrigin(true)) return true;
+      if (!disposed && activeLens === 'data' && relatedWorkReturn?.hash === hash && returnToRelatedWork(true)) return true;
+      if (!disposed && activeLens === 'data' && !workSearchReturn && activeWorkReader() && workReaderNavigation.returnPosition()
+        && !hasDataInFlightWork()) {
+        const view = currentView(true);
+        const parent = savedViewLinked && savedViewBinding !== undefined && view !== null && sameSavedDataViewDefinition(view, savedViewBinding.definition)
+          ? serializeShellRoute('views', savedViewBinding.id) : serializeShellRoute('data', activeTab);
+        if (hash === parent) {
+          dataHistory.adopt(dataAddress(hash, undefined));
+          closeWorkEntityDialog(); return true;
+        }
+      }
+      if (!disposed && activeLens === 'data' && projectChildReturn && !projectChildReturn.linking && hash === projectChildReturn.hash
+        && !hasDataInFlightWork() && !hasUnsavedWorkEntityDialog()) {
+        returnToProjectOverview(true); return true;
+      }
       const reminderAddress = parseReminderLink(hash);
       if (!disposed && activeLens === 'data' && activeTab === 'reminder' && reminderAddress) {
         if (!remindersSurface.open(reminderAddress.reminder_id, false)) return false;
@@ -18921,6 +23582,11 @@ export const bootstrapDataRoute = (
         && calendarAgendaReturn?.hash === hash && !hasDataInFlightWork() && !calendarEventSurface.hasUnsavedChanges()) {
         closeExplorerDetail(true);
         return true;
+      }
+      if (!disposed && activeLens === 'data' && activeTab === 'mail' && explorerDetail !== null
+        && hash === (mailInbox.position()?.hash ?? '#data/mail') && !hasDataInFlightWork()) {
+        if (!mailMessageSurface.beforeLeave()) return false;
+        closeExplorerDetail(true); return true;
       }
       if (disposed || activeLens !== 'data' || activeTab !== 'contact' || !contactSearchReturn
         || hash !== contactSearchReturn.hash || contactDialog !== null || openingContactEditEmail !== null
@@ -18985,20 +23651,46 @@ export const bootstrapDataRoute = (
       if (activeTab === 'search') {
         const saved = readSearchAssetReturn<SearchResume>(doc, searchContinuityOwner);
         if (saved) saveSearchAssetReturn(doc, searchContinuityOwner, { ...saved, state: captureSearchState() });
+        const chat = readSearchChatReturn<SearchResume>(doc, searchContinuityOwner);
+        if (chat) saveSearchChatReturn(doc, searchContinuityOwner, { ...chat, state: captureSearchState() });
+        const navigation = readSearchNavigationReturn<SearchResume>(doc, searchContinuityOwner);
+        if (navigation) saveSearchNavigationReturn(doc, searchContinuityOwner, { ...navigation, state: captureSearchState() });
       }
+      if (opts.projectViewMemory && activeLens === 'data' && activeTab === 'project' && projectWork && !projectEditing && workEntityState.dialog?.entity_id === projectWork.project.id) {
+        opts.projectViewMemory.value = { ...projectWork.viewState(), identity: projectAttentionIdentity(projectWork.project),
+          top: workSearchScrollHost()?.scrollTop ?? 0, focus: doc.activeElement?.getAttribute('data-project-focus') ?? 'heading' };
+      }
+      flushWorkReading();
+      rememberContactActivity(); contactActivity.dispose();
+      flushEditorDrafts(); noteDraft.suspend(); suspendWorkDrafts();
       disposed = true;
+      recentWorkPanel.reset(); pinnedWorkPanel.reset(); recordPins.reset(); sourceRecordCopy.reset();
+      workReaderCopy.reset();
+      workLinkPreviews.dispose(); recordLinkInsert.dispose(); searchRecordPreviews.dispose(); workLinkedFrom.dispose();
+      noteRelated.reset(); commitmentRelated.reset(); commitmentChat.reset(); bookingActions.reset(); bookingReader.reset(); bookingChat.reset(); bookingReaderReturn = null; discardRelatedWorkReturn();
+      noteFind.reset(); taskFind.reset();
+      workReaderNavigation.reset(); pendingWorkReaderListReturn = null;
       retireUniversalSearch();
       contactRecovery.dispose();
       assetSearch.dispose();
+      draftSearch.dispose(); chatSearch.dispose(); reminderSearch.dispose(); promptSearch.dispose(); decisionSearch.dispose(); searchReminderTriage.dispose(); searchPromptBulk.dispose();
       documentSearch.dispose();
       savedFiles.dispose();
+      mailReaderNavigation.reset();
+      mailBulk.dispose();
+      mailInbox.dispose();
       fileBatch.dispose();
       remindersSurface.dispose();
+      workReminder.dispose();
+      mailReminders.dispose();
       taskBulk.dispose();
+      noteBulk.dispose();
       calendarAgenda.dispose();
       calendarCreateSurface.dispose();
       calendarEventSurface.dispose();
       mailMessageSurface.dispose();
+      selectionNotePicker.reset();
+      readerPassage.dispose();
       projectWork?.dispose();
       fileChatAbort?.abort(); filePreviewAbort?.abort(); fileDownloadAbort?.abort();
       contactSearchRefresh.cancel();
@@ -19012,19 +23704,43 @@ export const bootstrapDataRoute = (
       for (const off of liveUnsubscribers.splice(0)) off();
       closeFormResponseRunModal();
       recordsImport.destroy();
-      disposeWorkEntityRefPickers();
+      workReferencePreviews.reset();
+      workContactPickers.reset();
+      workProjectPickers.reset();
+      workTaskPickers.reset();
+      taskBlockers.dispose();
       disposeUploadWidget();
       routeRoot.removeEventListener('click', onClick);
+      routeRoot.removeEventListener('toggle', onNoteRelatedToggle, true);
       routeRoot.removeEventListener('input', onInput);
+      routeRoot.removeEventListener('input', onReadingActivity);
+      routeRoot.removeEventListener('wheel', onReadingActivity);
+      routeRoot.removeEventListener('touchstart', onReadingActivity);
+      routeRoot.removeEventListener('pointerdown', onReadingActivity);
+      routeRoot.removeEventListener('click', onReadingActivity);
+      routeRoot.removeEventListener('keydown', onReadingActivity);
+      routeRoot.removeEventListener('scroll', onReadingActivity, true);
+      routeRoot.removeEventListener('toggle', onReadingActivity, true);
+      doc.defaultView?.removeEventListener?.('pagehide', flushWorkReading);
+      doc.defaultView?.removeEventListener?.('beforeunload', flushWorkReading);
+      doc.defaultView?.removeEventListener?.('pagehide', finishRecentSearch);
+      doc.defaultView?.removeEventListener?.('pagehide', flushEditorDrafts);
+      doc.removeEventListener('keydown', onContactActivityScrollIntent, true);
+      doc.removeEventListener('wheel', onContactActivityScrollIntent, true);
+      doc.removeEventListener('touchstart', onContactActivityScrollIntent, true);
+      doc.removeEventListener('scroll', rememberContactActivity, true);
       routeRoot.removeEventListener('change', onChange);
       routeRoot.removeEventListener('submit', onRecordsViewSubmit);
       routeRoot.removeEventListener('keydown', onKeyDown);
       routeRoot.removeEventListener('submit', calendarCreateSurface.handleSubmit);
       routeRoot.removeEventListener('compositionstart', calendarCreateSurface.handleComposition);
       routeRoot.removeEventListener('compositionend', calendarCreateSurface.handleComposition);
+      routeRoot.removeEventListener('compositionstart', calendarAgenda.handleComposition);
+      routeRoot.removeEventListener('compositionend', calendarAgenda.handleComposition);
       doc.removeEventListener('focusin', onCollectionFocusIn);
       doc.removeEventListener('focusout', onCollectionFocusOut);
       collectionPickerBreakpoint?.removeEventListener?.('change', onCollectionBreakpointChange);
+      collectionRailBreakpoint?.removeEventListener?.('change', onCollectionRailBreakpointChange);
       try {
         opts.root.removeChild(routeRoot);
       } catch {

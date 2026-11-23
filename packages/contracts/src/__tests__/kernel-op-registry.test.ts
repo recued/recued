@@ -54,7 +54,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-221 added the list/get backing ingredients for pack-owned Records
   // reachability (19 → 21).
   'work-entity': 36,
-  situation: 3,
+  situation: 5,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
   // 12 → 10 on 2026-09-23: `core.memory.annotate` / `core.memory.link` retired
@@ -94,7 +94,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // emailed attachment into a folder the owner names (D-318 follow-up 11).
   storage: 32,
   schedule: 2,
-  kitchen: 4,
+  kitchen: 5,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
   // `order.link-customer` edge that binds a paid order to the customer it issued,
@@ -110,7 +110,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // `core.dom.wait`, `core.dom.table` and `core.dom.screenshot`, slice J
   // `core.dom.act`, a sequence of steps approved once, slice U `core.dom.scroll`, and slice AP
   // `core.dom.download`, a file a page links to kept among the owner's files.
-  dom: 12,
+  dom: 13,
   // D-345 — the server's own fetch of a public web address: `core.http.get`, `.read`, `.download`.
   http: 3,
 };
@@ -253,6 +253,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // webhook collection they read.
       // D-335 slice J — a sequence of steps on one page, approved once.
       'core.dom.act|dom|dom-act|write',
+      'core.dom.bridges|dom|dom-bridges|read',
       'core.dom.click|dom|dom-click|write',
       // D-335 slice AP — a file a page links to, kept among the owner's files.
       'core.dom.download|dom|dom-download|read',
@@ -270,6 +271,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.http.download|http|http-download|read',
       'core.http.get|http|http-get|read',
       'core.http.read|http|http-read|read',
+      'core.kitchen.draft.from_job|kitchen|kitchen-draft-from-job|write',
       'core.kitchen.draft.get|kitchen|kitchen-draft-get|read',
       'core.kitchen.draft.import|kitchen|kitchen-draft-import|write',
       'core.kitchen.draft.list|kitchen|kitchen-draft-list|read',
@@ -373,6 +375,9 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-244 — CSV filtering as a KERNEL op rather than a CLI pack: csvkit is a
       // Python install an owner may not have, and a spreadsheet used as a customer
       // list is too common to have its search silently absent on a fresh box.
+      // D-343 (§355) — the chat's change of an occasion made in Yours, owner-on / door-off.
+      'core.situation.occasion-create|situation|(native)|write',
+      'core.situation.occasion-update|situation|(native)|write',
       'core.situation.prefetch|situation|(native)|read',
       'core.situation.read|situation|situation-query|read',
       // D-343 slice 2 — the owner's closing records (`episode.record`), owner-on / door-off.

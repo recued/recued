@@ -68,7 +68,7 @@ const noWrites = (calls: Array<{ method: string }>) =>
   expect(calls.filter(call => ['chat.send', 'chat.session.create', 'data.file.attachments.import'].includes(call.method) || call.method.startsWith('upload.'))).toEqual([]);
 
 const xlsxMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-const xlsx = (wide = false) => {
+const xlsx = (wide = false, find = false) => {
   const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
   const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const sheet = (body: string) => strToU8(`<worksheet xmlns="${ns}"><dimension ref="A1:XFD1048576"/><sheetData>${body}</sheetData></worksheet>`);
@@ -87,8 +87,11 @@ const xlsx = (wide = false) => {
       : '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="inlineStr"><is><t>Amount</t></is></c><c r="C1" t="inlineStr"><is><t>&lt;img src=https://outside.invalid/tracker onerror=alert(1)&gt;</t></is></c></row>'
       + '<row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>00125.50</v></c><c r="C2" s="1"><v>61</v></c></row>'
       + '<row r="3"><c r="A3" t="str"><f>WEBSERVICE("https://outside.invalid/formula")</f><v>Cached answer</v></c><c r="B3"><f>SUM(1,2)</f></c><c r="C3" t="b"><v>0</v></c></row>'
-      + Array.from({ length: 57 }, (_, n) => `<row r="${n + 5}"><c r="A${n + 5}" t="inlineStr"><is><t>Customer ${n + 5}</t></is></c></row>`).join('')),
-    'xl/worksheets/sheet2.xml': sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>Total</t></is></c><c r="B1" s="2"><f>SUM(Prices!B2:B61)</f><v>2500.5</v></c></row><row r="1048576"><c r="XFD1048576" s="0"><v/></c></row>'),
+      + Array.from({ length: 57 }, (_, n) => `<row r="${n + 5}"><c r="A${n + 5}" t="inlineStr"><is><t>Customer ${n + 5}</t></is></c></row>`).join('')
+      + (find ? '<row r="240"><c r="U240" t="inlineStr"><is><t>Target target &lt;img.*&gt;</t></is></c></row>' : '')),
+    'xl/worksheets/sheet2.xml': sheet('<row r="1"><c r="A1" t="inlineStr"><is><t>Total</t></is></c><c r="B1" s="2"><f>SUM(Prices!B2:B61)</f><v>2500.5</v></c></row>'
+      + (find ? '<row r="2"><c r="A2" t="inlineStr"><is><t>Final target</t></is></c></row>' : '')
+      + '<row r="1048576"><c r="XFD1048576" s="0"><v/></c></row>'),
     'xl/worksheets/sheet3.xml': sheet(''),
     'xl/worksheets/_rels/sheet1.xml.rels': strToU8(`<Relationships><Relationship Target="https://outside.invalid/linked"/></Relationships>`),
     'xl/vbaProject.bin': strToU8('not executed'),
@@ -152,6 +155,10 @@ test('connected XLSX exports explain a worksheet limit and still show other shee
     await expect(f.viewer.getByRole('alert')).toContainText('exceeds the preview limits');
     await f.viewer.getByRole('combobox', { name: 'Worksheet' }).selectOption({ label: 'Summary' });
     await expect(f.viewer.getByRole('cell', { name: '2500.50', exact: true })).toBeVisible();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in workbook', exact: true });
+    await find.fill('2500.50'); await find.press('Enter');
+    await expect(f.viewer.locator('[data-spreadsheet-find-status]')).toContainText('Cell 1 of 1 · Summary · B1');
+    await expect(f.viewer.locator('[data-spreadsheet-find-status]')).toContainText('Unsearched worksheets: Prices');
     await f.viewer.getByRole('button', { name: 'File actions', exact: true }).click();
     await f.viewer.getByRole('button', { name: 'Origin', exact: true }).click();
     await expect(f.viewer).toContainText('/Clients/Native prices');
@@ -159,6 +166,109 @@ test('connected XLSX exports explain a worksheet limit and still show other shee
     const download = await saving; expect(download.suggestedFilename()).toBe('Native prices.xlsx');
     expect(await readFile((await download.path())!)).toEqual(bytes);
     expect(f.fixture.cloudSource!.downloads()).toBe(1); noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
+test('XLSX Find opens matching sheets, row pages and distant columns, while cell jumps preserve sparse coordinates', async ({ browser }, testInfo) => {
+  const bytes = xlsx(false, true);
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'xlsx-find', name: 'Find.xlsx', mime_type: xlsxMime, bytes }).then(() => {}));
+  try {
+    await f.input.fill('Keep my draft'); await f.page.getByRole('button', { name: 'Preview Find.xlsx', exact: true }).click();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in workbook', exact: true });
+    const status = f.viewer.locator('[data-spreadsheet-find-status]');
+    const active = f.viewer.locator('[data-spreadsheet-active-cell]');
+    await find.fill('target'); await find.press('Enter');
+    await expect(status).toHaveText('Cell 1 of 2 · Prices · U240');
+    await expect(f.viewer).toContainText('Rows 201–240 of 240');
+    await expect(active).toHaveText('Target target <img.*>'); await expect(active).toBeInViewport();
+    await f.viewer.getByRole('button', { name: 'Next match', exact: true }).click();
+    await expect(status).toHaveText('Cell 2 of 2 · Summary · A2');
+    await expect(f.viewer.getByRole('combobox', { name: 'Worksheet' })).toHaveValue('1');
+    await f.page.keyboard.press('Control+f'); await expect(find).toBeFocused(); await find.press('Shift+Enter');
+    await expect(status).toHaveText('Cell 1 of 2 · Prices · U240');
+    const address = f.viewer.getByRole('textbox', { name: 'Cell address', exact: true });
+    await address.fill('C4'); await address.press('Enter');
+    await expect(active).toHaveAttribute('data-spreadsheet-cell', 'C4'); await expect(active).toHaveText('');
+    await expect(status).toHaveText('2 matching cells');
+    await expect(f.viewer).toContainText('Rows 1–50 of 240');
+    await address.fill('V1'); await address.press('Enter');
+    await expect(f.viewer.getByRole('alert')).toHaveText('Choose a cell within A1:U240.');
+    await expect(active).toHaveAttribute('data-spreadsheet-cell', 'C4');
+    await f.page.setViewportSize({ width: 390, height: 844 });
+    await address.fill('$u$240'); await f.viewer.getByRole('button', { name: 'Go to cell', exact: true }).click();
+    await expect(address).toHaveValue('U240'); await expect(active).toHaveText('Target target <img.*>'); await expect(active).toBeInViewport();
+    await f.viewer.screenshot({ path: testInfo.outputPath('xlsx-find-mobile.png') });
+    await find.fill('Result not saved'); await find.press('Enter'); await expect(status).toHaveText('No matching cells.');
+    await f.viewer.getByRole('combobox', { name: 'Worksheet' }).selectOption({ label: 'Empty' });
+    await address.fill('A1'); await address.press('Enter');
+    await expect(f.viewer.getByRole('alert')).toHaveText('This worksheet has no cells to jump to.');
+    await find.fill('2500.50'); await find.press('Enter');
+    await expect(status).toHaveText('Cell 1 of 1 · Summary · B1');
+    expect(await f.viewer.locator('img,script,iframe').count()).toBe(0);
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file', exact: true }).click();
+    expect(await readFile((await (await saving).path())!)).toEqual(bytes);
+    await f.viewer.getByRole('button', { name: 'Close preview' }).click(); await expect(f.input).toHaveValue('Keep my draft');
+    expect(f.calls.filter(call => call.method === previewMethod)).toHaveLength(1); noWrites(f.calls);
+    expect((await f.resources()).violations).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('CSV Find searches every data page and column, keeps its query through Raw text, and treats markup literally', async ({ browser }, testInfo) => {
+  const csv = 'Target heading,' + Array.from({ length: 11 }, (_, n) => `Field ${n + 2}`).join(',') + '\n'
+    + Array.from({ length: 70 }, (_, n) => Array.from({ length: 12 }, (_, column) => n === 0 && column === 0 ? 'Target target'
+      : n === 60 && column === 11 ? 'Target <img.*>' : `${n + 1}:${column + 1}`).join(',') + '\n').join('');
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'csv-find', name: 'Find.csv', mime_type: 'text/csv', bytes: csv }).then(() => {}));
+  try {
+    await f.page.setViewportSize({ width: 390, height: 844 }); await f.input.fill('Unsent CSV draft');
+    await f.page.getByRole('button', { name: 'Preview Find.csv', exact: true }).click();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in CSV', exact: true });
+    const status = f.viewer.locator('[data-spreadsheet-find-status]'), active = f.viewer.locator('[data-spreadsheet-active-cell]');
+    // Change pages in the same turn as typing, before the debounce can fire.
+    // Finishing that search must not undo the owner's later page navigation.
+    await find.evaluate(input => {
+      (input as HTMLInputElement).value = 'target'; input.dispatchEvent(new Event('input', { bubbles: true }));
+      const next = Array.from(input.closest('.csv-preview')!.querySelectorAll('button')).find(button => button.textContent === 'Next rows')!;
+      next.focus(); next.click();
+    });
+    await expect(status).toHaveText('2 matching cells'); await expect(f.viewer).toContainText('Rows 51–70 of 70');
+    await find.press('Enter'); await expect(status).toHaveText('Cell 1 of 2 · CSV data · A1');
+    await f.viewer.getByRole('button', { name: 'Next match', exact: true }).click();
+    await expect(status).toHaveText('Cell 2 of 2 · CSV data · L61');
+    await expect(f.viewer).toContainText('Rows 51–70 of 70'); await expect(active).toHaveText('Target <img.*>'); await expect(active).toBeInViewport();
+    await expect(f.viewer.getByRole('rowheader', { name: '61', exact: true })).toBeInViewport();
+    await f.viewer.getByRole('button', { name: 'Raw text', exact: true }).click();
+    await expect(f.viewer.getByLabel('File text', { exact: true })).toHaveText(csv);
+    await f.viewer.getByRole('button', { name: 'Table', exact: true }).click();
+    await expect(find).toHaveValue('target'); await expect(active).toBeInViewport();
+    const address = f.viewer.getByRole('textbox', { name: 'Cell address', exact: true });
+    await address.fill('M1'); await address.press('Enter'); await expect(address).toHaveAttribute('aria-invalid', 'true');
+    await expect(active).toHaveAttribute('data-spreadsheet-cell', 'L61');
+    await address.fill('$L$61'); await address.press('Enter'); await expect(address).toHaveValue('L61'); await expect(active).toBeInViewport();
+    await f.viewer.screenshot({ path: testInfo.outputPath('csv-find-mobile.png') });
+    await find.fill('<img.*>'); await find.press('Enter'); await expect(status).toHaveText('Cell 1 of 1 · CSV data · L61');
+    expect(await f.viewer.locator('img,script,iframe').count()).toBe(0);
+    const saving = f.page.waitForEvent('download'); await f.viewer.getByRole('button', { name: 'Download file' }).click();
+    expect(await readFile((await (await saving).path())!, 'utf8')).toBe(csv);
+    await find.press('Escape'); await expect(find).toHaveValue(''); await expect(f.viewer).toBeVisible();
+    await f.page.keyboard.press('Escape'); await expect(f.viewer).toBeHidden(); await expect(f.input).toHaveValue('Unsent CSV draft');
+    expect(f.calls.filter(call => call.method === previewMethod)).toHaveLength(1); noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
+test('spreadsheet Find can stop within a large CSV and close during a replacement search without late updates', async ({ browser }) => {
+  const csv = Array.from({ length: 10_000 }, (_, row) => Array.from({ length: 10 }, (_, column) => `${row}:${column}`).join(',') + '\n').join('');
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'csv-long', name: 'Long.csv', mime_type: 'text/csv; header=absent', bytes: csv }).then(() => {}));
+  const errors: string[] = []; f.page.on('pageerror', error => errors.push(error.message));
+  try {
+    await f.input.fill('Keep this draft'); await f.page.getByRole('button', { name: 'Preview Long.csv', exact: true }).click();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in CSV', exact: true });
+    await find.fill('missing'); await find.press('Enter'); await f.viewer.getByRole('button', { name: 'Stop search', exact: true }).click();
+    await expect(f.viewer.locator('[data-spreadsheet-find-status]')).toHaveText('Search stopped. 0 matching cells found so far.');
+    await find.fill(':'); await find.press('Enter');
+    await expect(f.viewer.locator('[data-spreadsheet-find-status]')).toContainText('Search limits reached; some cells were not searched.');
+    await find.fill('different'); await find.press('Enter'); await f.viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await expect(f.viewer).toBeHidden(); await expect(f.input).toHaveValue('Keep this draft');
+    expect(errors).toEqual([]); noWrites(f.calls); expect((await f.resources()).urls).toBe(0);
   } finally { await f.close(); }
 });
 
@@ -241,23 +351,24 @@ test('phone CSV previews retain paging focus and keep malformed CSV readable and
   } finally { await f.close(); }
 });
 
-// Valid two-page PDF, including an ignored document action. No network or library fixture dependency.
-const pdfFixture = () => {
-  const streams = ['First retained PDF page', 'Second retained PDF page'].map(text => 'BT /F1 24 Tf 30 200 Td (' + text + ') Tj ET\n');
+// Valid PDF, including an ignored document action. No network or library fixture dependency.
+const pdfFixture = (texts = ['First retained PDF page', 'Second retained PDF page'], rotatedPage = 0) => {
+  const streams = texts.map(text => 'BT /F1 24 Tf 30 200 Td (' + text.replace(/[\\()]/g, '\\$&') + ') Tj ET\n');
+  const font = 3 + texts.length * 2;
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R /OpenAction << /S /JavaScript /JS (app.alert\\(1\\)) >> >>',
-    '<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>',
-    '<< /Length ' + streams[0]!.length + ' >>\nstream\n' + streams[0] + 'endstream',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>',
-    '<< /Length ' + streams[1]!.length + ' >>\nstream\n' + streams[1] + 'endstream',
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Type /Pages /Kids [${texts.map((_, i) => `${3 + i * 2} 0 R`).join(' ')}] /Count ${texts.length} >>`,
   ];
+  for (const [i, stream] of streams.entries()) {
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] ${rotatedPage === i + 1 ? '/Rotate 90' : ''} /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${4 + i * 2} 0 R >>`,
+      `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`);
+  }
+  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
   let pdf = '%PDF-1.7\n'; const offsets = [0];
   for (const [i, object] of objects.entries()) { offsets.push(Buffer.byteLength(pdf)); pdf += (i + 1) + ' 0 obj\n' + object + '\nendobj\n'; }
-  const xref = Buffer.byteLength(pdf); pdf += 'xref\n0 8\n0000000000 65535 f \n';
+  const xref = Buffer.byteLength(pdf); pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
   for (const offset of offsets.slice(1)) pdf += String(offset).padStart(10, '0') + ' 00000 n \n';
-  return Buffer.from(pdf + 'trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+  return Buffer.from(pdf + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n` + xref + '\n%%EOF\n');
 };
 
 test('Conversation files and Data preview the same historical bytes without changing the draft or message', async ({ browser }) => {
@@ -354,6 +465,94 @@ test('remote PDF uses the local worker, pages and zooms on mobile, and Download 
     await expect.poll(() => f.resources().then(value => value.terminated)).toBe(1);
     await expect.poll(() => f.resources().then(value => value.urls)).toBe(0);
   } finally { releaseReader(); await f.close(); }
+});
+
+test('PDF page entry jumps directly and rejects invalid pages without losing the current page', async ({ browser }) => {
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'jump-pdf', name: 'Guide.pdf',
+    mime_type: 'application/pdf', bytes: pdfFixture(['First page', 'Second page', 'Third page']) }).then(() => {}));
+  try {
+    await f.page.getByRole('button', { name: 'Preview Guide.pdf', exact: true }).click();
+    await expect(f.viewer.locator('canvas[data-file-preview-rendered]')).toBeVisible();
+    const page = f.viewer.getByRole('spinbutton', { name: 'Page number', exact: true });
+    await page.fill('3'); await page.press('Enter');
+    await expect(f.viewer.getByRole('img', { name: 'PDF page 3 of 3' })).toBeVisible();
+    await page.fill('4'); await page.press('Enter');
+    await expect(f.viewer.getByRole('alert')).toContainText('Enter a whole page number from 1 to 3.');
+    await expect(f.viewer.getByRole('img', { name: 'PDF page 3 of 3' })).toBeVisible();
+    await page.fill('2.5'); await page.press('Enter'); await expect(page).toHaveAttribute('aria-invalid', 'true');
+    await page.fill('1'); await f.viewer.getByRole('button', { name: 'Go to page', exact: true }).click();
+    await expect(f.viewer.getByRole('img', { name: 'PDF page 1 of 3' })).toBeVisible();
+    await expect(f.viewer.getByRole('alert')).toBeHidden(); noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
+test('PDF Find counts literal matches, navigates rotated pages, and retains highlights after zoom', async ({ browser }, testInfo) => {
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'find-pdf', name: 'Contract.pdf',
+    mime_type: 'application/pdf', bytes: pdfFixture(['renewal and renewal', 'Renewal deadline <img.*>', 'Final renewal'], 2) }).then(() => {}));
+  try {
+    await f.page.getByRole('button', { name: 'Preview Contract.pdf', exact: true }).click();
+    await expect(f.viewer.locator('canvas[data-file-preview-rendered]')).toBeVisible();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in PDF', exact: true });
+    await find.fill('renewal'); await find.press('Enter');
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toHaveText('Match 1 of 4 · page 1');
+    await f.viewer.getByRole('button', { name: 'Next match', exact: true }).click();
+    await f.viewer.getByRole('button', { name: 'Next match', exact: true }).click();
+    await f.page.keyboard.press('Control+f'); await expect(find).toBeFocused();
+    await find.press('Shift+Enter');
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toHaveText('Match 2 of 4 · page 1');
+    await find.press('Enter');
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toHaveText('Match 3 of 4 · page 2');
+    await expect(f.viewer.locator('.pdf-text-layer [data-pdf-find-active]')).toHaveText('Renewal');
+    await expect(f.viewer.locator('.pdf-text-layer [data-pdf-find-active]')).toBeInViewport();
+    await f.viewer.getByRole('button', { name: 'Zoom in', exact: true }).click();
+    await expect(f.viewer.locator('canvas[data-file-preview-rendered]')).toBeVisible();
+    await expect(f.viewer.locator('.pdf-text-layer [data-pdf-find-active]')).toHaveText('Renewal');
+    await f.viewer.getByRole('button', { name: 'Show page text', exact: true }).click();
+    await expect(f.viewer.getByLabel('PDF page text').locator('[data-pdf-find-active]')).toHaveText('Renewal');
+    await find.fill('<img.*>'); await find.press('Enter');
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toHaveText('Match 1 of 1 · page 2');
+    await expect(f.viewer.locator('.pdf-text-layer [data-pdf-find-active]')).toHaveText('<img.*>');
+    await expect(f.viewer.locator('.pdf-text-layer [data-pdf-find-active]')).toBeInViewport();
+    await expect(f.viewer.locator('img,script,iframe')).toHaveCount(0);
+    await f.viewer.screenshot({ path: testInfo.outputPath('pdf-find-rotated.png') });
+    await find.fill('absent word'); await find.press('Enter');
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toHaveText('No matches found.');
+    await expect(f.viewer.getByRole('button', { name: 'Next match' })).toBeDisabled();
+    await find.press('Escape'); await expect(f.viewer).toBeVisible(); await expect(find).toHaveValue('');
+    await f.page.keyboard.press('Escape'); await expect(f.viewer).toBeHidden();
+    expect((await f.resources()).violations).toEqual([]); noWrites(f.calls);
+  } finally { await f.close(); }
+});
+
+test('PDF Find distinguishes a file with no searchable text from a completed no-match search', async ({ browser }) => {
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'scan-pdf', name: 'Scan.pdf',
+    mime_type: 'application/pdf', bytes: pdfFixture(['']) }).then(() => {}));
+  try {
+    await f.page.getByRole('button', { name: 'Preview Scan.pdf', exact: true }).click();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in PDF', exact: true });
+    await find.fill('renewal'); await find.press('Enter');
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toHaveText('This PDF has no searchable text.');
+    await expect(f.viewer.locator('canvas[data-file-preview-rendered]')).toBeVisible();
+    await expect(f.viewer.getByRole('button', { name: 'Next match' })).toBeDisabled();
+  } finally { await f.close(); }
+});
+
+test('PDF Find can stop and close during a longer search without late changes or retained workers', async ({ browser }) => {
+  const f = await setup(browser, fixture => fixture.addConversationFile({ id: 'long-pdf', name: 'Long.pdf',
+    mime_type: 'application/pdf', bytes: pdfFixture(Array.from({ length: 1000 }, (_, n) => `Page ${n + 1} renewal`)) }).then(() => {}));
+  const errors: string[] = []; f.page.on('pageerror', error => errors.push(error.message));
+  try {
+    await f.input.fill('Keep this draft'); await f.page.getByRole('button', { name: 'Preview Long.pdf', exact: true }).click();
+    const find = f.viewer.getByRole('searchbox', { name: 'Find in PDF', exact: true });
+    await find.fill('renewal'); await find.press('Enter');
+    await f.viewer.getByRole('button', { name: 'Stop search', exact: true }).click();
+    await expect(f.viewer.locator('[data-pdf-find-status]')).toContainText('Search stopped after');
+    await find.fill('different'); await find.press('Enter');
+    await f.viewer.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await expect(f.viewer).toBeHidden(); await expect(f.input).toHaveValue('Keep this draft');
+    await expect.poll(() => f.resources().then(value => value.terminated)).toBe(1);
+    expect(errors).toEqual([]); expect((await f.resources()).urls).toBe(0); noWrites(f.calls);
+  } finally { await f.close(); }
 });
 
 const docxMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';

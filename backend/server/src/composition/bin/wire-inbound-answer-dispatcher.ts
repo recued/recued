@@ -71,12 +71,15 @@ import {
   listMessengerVendors,
 } from '@recued/contracts';
 import type {
+  InboundMessageRemoval,
+  InboundSecret,
   NotificationBlock,
   RemoteChannel,
   SubmitAnswerOutcome,
 } from '@recued/notification';
 import type { ParsedInbound } from '@recued/transport';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
+import { signInCodeOf, TYPED_CODE_NOT_GIVEN, TYPED_CODE_REMOVAL, type TypedSecretIntake } from '../../bridges/browser-secrets.js';
 import { messengerSourceKey } from '../../watch/source-registry.js';
 import type { MessengerLiveControl } from './wire-messenger-live-control.js';
 import type { MessengerTurnIngest } from './wire-messenger-turn.js';
@@ -205,6 +208,12 @@ export interface ComposeInboundAnswerDispatcherDeps {
    *  existing paths run unchanged. Absent ⇒ the pre-slice posture (no `/recued`
    *  command, no control buttons). */
   messengerLiveControl?: MessengerLiveControl;
+  /** D-335 slice Z (2026-11-17) — the secrets a waiting browser step may be given by typing them in a
+   *  chat app the ask reached: a sign-in code only (`bridges/browser-secrets.ts`). A plain message is
+   *  offered here BEFORE the ask answers, the messenger turn and the message event, so a code typed
+   *  here becomes none of them: not kept in a chat, not handed to a model, not a recipe trigger, not
+   *  a log line. Absent ⇒ none is taken, and a code typed here is a chat message as before. */
+  typedSecrets?: TypedSecretIntake;
   /** Test seam — event timestamps. Defaults to `Date.now`. */
   now?: () => number;
 }
@@ -289,6 +298,58 @@ export const composeInboundAnswerDispatcher = (
    * boundary. Stable native IDs make a retry safe after an uncertain local ack. */
   const offerMessengerTurn = async (vendor: string, connection_name: string, payload: unknown): Promise<boolean> =>
     messengerTurnIngest ? messengerTurnIngest(vendor, connection_name, payload) : false;
+
+  /** D-335 slice Z — a sign-in code typed here for a browser step that waits for one (`typedSecrets`).
+   *  True when the message was one: it is then nothing else, whether the step took it or not. */
+  const offerTypedSecret = async (
+    vendor: string,
+    connection_name: string,
+    channel: RemoteChannel,
+    payload: unknown,
+    enrolled_at: number | undefined,
+  ): Promise<boolean> => {
+    const intake = deps.typedSecrets;
+    if (intake === undefined || channel.parseInboundSecret === undefined) return false;
+    // Nothing more is read while no code is awaited, the common case.
+    const asks = intake.typedSecretAsks();
+    if (asks.size === 0) return false;
+    // An answer to a plain ask: taken only on the connection the owner's asks go out through.
+    if (deps.plainAskConnection) {
+      const plain = await deps.plainAskConnection(vendor);
+      if (plain === null || plain.name !== connection_name || plain.enrolled_at !== enrolled_at) return false;
+    }
+    let found: InboundSecret | null;
+    try {
+      found = channel.parseInboundSecret(payload, asks, signInCodeOf);
+    } catch (e) {
+      // ⛔ The error's name only: its message is the parser's, about this payload.
+      log?.('warn', `messenger inbound (${vendor}) — parseInboundSecret threw`, {
+        connection_name,
+        error: e instanceof Error ? e.name : typeof e,
+      });
+      return false;
+    }
+    if (found === null) return false;
+    // The code leaves the chat first, whatever becomes of it (2026-11-17): Recued keeps it nowhere,
+    // and where the chat app lets its bot delete the owner's message (Telegram), neither does the chat.
+    let removal: InboundMessageRemoval = 'unsupported';
+    if (channel.deleteInboundMessage !== undefined) {
+      try { removal = await channel.deleteInboundMessage(payload); } catch { removal = 'failed'; }
+    }
+    if (found.kind === 'secret' && await intake.give(found.ask_id, found.value, false, vendor, removal)) return true;
+    // Taken all the same, so it reaches no chat; the chat is told why nothing was typed.
+    try {
+      await channel.deliverNotify({
+        text: `${TYPED_CODE_NOT_GIVEN[found.kind === 'ambiguous' ? 'ambiguous' : 'late']} ${TYPED_CODE_REMOVAL[removal]}`,
+      });
+    } catch (e) {
+      log?.('warn', `messenger inbound (${vendor}) — could not say why a typed sign-in code was not used`, {
+        connection_name,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+    return true;
+  };
 
   /** WatchSource messenger push source — emit a verified non-callback
    *  user message as a canonical bus event. Returns true when an event
@@ -425,6 +486,15 @@ export const composeInboundAnswerDispatcher = (
     }
     await block?.restoreAskDeliveries();
     const enrolled_at = deps.connectionEnrollment?.(connection_name);
+    // D-335 slice Z — a sign-in code typed here, BEFORE anything that keeps a message: an ask
+    // answer's record, the messenger turn (a chat kept, and handed to a model) and the message event.
+    if (await offerTypedSecret(vendor, connection_name, channel, payload, enrolled_at)) {
+      log?.('info', `messenger inbound (${vendor}) — a typed sign-in code, taken`, {
+        connection_name,
+        ...idLog,
+      });
+      return;
+    }
     const reply = channel.parseInboundReply(payload, enrolled_at === undefined ? undefined
       : { name: connection_name, enrolled_at });
     if (reply === null) {

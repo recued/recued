@@ -5,13 +5,16 @@ import { assetDateAt, calendarDayMs, PURSUIT_CLASS_ID, shiftAssetDate, dueSpan, 
   type ProactiveToday, type SituationAgendaSettings, type SituationAgendaStatus, type SituationCloseDaySettings, type SituationCloseDayStatus,
   type SituationCluster, type SituationDeliverySettings, type SituationDeliveryStatus, type SituationDigestLookAhead, type SituationItem,
   type SituationResult, type SituationStreamKind, type SituationStreamPreview, type SituationStreamSettings, type SituationStreamStatus,
-  NOTIFICATION_DELIVERY_CHANNELS, type NotificationDeliveryChannel } from '@recued/contracts';
+  NOTIFICATION_DELIVERY_CHANNELS, type NotificationDeliveryChannel, occasionIsPrivate } from '@recued/contracts';
 import type { NotificationSendArgs } from '../notification-handler.js';
+import type { CalendarCollectionTable } from '../collections/calendar/calendar-table.js';
 import type { SituationStore } from '../storage/situation-store.js';
 import type { PromptSchedules } from '../prompt-schedules.js';
 import type { AssetReminderService } from './asset-reminder-service.js';
-import type { PromptSchedule } from '@recued/contracts';
-import { AGENDA_SUGGESTIONS_KEY, SUGGESTIONS_HEAD_START_MS, SUGGESTIONS_TOOL_ROUNDS, WEEKLY_SUGGESTIONS_KEY, createAgendaSuggestions } from './agenda-suggestions.js';
+import type { PromptSchedule, SituationRunTiming, SituationSuggestionsOutcome } from '@recued/contracts';
+import { occasionWaitingForNext } from '@recued/contracts';
+import { OCCASION_NEXT_KIND } from './sources.js';
+import { AGENDA_SUGGESTIONS_KEY, SUGGESTIONS_BACKSTOP_MS, SUGGESTIONS_HEAD_START_MS, SUGGESTIONS_STALL_MS, SUGGESTIONS_TOOL_ROUNDS, WEEKLY_SUGGESTIONS_KEY, createAgendaSuggestions } from './agenda-suggestions.js';
 import { claimPromptScheduleDone, DONE_TEXT_MAX_CHARS, promptScheduleDoneClaimed } from '../prompt-schedule-done.js';
 import { isToolBudgetExhaustedAnswer } from '../chat-turn-budget.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
@@ -19,6 +22,8 @@ import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js
 import { createOccurrenceReminderStore } from '../storage/occurrence-reminder-store.js';
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
+import { calendarSeriesOccasionId } from './declared-occasions.js';
+import { bookingInviteUid, occasionOwningEvent, occasionOwningInvite } from './occasion-calendar-sync.js';
 import { createSituationDismissalStore } from '../storage/situation-dismissal-store.js';
 import { releasedAtStop, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { SituationAccess } from './access.js';
@@ -113,7 +118,11 @@ const missedBy = (item: SituationItem, cluster: SituationCluster, named: (anchor
   const side = value.from > span.to ? 'after' : value.to < span.from ? 'before' : null;
   return anchor && side ? ` · ${verdict === 'near' ? 'shortly' : 'well'} ${side} ${named(anchor)}` : '';
 };
-interface RunRow { id: string; mode: string; day: string; at: number; state: string; attempts: number; text: string; delivered_to: string; mentions?: string }
+interface RunRow { id: string; mode: string; day: string; at: number; state: string; attempts: number; text: string; delivered_to: string; mentions?: string;
+  prepared_at?: number | null; suggestions?: string | null }
+/** D-340 ruling 13 — a stream run's timing, for Today: none for a run before it. */
+const timingOf = (row: RunRow): SituationRunTiming => ({ ...(typeof row.prepared_at === 'number' ? { prepared_at: row.prepared_at } : {}),
+  ...(typeof row.suggestions === 'string' ? { suggestions: row.suggestions as SituationSuggestionsOutcome } : {}) });
 /** D-338 §11 — a name in an Agenda's text and the record it opens in the app. */
 type AgendaMention = { text: string; ref: { collection: string; id: string } };
 /** The names a run kept, for its Settings preview; none for a run before them or with none. */
@@ -131,6 +140,18 @@ export const mailboxHealthOf = (collections: readonly Collection[], now: number)
     const health = collection.health(); return { name: collection.slug, last_success_at: health.last_indexed_at,
       needs_attention: health.error_count_24h > 0 || health.last_indexed_at === 0 || now - health.last_indexed_at > 86_400_000 || health.auth_state === 'expired' || health.auth_state === 'unauthorized' };
   });
+/** D-340 ruling 13 — what a stream's message says in place of suggestions that did not come, in plain
+ *  words: never an error's text. Suggestions that finish after it went are in Today and their
+ *  conversation, never a notification of their own. */
+export const SUGGESTIONS_MISSING = {
+  stuck: 'Not ready this time: the AI stopped responding. If they finish, they will be in Today.',
+  failed: 'Not made this time: the AI service did not respond.',
+  unfinished: 'Not finished this time: the AI ran out of lookups.',
+  approval: 'Waiting on your approval in Today.',
+  not_started: 'Not made this time: they did not start.',
+} as const;
+type MissingSuggestions = keyof typeof SUGGESTIONS_MISSING;
+
 export const createScheduledSituations = (deps: {
   db: Database.Database; store: SituationStore; work: WorkEntityStore; query: ReturnType<typeof createSituationQuery>;
   timeZone: () => string; isVaultUnlocked: () => boolean; isQuiet: (at: number) => boolean;
@@ -145,28 +166,70 @@ export const createScheduledSituations = (deps: {
   memoryAllowed?: (cluster: SituationCluster) => boolean;
   /** A person's name as the owner's contacts give it, for an id an item's `who` carries. */
   personName?: (id: string) => string | undefined;
+  /** D-407 slice 2 — a person the owner keeps out of what Recued brings up (`contactExcludedFromProactive`): Today
+   *  asks "When is the next one?" of no occasion with one, as the occasion source asks nothing of it either. */
+  excludedPerson?: (id: string) => boolean;
   /** Whether a calendar event (by its record id) has fresh Meeting preparation notes, for the
    *  Agenda's "prep notes ready". Absent ⇒ the Agenda never says so. */
   prepNotesReady?: (calendarRecordId: string) => boolean;
+  /** D-407 Q8 — the owner's calendars, by slug, so an event its own calendar marks private
+   *  (`CanonicalEvent.marked_private`) is private here too. Absent ⇒ no event is. */
+  calendars?: () => ReadonlyArray<{ slug: string; table: Pick<CalendarCollectionTable, 'getByRecordId'> }>;
   /** D-338 slice 3 — the scheduled prompts the Agenda's AI suggestions run as. Late, because the
    *  chat is composed first; absent ⇒ the suggestions are never set up. */
   promptSchedules?: () => PromptSchedules | undefined;
   /** D-340 slice 3 — the owner's reminders, which the daily stream carries when it is asked to. */
   reminders?: Pick<AssetReminderService, 'streamReminders' | 'sendWithStream'>;
+  /** D-343 (2026-11-15) — keeps a message that went out (a stream's, the Agenda's, Close the day's) in
+   *  the app's "Your day" conversation, as a notice the owner can reply to there. Late, because the
+   *  chat is composed first; absent ⇒ nothing is kept. Never costs the send. */
+  recordAppNotice?: () => ((notice: { title: string; text: string }) => Promise<void>) | undefined;
+  /** D-340 ruling 13 — while a stream's message waits for its suggestions, it checks again this often
+   *  rather than at the next minute's tick, so it goes within moments of them. Absent ⇒ the tick only. */
+  suggestionsRecheckMs?: number;
   now?: () => number;
 }) => {
   const now = deps.now ?? Date.now; let access: SituationAccess | undefined; let active: Promise<unknown> | undefined; let stopped = false;
   const occurrences = createAssetOccurrenceStore(deps.db); const points = createOccurrenceReminderStore(deps.db);
   const dismissals = createSituationDismissalStore(deps.db);
   // What an item's own reminder keeps private stays out of every message the brief
-  // sends, as there: a sensitive asset, and an occasion with people in it
-  // (asset-reminder-service, occasion-clock-service). Today, in the app, names them.
+  // sends, as there: a sensitive asset, and an occasion the owner keeps private
+  // (asset-reminder-service, occasion-clock-service; `occasionIsPrivate`, D-407 slice 3)
+  // with the events of its yearly series; and an event its own calendar marks private
+  // (D-407 Q8). Today, in the app, names them.
   // `gone` is what a record no longer on file counts as: a resolution's stored line
   // may outlive its record (a deleted occasion leaves none), so it is private there.
   const occasions = createProactiveHistoryStore(deps.db, createProactiveProposalStore(deps.db));
+  // D-407 slice 4c (§4.2) — an occasion's own event is private as its occasion is, whatever the phone did to its marking.
+  const ownerOf = occasionOwningEvent(deps.db);
+  // D-407 slice 5 (§4.2, §10.1) — and the booking an emailed invite made, as the occasion that holds the invite's event.
+  const ownerOfInvite = occasionOwningInvite(deps.db);
   const privateRecord = (ref: { collection: string; id: string }, gone = false): boolean => {
     if (ref.collection === 'asset') { const asset = deps.work.readAsset(ref.id); return asset ? asset.settings.sensitive === true : gone; }
-    if (ref.collection === 'occasion') { const occasion = occasions.occasion(ref.id); return occasion ? occasion.people.length > 0 : gone; }
+    if (ref.collection === 'occasion') { const occasion = occasions.occasion(ref.id); return occasion ? occasionIsPrivate(occasion) : gone; }
+    // An event's ref is `<calendar slug>:<record id>`, as the calendar source writes it. One
+    // deleted since, or on a calendar since removed, counts as `gone` says, like the rest.
+    if (ref.collection === 'calendar') {
+      if (!deps.calendars) return false;
+      const colon = ref.id.indexOf(':'); const slug = colon > 0 ? ref.id.slice(0, colon) : undefined;
+      const row = slug === undefined ? null : deps.calendars().find(source => source.slug === slug)?.table.getByRecordId(ref.id.slice(colon + 1)) ?? null;
+      if (!row) return gone;
+      if (row.event.marked_private === true) return true;
+      const owner = occasions.occasion(ownerOf(slug!, row.event.source_id) ?? '');
+      if (owner) return occasionIsPrivate(owner);
+      // D-407 slice 3 — an event of a yearly series follows the occasion the series declares, every year's.
+      const series = occasions.occasion(calendarSeriesOccasionId(slug!, row));
+      return series ? occasionIsPrivate(series) : false;
+    }
+    if (ref.collection === 'booking') {
+      const booking = deps.work.readBooking(ref.id);
+      // A booking no longer on file says nothing of the invite it came from: named, as every booking was before. Counted
+      // as `gone`, every resolved booking's line (a trip over) read "a reminder in Yours".
+      if (!booking) return false;
+      const uid = bookingInviteUid(booking.source_extension_blob);
+      const owner = uid === undefined ? null : occasions.occasion(ownerOfInvite(uid) ?? '');
+      return owner ? occasionIsPrivate(owner) : false;
+    }
     const row = ref.collection === 'commitment' ? occurrences.byCommitment(ref.id) : null;
     return row ? privateRecord({ collection: row.subject_kind === 'occasion' ? 'occasion' : 'asset', id: row.asset_id }, gone) : false;
   };
@@ -191,6 +254,12 @@ export const createScheduledSituations = (deps: {
   // D-338 §11 — the names an Agenda's text links in the app, kept with its run for Settings.
   if (!(deps.db.prepare('PRAGMA table_info(scheduled_situation_runs)').all() as { name: string }[]).some(column => column.name === 'mentions')) {
     deps.db.exec("ALTER TABLE scheduled_situation_runs ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'");
+  }
+  // D-340 ruling 13 — when a stream run started preparing, and how its suggestions went.
+  {
+    const columns = new Set((deps.db.prepare('PRAGMA table_info(scheduled_situation_runs)').all() as { name: string }[]).map(column => column.name));
+    if (!columns.has('prepared_at')) deps.db.exec('ALTER TABLE scheduled_situation_runs ADD COLUMN prepared_at INTEGER');
+    if (!columns.has('suggestions')) deps.db.exec('ALTER TABLE scheduled_situation_runs ADD COLUMN suggestions TEXT');
   }
   // When the overview last listed each of its clusters. Only a trip's resolves, so
   // this is how retention tells a cluster that is over from one still shown. A
@@ -324,15 +393,16 @@ export const createScheduledSituations = (deps: {
     if (!row) return undefined;
     return row.state === 'sent' || row.state === 'uncertain' ? 'sent' : row.state === 'pending' || row.state === 'sending' ? 'pending' : 'skipped';
   };
-  const suggestionsOf = (key: string, agendaRunSince: (at: number) => 'sent' | 'skipped' | 'pending' | undefined) => createAgendaSuggestions({
+  const suggestionsOf = (key: string, agendaRunSince: (at: number) => 'sent' | 'skipped' | 'pending' | undefined,
+    streaming: () => boolean) => createAgendaSuggestions({
     db: deps.db, schedules: deps.promptSchedules ?? (() => undefined), key,
     readSetting: (name, fallback) => deps.store.readSetting(name, fallback),
     writeSetting: (name, value) => { deps.store.writeSetting(name, value); },
-    timeZone: deps.timeZone, agendaRunSince });
+    timeZone: deps.timeZone, agendaRunSince, streaming });
   // The Agenda's suggestions, which are the daily stream's once the streams take over (D-340 §3.6:
   // they carry over with their conversation), and the weekly stream's own.
-  const agendaSuggestions = suggestionsOf(AGENDA_SUGGESTIONS_KEY, at => runSince(streamsActive() ? 'stream' : 'agenda')(at));
-  const weeklySuggestions = suggestionsOf(WEEKLY_SUGGESTIONS_KEY, runSince('stream_week'));
+  const agendaSuggestions = suggestionsOf(AGENDA_SUGGESTIONS_KEY, at => runSince(streamsActive() ? 'stream' : 'agenda')(at), () => streamsActive());
+  const weeklySuggestions = suggestionsOf(WEEKLY_SUGGESTIONS_KEY, runSince('stream_week'), () => true);
   const streamSuggestions: Readonly<Record<SituationStreamKind, typeof agendaSuggestions>> = { daily: agendaSuggestions, weekly: weeklySuggestions };
   /** A stream as the Agenda's settings word it: what its AI suggestions read, and its span. They
    *  come only with its Agenda. */
@@ -347,8 +417,8 @@ export const createScheduledSituations = (deps: {
     const named = feature === 'agenda' || feature === 'stream' || feature === 'stream_week';
     const row = deps.db.prepare(`SELECT * FROM scheduled_situation_runs WHERE ${runsOf(feature)} ORDER BY at DESC,rowid DESC LIMIT 1`).get() as RunRow | undefined;
     const sent = deps.db.prepare(`SELECT * FROM scheduled_situation_runs WHERE ${runsOf(feature)} AND state='sent' ORDER BY at DESC,rowid DESC LIMIT 1`).get() as RunRow | undefined;
-    return { last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) as string[], ...(named ? mentionsOf(row) : {}) } : null,
-      last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) as string[], ...(named ? mentionsOf(sent) : {}) } : null,
+    return { last_run: row ? { at: row.at, mode: row.mode, state: row.state, text: row.text, delivered_to: JSON.parse(row.delivered_to) as string[], ...(named ? mentionsOf(row) : {}), ...timingOf(row) } : null,
+      last_sent: sent ? { at: sent.at, mode: sent.mode, text: sent.text, delivered_to: JSON.parse(sent.delivered_to) as string[], ...(named ? mentionsOf(sent) : {}), ...timingOf(sent) } : null,
       pending: (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_runs WHERE ${runsOf(feature)} AND state IN ('pending','sending')`).get() as { n: number }).n,
       uncertain: (deps.db.prepare(`SELECT count(*) AS n FROM scheduled_situation_runs WHERE ${runsOf(feature)} AND state='uncertain'`).get() as { n: number }).n };
   };
@@ -612,7 +682,8 @@ export const createScheduledSituations = (deps: {
     const situations = await collect(input.now, input.before - 1, 'today', uiContext);
     const questionIds = new Set(occurrences.all().filter(row => row.question).flatMap(row => row.commitment_id ? [row.commitment_id] : []));
     situations.clusters = situations.clusters.flatMap(cluster => {
-      const items = cluster.items.filter(item => !questionIds.has(item.ref.id)
+      // D-407 slice 2 — "When is the next one?" has a section of its own, with its answer (`occasions_waiting`).
+      const items = cluster.items.filter(item => !questionIds.has(item.ref.id) && item.kind !== OCCASION_NEXT_KIND
         && !(item.kind === 'asset_rule' && item.reasons.includes('missing') && item.when.value === null));
       return items.length ? [{ ...cluster, items }] : [];
     });
@@ -648,7 +719,15 @@ export const createScheduledSituations = (deps: {
     // An item names people by id (§6.2); Today shows the names.
     const ids = new Set(situations.clusters.flatMap(cluster => cluster.items.flatMap(item => item.who.value ?? [])));
     const people = deps.personName ? Object.fromEntries([...ids].flatMap(id => { const name = deps.personName!(id); return name ? [[id, name]] : []; })) : undefined;
-    return { ...await deps.overview(), situations, occurrences: visibleOccurrences, ...(Object.keys(summaries).length ? { summaries } : {}), ...(people ? { people } : {}) };
+    // D-407 slice 2 — the occasions waiting for their next date, each with the day it last happened.
+    const day = assetDateAt(input.now, deps.timeZone());
+    const occasions_waiting = history.occasions(10_000).flatMap(occasion => {
+      const last = occasion.muted || occasion.source_active === false || occasion.people.some(id => deps.excludedPerson?.(id) === true)
+        ? undefined : occasionWaitingForNext(occasion, day);
+      return last === undefined ? [] : [{ id: occasion.id, title: occasion.title, last_on: last }];
+    });
+    return { ...await deps.overview(), situations, occurrences: visibleOccurrences, occasions_waiting,
+      ...(Object.keys(summaries).length ? { summaries } : {}), ...(people ? { people } : {}) };
   };
   type DigestMode = 'overview' | 'day_of' | 'manual';
   /** What the Digest says for one of its modes on `day`: Coming up (`overview`), Due today
@@ -905,7 +984,10 @@ export const createScheduledSituations = (deps: {
           dates[item.kind].push({ text: title.endsWith(suffix) ? title.slice(0, -suffix.length) : title,
             ref: { collection: 'contact', id: item.ref.id } }); continue;
         }
-        const label = allDay ? 'All day ·' : when.from < start ? `Until ${clock.format(when.to)} ·` : clock.format(when.from);
+        // A task or a commitment with a day and no time is due that day; an event, an occasion or a
+        // date in Yours stays "All day" (the owner, 2026-11-14, on "All day · Call the plumber").
+        const label = allDay ? (item.ref.collection === 'task' || item.ref.collection === 'commitment' ? 'Due ·' : 'All day ·')
+          : when.from < start ? `Until ${clock.format(when.to)} ·` : clock.format(when.from);
         // A calendar item's id is `<calendar>:<record id>`; its prep notes are keyed by the record id.
         const prepared = item.ref.collection === 'calendar' && deps.prepNotesReady?.(item.ref.id.slice(item.ref.id.indexOf(':') + 1)) === true;
         const title = hides(item) ? 'Reminder in Yours'
@@ -962,6 +1044,8 @@ export const createScheduledSituations = (deps: {
   const sendDayMessage = async (id: string, mode: string, feature: 'agenda' | 'close_day' | 'stream' | 'stream_week',
     build: () => Promise<{ title: string; lines: string[]; mentions: AgendaMention[]; channels?: NotificationDeliveryChannel[] | null;
       unchanged?: () => Promise<boolean>; commit?: (sendAt: number) => void;
+      /** D-340 ruling 13 — a stream run's timing, kept with it once it went. */
+      timing?: SituationRunTiming;
       /** D-340 slice 3 — sends it some other way than `send`. `final`: what it handed on retries on its
        *  own, so this run is not sent again, and stays uncertain if nothing went at once. `stale`: what
        *  it holds changed, so the next tick builds it again. */
@@ -1008,8 +1092,12 @@ export const createScheduledSituations = (deps: {
     deps.db.transaction(() => {
       deps.db.prepare("UPDATE scheduled_situation_attempts SET outcome='delivered' WHERE id=?").run(attempt);
       deps.db.prepare("UPDATE scheduled_situation_runs SET state='sent',delivered_to=? WHERE id=?").run(JSON.stringify(delivered), id);
+      if (built.timing) deps.db.prepare('UPDATE scheduled_situation_runs SET prepared_at=?,suggestions=? WHERE id=?')
+        .run(built.timing.prepared_at ?? null, built.timing.suggestions ?? null, id);
       built.commit?.(sendAt);
     })();
+    try { await deps.recordAppNotice?.()?.({ title, text }); }
+    catch (error) { console.warn(`[situations] "${title}" went out, but could not be kept in Your day`, error); }
   };
   /** One Agenda run, titled with its day, or its first and last. A day with nothing on sends nothing. */
   const sendAgenda = (id: string, mode: 'agenda' | 'agenda_manual', from: string, end: string): Promise<void> =>
@@ -1053,7 +1141,7 @@ export const createScheduledSituations = (deps: {
    *  12). A Coming up folded into it from another time says so once (§3.6). `dryRun`, the preview,
    *  asks no model and marks nothing. */
   const streamMessage = async (kind: SituationStreamKind, span: { from: string; end: string }, context: SituationReadContext, dryRun: boolean,
-    ahead: string | null) => {
+    ahead: string | null, missing?: string) => {
     const stream = streamSettings(kind); const sections: string[][] = []; const mentions: AgendaMention[] = [];
     const counts = { states: 0, agenda: 0, due_today: 0, coming_up: 0, reminders: 0, suggestions: 0 };
     const parts: Array<NonNullable<Awaited<ReturnType<typeof digestPart>>>> = [];
@@ -1073,6 +1161,8 @@ export const createScheduledSituations = (deps: {
         : 'Talk it over: reply to this message, or open Today in Recued.']);
       counts.suggestions = 1;
     }
+    // D-340 ruling 13 — suggestions that did not come say so, where they would have been.
+    const suggestionsAt = sections.length;
     if (stream.agenda) {
       const agenda = await agendaLines(span.from, span.end, context, { namesPrivate: stream.include_private });
       if (agenda.lines.length) { sections.push(['Agenda', ...agenda.lines]); mentions.push(...agenda.mentions); counts.agenda = agenda.items; }
@@ -1105,17 +1195,25 @@ export const createScheduledSituations = (deps: {
     const last = shiftDays(span.end, -1);
     const title = kind === 'daily' ? `${STREAM_DAY_TITLE} · ${dayTitle(span.from)}` : `${STREAM_WEEK_TITLE} · ${dayTitle(span.from)} to ${dayTitle(last)}`;
     const note = deps.store.readSetting<string>(`situations.stream_fold_note.${kind}`, '');
+    if (missing !== undefined && counts.suggestions === 0 && stream.agenda && stream.suggestions && sections.length > 0) {
+      sections.splice(Math.min(suggestionsAt, sections.length), 0, ['Suggestions', missing]);
+    }
     const lines = sections.length ? [...note ? [note, ''] : [], ...sections.flatMap((section, index) => [...index ? [''] : [], ...section])] : [];
     return { title, lines, mentions, counts, parts, note, reminders, suggestions };
   };
   /** D-340 slice 2 — one run of a stream, to its channels. Once it went, its Coming up and Due today
    *  count as sent, and its fold note has been said. */
-  const sendStream = (kind: SituationStreamKind, id: string, mode: string, span: { from: string; end: string }, ahead: string | null): Promise<void> =>
+  const sendStream = (kind: SituationStreamKind, id: string, mode: string, span: { from: string; end: string }, ahead: string | null,
+    missing?: MissingSuggestions, preparedAt?: number): Promise<void> =>
     sendDayMessage(id, mode, STREAM_FEATURE[kind], async () => {
-      const message = await streamMessage(kind, span, access!.context(ownerSource, null), false, ahead);
+      const message = await streamMessage(kind, span, access!.context(ownerSource, null), false, ahead,
+        missing === undefined ? undefined : SUGGESTIONS_MISSING[missing]);
       if (!message.lines.length) return null;
       const channels = streamSettings(kind).channels; const carrier = deps.reminders;
-      return { title: message.title, lines: message.lines, mentions: message.mentions, channels,
+      const asked = streamSettings(kind).agenda && streamSettings(kind).suggestions;
+      const timing: SituationRunTiming = { ...(preparedAt !== undefined ? { prepared_at: preparedAt } : {}),
+        ...(asked && (message.counts.suggestions > 0 || missing !== undefined) ? { suggestions: message.counts.suggestions > 0 ? 'included' as const : missing! } : {}) };
+      return { title: message.title, lines: message.lines, mentions: message.mentions, channels, timing,
         // D-340 slice 3 — with reminders, one ask delivery carries this message to its messengers and
         // email, each reminder with its buttons; the app's card, and a channel that takes no reminder,
         // get it as before. Handed on, it retries on its own.
@@ -1151,6 +1249,46 @@ export const createScheduledSituations = (deps: {
   /** D-340 slice 2 — a stream's part of a tick, or its Send now: what it would list if it went now,
    *  today or tomorrow, and a week as if today were its weekday. As the Agenda's: a run still waiting
    *  from an earlier day or week is not sent late. */
+  /** D-340 ruling 13 (the owner, 2026-11-15) — whether a stream's message may go yet: at its time Recued
+   *  starts preparing the day and its AI suggestions start too; the message waits while they make
+   *  progress and goes once, with them inside or a line saying why they are missing. Read from the run's
+   *  own records: its schedule's outcome, and when its conversation last had a row (a lookup started or
+   *  ended, an answer); never a message's text. A day whose agenda lists nothing has none to wait for. */
+  const suggestionsGate = async (kind: SituationStreamKind, run: { id: string; from: string; end: string }, dueAt: number):
+    Promise<{ wait: true } | { missing?: MissingSuggestions }> => {
+    const stream = streamSettings(kind);
+    if (!stream.agenda || !stream.suggestions || !access) return {};
+    if (await suggestionsFor(kind, run.id)) return {};
+    if ((await agendaLines(run.from, run.end, access.context(ownerSource, null))).lines.length === 0) return {};
+    const at = now(); const elapsed = at - dueAt;
+    const stuck = (): { wait: true } | { missing: MissingSuggestions } => (elapsed >= SUGGESTIONS_STALL_MS ? { missing: 'stuck' } : { wait: true });
+    if (elapsed >= SUGGESTIONS_BACKSTOP_MS) return { missing: 'stuck' };
+    const schedule_id = streamSuggestions[kind].scheduleId(); const schedules = deps.promptSchedules?.();
+    if (!schedule_id || !schedules) return {};
+    try {
+      const occurrence = deps.db.prepare(`SELECT turn_id, due_at FROM chat_prompt_occurrences WHERE schedule_id=? AND due_at>=?
+        AND occurrence_id NOT LIKE ? ORDER BY due_at DESC LIMIT 1`).get(schedule_id, dueAt - 60_000, `${schedule_id}:manual:%`) as
+        { turn_id: string | null; due_at: number } | undefined;
+      if (!occurrence?.turn_id) return elapsed >= SUGGESTIONS_STALL_MS ? { missing: 'not_started' } : { wait: true };
+      const schedule = await schedules.get(schedule_id);
+      const status = schedule.last_turn_id === occurrence.turn_id ? schedule.last_outcome?.status : undefined;
+      // Finished, yet nothing to carry: out of its rounds, or no answer.
+      if (status === 'finished') return { missing: 'unfinished' };
+      if (status === 'needs_approval' || status === 'needs_attention') return { missing: 'approval' };
+      if (status === 'failed' || status === 'interrupted' || status === 'cancelled' || status === 'withdrawn') return { missing: 'failed' };
+      // Queued or running: it is moving while its conversation gains rows.
+      const last = (deps.db.prepare('SELECT MAX(ts) AS ts FROM chat_messages WHERE session_id=? AND turn_id=?')
+        .get(schedule.session_id, occurrence.turn_id) as { ts: number | null } | undefined)?.ts ?? 0;
+      return at - Math.max(dueAt, occurrence.due_at, last) >= SUGGESTIONS_STALL_MS ? { missing: 'stuck' } : { wait: true };
+    } catch { return stuck(); }
+  };
+  // D-340 ruling 13 — one recheck at a time, while a message waits for its suggestions; `stop` clears it.
+  let recheck: ReturnType<typeof setTimeout> | undefined;
+  const recheckSoon = (): void => {
+    if (recheck !== undefined || stopped || deps.suggestionsRecheckMs === undefined) return;
+    recheck = setTimeout(() => { recheck = undefined; void tick().catch(() => {}); }, deps.suggestionsRecheckMs);
+    recheck.unref?.();
+  };
   const streamTick = async (kind: SituationStreamKind, manual: boolean): Promise<void> => {
     if (stopped || !access || !deps.isVaultUnlocked() || !streamsActive()) return;
     const stream = streamSettings(kind); const at = now(); const zone = deps.timeZone(); const day = assetDateAt(at, zone);
@@ -1168,7 +1306,11 @@ export const createScheduledSituations = (deps: {
     }
     const clock = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     if (!current || clock.format(at) < due || deps.isQuiet(at)) return;
-    await sendStream(kind, current.id, feature, current, current.id);
+    // D-340 ruling 13 — one message: it waits for the suggestions while they make progress.
+    const dueAt = zonedWallClockToEpochMs(`${day}T${due}`, zone);
+    const gate = dueAt === null ? {} : await suggestionsGate(kind, current, dueAt);
+    if ('wait' in gate) { recheckSoon(); return; }
+    await sendStream(kind, current.id, feature, current, current.id, gate.missing, dueAt ?? undefined);
   };
   /** The Agenda's part of a tick, or its Send now. What a run lists is `agendaSpan`'s. An agenda
    *  still waiting from an earlier day, or from an earlier week or the other frequency, is not
@@ -1326,6 +1468,11 @@ export const createScheduledSituations = (deps: {
     // Agenda's, or either stream's once the streams take over.
     readsPursuits: (source: Parameters<typeof agendaSuggestions.isOwnRun>[0]): boolean =>
       agendaSuggestions.isOwnRun(source) || weeklySuggestions.isOwnRun(source),
+    // D-339 slice 6 — a Body's values reach a model's general read only for a stream's own
+    // suggestions while that stream includes private items (D-340 §3.4); every other read sees names.
+    showsWithheldValues: (source: Parameters<typeof agendaSuggestions.isOwnRun>[0]): boolean => streamsActive()
+      && ((agendaSuggestions.isOwnRun(source) && streamSettings('daily').include_private)
+        || (weeklySuggestions.isOwnRun(source) && streamSettings('weekly').include_private)),
     // D-338 slice 3 — after a save: the suggestions' schedule follows the Agenda's settings.
     syncAgendaSuggestions: () => agendaSuggestions.sync(agendaSettings()),
     // The done notices of either stream's suggestions wait on that stream's own run.
@@ -1353,6 +1500,7 @@ export const createScheduledSituations = (deps: {
     eveningPursuits,
     sendNow: () => run('digest'), sendAgendaNow: () => run('agenda'), async stop() {
       stopped = true; stops.abort();
+      if (recheck !== undefined) { clearTimeout(recheck); recheck = undefined; }
       if (active) await settleWithin(active, STOP_GRACE_MS);
     } };
 };

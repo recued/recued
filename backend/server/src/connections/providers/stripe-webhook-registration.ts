@@ -12,6 +12,7 @@ import {
   createWebhookAddressableCollectionRegistrationDriver,
 } from '../../webhook-addressable-collection-registration-driver.js';
 import {
+  assertDesiredEventTypesAdmitted,
   WebhookRegistrationAdapterError,
   type ManagedWebhookEndpointCreateResult,
   type ManagedWebhookEndpointMatch,
@@ -84,9 +85,10 @@ interface ParsedStripeEndpoint {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** Everything but the event names, which are checked where they are sent
+ *  (create, update): cleanup never depends on them (D-201 Slice 10G). */
 const validateContext = (
   context: ManagedWebhookRegistrationContext,
-  eventTypeParser: WebhookAsciiEventTypeParser,
   remoteUrlParser: WebhookBoundedHttpUrlParser,
 ): void => {
   const { desired } = context;
@@ -97,11 +99,7 @@ const validateContext = (
     || (desired.environment !== 'test' && desired.environment !== 'live')
     || desired.registration_target !== null
     || endpoint === null
-    || !endpoint.startsWith('https://')
-    || desired.event_types.length < 1
-    || desired.event_types.length > 64
-    || desired.event_types.some((eventType) =>
-      eventTypeParser.parse(eventType) === null)) {
+    || !endpoint.startsWith('https://')) {
     throw new WebhookRegistrationAdapterError(
       'registration_input_invalid',
       'Stripe managed registration input is invalid',
@@ -246,7 +244,7 @@ export const createStripeWebhookRegistrationAdapter = (
   const connectionFor = async (
     context: ManagedWebhookRegistrationContext,
   ): Promise<StripeWebhookRegistrationConnection> => {
-    validateContext(context, deps.eventTypeParser, deps.remoteUrlParser);
+    validateContext(context, deps.remoteUrlParser);
     const cached = connectionByContext.get(context);
     if (cached) return cached;
     const resolved = (async (): Promise<StripeWebhookRegistrationConnection> => {
@@ -329,21 +327,40 @@ export const createStripeWebhookRegistrationAdapter = (
       };
     } catch {
       clearTimeout(timeout);
+      // D-201 Slice 10O — sent, and nothing came back: Stripe may still be
+      // carrying it out, and its idempotency key will give the next request
+      // with it this one's result, so the reconciler keeps the key.
       throw new WebhookRegistrationAdapterError(
         'upstream_unavailable',
         'Stripe webhook registration request did not complete',
+        [],
+        { no_response: true },
       );
     }
   };
 
   const requireSuccess = async (
     pending: WebhookRegistrationPendingResponse,
+    /** The request sent this attempt's idempotency key. */
+    keyed = false,
   ): Promise<unknown> => {
     if (!pending.response.ok) {
       // Drain only a bounded amount so a pooled connection can be reused; the
       // body is deliberately excluded from errors because it is not a trusted
       // or secret-safe owner projection.
       await readBoundedText(pending);
+      // D-201 Slice 10T (10Q finding 6) — to a keyed request, a 409 is Stripe
+      // saying an earlier request under this key is still running (it keeps no
+      // result for the 409 itself). That one may yet land, so the key is kept:
+      // a new one would let the next create land beside it.
+      if (keyed && pending.response.status === 409) {
+        throw new WebhookRegistrationAdapterError(
+          'upstream_unavailable',
+          'Stripe is still carrying out an earlier webhook registration request under this key',
+          [],
+          { in_progress: true },
+        );
+      }
       throw new WebhookRegistrationAdapterError(
         pending.response.status === 429 || pending.response.status >= 500
           ? 'upstream_unavailable'
@@ -459,12 +476,13 @@ export const createStripeWebhookRegistrationAdapter = (
             'Stripe create idempotency key is invalid',
           );
         }
+        assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'Stripe');
         const response = await request(context, '/v1/webhook_endpoints', {
           method: 'POST',
           form: desiredForm(context),
           idempotencyKey,
         });
-        const body = await requireSuccess(response);
+        const body = await requireSuccess(response, true);
         const parsed = parseStripeEndpoint(
           body,
           context.desired.environment,
@@ -494,6 +512,7 @@ export const createStripeWebhookRegistrationAdapter = (
             'Stripe update idempotency key is invalid',
           );
         }
+        assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'Stripe');
         const parsedRemoteEndpointId = committedRemoteId(remoteEndpointId);
         const form = desiredForm(context);
         form.set('disabled', 'false');
@@ -503,7 +522,7 @@ export const createStripeWebhookRegistrationAdapter = (
           { method: 'POST', form, idempotencyKey },
         );
         const parsed = parseStripeEndpoint(
-          await requireSuccess(response),
+          await requireSuccess(response, true),
           context.desired.environment,
           context.desired.ingress_id,
           deps.remoteIdParser,

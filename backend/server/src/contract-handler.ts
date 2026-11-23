@@ -47,6 +47,7 @@
  *  Spec: D-166 §"contract_definition lifecycle"; the use-resolution
  *  overlay this lights up is documented in the contract-definition handover. */
 
+import { createCallerPreapprovalRpcHandlers } from './caller-preapproval-rpc.js';
 import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, OWNER_TOOL_VERSION_SCOPE, cliToolVersionHash, isCliVersionOutside, OWNER_TOOL_PATH_SCOPE, ownerToolPathProblem, cliToolFromConnectorRuntime, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, KEY_AUTHORITIES, isKeyAuthority, type KeyAuthority, type UsageCapPeriod, type DoorType } from '@recued/contracts';
 import type {
   Actor,
@@ -86,6 +87,7 @@ import type {
   SetContractLimitsRequest,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
+import { heldActionName } from './ask-card-action-name.js';
 import type { WsClient } from './ws-server.js';
 import {
   ContractWriteInvalidError,
@@ -101,6 +103,7 @@ import {
   type ContractDefinitionStore,
 } from './storage/contract-definition-store.js';
 import { createWriteRuleRpcHandlers } from './write-rule-rpc.js';
+import { createChainRuleRpcHandlers } from './chain-rule-rpc.js';
 import { createBrowserPassRpcHandlers } from './browser-pass-rpc.js';
 import { createTriggerPreapprovalRpcHandlers, type TriggerPreapprovalTargets } from './trigger-preapproval-rpc.js';
 import { createBrowserLoginRpcHandlers } from './browser-login-rpc.js';
@@ -123,6 +126,7 @@ import { createConnectionCatalogBindingStore } from './storage/connection-catalo
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import { readRecipeCoverageUsage } from './recipe-coverage-usage.js';
 import { buildRecipeOpDependencyIndex } from './derive-recipe-capability.js';
+import { isServerDoorRetireReason } from './mint-door-contract.js';
 import type { RecipeStore } from './recipe-store.js';
 import { createCliBinaryPathResolver } from './cli-binary-reachability.js';
 
@@ -158,6 +162,14 @@ export interface ContractRpcDeps {
   /** D-329 §3.4 — the write rules an AI's approvals teach (`write-rule-rpc.ts`). Absent ⇒
    *  their five methods answer `not_configured`. */
   writeRules?: import('./storage/write-rule-store.js').WriteRuleStore;
+  /** D-348 — the chains the owner's approvals teach: their suggestions and rules. Absent ⇒ the
+   *  chain methods answer `not_configured`. */
+  chainRules?: import('./storage/chain-rule-store.js').ChainRuleStore;
+  /** D-348 slice 3 — a chain's call by the name the owner knows it by (`chain-call-name.ts`). */
+  nameChainCall?: (signature: import('@recued/contracts').ChainCallSignature) => string | undefined;
+  /** D-348 — how the owner knows the values each call names (`chainCallPinLabels`). */
+  labelChainCall?: (signature: import('@recued/contracts').ChainCallSignature)
+    => Promise<import('@recued/contracts').ApprovalValueLabels | undefined>;
   /** D-335 slice F — passes for Browser Toolkit writes (`browser-pass-rpc.ts`). Absent ⇒
    *  their five methods answer `not_configured`. */
   browserPasses?: import('./storage/browser-pass-store.js').BrowserPassStore;
@@ -166,6 +178,8 @@ export interface ContractRpcDeps {
    *  ⇒ their three methods answer `not_configured`. */
   triggerPreapprovals?: import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore;
   triggerPreapprovalRecipes?: { get(recipe_id: string): import('@recued/contracts').RecipeDefinition | null };
+  /** D-402 slice F4 — an AI app's name, as the owner gave its key, by its contract. */
+  aiAppNameOf?: (contract_id: string) => string | undefined;
   triggerPreapprovalTargets?: TriggerPreapprovalTargets;
   /** D-341 slice B2 — the granter the resumer shares; when given, the rpc grants through it. */
   triggerPreapprovalGranter?: import('./trigger-preapproval-rpc.js').TriggerPreapprovalGranter;
@@ -174,6 +188,10 @@ export interface ContractRpcDeps {
   /** D-335 slice Z — the logins remembered for browser steps (`browser-login-rpc.ts`). Absent ⇒
    *  their two methods answer `not_configured`. */
   browserLogins?: import('./storage/browser-login-store.js').BrowserLoginStore;
+  /** D-402 slice H5 — a browser's name as its owner gave it (routing's `listBrowsers`), for the logins list. */
+  browserNameOf?: (browser_id: string) => string | undefined;
+  /** D-402 slice H4d — the browser a pass's key names, as the owner knows it (`browserPassBrowserFrom`). */
+  browserPassBrowserOf?: (browser_id: string) => import('@recued/contracts').BrowserPassBrowser;
   /** D-177 N.14.8 fork 3 — counts the owner's D-173 rejects on one door, for the
    *  suggestion card's counter-evidence. OPTIONAL: absent ⇒ door rows carry no
    *  reject count at all, which the card renders as "not counted" — never as a
@@ -521,14 +539,16 @@ const handleContractListOverrides = async (
 // D-211 global owner operation defaults
 // ════════════════════════════════════════════════════════════════
 
-export const upsertOwnerOperationOverride = async (
+/** Synchronous write core for host transactions that also persist a decision
+ * receipt. Publish its audit only after the outer transaction commits. */
+export const writeOwnerOperationOverride = (
   deps: ContractRpcDeps,
   args: {
     ingredient_id: string;
     operation_id: string;
     policy: OwnerOperationPolicyInput;
   },
-): Promise<OwnerOperationView> => {
+): { view: OwnerOperationView; audit: () => Promise<void> } => {
   const method = 'collection.operation.upsertOwnerOverride';
   const a = ensureRecordArgs(method, args);
   const ingredient_id = ensureIngredientId(method, a.ingredient_id);
@@ -628,7 +648,7 @@ export const upsertOwnerOperationOverride = async (
   if (row === null) {
     throw new RpcError('internal', `${method}: owner operation row missing after write`);
   }
-  await emitOverrideAudit(deps, 'owner_operation_override_written', operation_id, {
+  const detail = {
     ingredient_id,
     operation_id,
     policy,
@@ -639,8 +659,18 @@ export const upsertOwnerOperationOverride = async (
     floor_before: approvalFloorForRisk(priorRisk),
     floor_after: approvalFloorForRisk(effectiveRisk),
     op_hash,
-  });
-  return ownerOperationViewFromRow(row);
+  };
+  return { view: ownerOperationViewFromRow(row),
+    audit: () => emitOverrideAudit(deps, 'owner_operation_override_written', operation_id, detail) };
+};
+
+export const upsertOwnerOperationOverride = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id: string; operation_id: string; policy: OwnerOperationPolicyInput },
+): Promise<OwnerOperationView> => {
+  const change = writeOwnerOperationOverride(deps, args);
+  await change.audit();
+  return change.view;
 };
 
 const handleOwnerOperationDelete = async (
@@ -1221,6 +1251,17 @@ const handleContractRevoke = async (
     a.reason === undefined || a.reason === null
       ? 'Revoked from Settings'
       : ensureNonEmptyString(method, 'reason', a.reason);
+  // D-201 Slice 10AC (10AA finding 8) — the server's own reasons for retiring a
+  // door are kept for it: a door the owner revokes with one would read as the
+  // server's retirement, and a later update would make it again.
+  if (isServerDoorRetireReason(reason)) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: '${reason}' is a reason Recued gives when it retires a door itself. Give another reason.`,
+      undefined,
+      method,
+    );
+  }
   const def = definitionStore.revoke(contract_id, reason);
   if (def === null) {
     throw new RpcError(
@@ -1517,7 +1558,15 @@ const handleContractList = async (
  *  always-singleton channels/actors axes are dropped — they carry no "what does
  *  this pass permit" signal). No identity / projection hashes leak — a session
  *  grant is never returned as a bearer secret (D-177 N.3). */
-const toSessionGrantView = (def: ContractDefinition, nowMs: number): SessionGrantView => {
+/** Names an action a pass lets through as the owner knows it ("Send mail"), or undefined. */
+export type PassActionNamer = (id: string) => string | undefined;
+
+/** The namer the server lists passes with: an operation or ingredient by its manifest's name, as
+ *  its approval names it (`heldActionName`). */
+export const passActionNamer = (getManifest: (slug: string) => IngredientManifest | null): PassActionNamer =>
+  (id) => { try { return heldActionName(id, getManifest); } catch { return undefined; } };
+
+const toSessionGrantView = (def: ContractDefinition, nowMs: number, nameAction?: PassActionNamer): SessionGrantView => {
   const permits: SessionGrantPermits = {
     ...(def.scope.ingredient_ids !== undefined
       ? { ingredient_ids: def.scope.ingredient_ids }
@@ -1529,11 +1578,23 @@ const toSessionGrantView = (def: ContractDefinition, nowMs: number): SessionGran
       ? { connection_names: def.scope.connection_names }
       : {}),
   };
+  // What it lets through, as the lists say it ("Send mail", not "send-email"): its operations, else
+  // its ingredients, each by its manifest's name; one no manifest names keeps its id.
+  const actionIds = (permits.operation_ids?.length ?? 0) > 0 ? permits.operation_ids! : permits.ingredient_ids ?? [];
+  const named = nameAction !== undefined ? actionIds.map((id) => nameAction(id) ?? id) : [];
+  // Only when it names one: a list of ids echoed back says nothing the permits do not.
+  const permit_names = named.some((name, i) => name !== actionIds[i]) ? named : undefined;
+  // Its title was minted with the action's id ("Batched approval — send-email (3 items)",
+  // "Session grant — send-email"); the row reads it by name, the stored title is untouched.
+  const display_name = permit_names !== undefined
+    ? actionIds.reduce((title, id, i) => title.split(`— ${id}`).join(`— ${permit_names[i]!}`), def.display_name)
+    : def.display_name;
   return {
     contract_id: def.contract_id,
-    display_name: def.display_name,
+    display_name,
     grant_mode: def.grant_mode ?? 'exact',
     permits,
+    ...(permit_names !== undefined ? { permit_names } : {}),
     ...(def.risk_tier !== undefined ? { risk_tier: def.risk_tier } : {}),
     ...(def.channel_session_id !== undefined
       ? { channel_session_id: def.channel_session_id }
@@ -1566,6 +1627,7 @@ export const listActiveSessionGrantViews = (
   definitionStore: ContractDefinitionStore,
   nowMs: number,
   channel_session_id?: string,
+  nameAction?: PassActionNamer,
 ): SessionGrantView[] => {
   const rows =
     channel_session_id !== undefined
@@ -1573,7 +1635,7 @@ export const listActiveSessionGrantViews = (
       : definitionStore.list().filter((def) => def.grant_kind === 'session');
   return rows
     .filter((def) => contractLifecycleState(def, nowMs) === 'active')
-    .map((def) => toSessionGrantView(def, nowMs))
+    .map((def) => toSessionGrantView(def, nowMs, nameAction))
     .sort(
       (lhs, rhs) =>
         (lhs.remaining_ttl_ms ?? Number.POSITIVE_INFINITY)
@@ -1591,15 +1653,17 @@ export const revokeSessionGrantView = (
   definitionStore: ContractDefinitionStore,
   contract_id: string,
   nowMs: number,
+  nameAction?: PassActionNamer,
 ): SessionGrantView | null => {
   const def = definitionStore.revokeSessionGrant(contract_id);
-  return def === null ? null : toSessionGrantView(def, nowMs);
+  return def === null ? null : toSessionGrantView(def, nowMs, nameAction);
 };
 
 const handleSessionGrantList = async (
   definitionStore: ContractDefinitionStore,
   now: () => number,
   args: SessionGrantListRequest | void,
+  nameAction?: PassActionNamer,
 ): Promise<SessionGrantListResponse> => {
   const method = 'collection.contract.session_grant.list';
   const a = args === undefined || args === null ? {} : ensureRecordArgs(method, args);
@@ -1608,7 +1672,7 @@ const handleSessionGrantList = async (
       ? undefined
       : ensureNonEmptyString(method, 'channel_session_id', a.channel_session_id);
   return {
-    grants: listActiveSessionGrantViews(definitionStore, now(), channel_session_id),
+    grants: listActiveSessionGrantViews(definitionStore, now(), channel_session_id, nameAction),
   };
 };
 
@@ -1616,11 +1680,12 @@ const handleSessionGrantRevoke = async (
   definitionStore: ContractDefinitionStore,
   now: () => number,
   args: SessionGrantRevokeRequest,
+  nameAction?: PassActionNamer,
 ): Promise<SessionGrantView> => {
   const method = 'collection.contract.session_grant.revoke';
   const a = ensureRecordArgs(method, args);
   const contract_id = ensureNonEmptyString(method, 'contract_id', a.contract_id);
-  const view = revokeSessionGrantView(definitionStore, contract_id, now());
+  const view = revokeSessionGrantView(definitionStore, contract_id, now(), nameAction);
   if (view === null) {
     // Fail-closed session guard (store-side): a missing id AND a non-session
     // row both surface as `not_found` — the live-control surface only revokes
@@ -2564,6 +2629,11 @@ type ContractMethods =
   | 'collection.contract.dismissWriteRuleSuggestion'
   | 'collection.contract.listWriteRules'
   | 'collection.contract.revokeWriteRule'
+  | 'collection.contract.listChainSuggestions'
+  | 'collection.contract.acceptChainSuggestion'
+  | 'collection.contract.dismissChainSuggestion'
+  | 'collection.contract.listChainRules'
+  | 'collection.contract.revokeChainRule'
   | 'collection.contract.listBrowserPasses'
   | 'collection.contract.revokeBrowserPass'
   | 'collection.contract.listBrowserPassSuggestions'
@@ -2576,7 +2646,9 @@ type ContractMethods =
   | 'collection.contract.grantTriggerPreapproval'
   | 'collection.contract.listTriggerPreapprovals'
   | 'collection.contract.revokeTriggerPreapproval'
-  | 'collection.contract.triggerPreapprovalChoices';
+  | 'collection.contract.triggerPreapprovalChoices'
+  | 'collection.contract.listCallerPreapprovals'
+  | 'collection.contract.stopAllowing';
 
 export const makeContractHandlers = (
   deps: ContractRpcDeps | undefined,
@@ -2640,6 +2712,11 @@ export const makeContractHandlers = (
       'collection.contract.dismissWriteRuleSuggestion',
       'collection.contract.listWriteRules',
       'collection.contract.revokeWriteRule',
+      'collection.contract.listChainSuggestions',
+      'collection.contract.acceptChainSuggestion',
+      'collection.contract.dismissChainSuggestion',
+      'collection.contract.listChainRules',
+      'collection.contract.revokeChainRule',
       'collection.contract.listBrowserPasses',
       'collection.contract.revokeBrowserPass',
       'collection.contract.listBrowserPassSuggestions',
@@ -2653,6 +2730,8 @@ export const makeContractHandlers = (
       'collection.contract.listTriggerPreapprovals',
       'collection.contract.revokeTriggerPreapproval',
       'collection.contract.triggerPreapprovalChoices',
+      'collection.contract.listCallerPreapprovals',
+      'collection.contract.stopAllowing',
     ],
     handlers: {
       // D-329 §3.4 — the write rules an AI's approvals teach.
@@ -2661,10 +2740,35 @@ export const makeContractHandlers = (
         ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
         now,
       }),
+      // D-348 — the chains the owner's approvals teach.
+      ...createChainRuleRpcHandlers({
+        ...(deps.chainRules !== undefined ? { store: deps.chainRules } : {}),
+        ...(deps.nameChainCall !== undefined ? { nameCall: deps.nameChainCall } : {}),
+        ...(deps.labelChainCall !== undefined ? { labelCall: deps.labelChainCall } : {}),
+        ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        now,
+      }),
       // D-335 slice F — passes for Browser Toolkit writes, and the suggestions to always allow.
       ...createBrowserPassRpcHandlers({
         ...(deps.browserPasses !== undefined ? { store: deps.browserPasses } : {}),
         ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        // D-402 slice H4d — each pass by the browser it was granted in.
+        ...(deps.browserPassBrowserOf !== undefined ? { browserOf: deps.browserPassBrowserOf } : {}),
+        now,
+      }),
+      // D-402 slice F4 — what callers may do without asking, and "Stop allowing" (ruling 12).
+      ...createCallerPreapprovalRpcHandlers({
+        ...(deps.triggerPreapprovals !== undefined ? { store: deps.triggerPreapprovals } : {}),
+        ...(deps.triggerPreapprovals !== undefined ? { stopDeps: () => ({
+          preapprovals: deps.triggerPreapprovals!,
+          ...(deps.browserPasses !== undefined ? { browserPasses: deps.browserPasses } : {}),
+          definitions: definitionStore,
+          ...(deps.writeRules !== undefined ? { writeRules: deps.writeRules } : {}),
+          ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+          now,
+        }) } : {}),
+        ...(deps.triggerPreapprovalRecipes !== undefined ? { recipeOf: (id: string) => deps.triggerPreapprovalRecipes!.get(id) } : {}),
+        ...(deps.aiAppNameOf !== undefined ? { aiAppNameOf: deps.aiAppNameOf } : {}),
         now,
       }),
       // D-341 slice B1 — triggers' standing pre-approvals.
@@ -2681,6 +2785,7 @@ export const makeContractHandlers = (
       // D-335 slice Z — the logins remembered for browser steps.
       ...createBrowserLoginRpcHandlers({
         ...(deps.browserLogins !== undefined ? { store: deps.browserLogins } : {}),
+        ...(deps.browserNameOf !== undefined ? { browserNameOf: deps.browserNameOf } : {}),
         ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
         now,
       }),
@@ -2863,12 +2968,14 @@ export const makeContractHandlers = (
           definitionStore,
           now,
           args as Parameters<typeof handleSessionGrantList>[2],
+          passActionNamer(deps.getManifest),
         ),
       'collection.contract.session_grant.revoke': async (args) => {
         const view = await handleSessionGrantRevoke(
           definitionStore,
           now,
           args as Parameters<typeof handleSessionGrantRevoke>[2],
+          passActionNamer(deps.getManifest),
         );
         emitContractChanged(deps.broadcast, 'revoke', view.contract_id);
         return view;

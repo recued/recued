@@ -77,6 +77,24 @@ test('live control gives repeated actions exact accessible owners', async ({ pag
   }
 });
 
+test('live control names each running recipe as the owner knows it', async ({ page }) => {
+  // The owner, 2026-11-13: it read "daily-brief · summarize". An installed recipe by its name and
+  // its step by what it does; one passed in with its run as a one-off, never as an installed one.
+  await page.goto(`${HARNESS_URL}?live=running&live_names=1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${LIVE_CONTROL_TOGGLE}]`).click();
+  const panel = page.locator(`[${LIVE_CONTROL_PANEL}]`);
+  await expect(panel).toContainText('Daily brief · Summarize text');
+  await expect(panel).toContainText('One-off recipe “Review the week”');
+  await expect(panel).not.toContainText('daily-brief');
+  for (const name of [
+    'Kill Daily brief · Summarize text (run-live-control-1)',
+    'Kill One-off recipe “Review the week” (run-live-control-2)',
+  ]) {
+    await expect(page.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
+});
+
 test('live control preserves exact action focus through a running refresh', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?live=running`);

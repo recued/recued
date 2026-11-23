@@ -41,6 +41,7 @@ import {
   CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR,
   CONTRACT_GRANTS_NEED_ATTR,
   CONTRACT_GRANTS_NEEDS_ATTR,
+  CONTRACT_GRANTS_NEEDS_STATUS_ATTR,
   CONTRACT_GRANTS_TITLE_ATTR,
   mountContractGrantsPanel,
   type GrantCatalogOperationsCaller,
@@ -1605,6 +1606,8 @@ describe('D-327 follow-on — every switch says what it is, every AI tool what i
       'core.work-entity.project.create',
       // D-325 — `work.create` adds things you own, so the asset create is a need too.
       'core.work-entity.asset.create',
+      // D-407 slice 1 — and occasions, which the handler checks against their own switch.
+      'core.situation.occasion-create',
     ]);
     expect(needButton(root, tool, 'core.work-entity.asset.create')?.textContent).toBe('+ Add a thing you own');
     const task = needButton(root, tool, 'core.work-entity.task.create')!;
@@ -1625,6 +1628,31 @@ describe('D-327 follow-on — every switch says what it is, every AI tool what i
     // The same switch as its own row, not a copy that could disagree with it.
     expect(panel.getEffective('core.work-entity.task.create')).toBe('on');
     expect(cellFor(opsRootEl(panel), 'core.work-entity.task.create')!.getAttribute('data-effective')).toBe('on');
+  });
+
+  it('says, once a tool is on, that it can do nothing until a kind is on, then which kinds it works for', async () => {
+    const { panel } = mountPanelWith({ keyAgreement: true });
+    await panel.whenLoaded();
+    const tool = primitiveGrantEntry('work.create');
+    const status = () => collectByAttr(needsLine(opsRootEl(panel), tool)!, CONTRACT_GRANTS_NEEDS_STATUS_ATTR)[0];
+    // Off: nothing to say beyond its switches, each kind under its own heading.
+    expect(status()).toBeUndefined();
+    expect(allText(needsLine(opsRootEl(panel), tool)!)).toContain('One switch per kind:');
+    expect(allText(needsLine(opsRootEl(panel), tool)!)).not.toContain('Also needs:');
+    // On alone: the trap an app met live, said where it is set.
+    await panel.toggleEntry(tool);
+    expect(status()?.getAttribute('data-state')).toBe('blocked');
+    expect(status()?.textContent).toBe('Every call is refused until one switch per kind below is on.');
+    // A kind on: it works for that kind, by the switch's own title.
+    needButton(opsRootEl(panel), tool, 'core.work-entity.task.create')!.click();
+    await panel.whenLoaded(); await tick(10);
+    expect(status()?.getAttribute('data-state')).toBe('works');
+    expect(status()?.textContent).toBe('Works for: Create a task.');
+    // A switch every call needs is named in the refusal too (work.search reads through one).
+    const search = primitiveGrantEntry('work.search');
+    await panel.toggleEntry(search);
+    const searchStatus = collectByAttr(needsLine(opsRootEl(panel), search)!, CONTRACT_GRANTS_NEEDS_STATUS_ATTR)[0];
+    expect(searchStatus?.textContent).toBe('Every call is refused until Read tasks, notes and more, and one switch per kind below is on.');
   });
 
   it('shows a need that is a data switch, and a need that applies only sometimes', async () => {

@@ -1378,6 +1378,9 @@ export interface KernelDispatchers {
      *  recipe's per-(bound contract, topic) enrichment read-visibility against it
      *  when `trigger_source === 'mcp'`. Present iff contracted. */
     origin_contract_id?: string;
+    /** Read authority comes only from the gateway's StepMeta. */
+    origin_execution_source?: ExecutionSource;
+    contract_dispatch_reservation?: object;
   }) => Promise<{ entries: TimelineEntry[]; next_cursor?: string }>;
 
   // D-122 Phase 4.5 — enrichment substrate ingredients. Five new
@@ -1436,6 +1439,9 @@ export interface KernelDispatchers {
      *  per-(bound contract, topic) read-visibility against it (the recipe-channel
      *  analog of the native MCP tool's door contract). Present iff contracted. */
     origin_contract_id?: string;
+    /** Read authority comes only from the gateway's StepMeta. */
+    origin_execution_source?: ExecutionSource;
+    contract_dispatch_reservation?: object;
   }) => Promise<{ entries: unknown[]; next_cursor: string | null }>;
 
   /** Backs `mail-get`. Single-record warehouse read; symmetric with
@@ -1587,6 +1593,8 @@ export interface KernelDispatchers {
   mailDraft?: (method: 'create' | 'get' | 'update' | 'delete', input: unknown,
     meta: StepMeta | undefined) => Promise<MailDraft | { deleted: true }>;
   kitchenDraftImport?: (input: unknown, meta: StepMeta | undefined) => Promise<import('@recued/contracts').KitchenDraftImportReceipt>;
+  /** D-402 slice A5 — an AI app's job, kept for its draft, made into a recipe draft that is Recued's. */
+  kitchenDraftFromJob?: (input: unknown, meta: StepMeta | undefined) => Promise<import('@recued/contracts').KitchenDraftFromJobReceipt>;
   kitchenDraft?: (method: 'list' | 'get' | 'update', input: unknown, meta: StepMeta | undefined) =>
     Promise<import('@recued/contracts').KitchenDraftListResult | import('@recued/contracts').KitchenImportDraft | import('@recued/contracts').KitchenDraftUpdateReceipt>;
 
@@ -1791,12 +1799,14 @@ export interface KernelDispatchers {
     limit?: number;
     offset?: number;
     origin_execution_source?: ExecutionSource;
+    contract_dispatch_reservation?: object;
   }) => Promise<{ entities: WorkEntity[]; total: number }>;
   /** Recipe-callable by-id native read. */
   workEntityGet?: (input: {
     kind: WorkEntityKind;
     id: string;
     origin_execution_source?: ExecutionSource;
+    contract_dispatch_reservation?: object;
   }) => Promise<{ entity: WorkEntity | null; found: boolean }>;
 
   // ── D-145 PA3 — work-entity CRUD dispatcher slots ───────────────
@@ -2016,7 +2026,7 @@ export interface KernelDispatchers {
     id: string;
     tombstone?: boolean;
   }) => Promise<{ ok: true; id: string; tombstoned: boolean }>;
-  situationQuery?: (input: unknown, source: ExecutionSource | undefined) => Promise<import('@recued/contracts').SituationResult>;
+  situationQuery?: (input: unknown, source: ExecutionSource | undefined, reservation?: object) => Promise<import('@recued/contracts').SituationResult>;
   assetCreate?: (input: AssetCreateInput & { origin_execution_source?: ExecutionSource }) => Promise<{ asset: { id: string } }>;
   assetUpdate?: (input: AssetUpdateInput & { origin_execution_source?: ExecutionSource }) => Promise<{ asset: { id: string } }>;
   assetDelete?: (input: { id: string; tombstone?: boolean }) => Promise<{ ok: true; id: string; tombstoned: boolean }>;
@@ -2211,6 +2221,9 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
       case 'kitchen-draft-import':
         if (!dispatchers.kitchenDraftImport) throw new IngredientError('SERVER_NOT_REACHABLE', 'Kitchen draft imports are unavailable.', { slug });
         return dispatchers.kitchenDraftImport(call.input, call.stepMeta);
+      case 'kitchen-draft-from-job':
+        if (!dispatchers.kitchenDraftFromJob) throw new IngredientError('SERVER_NOT_REACHABLE', 'Making a recipe from a job is unavailable.', { slug });
+        return dispatchers.kitchenDraftFromJob(call.input, call.stepMeta);
       case 'kitchen-draft-list':
       case 'kitchen-draft-get':
       case 'kitchen-draft-update': {
@@ -4078,6 +4091,10 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             && call.stepMeta.contract_id.length > 0) {
           dispatchInput.origin_contract_id = call.stepMeta.contract_id;
         }
+        if (call.stepMeta?.execution_source !== undefined) dispatchInput.origin_execution_source = call.stepMeta.execution_source;
+        if (call.stepMeta?.contract_dispatch_reservation !== undefined) {
+          dispatchInput.contract_dispatch_reservation = call.stepMeta.contract_dispatch_reservation;
+        }
         return dispatchers.enrichmentList(dispatchInput);
       }
 
@@ -5468,8 +5485,8 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
       // SEALED visitor address server-side (booking → `reception_record_id` →
       // open only `visitor_email`) and delegates the send to `mailSend`. The
       // recipe supplies the BOOKING, the owner's sender, and the message — never
-      // the recipient, which never reaches step state. Joins
-      // OUTBOUND_SEND_INGREDIENT_SLUGS so the send still lifts to the D-157 gate.
+      // the recipient, which never reaches step state. A `write`, so it asks by its
+      // approval where the caller's ceiling holds writes (D-177 §N.15.6).
       case 'notify-booking-visitor': {
         if (!dispatchers.notifyBookingVisitor) {
           throw new IngredientError(
@@ -5587,6 +5604,10 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             && call.stepMeta.contract_id.length > 0) {
           dispatchInput.origin_contract_id = call.stepMeta.contract_id;
         }
+        if (call.stepMeta?.execution_source !== undefined) dispatchInput.origin_execution_source = call.stepMeta.execution_source;
+        if (call.stepMeta?.contract_dispatch_reservation !== undefined) {
+          dispatchInput.contract_dispatch_reservation = call.stepMeta.contract_dispatch_reservation;
+        }
         return dispatchers.timelineRead(dispatchInput);
       }
 
@@ -5677,7 +5698,11 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof raw.parent_project_id === 'string') input.parent_project_id = raw.parent_project_id;
         if (typeof raw.limit === 'number') input.limit = raw.limit;
         if (typeof raw.offset === 'number') input.offset = raw.offset;
-        return dispatchers.workEntityList(withCreateOrigin(input, call.stepMeta));
+        const dispatchInput = withCreateOrigin(input, call.stepMeta);
+        if (call.stepMeta?.contract_dispatch_reservation !== undefined) {
+          dispatchInput.contract_dispatch_reservation = call.stepMeta.contract_dispatch_reservation;
+        }
+        return dispatchers.workEntityList(dispatchInput);
       }
       case 'work-entity-get': {
         if (!dispatchers.workEntityGet) {
@@ -5698,7 +5723,12 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof raw.id !== 'string' || raw.id.length === 0) {
           throw new IngredientError('BAD_INPUT', 'work-entity-get: id is required', { slug });
         }
-        return dispatchers.workEntityGet(withCreateOrigin({ kind: raw.kind, id: raw.id, origin_execution_source: undefined as ExecutionSource | undefined }, call.stepMeta));
+        const dispatchInput: Parameters<NonNullable<KernelDispatchers['workEntityGet']>>[0] =
+          withCreateOrigin({ kind: raw.kind, id: raw.id, origin_execution_source: undefined as ExecutionSource | undefined }, call.stepMeta);
+        if (call.stepMeta?.contract_dispatch_reservation !== undefined) {
+          dispatchInput.contract_dispatch_reservation = call.stepMeta.contract_dispatch_reservation;
+        }
+        return dispatchers.workEntityGet(dispatchInput);
       }
 
       // ── D-145 PA3 — work-entity CRUD kernel ingredients ────────
@@ -6021,7 +6051,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
 
       case 'situation-query': {
         if (!dispatchers.situationQuery) throw new IngredientError('SERVER_NOT_REACHABLE', 'Situation query unavailable', { slug });
-        return dispatchers.situationQuery(call.input, call.stepMeta?.execution_source);
+        return dispatchers.situationQuery(call.input, call.stepMeta?.execution_source, call.stepMeta?.contract_dispatch_reservation);
       }
       case 'asset-create':
       case 'asset-update': {

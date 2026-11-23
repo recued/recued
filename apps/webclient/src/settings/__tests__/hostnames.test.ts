@@ -1955,6 +1955,26 @@ describe('R27 delta-B — Pro DDNS toggle (hostnames panel)', () => {
   });
 });
 
+describe('Pro DDNS stale control gates', () => {
+  for (const gate of ['blocked', 'unpublished'] as const) {
+    it(`refuses a captured toggle after a refresh makes it ${gate}`, async () => {
+      let context = ddnsContext();
+      const runDdnsSetEnabled = vi.fn<DdnsSetEnabledCaller>(async () => ({ enabled: false }));
+      const { host, panel } = mountPanel({
+        runDdnsStatus: vi.fn(async () => ({ enabled: true })), runDdnsSetEnabled,
+        runDdnsControlContext: vi.fn(async () => context),
+      });
+      await panel.whenLoaded();
+      const old = findByAttr(host, HOSTNAMES_DDNS_TOGGLE_ATTR)!;
+      context = ddnsContext(gate === 'blocked' ? { blockToggle: true } : { published: false });
+      await panel.refresh();
+      old.click(); await flushMicrotasks();
+      expect(runDdnsSetEnabled).not.toHaveBeenCalled();
+      panel.dispose();
+    });
+  }
+});
+
 describe('D-152 P6 hostnames panel route mount', () => {
   it.each(['add', 'update'] as const)('aggregates hostname %s drafts and pending writes into the Settings guard', async mode => {
     const doc = makeFakeDocument(); const host = makeFakeElement('div'); const row = hostname('seed.example');

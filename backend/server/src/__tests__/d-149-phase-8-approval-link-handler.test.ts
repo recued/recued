@@ -23,7 +23,7 @@
 import Database from 'better-sqlite3';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Socket } from 'node:net';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ApprovalLinkConfig } from '@recued/contracts';
 import { ensureReceptionSchema } from '../storage/reception-store.js';
 import { createPublicEndpointRegistryStore } from '../storage/public-endpoint-registry-store.js';
@@ -180,13 +180,14 @@ const fakeRes = () => {
   return res;
 };
 
-const buildHandler = (env: ReturnType<typeof buildEnv>, audit?: AuditLogStore, trustForwardedFor?: boolean) =>
+const buildHandler = (env: ReturnType<typeof buildEnv>, audit?: AuditLogStore, trustForwardedFor?: boolean,
+  runtime: { now?: () => number } = {}) =>
   createReceptionPortHandler({
     getStore: () => env.store,
     getCache: () => env.cache,
     getRateLimiter: () => env.limiter,
     getPepper: () => PEPPER,
-    now: () => NOW,
+    now: runtime.now ?? (() => NOW),
     ...(trustForwardedFor === undefined ? {} : { trustForwardedFor }),
     getApprovalIntentStore: () => env.intentStore,
     getApprovalLinkNonceStore: () => env.nonce,
@@ -196,6 +197,97 @@ const buildHandler = (env: ReturnType<typeof buildEnv>, audit?: AuditLogStore, t
 
 const formUrlencode = (fields: Record<string, string>): string =>
   new URLSearchParams(fields).toString();
+
+describe('approval authority at the consume boundary', () => {
+  const headers = { host: 'mary.recued.cloud', origin: 'http://mary.recued.cloud',
+    'content-type': 'application/x-www-form-urlencoded' };
+  const url = '/reception/approve/ep-approve-1?t=goodbearer';
+  const body = (env: ReturnType<typeof buildEnv>) => formUrlencode({
+    form_nonce: env.nonce.issue('ep-approve-1', NOW), visitor_name: 'Bob',
+    visitor_email: 'bob@example.com', option_id: 'opt_a',
+  });
+
+  it.each(['revoke', 'disable', 'expire', 'rotate'] as const)('%s during body delivery refuses the response without consuming the intent', async change => {
+    const env = buildEnv();
+    try {
+      insertEndpoint(env, 'goodbearer');
+      env.store.extend({ endpoint_id: 'ep-approve-1', new_expires_at: NOW + 1_000, now: NOW });
+      let now = NOW;
+      const audit = fakeAudit(), handler = buildHandler(env, audit, undefined, { now: () => now });
+      const req = fakeReq('POST', url, undefined, headers), res = fakeRes(), form = body(env);
+      const pending = handler(req, res);
+      await vi.waitFor(() => expect(req.listenerCount('data')).toBeGreaterThan(0));
+      if (change === 'revoke') env.store.revoke({ endpoint_id: 'ep-approve-1', now, reason: 'Owner revoked' });
+      if (change === 'disable') env.store.disable('ep-approve-1', now);
+      if (change === 'expire') now = NOW + 1_000;
+      if (change === 'rotate') env.store.rotateToken({ endpoint_id: 'ep-approve-1', now,
+        new_bearer_secret_hmac: computeBearerHmac('newbearer', PEPPER) });
+      env.cache.invalidate('ep-approve-1');
+      req.emit('data', Buffer.from(form)); req.emit('end');
+      await pending;
+      expect(res.status).toBe(410);
+      expect(env.intentStore.findByEndpoint('ep-approve-1')).toMatchObject({ consumed_at: null,
+        consumed_by_visitor_email_encrypted: null, consumed_outcome_encrypted: null });
+      expect(audit.calls).not.toContainEqual(expect.objectContaining({ action: 'approval_intent.consumed' }));
+    } finally { env.db.close(); }
+  });
+
+  it.each(['revoke', 'expire'] as const)('%s while PII is sealing refuses the response without consuming the intent', async change => {
+    const env = buildEnv();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let sealing = false;
+    const encrypt = globalThis.crypto.subtle.encrypt.bind(globalThis.crypto.subtle);
+    const spy = vi.spyOn(globalThis.crypto.subtle, 'encrypt').mockImplementation(async (...args) => {
+      sealing = true; await held; return encrypt(...args);
+    });
+    let pending: Promise<void> | undefined;
+    try {
+      insertEndpoint(env, 'goodbearer');
+      env.store.extend({ endpoint_id: 'ep-approve-1', new_expires_at: NOW + 1_000, now: NOW });
+      let now = NOW;
+      const handler = buildHandler(env, undefined, undefined, { now: () => now }), res = fakeRes();
+      pending = handler(fakeReq('POST', url, body(env), headers), res);
+      await vi.waitFor(() => expect(sealing).toBe(true));
+      if (change === 'revoke') env.store.revoke({ endpoint_id: 'ep-approve-1', now, reason: 'Owner revoked' });
+      else now = NOW + 1_000;
+      env.cache.invalidate('ep-approve-1');
+      release(); await pending;
+      expect(res.status).toBe(410);
+      expect(env.intentStore.findByEndpoint('ep-approve-1')).toMatchObject({ consumed_at: null,
+        consumed_by_visitor_email_encrypted: null, consumed_outcome_encrypted: null });
+    } finally {
+      release();
+      try { await pending; } finally { spy.mockRestore(); env.db.close(); }
+    }
+  });
+
+  it('uses an extended live expiry and records a valid delayed response exactly once', async () => {
+    const env = buildEnv();
+    try {
+      insertEndpoint(env, 'goodbearer');
+      env.store.extend({ endpoint_id: 'ep-approve-1', new_expires_at: NOW + 1_000, now: NOW });
+      let now = NOW;
+      const handler = buildHandler(env, undefined, undefined, { now: () => now });
+      const req = fakeReq('POST', url, undefined, headers), res = fakeRes(), form = body(env);
+      const pending = handler(req, res);
+      await vi.waitFor(() => expect(req.listenerCount('data')).toBeGreaterThan(0));
+      env.store.extend({ endpoint_id: 'ep-approve-1', new_expires_at: NOW + 2_000, now });
+      env.cache.invalidate('ep-approve-1'); now = NOW + 1_000;
+      req.emit('data', Buffer.from(form)); req.emit('end'); await pending;
+      expect(res.status).toBe(200);
+      const accepted = env.intentStore.findByEndpoint('ep-approve-1')!;
+      expect(accepted.consumed_at).toBe(now);
+      expect(await openApprovalIntentPiiField({ key: deriveApprovalIntentPiiKeyFromSubDek(SUB_DEK),
+        endpoint_id: accepted.endpoint_id, intent_id: accepted.intent_id, field: 'outcome',
+        ciphertext: accepted.consumed_outcome_encrypted })).toBe('pick:opt_a');
+      const again = fakeRes();
+      await handler(fakeReq('POST', url, form, headers), again);
+      expect(again.status).toBe(200); expect(again.body).toContain('Already responded');
+      expect(env.intentStore.findByEndpoint('ep-approve-1')).toEqual(accepted);
+    } finally { env.db.close(); }
+  });
+});
 
 // ────────────────────────────────────────────────────────────────
 // GET tests

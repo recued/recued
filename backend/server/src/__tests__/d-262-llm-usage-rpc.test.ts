@@ -40,6 +40,43 @@ const setup = () => {
 };
 
 describe('D-262 — server.getLLMUsage', () => {
+  /** ⛔ A background call that failed (a recipe's AI step, an enrichment) used to leave a run-log line
+   *  and nothing else. Each chat source now carries its last call. */
+  it('says how a source\'s last call ended, while the source still has that model', async () => {
+    const { db, llmManager, quota, usage } = setup();
+    try {
+      llmManager.setSlot1(slot() as never);
+      llmManager.upsertPoolEntry({ id: 'groq-llama', type: 'api', provider: 'openai-compatible', model: 'llama3-70b-8192',
+        api_key: 'k', base_url: 'https://api.groq.com/openai/v1', speed: 'fast', supports_json: true, enabled: true } as never);
+      quota.recordCallOutcome!('slot_1', { at: 1_000, model: 'gpt-4.1-mini', result: 'answered', answered_by: 'gpt-6-luna' });
+      quota.recordCallOutcome!('groq-llama', { at: 2_000, model: 'llama3-70b-8192', result: 'model_missing' });
+
+      const sources = (await usage()).sources;
+      expect(sources.find((s) => s.id === 'slot_1')?.last_call).toEqual({ at: 1_000, result: 'answered', answered_by: 'gpt-6-luna' });
+      expect(sources.find((s) => s.id === 'groq-llama')?.last_call).toEqual({ at: 2_000, result: 'model_missing' });
+
+      // The owner chose another model since: that call says nothing about this one.
+      llmManager.setSlot1(slot({ model: 'gpt-6-luna' }) as never);
+      expect((await usage()).sources.find((s) => s.id === 'slot_1')?.last_call).toBeUndefined();
+    } finally { db.close(); }
+  });
+
+  it('shows a persisted last call only when it can read it', async () => {
+    const { db, llmManager, usage } = setup();
+    try {
+      llmManager.setSlot1(slot() as never);
+      const quota = createQuotaTracker({ daily_reset_at: '2026-11-16', tokens_today: {}, cursor: {},
+        last_calls: { slot_1: { at: 1, model: 'gpt-4.1-mini', result: 'from-a-later-version' as never } } });
+      const slice = makeConfigHandlers(llmManager, undefined, { adapters: (() => ({})) as never, quota });
+      const handlers = slice!.handlers as unknown as Record<string, (args?: unknown) => Promise<unknown>>;
+      const row = ((await handlers['server.getLLMUsage']!(undefined)) as ServerLlmUsageResponse).sources
+        .find((s) => s.id === 'slot_1');
+      expect(row?.last_call).toBeUndefined();
+      expect(row).toBeDefined();
+      void usage;
+    } finally { db.close(); }
+  });
+
   it('reports a chat slot\'s tokens against its daily budget', async () => {
     const { db, llmManager, quota, usage } = setup();
     try {

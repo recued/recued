@@ -1,4 +1,6 @@
 import type { Asset, AssetContributionKind, AssetEvidence, AssetFactSource, AssetPatch } from '@recued/contracts';
+import type { RecordsRecordAddress } from '../data/records-navigation.js';
+import { BODY_SIGNALS_RECORDS, assetFieldName, bodySignalsRow, readingDayDate, readingValueWords, sourceWords, type BodySignalsRow } from './reading-words.js';
 
 /** D-325 §15.3 — where an asset's facts came from, in the owner's words. */
 
@@ -83,4 +85,38 @@ export const assetEvidenceText = (evidence: AssetEvidence): string => {
   const field = evidence.field?.replace(/^(?:dates|readings|observations|attributes|settings)\./u, '').replaceAll('_', ' ');
   const value = evidence.value === undefined || evidence.value === null ? '' : String(evidence.value);
   return [where, field && value ? `${field}: ${value}` : field || value].filter(Boolean).join(' · ');
+};
+
+/** One line of what an observation rests on: an item the page opens itself, or a row in Records. */
+export interface AssetEvidenceLine { text: string; item?: AssetEvidence; records?: RecordsRecordAddress }
+
+/** §15.3 and D-339 — an observation's evidence as lines. A Body signals row is one line whatever
+ *  fields its writer cited from it, in words, and opens in Records: "7 h 05 · Oura · Tue, Nov 17",
+ *  its measure named only when the rows hold more than one ("Resting heart rate 58 bpm · …"). Its
+ *  newest day's rows are `lines`, after any other items; the days before it, which a state's usual
+ *  comes from, are `earlier`, newest first. Every other item is a line of its own, as
+ *  `assetEvidenceText` writes it. `unitOf` gives a metric's unit, which a row's cited value leaves out. */
+export const assetEvidenceLines = (evidence: readonly AssetEvidence[], unitOf: (metric: string) => string | undefined,
+  now: Date): { lines: AssetEvidenceLine[]; earlier: AssetEvidenceLine[] } => {
+  const lines: AssetEvidenceLine[] = [];
+  const rows = new Map<string, { row: BodySignalsRow; value?: AssetEvidence['value']; at: number }>();
+  evidence.forEach((item, at) => {
+    const row = bodySignalsRow(item);
+    if (!row) { lines.push({ text: assetEvidenceText(item), item }); return; }
+    const kept = rows.get(row.id) ?? { row, at };
+    if (item.field === 'value' && item.value !== undefined && item.value !== null) kept.value = item.value;
+    rows.set(row.id, kept);
+  });
+  const sorted = [...rows.values()].sort((a, b) => b.row.day.localeCompare(a.row.day) || a.at - b.at);
+  const named = new Set(sorted.map(kept => kept.row.metric)).size > 1;
+  const line = ({ row, value }: { row: BodySignalsRow; value?: AssetEvidence['value'] }): AssetEvidenceLine => {
+    const unit = unitOf(row.metric);
+    const measure = [named ? assetFieldName(row.metric) : '',
+      value === undefined ? '' : typeof value === 'number' && unit ? readingValueWords(value, unit) : String(value)].filter(Boolean).join(' ');
+    return { text: [measure, sourceWords(row.source), readingDayDate(row.day, now)].filter(Boolean).join(' · '),
+      records: { owner: { ...BODY_SIGNALS_RECORDS.owner }, entity: BODY_SIGNALS_RECORDS.entity, id: row.id } };
+  };
+  const newest = sorted[0]?.row.day;
+  return { lines: [...lines, ...sorted.filter(kept => kept.row.day === newest).map(line)],
+    earlier: sorted.filter(kept => kept.row.day !== newest).map(line) };
 };

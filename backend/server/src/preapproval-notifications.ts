@@ -1,9 +1,35 @@
 /** D-261 prompts project the same proposal/decision as the owner UI. They
  * cannot turn a generic notification answer into a grant. */
 import { PREAPPROVAL_NOTIFICATION_HANDLER } from '@recued/contracts';
+import { preflightAskHolds } from '@recued/gateway';
 import { createProtectedAskController, type NotificationBlock } from '@recued/notification';
 import type { PreapprovalRepository, PreapprovalPrompt } from './storage/preapproval-repository.js';
 import type { GatedActionStore } from './gated-action-store.js';
+
+/** Close the approvals of holds whose reviewed execution stopped: each such hold's receipt is
+ *  closed, and the approval with it. A round's gathered approval (D-177 §N.15.9) answers several
+ *  holds: it closes once every one of them stopped, and until then a yes passes over a stopped
+ *  one, whose receipt is closed. */
+export const closeStoppedHoldAsks = async (deps: {
+  readonly block: Pick<NotificationBlock, 'listOpenAsks' | 'cancelAsk'>;
+  readonly checkpointWasStopped: (checkpoint_id: string, run_id: string) => boolean;
+  readonly gatedActions?: Pick<GatedActionStore, 'getByCheckpoint' | 'finish'>;
+}): Promise<void> => {
+  for (const ask of await deps.block.listOpenAsks()) {
+    const holds = preflightAskHolds(ask);
+    const stopped = holds.flatMap(({ checkpoint_id, run_id }) =>
+      checkpoint_id !== undefined && run_id !== undefined && deps.checkpointWasStopped(checkpoint_id, run_id)
+        ? [{ checkpoint_id, run_id }] : []);
+    for (const { checkpoint_id, run_id } of stopped) {
+      const receipt = await deps.gatedActions?.getByCheckpoint(checkpoint_id);
+      if (receipt?.run_id === run_id) await deps.gatedActions!.finish(receipt.action_ref, {
+        status: 'cancelled', status_message: 'The enclosing reviewed execution stopped.', result: null,
+        awaiting_checkpoint: { run_id, checkpoint_id },
+      });
+    }
+    if (stopped.length > 0 && stopped.length === holds.length) await deps.block.cancelAsk(ask.ask_id);
+  }
+};
 
 const promptPayload = (prompt: PreapprovalPrompt): Record<string, unknown> => ({
   proposal_id: prompt.proposal_id, proposal_revision: prompt.proposal_revision, review_digest: prompt.review_digest,
@@ -29,18 +55,11 @@ export const createPreapprovalNotifications = (deps: {
   });
   return {
     async closeStoppedAsks(): Promise<void> {
-      for (const ask of await deps.block.listOpenAsks()) {
-        if (ask.handler_kind !== 'gateway.preflight') continue;
-        const { checkpoint_id, run_id } = ask.handler_payload;
-        if (typeof checkpoint_id !== 'string' || typeof run_id !== 'string'
-          || !deps.repository.checkpointWasStopped(checkpoint_id, run_id)) continue;
-        const receipt = await deps.gatedActions?.getByCheckpoint(checkpoint_id);
-        if (receipt?.run_id === run_id) await deps.gatedActions!.finish(receipt.action_ref, {
-          status: 'cancelled', status_message: 'The enclosing reviewed execution stopped.', result: null,
-          awaiting_checkpoint: { run_id, checkpoint_id },
-        });
-        await deps.block.cancelAsk(ask.ask_id);
-      }
+      await closeStoppedHoldAsks({
+        block: deps.block,
+        checkpointWasStopped: (checkpoint_id, run_id) => deps.repository.checkpointWasStopped(checkpoint_id, run_id),
+        ...(deps.gatedActions !== undefined ? { gatedActions: deps.gatedActions } : {}),
+      });
     },
     /** Called by the shared outbox for review/decision/stop events, and for
      * pending proposals at boot. It never leases or discards activation work. */

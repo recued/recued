@@ -17,7 +17,9 @@ import {
   type ChatToolHandlerDeps,
 } from '../chat-tool-handlers.js';
 import { buildCanonicalOpToolDescriptors } from '../canonical-op-tool-catalog.js';
-import { stampExecuteResponseAuditRun } from '../types.js';
+import { noteWaitingInTurn, notAskedYetMessage } from '../chat-carries-on.js';
+import { beginRoundGather, takeRoundGather, type DeferredHold } from '../chat-gather.js';
+import { stampExecuteResponseAuditRun, type InternalExecuteOverrides } from '../types.js';
 
 const CANONICAL = buildCanonicalOpToolDescriptors({
   boundConnections: [{ name: 'acme-corp', vendor: 'hubspot' }],
@@ -199,5 +201,66 @@ describe('canonical search fans out; everything else names its connection', () =
     } as unknown as ChatToolHandlerDeps);
     const res = await none(`${CANONICAL_OP_TOOL_PREFIX}invoice.search`, {}, {} as never);
     expect(JSON.stringify(res)).toContain('no connection serves');
+  });
+});
+
+describe('D-337 slice K / D-177 §N.15.9 — a vendor-neutral op in the owner\'s chat, beside its turn\'s other calls', () => {
+  /** The owner's app chat: a conversation that carries on. */
+  const OWNER_CHAT = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-a', user_id: 'owner' } as never;
+  const UPDATE = `${CANONICAL_OP_TOOL_PREFIX}contact.update`;
+  const READ = `${CANONICAL_OP_TOOL_PREFIX}contact.read`;
+  const held = { success: false, awaiting_approval: true };
+  const run = (execute: (req: unknown, internal?: InternalExecuteOverrides) => Promise<unknown>) => createChatRawOpDispatch(deps({
+    getExecuteRecipe: () => execute as never,
+    // No CRM resolves the write's operation: it counts as asking (slice O).
+    getExecutorConfig: () => ({ manifests: new Map() }) as never,
+  }));
+  const waitingTurn = () => {
+    const turn_state = new Map<string, unknown>();
+    noteWaitingInTurn(turn_state, 'recipe.run', 'run-0');
+    return turn_state;
+  };
+
+  it('a write is not asked while a call of its turn waits; nothing runs', async () => {
+    let ran = 0;
+    const result = await run(async () => { ran += 1; return held; })(
+      UPDATE, { connection: 'acme-corp', args: { id: 'c-1', jobtitle: 'CTO' } },
+      { execution_source: OWNER_CHAT, turn_state: waitingTurn() } as never);
+    expect(result).toEqual({ ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage('recipe.run') });
+    expect(ran).toBe(0);
+  });
+
+  it('a read runs: it cannot ask', async () => {
+    let ran = 0;
+    const result = await run(async () => { ran += 1; return { success: true }; })(
+      READ, { connection: 'acme-corp', args: { id: 'c-1' } },
+      { execution_source: OWNER_CHAT, turn_state: waitingTurn() } as never);
+    expect(result.ok).toBe(true);
+    expect(ran).toBe(1);
+  });
+
+  it('a write its round repeats goes ahead, and its hold is kept for the round\'s approval', async () => {
+    const turn_state = new Map<string, unknown>();
+    beginRoundGather(turn_state, 0, [{ tool: UPDATE, args: {} }, { tool: UPDATE, args: {} }]);
+    const dispatch = run(async (_req, internal) => {
+      // The run's gate holds the write and hands its ask to the round, as the execute handler does.
+      const kept = internal?.defer_ask?.({ run_id: 'run-1', op_key: 'contact.update@acme-corp' } as DeferredHold);
+      expect(kept).toBe(true);
+      return stampExecuteResponseAuditRun(held as never, 'run-1');
+    });
+    const result = await dispatch(UPDATE, { connection: 'acme-corp', args: { id: 'c-1', jobtitle: 'CTO' } },
+      { execution_source: OWNER_CHAT, turn_state } as never);
+    expect(result).toEqual({ ok: true, result: held, run_held: { kind: 'approval', gathered: true }, run_id: 'run-1' });
+    expect(takeRoundGather(turn_state).map((member) => [member.run_id, member.tool_name])).toEqual([['run-1', UPDATE]]);
+  });
+
+  it('an AI app\'s call is never kept for a round: its conversation does not carry on', async () => {
+    const turn_state = new Map<string, unknown>();
+    beginRoundGather(turn_state, 0, [{ tool: UPDATE, args: {} }, { tool: UPDATE, args: {} }]);
+    let deferred: unknown = 'unset';
+    await run(async (_req, internal) => { deferred = internal?.defer_ask; return held; })(
+      UPDATE, { connection: 'acme-corp', args: { id: 'c-1' } },
+      { execution_source: { channel: 'mcp', actor: 'contracted_user', contract_id: 'ct-1' }, turn_state } as never);
+    expect(deferred).toBeUndefined();
   });
 });

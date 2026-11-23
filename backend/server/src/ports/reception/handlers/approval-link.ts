@@ -53,6 +53,7 @@
  *  Spec: D-149 § A.5.5 + § Must Hold I-11 + I-12 + § N.6. */
 
 import { randomBytes } from 'node:crypto';
+import { extractReceptionBearer as extractBearer, readLiveReceptionEndpoint } from '../endpoint-authority.js';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
@@ -157,23 +158,6 @@ const writeErrorPage = (
   status: number,
 ): void => {
   writeHtmlResponse(res, renderApprovalLinkErrorHtml({ display_name, message }), status);
-};
-
-// ────────────────────────────────────────────────────────────────
-// Bearer extract
-// ────────────────────────────────────────────────────────────────
-
-const extractBearer = (req: IncomingMessage): string => {
-  const url = new URL(req.url ?? '/', 'http://x');
-  const q = url.searchParams.get('t');
-  if (q && q.length > 0) return q;
-  const headerToken = req.headers['x-recued-endpoint-token'];
-  if (typeof headerToken === 'string' && headerToken.length > 0) return headerToken;
-  const auth = req.headers.authorization;
-  if (typeof auth === 'string' && auth.startsWith('Bearer ')) {
-    return auth.slice('Bearer '.length).trim();
-  }
-  return '';
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -436,6 +420,7 @@ export interface ApprovalLinkConsumeHandlerDeps {
   readonly checkQuoteCompletionLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly checkQuoteSignoffLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly getStore: () => PublicEndpointRegistryStore;
+  readonly getPepper: () => Buffer;
   readonly getApprovalIntentStore: () => ApprovalIntentStore;
   readonly getApprovalLinkNonceStore: () => ApprovalLinkNonceStore;
   readonly getApprovalIntentPiiKey: () => Uint8Array;
@@ -482,9 +467,12 @@ export const createApprovalLinkConsumeHandler = (
       return;
     }
 
-    const row = deps.getStore().findById(endpoint_id);
+    const liveEndpoint = () => readLiveReceptionEndpoint(req, endpoint_id, 'approval_link', deps);
+    // The dispatcher authorized before the body arrived. Re-read before using that body
+    // or its nonce, including when returning an earlier consumption's receipt.
+    const row = liveEndpoint();
     if (!row) {
-      writeErrorPage(res, 'this approval link', 'Submission unavailable.', 503);
+      writeErrorPage(res, 'this approval link', 'This approval request is no longer available. Ask for a new link.', 410);
       return;
     }
     const config = parseApprovalLinkConfig(row.metadata);
@@ -669,9 +657,13 @@ export const createApprovalLinkConsumeHandler = (
         outcome_kind: built.kind,
         action_kind: config.action_kind,
       },
-    });
+    }, () => liveEndpoint() !== null);
 
     if (!result.ok) {
+      if (result.reason === 'not_authorized') {
+        writeErrorPage(res, display_name, 'This approval request is no longer available. Ask for a new link.', 410);
+        return;
+      }
       if (result.reason === 'already_consumed') {
         // Concurrent-race loser. Visitor sees the already-consumed
         // page with the same copy as the GET-side handler emits on a

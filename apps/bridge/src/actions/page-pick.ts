@@ -12,8 +12,10 @@
  *  3. {@link findPickOption}, again until the suggestion shows: the field's own list (the one its
  *     `aria-controls` or `aria-owns` names, or the one its `aria-activedescendant` is in), else a list
  *     that showed just below or above the field since the note; then the option whose text is the
- *     one wanted. When no list shows within a second, {@link typeWithKeys} types the text again a key
- *     at a time, for a picker that reads keys rather than the value.
+ *     one wanted. The noted field has a ref even when named by selector; guarded retries rebind
+ *     only a unique matching replacement. Focus alone never selects another field. When no list
+ *     shows within a second, {@link typeWithKeys} types the text again a key at a time, for a picker
+ *     that reads keys rather than the value.
  *  4. The click on that option, as a person's (`clickPageElement`, by the ref this gives it): on its
  *     link when it holds one, since the middle of its row may miss a link that is only its text.
  *  5. {@link pickTook}: a hidden value changed, or the field or what sits beside it (a chip) shows
@@ -50,10 +52,19 @@ type PickNote = { field: Element; lists: Map<Element, string>; hidden: Map<Eleme
 /** Before typing: what is shown near the field now, and the hidden values around it. `ref`, when
  *  given, names the field instead of `selector`. */
 export const notePickLists = (selector: string, ref: string | null | undefined, rules: PickRules):
-  { noted: true } | { missing: true } | { stale: true } | { blocked: true } => {
+  { noted: true; ref: string } | { missing: true } | { stale: true } | { blocked: true } | { several: number } => {
   if (document.documentElement.hasAttribute('data-recued-owner-surface')) return { blocked: true };
-  const refs = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
-  const field = ref == null ? document.querySelector(selector) : refs?.byRef.get(ref) ?? null;
+  type RefMap = { next: number; byRef: Map<string, Element>; byElement: WeakMap<Element, string> };
+  const world = globalThis as typeof globalThis & { recuedPageRefs?: RefMap; recuedPickNote?: PickNote };
+  let bySelector: Element | null = null;
+  if (ref == null) {
+    // Keep the ordinary fill's ambiguity check when pinning a selector to a ref.
+    const all = [...document.querySelectorAll(selector)];
+    const visible = all.filter(one => one.closest('[aria-hidden="true"]') === null && one.checkVisibility({ checkVisibilityCSS: true }));
+    if (visible.length > 1 || (visible.length === 0 && all.length > 1)) return { several: visible.length || all.length };
+    bySelector = visible[0] ?? all[0] ?? null;
+  }
+  const field = ref == null ? bySelector : world.recuedPageRefs?.byRef.get(ref) ?? null;
   if (ref != null && !field?.isConnected) return { stale: true };
   if (!field) return { missing: true };
   const shown = (element: Element) => element.getAttribute('aria-hidden') !== 'true'
@@ -71,8 +82,17 @@ export const notePickLists = (selector: string, ref: string | null | undefined, 
   const scope = form ?? field.parentElement?.parentElement?.parentElement ?? document.body;
   const hidden = new Map<Element, string>();
   for (const input of scope.querySelectorAll('input[type="hidden"]')) hidden.set(input, (input as HTMLInputElement).value);
-  (globalThis as typeof globalThis & { recuedPickNote?: PickNote }).recuedPickNote = { field, lists, hidden, scope };
-  return { noted: true };
+  // Pin selectors too: later injections must not follow a selector or focus to
+  // a different field. The executor uses the ordinary guarded ref retry.
+  const refs = world.recuedPageRefs ??= { next: 1, byRef: new Map(), byElement: new WeakMap() };
+  let fieldRef = ref ?? refs.byElement.get(field);
+  if (fieldRef === undefined || refs.byRef.get(fieldRef) !== field) {
+    fieldRef = `e${refs.next++}`;
+    refs.byRef.set(fieldRef, field);
+    refs.byElement.set(field, fieldRef);
+  }
+  world.recuedPickNote = { field, lists, hidden, scope };
+  return { noted: true, ref: fieldRef };
 };
 
 /** The option to pick, once it shows: `found` is the ref it now has, `label` its text and `url`
@@ -80,31 +100,18 @@ export const notePickLists = (selector: string, ref: string | null | undefined, 
  *  several of which match. */
 export const findPickOption = (selector: string, ref: string | null | undefined, want: string, rules: PickRules):
   { found: string; label: string; url: string } | { none: string[] } | { several: string[] } | { no_list: true }
-  | { gone: true } | { blocked: true } => {
+  | { gone: true } | { stale: true } | { blocked: true } => {
   if (document.documentElement.hasAttribute('data-recued-owner-surface')) return { blocked: true };
   type RefMap = { next: number; byRef: Map<string, Element>; byElement: WeakMap<Element, string> };
   const world = globalThis as typeof globalThis & { recuedPageRefs?: RefMap; recuedPickNote?: PickNote };
   const note = world.recuedPickNote;
   const isField = (element: Element | null) => element !== null && element.isConnected
     && element.matches('input, textarea, [contenteditable]:not([contenteditable="false"]), [role="combobox"]');
-  // The field: by ref while it is on the page. A picker that rebuilt it (Wikipedia's search does,
-  // once the box has focus) is read where the focus went.
+  // Rebuilt fields are recovered by the executor's guarded ref retry. An
+  // unrelated live field, including the one with focus, is never a substitute.
   const named = ref == null ? document.querySelector(selector) : world.recuedPageRefs?.byRef.get(ref) ?? null;
-  // Slice R — the focus, down through web components and frames from this site.
-  let focused: Element | null = document.activeElement;
-  for (let depth = 0; focused !== null && depth < 16; depth += 1) {
-    const inner: Element | null | undefined = focused.shadowRoot?.activeElement
-      ?? (focused.localName === 'iframe' ? (() => {
-        try {
-          return (focused as HTMLIFrameElement).contentDocument?.activeElement;
-        } catch {
-          return null;
-        }
-      })() : null);
-    if (inner === null || inner === undefined || inner === focused) break;
-    focused = inner;
-  }
-  const field = [named, note?.field ?? null, focused].find(isField) ?? null;
+  if (ref != null && !named?.isConnected) return { stale: true };
+  const field = isField(named) ? named : null;
   if (field === null) return { gone: true };
   // Slice R — where its list may be: its web component or frame, and the page around it.
   const root = field.getRootNode() as Document | ShadowRoot;
@@ -190,16 +197,36 @@ export const findPickOption = (selector: string, ref: string | null | undefined,
 /** Types `typed` into the field again, a key at a time, as a person's keys reach the page:
  *  `keydown`, `keypress`, `beforeinput`, the character, `input`, `keyup`. For a picker that searches
  *  on keys rather than on the value. A key the page cancels is not typed, as a browser would not
- *  type it. The events are the page's own (`isTrusted: false`). */
-export const typeWithKeys = (selector: string, ref: string | null | undefined, typed: string):
-  { typed: true } | { not_applied: string } | { gone: true } => {
-  const world = globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> };
-    recuedPickNote?: { field: Element } };
+ *  type it. The events are the page's own (`isTrusted: false`). Recovery keeps
+ *  the ordinary fill's page, disabled-field and modal checks before touching the field. */
+export const typeWithKeys = (selector: string, ref: string | null | undefined, typed: string, expectedUrl?: string | null):
+  { typed: true } | { not_applied: string } | { gone: true } | { stale: true } | { blocked: true } => {
+  if (document.documentElement.hasAttribute('data-recued-owner-surface')
+    || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
+  const world = globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } };
   const isField = (element: Element | null) => element !== null && element.isConnected && element.matches('input, textarea');
   const named = ref == null ? document.querySelector(selector) : world.recuedPageRefs?.byRef.get(ref) ?? null;
-  const field = [named, world.recuedPickNote?.field ?? null, document.activeElement].find(isField) as
-    HTMLInputElement | HTMLTextAreaElement | undefined;
-  if (field === undefined) return { gone: true };
+  if (ref != null && !named?.isConnected) return { stale: true };
+  if (!isField(named)) return { gone: true };
+  const field = named as HTMLInputElement | HTMLTextAreaElement;
+  if (field.matches(':disabled') || field.getAttribute('aria-disabled') === 'true') {
+    return { not_applied: 'This field is disabled.' };
+  }
+  // Injected and self-contained, as fillPageField is. Composed ancestry also
+  // allows a field inside an active dialog's shadow tree.
+  const within = (parent: Element, child: Element): boolean => {
+    for (let at: Element | null = child; at;) {
+      if (at === parent) return true;
+      const root = at.getRootNode();
+      at = at.parentElement ?? (root as ShadowRoot).host ?? null;
+    }
+    return false;
+  };
+  for (const modal of document.querySelectorAll('dialog:modal, [aria-modal="true"]')) {
+    if (modal.checkVisibility({ checkVisibilityCSS: true }) && !within(modal, field)) {
+      return { not_applied: 'An open dialog blocks this field. Use the control inside the active dialog.' };
+    }
+  }
   const own = Object.getOwnPropertyDescriptor(
     field.localName === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')?.set;
   const set = (value: string) => (own ? own.call(field, value) : (field.value = value));
@@ -246,7 +273,7 @@ export const pickTook = (selector: string, ref: string | null | undefined, typed
   const isField = (element: Element | null) => element !== null && element.isConnected
     && element.matches('input, textarea, [contenteditable]:not([contenteditable="false"]), [role="combobox"]');
   const named = ref == null ? document.querySelector(selector) : world.recuedPageRefs?.byRef.get(ref) ?? null;
-  const field = [named, note.field, document.activeElement].find(isField) ?? null;
+  const field = isField(named) ? named : null;
   const option = note.chosen.option;
   const list = option.closest('[role="listbox"], [role="menu"], [role="grid"], [role="tree"], ul, ol') ?? option.parentElement;
   const open = shown(option) || (list !== null && shown(list) && list.contains(option));

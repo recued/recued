@@ -777,6 +777,8 @@ describe('D-220 Slice B — mountReceptionRoute: pack templates', () => {
     await flush();
     await flush();
     page.click({ action: 'reception-open-templates' });
+    await flush();
+    await flush();
     expect(modal.getHtml()).toContain('From the Packs you have');
     expect(modal.getHtml()).toContain(`data-template-ref="${PACK_TEMPLATE_REF}"`);
     expect(modal.getHtml()).toContain('From Job Status Board (v4)');
@@ -802,6 +804,8 @@ describe('D-220 Slice B — mountReceptionRoute: pack templates', () => {
     await flush();
     await flush();
     page.click({ action: 'reception-open-templates' });
+    await flush();
+    await flush();
     expect(modal.getHtml()).toContain('Client inquiry');
     expect(modal.getHtml()).not.toContain('From the Packs you have');
     route.dispose();

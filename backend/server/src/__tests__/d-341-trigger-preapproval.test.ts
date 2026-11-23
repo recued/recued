@@ -62,6 +62,7 @@ import { createTriggerPreapprovalAdmission } from '../trigger-preapproval-admiss
 import { createRecordsStore } from '../records/store.js';
 
 const DAY = 86_400_000;
+const APPROVAL = { run_id: 'approved-run', checkpoint_id: 'approved-checkpoint' };
 const OP = 'recued-core.body-signals.daily_metric.batch';
 const WEBHOOK: TriggerPreapprovalTrigger = { kind: 'webhook', ingress_id: 'whi_1' };
 const SCHEDULE: TriggerPreapprovalTrigger = { kind: 'schedule', schedule_id: 'sch_1' };
@@ -502,12 +503,12 @@ describe('D-341 slice B4 — a reception form\'s pre-approval', () => {
     const sha = triggerPreapprovalRecipeSha256(recipeStore.get('save-readings')!);
     const offer = { trigger: FORM, door_contract_id: 'door-r1', recipe_id: 'save-readings', recipe_sha256: sha, op: OP };
     door = 'door-r2';
-    await expect(granter.grantOffer(offer)).rejects.toThrow(/that form's door changed since it asked/u);
+    await expect(granter.grantOffer(offer, APPROVAL)).rejects.toThrow(/that form's door changed since it asked/u);
     door = null;
-    await expect(granter.grantOffer(offer)).rejects.toThrow(/that form cannot run Save readings yet/u);
+    await expect(granter.grantOffer(offer, APPROVAL)).rejects.toThrow(/that form cannot run Save readings yet/u);
     expect(store.list()).toEqual([]);
     door = 'door-r1';
-    expect(await granter.grantOffer(offer)).toMatchObject({ trigger: FORM, door_contract_id: 'door-r1', state: 'live' });
+    expect(await granter.grantOffer(offer, APPROVAL)).toMatchObject({ trigger: FORM, door_contract_id: 'door-r1', state: 'live' });
   });
 });
 
@@ -668,7 +669,7 @@ describe('D-341 slice B1 — a triggered run\'s held write goes through under it
     expect((await f.run(tick('dsh_1'), 'auto_run')).awaiting_approval).toBe(true);
     expect(registerHold).not.toHaveBeenCalled();
     expect(f.asks).toHaveLength(1);
-    expect(f.asks[0]).toContain('“Always allow for this auto-run” stops asking about this write');
+    expect(f.asks[0]).toContain('“Always allow for this auto-run” stops asking about what');
     // A hold no trigger's run made still joins the batch, as before.
     const g = executeFixture([{ id: 'act', ...CLICK }], batched);
     expect((await g.run(tick(), 'auto_run')).awaiting_approval).toBe(true);
@@ -855,17 +856,17 @@ describe('D-341 slice B2 — an answer grants what its hold offered', () => {
     trigger: WEBHOOK, door_contract_id: 'door-1', recipe_id: 'save-readings', op: OP, ...over,
   });
 
-  it('grants it with the ask\'s bounds, audited as from an ask, and grants it once however often it is told', async () => {
+  it('grants it for the whole recipe (D-402 ruling 10), audited as from an ask, and grants it once however often it is told', async () => {
     const { store, recipeStore, auditLog } = rpcFixture();
     const granter = createTriggerPreapprovalGranter({ store, recipeStore, manifestOf, packs: () => PACKS, auditLog,
       targets: createTriggerPreapprovalTargets({ webhooks: { consumersOfRecipe: () => [{ snapshot: {
         bindings: [{ binding_id: 'b1', ingress_id: 'whi_1' }], triggers: [{ binding_id: 'b1', recipe_id: 'save-readings', contract_id: 'door-1' }],
       } }] } }) });
     const sha = triggerPreapprovalRecipeSha256(recipeStore.get('save-readings')!);
-    const granted = await granter.grantOffer(offer({ recipe_sha256: sha }) as never);
-    expect(granted).toMatchObject({ trigger: WEBHOOK, door_contract_id: 'door-1', writes: [OP], max_per_run: 1, state: 'live' });
+    const granted = await granter.grantOffer(offer({ recipe_sha256: sha }) as never, APPROVAL);
+    expect(granted).toMatchObject({ trigger: WEBHOOK, door_contract_id: 'door-1', writes: ['*'], max_per_run: 0, state: 'live' });
     expect(granted).not.toHaveProperty('expires_at');
-    expect((await granter.grantOffer(offer({ recipe_sha256: sha }) as never)).id).toBe(granted.id);
+    expect((await granter.grantOffer(offer({ recipe_sha256: sha }) as never, APPROVAL)).id).toBe(granted.id);
     expect(store.list()).toHaveLength(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const audited = (await auditLog.listActivities()).filter((a) => a.action === 'trigger_preapproval_granted');
@@ -880,9 +881,9 @@ describe('D-341 slice B2 — an answer grants what its hold offered', () => {
         bindings: [{ binding_id: 'b1', ingress_id: 'whi_1' }], triggers: [{ binding_id: 'b1', recipe_id: 'save-readings', contract_id: door }],
       } }] } }) });
     const sha = triggerPreapprovalRecipeSha256(recipeStore.get('save-readings')!);
-    await expect(granter.grantOffer(offer({ recipe_sha256: 'b'.repeat(64) }) as never)).rejects.toThrow(/changed since it asked/u);
+    await expect(granter.grantOffer(offer({ recipe_sha256: 'b'.repeat(64) }) as never, APPROVAL)).rejects.toThrow(/changed since it asked/u);
     door = 'door-2';
-    await expect(granter.grantOffer(offer({ recipe_sha256: sha }) as never)).rejects.toThrow(/door changed since it asked/u);
+    await expect(granter.grantOffer(offer({ recipe_sha256: sha }) as never, APPROVAL)).rejects.toThrow(/door changed since it asked/u);
     expect(store.list()).toEqual([]);
   });
 });
@@ -963,7 +964,8 @@ describe('D-341 slice B2 — "Always allow for this schedule" from its ask', () 
     await f.block.submitAnswer({ ask_id: ask!.ask_id, option: 'allow_trigger', via: 'ui' });
     expect(f.notes()).toEqual(['n1']);
     const [row] = f.triggerPreapprovals.list();
-    expect(row).toMatchObject({ trigger: SCHEDULE, recipe_id: 'add-note', writes: [CREATE], max_per_run: 1, uses: 0 });
+    // D-402 ruling 10 — every write of the version, with no count.
+    expect(row).toMatchObject({ trigger: SCHEDULE, recipe_id: 'add-note', writes: ['*'], max_per_run: 0, uses: 0 });
 
     const next = await f.run('n2');
     expect(next.awaiting_approval, JSON.stringify(next.errors)).toBeFalsy();
@@ -981,11 +983,11 @@ describe('D-341 slice B2 — "Always allow for this schedule" from its ask', () 
     expect(held.awaiting_approval, JSON.stringify(held.errors)).toBe(true);
     const [ask] = await f.open();
     expect(ask!.options.map((option) => option.label)).toEqual(['Approve', 'Always allow for this auto-run', 'Deny']);
-    expect(ask!.message.text).toContain('when "Save readings" runs on its own, once a run, until you end it on the auto-run\'s page');
+    expect(ask!.message.text).toContain('stops asking about what "Save readings" writes when it runs on its own, until you end it on the auto-run\'s page');
     await f.block.submitAnswer({ ask_id: ask!.ask_id, option: 'allow_trigger', via: 'ui' });
     expect(f.notes()).toEqual(['n1']);
     const [row] = f.triggerPreapprovals.list();
-    expect(row).toMatchObject({ trigger: { kind: 'auto_run', dish_id: 'dsh_1' }, recipe_id: 'add-note', writes: [CREATE] });
+    expect(row).toMatchObject({ trigger: { kind: 'auto_run', dish_id: 'dsh_1' }, recipe_id: 'add-note', writes: ['*'] });
 
     const next = await f.runAs(tick('dsh_1'), 'n2', 'auto_run');
     expect(next.awaiting_approval, JSON.stringify(next.errors)).toBeFalsy();
@@ -1080,7 +1082,7 @@ describe('D-341 slice B6 — a recipe a scheduled prompt starts, pre-approved re
   it('covers nothing else: an edited prompt, another scheduled prompt, a changed recipe, an inline recipe, an AI\'s vault', async () => {
     const f = fixture();
     const sha = triggerPreapprovalRecipeSha256(f.recipe);
-    await f.granter.grantOffer({ trigger: PROMPT, recipe_id: 'add-note', recipe_sha256: sha, op: CREATE, asks_ai: true, prompt_sha256: V1 });
+    await f.granter.grantOffer({ trigger: PROMPT, recipe_id: 'add-note', recipe_sha256: sha, op: CREATE, asks_ai: true, prompt_sha256: V1 }, APPROVAL);
     expect((await f.start(prompted('ps_1:4:100', V2), 'e1')).awaiting_approval).toBe(true);
     expect((await f.start(prompted('ps_2:1:100', V1, 'ps_2'), 'e2')).awaiting_approval).toBe(true);
     // What the AI chose itself: none is offered, and none is covered. (A connection it chose: in the
@@ -1107,11 +1109,11 @@ describe('D-341 slice B6 — a recipe a scheduled prompt starts, pre-approved re
     const sha = triggerPreapprovalRecipeSha256(f.recipe);
     const offer = { trigger: PROMPT, recipe_id: 'add-note', recipe_sha256: sha, op: CREATE, asks_ai: true, prompt_sha256: V1 } as const;
     f.prompt.version = V2;
-    await expect(f.granter.grantOffer(offer)).rejects.toThrow(/the prompt of Morning notes changed since it asked/u);
+    await expect(f.granter.grantOffer(offer, APPROVAL)).rejects.toThrow(/the prompt of Morning notes changed since it asked/u);
     f.prompt.version = V1;
-    await expect(f.granter.grantOffer({ ...offer, recipe_sha256: 'c'.repeat(64) })).rejects.toThrow(/Save readings changed since it asked/u);
+    await expect(f.granter.grantOffer({ ...offer, recipe_sha256: 'c'.repeat(64) }, APPROVAL)).rejects.toThrow(/Save readings changed since it asked/u);
     expect(f.triggerPreapprovals.list()).toEqual([]);
-    const granted = await f.granter.grantOffer(offer);
+    const granted = await f.granter.grantOffer(offer, APPROVAL);
     expect(granted).toMatchObject({ state: 'live', recipe_name: 'Save readings', prompt_sha256: V1,
       description: 'Save readings, when your scheduled prompt Morning notes runs it, may do this without asking: '
         + `${granted.write_labels[0]![0]!.toLowerCase()}${granted.write_labels[0]!.slice(1)}. Its AI decides what it writes.`
@@ -1123,5 +1125,8 @@ describe('D-341 slice B6 — a recipe a scheduled prompt starts, pre-approved re
     // An edit to the prompt ends it.
     f.prompt.version = V2;
     expect((await f.granter.list('test'))[0]!.state).toBe('outdated');
+    await f.granter.revoke({ id: granted.id }, 'owner revoke');
+    expect(await f.granter.grantOffer(offer, APPROVAL)).toMatchObject({ id: granted.id, state: 'revoked' });
+    expect(f.triggerPreapprovals.list()).toHaveLength(1);
   });
 });

@@ -6,14 +6,14 @@
  *  on the screen and chat's "My reminders" word a time, refuse a passed one and
  *  say what happened in the same words. */
 
-import { RpcError } from '@recued/contracts';
+import { RpcError, isReminderState, readReminderRecordReference, readReminderMailReference, REMINDER_TRIAGE_MAX, type ReminderTriageAction } from '@recued/contracts';
 import type { HandlerSlice, ServerRpcRegistry, ReminderListPageInput } from '@recued/contracts';
 
 import type { WsClient } from '../ws-server.js';
 import { ReminderInputError, type ReminderDispatchers } from './reminder-service.js';
 import { ReminderCreationConflictError, ReminderLimitError } from '../storage/reminder-store.js';
 
-type ReminderMethods = 'reminder.create' | 'reminder.list' | 'reminder.get' | 'reminder.update' | 'reminder.cancel';
+type ReminderMethods = 'reminder.triage.preview' | 'reminder.triage.apply' | 'reminder.create' | 'reminder.list' | 'reminder.get' | 'reminder.update' | 'reminder.cancel';
 
 /** The owner's webclient only, as the Data screens' other rpc are: never a
  *  Bridge, the CLI or MCP. */
@@ -35,7 +35,14 @@ const listPage = (value: unknown): ReminderListPageInput => {
   const fail = (message: string): never => { throw new RpcError('bad_request', message); };
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return fail('Reminder search needs valid filters.');
   const raw = value as Record<string, unknown>;
+  const record_ref = raw.record_ref === undefined ? undefined : readReminderRecordReference(raw.record_ref);
+  if (raw.record_ref !== undefined && !record_ref) return fail('Choose a valid saved task or commitment for this reminder search.');
+  const mail_ref = raw.mail_ref === undefined ? undefined : readReminderMailReference(raw.mail_ref);
+  if (raw.mail_ref !== undefined && !mail_ref || mail_ref && record_ref) return fail('Choose one valid saved email or work record for this reminder search.');
+  if (raw.history_only !== undefined && raw.history_only !== true || raw.history_only === true && raw.state !== 'all')
+    return fail('Reminder history requires all statuses.');
   if (raw.query !== undefined && (typeof raw.query !== 'string' || raw.query.length > 200)) return fail('Reminder search must be text of at most 200 characters.');
+  if (raw.state !== undefined && raw.state !== 'all' && !isReminderState(raw.state)) return fail('Choose a valid reminder status.');
   const instant = (at: unknown): at is number => typeof at === 'number' && Number.isFinite(at) && Math.abs(at) <= 8.64e15;
   if (raw.from !== undefined && !instant(raw.from) || raw.before !== undefined && !instant(raw.before)) return fail('Reminder dates must be valid instants.');
   if (typeof raw.from === 'number' && typeof raw.before === 'number' && raw.from >= raw.before) return fail('The last reminder date must follow the first.');
@@ -47,11 +54,31 @@ const listPage = (value: unknown): ReminderListPageInput => {
     cursor = { at: row.at, reminder_id: row.reminder_id };
   }
   return {
+    ...(record_ref ? { record_ref } : {}),
+    ...(mail_ref ? { mail_ref } : {}),
+    ...(raw.history_only === true ? { history_only: true as const } : {}),
     ...(typeof raw.query === 'string' ? { query: raw.query.trim() } : {}),
+    ...(raw.state === 'all' || isReminderState(raw.state) ? { state: raw.state } : {}),
     ...(typeof raw.from === 'number' ? { from: raw.from } : {}),
     ...(typeof raw.before === 'number' ? { before: raw.before } : {}),
     ...(cursor ? { cursor } : {}),
   };
+};
+
+const object = (value: unknown): Record<string, unknown> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RpcError('bad_request', 'Choose valid reminder changes.');
+  return value as Record<string, unknown>;
+};
+const validToken = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const triageAction = (value: unknown): ReminderTriageAction => {
+  const row = object(value);
+  if (row.kind === 'cancel') return { kind: 'cancel' };
+  if (row.kind !== 'move' || typeof row.at !== 'number' || !Number.isSafeInteger(row.at) || Math.abs(row.at) > 8.64e15
+    || typeof row.time_zone !== 'string' || !row.time_zone || row.time_zone.length > 128)
+    throw new RpcError('bad_request', 'Choose a valid future reminder time and time zone.');
+  try { new Intl.DateTimeFormat('en', { timeZone: row.time_zone }).format(0); }
+  catch { throw new RpcError('bad_request', 'Choose a valid reminder time zone.'); }
+  return { kind: 'move', at: row.at, time_zone: row.time_zone };
 };
 
 /** A refusal the owner can act on (a passed time, no words) reads as itself. */
@@ -67,17 +94,46 @@ export const makeReminderHandlers = (
   if (!deps) return undefined;
   const { dispatchers } = deps;
   return {
-    methods: ['reminder.create', 'reminder.list', 'reminder.get', 'reminder.update', 'reminder.cancel'],
+    methods: ['reminder.triage.preview', 'reminder.triage.apply', 'reminder.create', 'reminder.list', 'reminder.get', 'reminder.update', 'reminder.cancel'],
     handlers: {
+      'reminder.triage.preview': async (args, client) => {
+        requireClient(client);
+        const raw = object(args), action = triageAction(raw.action), ids = raw.reminder_ids;
+        if (!Array.isArray(ids) || !ids.length || ids.length > REMINDER_TRIAGE_MAX
+          || ids.some(id => !validToken(id)) || new Set(ids).size !== ids.length)
+          throw new RpcError('bad_request', `Select between 1 and ${REMINDER_TRIAGE_MAX} different reminders.`);
+        return dispatchers.reminderTriagePreview({ reminder_ids: ids as string[], action }).catch(asRpcError);
+      },
+      'reminder.triage.apply': async (args, client) => {
+        requireClient(client);
+        const raw = object(args), action = triageAction(raw.action), items = raw.items;
+        if (!validToken(raw.request_id) || !Array.isArray(items) || !items.length || items.length > REMINDER_TRIAGE_MAX)
+          throw new RpcError('bad_request', 'Choose a bounded, reviewed reminder selection.');
+        const checked = items.map(value => {
+          const item = object(value);
+          if (!validToken(item.reminder_id) || typeof item.review_token !== 'string' || !/^[a-f0-9]{64}$/.test(item.review_token))
+            throw new RpcError('bad_request', 'Review these reminders before applying changes.');
+          return { reminder_id: item.reminder_id, review_token: item.review_token };
+        });
+        if (new Set(checked.map(row => row.reminder_id)).size !== checked.length)
+          throw new RpcError('bad_request', 'Select each reminder once.');
+        return dispatchers.reminderTriageApply({ request_id: JSON.stringify([client.instance_id, raw.request_id]), action, items: checked });
+      },
       'reminder.create': async (args, client) => {
         requireClient(client);
-        const input = args as { text?: unknown; at?: unknown; creation_id?: unknown } | null | undefined;
+        const input = args as { text?: unknown; at?: unknown; creation_id?: unknown; record_ref?: unknown; mail_ref?: unknown } | null | undefined;
         if (typeof input?.text !== 'string') throw new RpcError('bad_request', 'An alarm needs words to say.');
         if (typeof input.at !== 'number' || !Number.isFinite(input.at)) throw new RpcError('bad_request', 'An alarm needs a valid time.');
         if (typeof input.creation_id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(input.creation_id)) {
           throw new RpcError('bad_request', 'An alarm needs a stable creation ID.');
         }
-        return dispatchers.reminderCreate({ text: input.text, at: input.at,
+        const record_ref = input.record_ref === undefined ? undefined : readReminderRecordReference(input.record_ref);
+        if (input.record_ref !== undefined && !record_ref) throw new RpcError('bad_request', 'Choose a valid saved task or commitment for this reminder.');
+        const mail_ref = input.mail_ref === undefined ? undefined : readReminderMailReference(input.mail_ref);
+        if (input.mail_ref !== undefined && !mail_ref || mail_ref && record_ref)
+          throw new RpcError('bad_request', 'Choose one valid saved email or work record for this reminder.');
+        return dispatchers.reminderCreate({ text: input.text, at: input.at, ...(record_ref ? { record_ref } : {}),
+          ...(mail_ref ? { mail_ref } : {}),
           creation_id: JSON.stringify([client.instance_id, input.creation_id]), origin: { channel: 'manual' } }).catch(asRpcError);
       },
       'reminder.list': async (args, client) => {

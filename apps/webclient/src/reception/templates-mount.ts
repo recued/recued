@@ -21,7 +21,8 @@
  *      `mountAuthoringForm` handle shape).
  *
  *  ── Projection only, like every Reception satellite ───────────────
- *  The mount owns NO rpc + NO seed conversion: `onUseTemplate(ref)` hands
+ *  The mount owns NO rpc + NO seed conversion: `onLoadTemplates` refreshes
+ *  the route cache and returns the gallery data; `onUseTemplate(ref)` hands
  *  the closed-list ref back to the host, which resolves the seed
  *  (`resolveTemplateSeed`) + opens the authoring form. The mount never
  *  touches `@recued/contracts` template conversion — it renders the
@@ -32,8 +33,8 @@
  *  ── a11y ──────────────────────────────────────────────────────────
  *  The modal heading carries `tabindex="-1"` + is focused on open (the
  *  same focus-the-heading-on-open convention the satellites follow); the
- *  Use / close controls are native `<button>`s (keyboard-operable) with
- *  `aria-label`s.
+ *  Use / close controls are native `<button>`s. The named dialog traps Tab;
+ *  Escape or Close returns focus to the visible New control.
  *
  *  Spec: D-149 § A.10 (Pre-built intake_form templates). */
 
@@ -46,6 +47,7 @@ import {
   type PackReceptionTemplateUnavailable,
   type ReceptionConfigTemplateKind,
   type ReceptionEndpointKind,
+  type ReceptionTemplateListResult,
 } from '@recued/contracts';
 
 import { e } from '@recued/ui-shared/template';
@@ -57,6 +59,8 @@ import {
   panel,
 } from '@recued/ui-shared/primitives';
 import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';
+import { wireFocusTrap } from '@recued/ui-shared/focus-trap';
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 
 import {
   buildIntakeFormTemplatesBrowserModel,
@@ -82,6 +86,8 @@ export const TEMPLATES_BROWSER_ACTIONS = [
   'reception-template-close',
   // D-151 P2 — intent-first "Draft it with AI" submit.
   'reception-template-propose',
+  'reception-template-reload',
+  'reception-template-review',
 ] as const;
 
 export type TemplatesBrowserAction = (typeof TEMPLATES_BROWSER_ACTIONS)[number];
@@ -212,8 +218,8 @@ const renderPackTemplateCard = (card: PackIntakeFormTemplateCardModel): string =
  *  entry stays hidden on servers without a propose path. The status line
  *  is `aria-live="polite"` so a screen reader announces Drafting… / the
  *  suggestion note / the friendly error. The input is labelled + submits
- *  on Enter (a native form-less input + a submit button sharing the
- *  delegated dispatcher). No raw prompts / confidence are ever shown
+ *  on Enter (a native form sharing the delegated dispatcher). No raw
+ *  prompts / confidence are ever shown
  *  (I-19) — only the redacted `reason`. */
 const renderIntentSection = (): string => `
   <form class="reception-intent" data-action="reception-template-propose">
@@ -272,6 +278,7 @@ const renderTemplatesBrowser = (
   intentEnabled: boolean,
   packTemplates: ReadonlyArray<PackReceptionTemplateListing> = [],
   packTemplatesUnavailable: ReadonlyArray<PackReceptionTemplateUnavailable> = [],
+  read: { loading: boolean; error: boolean; reloadable: boolean } = { loading: false, error: false, reloadable: false },
 ): string => {
   const intakeModel = buildIntakeFormTemplatesBrowserModel({ templates });
   const configModel = buildReceptionConfigTemplatesBrowserModel({ templates: configTemplates });
@@ -329,10 +336,14 @@ const renderTemplatesBrowser = (
   ].join('');
 
   const allEmpty = intakeModel.is_empty && configModel.is_empty && packModel.is_empty;
-  const body = allEmpty
+  const body = read.loading
+    ? '<p class="reception-templates-read-status" role="status" aria-label="Loading templates">Loading templates…</p>'
+    : read.error
+    ? '<p class="reception-templates-read-status" role="alert">Could not load templates. Retry to get the latest starting points.</p>'
+    : allEmpty
     ? emptyHint({
         message:
-          'No Reception templates loaded. The Foundation pack may not be installed on this server.',
+          'No Reception templates are available. Install the Foundation pack or a Pack with intake templates, then refresh.',
       })
     : sections;
 
@@ -373,9 +384,9 @@ const renderTemplatesBrowser = (
     : '';
 
   return `
-    <div class="reception-templates-browser">
+    <div class="reception-templates-browser" role="dialog" aria-modal="true" aria-labelledby="reception-templates-title" tabindex="-1">
       <div class="reception-templates-browser-head">
-        <h3 class="reception-templates-browser-title" ${TEMPLATES_BROWSER_HEADING_ATTR} tabindex="-1">
+        <h3 id="reception-templates-title" class="reception-templates-browser-title" ${TEMPLATES_BROWSER_HEADING_ATTR} tabindex="-1">
           Reception templates
         </h3>
         ${button({
@@ -387,13 +398,11 @@ const renderTemplatesBrowser = (
         })}
       </div>
       <p class="reception-templates-browser-desc">
-        Pre-built Foundation-pack starting points — pick one, then review + edit
-        it before creating the endpoint.
+        Choose a starting point, then review and edit it before creating an endpoint.
       </p>
       ${intentEnabled ? renderIntentSection() : ''}
-      ${intakePartial}
-      ${configPartial}
-      ${packUnavailableNote}
+      ${read.reloadable ? `<div class="reception-templates-toolbar">${button({ label: read.error ? 'Retry templates' : 'Refresh templates', size: 'sm', action: 'reception-template-reload', data: {}, disabled: read.loading })}</div>` : ''}
+      ${!read.loading && !read.error ? intakePartial + configPartial + packUnavailableNote : ''}
       ${body}
     </div>
   `;
@@ -409,8 +418,8 @@ export interface TemplatesBrowserMountOptions {
   host: HTMLElement;
   /** The raw Foundation-pack intake_form templates to project. The host
    *  supplies these from the route's `reception.template.list` cache; an
-   *  empty array (with an empty `configTemplates`) renders the "not
-   *  installed" empty state. */
+   *  empty array (with an empty `configTemplates`) renders the empty state
+   *  only after an optional `onLoadTemplates` read has succeeded. */
   templates: ReadonlyArray<IntakeFormTemplate>;
   /** D-151 — the raw non-intake config templates (`scheduling_link` +
    *  `reception_page`) from the same `reception.template.list` cache.
@@ -423,6 +432,8 @@ export interface TemplatesBrowserMountOptions {
   /** D-220 Slice B — stored pack templates the server could not admit
    *  (`pack_templates_unavailable`); rendered as an inline note. */
   packTemplatesUnavailable?: ReadonlyArray<PackReceptionTemplateUnavailable>;
+  /** Explicit gallery reads share the route cache used to resolve selected seeds. */
+  onLoadTemplates?: () => Promise<ReceptionTemplateListResult>;
   /** Clock seam — accepted for parity with the sibling mounts (the
    *  templates browser carries no relative timestamps today, so it is
    *  unused). Defaults to `Date.now`. */
@@ -437,9 +448,10 @@ export interface TemplatesBrowserMountOptions {
   /** D-151 P2 — intent-first authoring seam. When provided, the gallery
    *  renders a "Describe it with AI" section at the top (the intent-first
    *  sibling of the template cards); absent ⇒ that section is hidden. On
-   *  submit the mount disables the button, shows an inline "Drafting…"
+   *  submit the mount disables the input and button, shows an inline "Drafting…"
    *  status, and calls this with the free text. On `ok` it shows a one-line
-   *  suggestion note then hands `(kind, config)` to `onUseProposed` + closes;
+   *  suggestion note then hands `(kind, config)` to `onUseProposed`, unless
+   *  a later interaction has taken ownership; that draft waits for review;
    *  on `!ok` it shows the friendly `message` inline + leaves the gallery
    *  usable (the degraded path). */
   onProposeIntent?: (
@@ -456,7 +468,7 @@ export interface TemplatesBrowserMountOptions {
   /** Called when the user closes the gallery (the close control) AND
    *  immediately after a "Use template" pick — the host tears the mount
    *  down. */
-  onClose: () => void;
+  onClose: (reason?: 'selection') => void;
 }
 
 /** Mounted templates-browser handle. */
@@ -474,130 +486,157 @@ export const mountTemplatesBrowser = (
   opts: TemplatesBrowserMountOptions,
 ): TemplatesBrowserMount => {
   const { host } = opts;
+  const doc = host.ownerDocument;
+  const opener = doc?.activeElement as HTMLElement | null;
+  const focusOwner = doc ? trackCustomerWorkspaceFocus(doc) : null;
   const intentEnabled = opts.onProposeIntent !== undefined;
   let disposed = false;
-  // Guards a propose in flight — a second submit (Enter + click, or a
-  // double Enter) is dropped so we never fire two concurrent `propose`
-  // rpcs or double-open the authoring form.
   let proposing = false;
-
-  host.innerHTML = renderTemplatesBrowser(
-    opts.templates,
-    opts.configTemplates ?? [],
-    intentEnabled,
-    opts.packTemplates ?? [],
-    opts.packTemplatesUnavailable ?? [],
-  );
-
-  /** Locate a marked element off the host — null on the DOM-free fake
-   *  host (no `querySelector`), which the test path tolerates. */
-  const find = (attr: string): (HTMLElement & {
-    value?: string;
-    textContent?: string | null;
-    disabled?: boolean;
-  }) | null =>
-    typeof host.querySelector === 'function'
-      ? (host.querySelector(`[${attr}]`) as never)
-      : null;
-
-  /** Set the aria-live status line (announced to screen readers). */
-  const setStatus = (text: string): void => {
-    const el = find(TEMPLATES_BROWSER_INTENT_STATUS_ATTR);
-    if (el) el.textContent = text;
+  let loading = opts.onLoadTemplates !== undefined;
+  let loadError = false;
+  let status = '';
+  let ready: { kind: ReceptionEndpointKind; config: object } | null = null;
+  let catalog: ReceptionTemplateListResult = {
+    templates: opts.templates, config_templates: opts.configTemplates ?? [],
+    pack_templates: opts.packTemplates ?? [], pack_templates_unavailable: opts.packTemplatesUnavailable ?? [],
   };
-
-  // Focus the modal heading on open (the satellite focus-on-open
-  // convention) — guarded so the DOM-free fake host in tests (no
-  // `querySelector` / `focus`) does not throw.
-  const heading =
-    typeof host.querySelector === 'function'
-      ? (host.querySelector(
-          `[${TEMPLATES_BROWSER_HEADING_ATTR}]`,
-        ) as (HTMLElement & { focus?: () => void }) | null)
-      : null;
-  heading?.focus?.();
+  const find = (attr: string): (HTMLElement & { value?: string; disabled?: boolean }) | null =>
+    typeof host.querySelector === 'function' ? host.querySelector(`[${attr}]`) : null;
+  const setStatus = (message: string): void => {
+    status = message;
+    const el = find(TEMPLATES_BROWSER_INTENT_STATUS_ATTR);
+    if (el) el.textContent = message;
+  };
+  // Catalog reads can settle while the owner is still typing. Keep the input,
+  // caret and modal scroll, and never pull focus back from another overlay.
+  const render = (): void => {
+    const input = find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR) as HTMLInputElement | null;
+    const value = input?.value;
+    const selection = input ? [input.selectionStart, input.selectionEnd, input.selectionDirection] as const : null;
+    const active = doc?.activeElement;
+    const activeAction = active && host.contains(active) ? (active as HTMLElement).dataset.action : undefined;
+    const inputFocused = active === input && input !== null;
+    const headingFocused = active === find(TEMPLATES_BROWSER_HEADING_ATTR) && active != null;
+    const scroll = host.scrollTop;
+    host.innerHTML = renderTemplatesBrowser(catalog.templates, catalog.config_templates, intentEnabled,
+      catalog.pack_templates ?? [], catalog.pack_templates_unavailable ?? [],
+      { loading, error: loadError, reloadable: opts.onLoadTemplates !== undefined });
+    const nextInput = find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR) as HTMLInputElement | null;
+    if (nextInput) {
+      if (value !== undefined) nextInput.value = value;
+      nextInput.disabled = proposing;
+    }
+    const submit = find('id="reception-intent-submit"');
+    if (submit) submit.disabled = proposing;
+    setStatus(status);
+    if (ready) find(TEMPLATES_BROWSER_INTENT_STATUS_ATTR)?.insertAdjacentHTML?.('afterend', button({
+      label: 'Review AI draft', size: 'sm', action: 'reception-template-review', data: {},
+    }));
+    const target = inputFocused && !proposing ? nextInput
+      : headingFocused ? find(TEMPLATES_BROWSER_HEADING_ATTR)
+      : activeAction ? find(`data-action="${activeAction}"`) : null;
+    if (target && !target.disabled) target.focus?.({ preventScroll: true });
+    if (inputFocused && nextInput && selection?.[0] != null && selection[1] != null)
+      nextInput.setSelectionRange(selection[0], selection[1], selection[2] ?? undefined);
+    host.scrollTop = scroll;
+  };
+  const reload = async (): Promise<void> => {
+    if (disposed || !opts.onLoadTemplates) return;
+    loading = true; loadError = false; render();
+    const ownsFocus = focusOwner?.capture() ?? (() => true);
+    try {
+      const next = await opts.onLoadTemplates();
+      if (disposed) return;
+      catalog = next;
+    } catch {
+      if (disposed) return;
+      loadError = true;
+    }
+    if (disposed) return;
+    loading = false; render();
+    if (ownsFocus() && doc && doc.activeElement === doc.body)
+      find('data-action="reception-template-reload"')?.focus?.({ preventScroll: true });
+  };
+  const close = (): void => {
+    if (disposed) return;
+    opts.onClose();
+    // The page may have re-rendered its New control since the gallery opened.
+    const fallback = doc ? [...doc.querySelectorAll<HTMLElement>('[data-action="reception-open-templates"]')]
+      .find(node => node.getClientRects().length > 0) : null;
+    const source = opener?.closest?.<HTMLElement>('[data-action="reception-open-templates"]');
+    (source?.isConnected && source.getClientRects().length > 0 ? source : fallback)?.focus?.({ preventScroll: true });
+  };
+  const useProposal = (): void => {
+    if (disposed || !ready) return;
+    opts.onUseProposed?.(ready.kind, ready.config);
+    opts.onClose('selection');
+  };
+  render();
+  find(TEMPLATES_BROWSER_HEADING_ATTR)?.focus?.();
+  const trap = doc ? wireFocusTrap({ document: doc, getContainer: () => host.querySelector('.reception-templates-browser'),
+    initialFocus: false, restoreFocus: false }) : null;
+  const onKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || !host.contains(doc?.activeElement ?? null)) return;
+    event.preventDefault(); event.stopPropagation(); close();
+  };
+  host.addEventListener('keydown', onKeydown);
 
   const handlers = {
     'reception-template-use': (dataset: DOMStringMap) => {
-      if (disposed) return;
-      const ref = dataset.templateRef;
-      if (ref === undefined) return;
-      // The card stamps its reception `kind` on the button (`intake_form`
-      // for the intake cards, the card's own kind for the config-template
-      // cards). A missing / unrecognised kind falls back to `intake_form`
-      // — the historical single-kind behaviour, and a synthesised click
-      // (a fake host in tests) without a kind keeps working.
+      if (disposed || loading || loadError || dataset.templateRef === undefined) return;
       const rawKind = dataset.kind;
-      const kind: ReceptionEndpointKind =
-        rawKind !== undefined && isReceptionEndpointKind(rawKind) ? rawKind : 'intake_form';
-      opts.onUseTemplate(ref, kind);
-      opts.onClose();
+      const kind: ReceptionEndpointKind = rawKind !== undefined && isReceptionEndpointKind(rawKind) ? rawKind : 'intake_form';
+      opts.onUseTemplate(dataset.templateRef, kind);
+      opts.onClose('selection');
     },
-    'reception-template-close': () => {
-      if (disposed) return;
-      opts.onClose();
-    },
-    // D-151 P2 — "Draft it with AI". Reads the intent free text off the
-    // host, calls `onProposeIntent`, and on `ok` hands the AI-projected
-    // `(kind, config)` to `onUseProposed` then closes. On `!ok` it shows
-    // the friendly message inline + leaves the gallery usable.
+    'reception-template-close': close,
+    'reception-template-reload': () => { if (!loading) void reload(); },
+    'reception-template-review': useProposal,
     'reception-template-propose': () => {
-      if (disposed || proposing) return;
-      const propose = opts.onProposeIntent;
-      if (propose === undefined) return;
-      const input = find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR);
-      const intent = (input?.value ?? '').trim();
-      if (intent.length === 0) {
-        setStatus('Say what you need first, then let AI write it.');
-        return;
-      }
-      const submitBtn = find('id="reception-intent-submit"');
-      proposing = true;
-      if (submitBtn && 'disabled' in submitBtn) submitBtn.disabled = true;
-      setStatus('Drafting…');
-      void propose(intent).then(
-        (result) => {
-          // The mount may have been torn down while the rpc was in flight.
-          if (disposed) return;
-          proposing = false;
-          if (submitBtn && 'disabled' in submitBtn) submitBtn.disabled = false;
-          if (result.ok) {
-            const reason = result.reason !== undefined && result.reason.length > 0
-              ? ` — ${result.reason}`
-              : '';
-            setStatus(`AI thinks you want a ${result.kind}${reason}`);
-            opts.onUseProposed?.(result.kind, result.config);
-            opts.onClose();
-            return;
-          }
-          setStatus(result.message);
-        },
-        () => {
-          if (disposed) return;
-          proposing = false;
-          if (submitBtn && 'disabled' in submitBtn) submitBtn.disabled = false;
-          setStatus(
-            'Recued could not write that. Pick a template below, or make one yourself.',
-          );
-        },
-      );
+      if (disposed || proposing || !opts.onProposeIntent) return;
+      const intent = (find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR)?.value ?? '').trim();
+      if (!intent) { setStatus('Say what you need first, then let AI write it.'); return; }
+      proposing = true; ready = null; status = 'Drafting…'; render();
+      const ownsFocus = focusOwner?.capture() ?? (() => true);
+      void opts.onProposeIntent(intent).then(result => {
+        if (disposed) return;
+        proposing = false;
+        if (result.ok) {
+          ready = { kind: result.kind, config: result.config };
+          status = `AI thinks you want a ${result.kind}${result.reason ? ` — ${result.reason}` : ''}`;
+          // A later owner interaction must not be replaced by async navigation.
+          // Keep the proposal here until they explicitly choose to review it.
+          if (ownsFocus()) { setStatus(status); useProposal(); return; }
+          status = 'Your AI draft is ready. Review it when you are ready.';
+        } else status = result.message;
+        const restoreInput = ownsFocus() && doc && doc.activeElement === doc.body;
+        render();
+        if (restoreInput) find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR)?.focus?.({ preventScroll: true });
+      }, () => {
+        if (disposed) return;
+        proposing = false;
+        status = 'Recued could not write that. Pick a template below, or make one yourself.';
+        const restoreInput = ownsFocus() && doc && doc.activeElement === doc.body;
+        render();
+        if (restoreInput) find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR)?.focus?.({ preventScroll: true });
+      });
     },
   } satisfies Record<TemplatesBrowserAction, (dataset: DOMStringMap) => void>;
-
-  const detach = createActionDispatcher<TemplatesBrowserAction>({
-    root: host,
-    // `submit` so the intent input submits on Enter (the `<form>` carries
-    // the same `data-action` as its button); `click` for the button + the
-    // template cards + close control.
-    events: ['click', 'submit'],
-    handlers,
+  const detach = createActionDispatcher<TemplatesBrowserAction>({ root: host, events: ['click', 'submit'], handlers,
+    shouldDispatch: (target, event) => event.type !== 'click' || target.tagName !== 'FORM',
   });
-
+  const onInput = (event: Event): void => {
+    if (proposing || event.target !== find(TEMPLATES_BROWSER_INTENT_INPUT_ATTR)) return;
+    if (ready) { ready = null; status = ''; render(); }
+    else setStatus('');
+  };
+  host.addEventListener('input', onInput);
+  if (opts.onLoadTemplates) void reload();
   return {
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      detach();
+      detach(); trap?.release(); focusOwner?.dispose(); host.removeEventListener('keydown', onKeydown); host.removeEventListener('input', onInput);
       host.innerHTML = '';
     },
   };
@@ -615,84 +654,151 @@ export const RECEPTION_TEMPLATES_BROWSER_STYLES = `
 .reception-templates-browser {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  max-width: 720px;
+  gap: 20px;
+  box-sizing: border-box;
+  min-width: 0;
   width: 100%;
+  max-width: 1100px;
+  padding: clamp(16px, 3vw, 28px);
   background: var(--bg);
-  border-radius: 8px;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow-wrap: anywhere;
 }
 .reception-templates-browser-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 12px;
 }
 .reception-templates-browser-title {
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0;
+  font-size: clamp(18px, 2.2vw, 22px);
+  line-height: 1.3;
+  letter-spacing: -.025em;
+  font-weight: 650;
+  margin: 6px 0 0;
   flex: 1;
+  min-width: 0;
 }
+.reception-templates-browser :is(button,input):focus-visible,
 .reception-templates-browser-title:focus-visible {
   outline: 2px solid var(--accent, var(--fg));
-  outline-offset: 2px;
+  outline-offset: 3px;
 }
-.reception-templates-browser-desc {
-  font-size: 12px;
+.reception-templates-browser-desc,
+.reception-templates-browser-section-help {
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--fg-muted);
   margin: 0;
+  max-width: 76ch;
+}
+.reception-templates-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.reception-templates-read-status {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-sunk);
+  font-size: 13px;
+  line-height: 1.6;
 }
 .reception-templates-browser-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
 }
 .reception-templates-browser-section-title {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 8px 0 0;
-}
-.reception-templates-browser-section-help {
-  font-size: 12px;
-  color: var(--fg-muted);
+  font-size: 15px;
+  font-weight: 650;
   margin: 0;
 }
 .reception-templates-browser-grid {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.reception-templates-browser .reception-template-card {
+  min-width: 0;
+  padding: 18px;
   gap: 10px;
+  background: var(--surface-sunk);
+  border-radius: 10px;
+}
+.reception-templates-browser .reception-template-card-head {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.reception-templates-browser .reception-template-name {
+  font-size: 14px;
+  line-height: 1.4;
+}
+.reception-templates-browser :is(.reception-template-desc,.reception-row-meta) {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+}
+.reception-templates-browser button {
+  min-height: 40px;
+  max-width: 100%;
+  white-space: normal;
+}
+.reception-templates-browser .reception-template-card > button {
+  align-self: flex-start;
+  margin-top: auto;
 }
 .reception-intent {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px;
+  gap: 10px;
+  min-width: 0;
+  padding: 18px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-sunk, var(--bg));
+  border-radius: 10px;
+  background: var(--surface-sunk);
 }
 .reception-intent-label {
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.5;
   font-weight: 600;
 }
 .reception-intent-row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
+  min-width: 0;
 }
 .reception-intent-input {
   flex: 1;
-  padding: 8px 10px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 9px 12px;
   border: 1px solid var(--border-strong, var(--border));
-  border-radius: 4px;
+  border-radius: 8px;
   font: inherit;
+  font-size: 13px;
   background: var(--bg);
   color: var(--fg);
 }
+.reception-intent-row button { flex-shrink: 0; }
 .reception-intent-status {
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--fg-muted);
   margin: 0;
   min-height: 1em;
+}
+@media (max-width: 700px) {
+  .reception-templates-browser-grid { grid-template-columns: minmax(0, 1fr); }
+  .reception-intent-row { flex-direction: column; align-items: stretch; }
+  .reception-intent, .reception-templates-browser .reception-template-card { padding: 14px; }
 }
 `;

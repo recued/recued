@@ -23,7 +23,7 @@
  *  switched off for the owner is a switch, and the run dialog turns it on in one click
  *  (`ProgramSwitchSet`). The result panel still links to the pack. */
 
-import type { RunNeed, RunProgramNeed, RunSwitchNeed, ServerExecuteResponse } from '@recued/contracts';
+import type { RunBrowserNeed, RunNeed, RunProgramNeed, RunSwitchNeed, ServerExecuteResponse } from '@recued/contracts';
 import type { RunModal } from '@recued/ui-shared';
 
 import { connectionsLaneAddress, connectionsReviewAccessAddress } from '../connections/connections-navigation.js';
@@ -74,11 +74,23 @@ const switchNeedStep = (need: RunSwitchNeed): { lead: string; link: { text: stri
     : { text: need.label !== undefined ? `Open ${need.label}` : 'Open its pack', href: serializeShellRoute('packs', need.pack_slug) },
 });
 
+/** D-402 slice H3c — moves a dish's browser settings from one browser to another (`dishes.use_browser`). */
+export type BrowserMove = (args: { dish_id: string; from: string; to: string }) => Promise<void>;
+
+/** D-402 slice H3c (ruling 14) — a browser the recipe's settings name, gone or not connected. The run's
+ *  reason already says which and what is missing; this says what else the owner can do, and opens the
+ *  dish's settings, where the browser is chosen. */
+const browserNeedStep = (need: RunBrowserNeed): { lead: string; link: { text: string; href: string } | null } => ({
+  lead: need.problem === 'not_paired' ? 'Use another browser instead.' : 'Or use another browser instead.',
+  link: need.dish_id === undefined ? null : { text: 'Choose a browser', href: serializeShellRoute('automation', 'dishes', need.dish_id) },
+});
+
 /** A need's sentence, and where its link goes (none when the server could not
  *  name the pack of a program). */
 export const runNeedStep = (need: RunNeed): { lead: string; link: { text: string; href: string } | null } => {
   if (need.kind === 'program') return programNeedStep(need);
   if (need.kind === 'switch') return switchNeedStep(need);
+  if (need.kind === 'browser') return browserNeedStep(need);
   const details = {
     slot: need.slot,
     ...(need.pack_slug !== undefined ? { pack_slug: need.pack_slug } : {}),
@@ -119,16 +131,31 @@ export const programNeedsFromError = (err: unknown): RunProgramNeed[] | null => 
   return needs.length > 0 ? needs : null;
 };
 
+/** D-402 slice H3c — the one browser to move to, in one click: only when the run names exactly one
+ *  browser it could not use, the server named the only other one connected that the run does not already
+ *  use, and the dish is known. ⛔ Never two at once: two missing browsers moved to the one connected would
+ *  make a recipe that reads in one and types in the other do both in one. Those are chosen in the dish's
+ *  settings. */
+const browserToMoveTo = (needs: readonly RunNeed[]): (RunBrowserNeed & { dish_id: string; instead: { browser_id: string; name: string } }) | undefined => {
+  const browsers = needs.filter((need): need is RunBrowserNeed => need.kind === 'browser');
+  if (new Set(browsers.map((need) => need.browser_id)).size !== 1) return undefined;
+  const offer = browsers.find((need) => need.instead !== undefined && need.dish_id !== undefined);
+  return offer as (RunBrowserNeed & { dish_id: string; instead: { browser_id: string; name: string } }) | undefined;
+};
+
 /** The run dialog's next step for these needs, or null when there are none. With
  *  `turnOn`, a program switched off for the owner is turned on from the dialog ("Turn it
- *  on"), every one the run named at once. */
-export const runNeedsStep = (needs: readonly RunNeed[], turnOn?: ProgramSwitchSet): RunModal.RunModalNextStep | null => {
+ *  on"), every one the run named at once. With `move` (D-402 slice H3c), a browser no longer
+ *  paired or not connected is replaced by the only other one connected, "Use “Work” instead". */
+export const runNeedsStep = (needs: readonly RunNeed[], turnOn?: ProgramSwitchSet, move?: BrowserMove): RunModal.RunModalNextStep | null => {
   const steps = needs.map(runNeedStep);
   if (steps.length === 0) return null;
   const switches = needs.filter((need): need is RunSwitchNeed => need.kind === 'switch');
+  const moveTo = move !== undefined && switches.length === 0 ? browserToMoveTo(needs) : undefined;
   return {
-    lead: steps.map((step) => step.lead).join(' '),
-    links: steps.flatMap((step) => (step.link === null ? [] : [step.link])),
+    lead: [...new Set(steps.map((step) => step.lead))].join(' '),
+    links: steps.flatMap((step) => (step.link === null ? [] : [step.link]))
+      .filter((link, index, all) => all.findIndex((other) => other.href === link.href) === index),
     ...(turnOn !== undefined && switches.length > 0
       ? {
           action: {
@@ -142,13 +169,23 @@ export const runNeedsStep = (needs: readonly RunNeed[], turnOn?: ProgramSwitchSe
               : 'Their programs are'} on now. Run it again.`,
           },
         }
+      : moveTo !== undefined
+      ? {
+          action: {
+            text: `Use “${moveTo.instead.name}” instead`,
+            run: async () => {
+              await move!({ dish_id: moveTo.dish_id, from: moveTo.browser_id, to: moveTo.instead.browser_id });
+            },
+            done: `It acts in “${moveTo.instead.name}” now. Run it again.`,
+          },
+        }
       : {}),
   };
 };
 
 /** The run dialog's next step for a run that returned errors, or null. */
-export const runNeedsNextStep = (result: ServerExecuteResponse, turnOn?: ProgramSwitchSet): RunModal.RunModalNextStep | null =>
-  runNeedsStep(needsOf(result), turnOn);
+export const runNeedsNextStep = (result: ServerExecuteResponse, turnOn?: ProgramSwitchSet, move?: BrowserMove): RunModal.RunModalNextStep | null =>
+  runNeedsStep(needsOf(result), turnOn, move);
 
 /** The offer on a result panel: a sentence and a link for each need. It wears
  *  the install offer's classes, which both of its hosts inject. */

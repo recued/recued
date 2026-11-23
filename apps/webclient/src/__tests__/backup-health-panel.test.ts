@@ -20,6 +20,23 @@ const setup = async (value = initial) => {
 };
 
 describe('backup health panel', () => {
+  it('shows available age evidence without inventing optional receipt IDs, and adds them after refresh', async () => {
+    const value: ArchiveBackupHealthStatus = { ...initial,
+      backup: { state: 'current', created_at: 1_700_000_000_000, due_at: 1_700_003_600_000 },
+      recovery: { state: 'current', finished_at: 1_700_000_000_000, due_at: 1_700_086_400_000 } };
+    const h = await setup(value);
+    expect(h.node('backup').textContent).toContain('Verified backup within the age limit · Backup started ');
+    expect(h.node('recovery').textContent).toContain('Passing recovery test within the age limit · Passed ');
+    expect(h.node('backup').textContent).not.toContain('Backup undefined');
+    expect(h.node('recovery').textContent).not.toContain('Test undefined');
+    h.current({ ...value, backup: { ...value.backup!, operation_id: 'backup-proof' },
+      recovery: { ...value.recovery!, operation_id: 'recovery-proof' } });
+    await h.mounted.refresh();
+    expect(h.node('backup').textContent).toContain(' · Backup backup-proof · Fresh copy due ');
+    expect(h.node('recovery').textContent).toContain(' · Test recovery-proof · Test due ');
+    expect(h.save).not.toHaveBeenCalled();
+  });
+
   it('does not report newer edits when they return to the submitted policy', async () => {
     const h = await setup(); let saved!: (value: ArchiveBackupHealthStatus) => void;
     h.save.mockImplementationOnce(() => new Promise(resolve => { saved = resolve; }));

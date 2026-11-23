@@ -144,6 +144,12 @@ export const TRANSPARENCY_TEMPLATES_EN: Readonly<{
     if (e.reason === 'no_source') {
       return 'no AI model source available for this turn — check Settings → AI / Models';
     }
+    if (e.reason === 'output_limit') {
+      return 'the AI model used its whole output allowance before it answered, most likely on thinking — if it keeps happening, turn its thinking off in Settings → AI / Models';
+    }
+    if (e.reason === 'model_unavailable') {
+      return 'the provider does not have this AI model — choose another in Settings → AI / Models';
+    }
     if (e.reason === 'invalid_output') {
       return 'the AI returned output that could not be decoded';
     }

@@ -3,7 +3,9 @@ import type { CalendarOverlapRequest, CalendarOverlapResult, CalendarEventSnapsh
 import type { CalendarEventDeleteRequest, CalendarEventDeletionCheckRequest } from '@recued/contracts';
 
 /** Local RPC fixture. Clone every reply, as a real WebSocket boundary does. */
-export type CalendarEventFixtureMode = 'timed' | 'all-day' | 'connected' | 'invitation' | 'editable-google' | 'editable-outlook';
+export type CalendarEventFixtureMode = 'timed' | 'all-day' | 'connected' | 'invitation' | 'editable-google' | 'editable-outlook'
+  /** D-407 slice 5 — a local event the Occasion tick is offered on, Dr. Lee waiting for its next date and matching. */
+  | 'occasion';
 export const installCalendarEventFixture = async (page: Page, mode: CalendarEventFixtureMode = 'timed', agenda = false): Promise<void> => {
   await page.addInitScript(({ mode, agenda }) => {
     const editableRemote = mode === 'editable-google' || mode === 'editable-outlook';
@@ -42,12 +44,17 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
     const deletionChecks: CalendarEventDeletionCheckRequest[] = [];
     const removed = new Set<string>();
     const creates: CalendarEventCreateRequest[] = [];
+    const chatSends: Record<string, unknown>[] = [];
     const created = new Map<string, CalendarEventCreateResult>();
     const record = () => ({ record_id: saved.event.record_id, source_id: saved.event.source_id, received_at: 1_700_000_000_000,
       modified_at: 1_700_000_000_000 + version, size_bytes: saved.event.description.length,
       hot_fields: { summary: saved.event.summary, location: saved.event.location, start_at: saved.event.start_at, end_at: saved.event.end_at,
         is_all_day: saved.event.is_all_day, status: saved.event.status }, body_inline: saved.event.description });
-    const view = (): CalendarEventSnapshot => structuredClone({ ...saved, record: record() });
+    // D-407 slice 5 — the event's Occasion block, as the server's adoption reads it, and each change the tick sent.
+    const waitingLee = [{ occasion_id: 'occ-lee', title: 'Dr. Lee', private: false, match: true as const }];
+    let occasion: CalendarEventSnapshot['occasion'] = mode === 'occasion' ? { waiting: waitingLee } : undefined;
+    const occasionChanges: Record<string, unknown>[] = [];
+    const view = (): CalendarEventSnapshot => structuredClone({ ...saved, record: record(), ...(occasion ? { occasion } : {}) });
     const extra = (id: string, summary: string, start: string | number, end: string | number, is_all_day = false): CollectionRecord => ({
       record_id: id, source_id: id, received_at: 1, modified_at: 1, size_bytes: 0,
       hot_fields: { summary, start_at: typeof start === 'string' ? Date.parse(start) : start,
@@ -69,7 +76,13 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
       pending() { return releaseList !== undefined; },
       release() { if (!releaseList) throw new Error('No agenda read is waiting.'); const done = releaseList; releaseList = undefined; done(); },
     };
-    const controls = { writes, responses, creates, deletes, deletionChecks, createdCount: () => created.size,
+    const controls = { writes, responses, creates, deletes, deletionChecks, chatSends, createdCount: () => created.size,
+      occasionChanges: () => structuredClone(occasionChanges),
+      setConferenceUrl(url?: string) { saved.event.conference_url = url; },
+      setStatus(status: 'confirmed' | 'tentative' | 'cancelled') { saved.event.status = status; },
+      setRecurring(value: boolean) { saved.event.is_recurring = value; },
+      setSpan(milliseconds: number) { saved.event.end_at = saved.event.start_at + milliseconds; },
+      setAttendees(value: NonNullable<CalendarEventSnapshot['event']['attendees']>) { saved.event.attendees = value; saved.event.attendee_count = value.length; },
       setDeleteSupported(supported: boolean) { if (supported) saved.deletable = true; else delete saved.deletable; },
       replaceCalendar() { saved.incarnation = 'replacement-calendar'; },
       setReadAvailable(available: boolean) { readAvailable = available; },
@@ -92,6 +105,17 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
     };
     Object.assign(window, { __calendarOverlap: overlapControls, __calendarEvent: controls, __calendarAgenda: agendaControls, __connectionsFixture: async (method: string, raw: unknown) => {
       const args = raw as Record<string, unknown> | undefined;
+      if (method === 'chat.send') chatSends.push(structuredClone(args!));
+      if (method === 'yours.change' && (args?.action === 'occasion.adopt_event' || args?.action === 'occasion.release_event')) {
+        occasionChanges.push(structuredClone(args));
+        if (args.action === 'occasion.release_event') {
+          occasion = { waiting: waitingLee };
+          return { result: { message: 'The event is let go, and its occasion waits for its next date again. The event stays in your calendar.' } };
+        }
+        occasion = { owner: { occasion_id: String(args.occasion_id ?? 'occ-new'), title: args.occasion_id ? 'Dr. Lee' : saved.event.summary,
+          private: args.private === true }, waiting: [] };
+        return { result: { message: `This event is Dr. Lee's next one, ${args.private === true ? 'Private' : 'Shown by name'}. It stays as it is in your calendar.` } };
+      }
       if (method === 'collection.listInstances') return { result: { instances: [{
         slug, platform: 'calendar', adapter_type: mode === 'editable-outlook' ? 'graph' : connected ? 'gcal' : 'local', caps: {}, auth_state: 'healthy', last_synced_at: 1_700_000_000_000,
       }, ...(agenda ? [{ slug: 'work', platform: 'calendar', adapter_type: 'gcal', caps: {}, auth_state: 'healthy', last_synced_at: Date.now() }] : [])] } };
@@ -232,11 +256,18 @@ export const installCalendarEventFixture = async (page: Page, mode: CalendarEven
 
 declare global { interface Window { __calendarEvent: {
   writes: CalendarEventUpdateRequest[];
+  occasionChanges(): Record<string, unknown>[];
   creates: CalendarEventCreateRequest[];
   createdCount(): number;
   responses: CalendarEventRespondRequest[];
   deletes: CalendarEventDeleteRequest[];
   deletionChecks: CalendarEventDeletionCheckRequest[];
+  chatSends: Record<string, unknown>[];
+  setConferenceUrl(url?: string): void;
+  setStatus(status: 'confirmed' | 'tentative' | 'cancelled'): void;
+  setRecurring(value: boolean): void;
+  setSpan(milliseconds: number): void;
+  setAttendees(value: NonNullable<CalendarEventSnapshot['event']['attendees']>): void;
   setDeleteSupported(supported: boolean): void;
   replaceCalendar(): void;
   setReadAvailable(available: boolean): void;

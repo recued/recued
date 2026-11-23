@@ -51,6 +51,7 @@
  *  Spec: D-149 § A.5.2 + § Must Hold I-12 + I-12b. */
 
 import { randomUUID } from 'node:crypto';
+import { readLiveReceptionEndpoint } from '../endpoint-authority.js';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
@@ -226,6 +227,9 @@ const parseSlotPipe = (
 
 export interface SchedulingLinkBookHandlerDeps {
   readonly getStore: () => PublicEndpointRegistryStore;
+  readonly getPepper: () => Buffer;
+  /** Trust the forwarded public scheme only behind the configured proxy. */
+  readonly trustForwardedProto?: boolean;
   /** D-210 A.8 slice 4b-ii — the MERGED submission store. A booking is a
    *  `reception_form_submission` row with a slot; `reception_booking_request`
    *  has no writer after this slice (4c drops it). */
@@ -290,15 +294,16 @@ export const createSchedulingLinkBookHandler = (
     const form = parsed;
 
     // Origin / Referer same-origin check
-    if (!verifyOrigin(req)) {
+    if (!verifyOrigin(req, deps.trustForwardedProto === true)) {
       writeErrorPage(res, null, 'Submission blocked by origin policy.', 403);
       return;
     }
 
-    // Load config
-    const row = deps.getStore().findById(endpoint_id);
+    // Dispatch preceded the body wait. Reauthorize before consuming its nonce.
+    const liveEndpoint = () => readLiveReceptionEndpoint(req, endpoint_id, 'scheduling_link', deps);
+    const row = liveEndpoint();
     if (!row) {
-      writeErrorPage(res, null, 'Booking unavailable.', 503);
+      writeErrorPage(res, null, 'This booking link is no longer available. Ask for a new link.', 410);
       return;
     }
     const config = parseSchedulingLinkConfig(row.metadata);
@@ -348,7 +353,13 @@ export const createSchedulingLinkBookHandler = (
       min_advance_notice_hours: config.min_advance_notice_hours,
       max_lead_time_days: config.max_lead_time_days,
     });
-    const built = buildReceptionPacket('scheduling_link_packet', rawInput, endpoint, {
+    // Use the live expiry, including an extension made during the body wait.
+    const built = buildReceptionPacket('scheduling_link_packet', rawInput, {
+      endpoint_id,
+      kind: endpoint.kind,
+      ...(endpoint.audit_context === undefined ? {} : { audit_context: endpoint.audit_context }),
+      ...(row.expires_at === null ? {} : { expires_at: row.expires_at }),
+    }, {
       now,
       randomToken: () => randomUUID(),
     });
@@ -507,9 +518,12 @@ export const createSchedulingLinkBookHandler = (
       max_bookings_per_day: config.max_bookings_per_day,
       day_window_start_at: now - ONE_DAY_MS,
       now,
-    });
+    }, () => liveEndpoint() !== null);
     if ('conflict' in insertResult) {
-      // `day_cap` is the only conflict the store can return.
+      if (insertResult.conflict === 'not_authorized') {
+        writeErrorPage(res, null, 'This booking link is no longer available. Ask for a new link.', 410);
+        return;
+      }
       writeErrorPage(
         res,
         config,

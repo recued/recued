@@ -23,8 +23,11 @@ import {
   TRIGGER_PREAPPROVAL_PANEL_PER_RUN_ATTR,
   TRIGGER_PREAPPROVAL_PANEL_ROW_ATTR,
   TRIGGER_PREAPPROVAL_PANEL_WRITE_ATTR,
+  TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS,
+  TRIGGER_PREAPPROVAL_PANEL_BROADCAST_KINDS,
   type TriggerPreapprovalPanelCallers,
 } from '../contracts/trigger-preapproval-panel.js';
+import { WEBCLIENT_DEFAULT_SUBSCRIPTIONS } from '../realtime/subscriber.js';
 
 interface FakeEl {
   tagName: string;
@@ -130,7 +133,8 @@ const choice = (over: Partial<TriggerPreapprovalChoice> = {}): TriggerPreapprova
 });
 
 const mount = (recipes: TriggerPreapprovalChoice[] | (() => Promise<{ recipes: TriggerPreapprovalChoice[] }>),
-  over: Partial<TriggerPreapprovalPanelCallers> = {}, trigger: TriggerPreapprovalTrigger = SCHEDULE) => {
+  over: Partial<TriggerPreapprovalPanelCallers> = {}, trigger: TriggerPreapprovalTrigger = SCHEDULE,
+  subscribe?: (kind: string, listener: (event: { holder: string }) => void) => () => void) => {
   const doc = fakeDocument();
   const host = doc.createElement('details');
   doc.body.appendChild(host);
@@ -139,7 +143,8 @@ const mount = (recipes: TriggerPreapprovalChoice[] | (() => Promise<{ recipes: T
     ({ preapproval: view({ id: 'tpa_new', writes: [...args.writes] }) }));
   const revoke = vi.fn(async (args: { id: string }) => ({ preapproval: view({ id: args.id, state: 'revoked', revoked_at: NOW }) }));
   const callers = { choices, grant, revoke, ...over };
-  const panel = mountTriggerPreapprovalPanel({ host: host as never, trigger, callers, document: doc as never });
+  const panel = mountTriggerPreapprovalPanel({ host: host as never, trigger, callers, document: doc as never,
+    ...(subscribe !== undefined ? { subscribe: subscribe as never } : {}) });
   const root = one(host, TRIGGER_PREAPPROVAL_PANEL_ATTR);
   return { doc, host, root, panel, callers };
 };
@@ -330,6 +335,37 @@ describe('D-341 slice B2b — "Allow without asking"', () => {
   });
 });
 
+describe('D-402 ruling 5 — from a server that grants every write of the recipe', () => {
+  it('lists its changes and what still asks, and "Allow without asking" grants them all, with no count', async () => {
+    let listed = [choice({ grants_whole_recipe: true })];
+    const { root, callers } = mount(async () => ({ recipes: listed }));
+    await tick();
+    // Nothing to tick and no times a run: the changes are listed, each by its op.
+    expect(all(root, TRIGGER_PREAPPROVAL_PANEL_PER_RUN_ATTR)).toEqual([]);
+    expect(all(root, TRIGGER_PREAPPROVAL_PANEL_WRITE_ATTR).map((line) => [line.getAttribute(TRIGGER_PREAPPROVAL_PANEL_WRITE_ATTR), line.tagName]))
+      .toEqual([[POST, 'P'], [SEND, 'P']]);
+    expect(text(root)).toContain('Always asks: Delete one daily reading. It deletes or can\'t be undone.');
+    expect(text(root)).toContain('Every time it runs, until you end it. A change to the recipe asks you again.');
+    one(root, TRIGGER_PREAPPROVAL_PANEL_GRANT_ATTR).click();
+    expect(callers.grant).toHaveBeenCalledWith({ trigger: SCHEDULE, recipe_id: 'daily-brief', writes: ['*'] });
+    // Granted: nothing is left to offer, and what still asks is still said.
+    listed = [choice({ grants_whole_recipe: true, preapprovals: [view({ id: 'tpa_new', writes: ['*'], max_per_run: 0,
+      write_labels: ['Post a note to the team', 'Send an email'] })] })];
+    await tick();
+    expect(all(root, TRIGGER_PREAPPROVAL_PANEL_GRANT_ATTR)).toEqual([]);
+    expect(all(root, TRIGGER_PREAPPROVAL_PANEL_WRITE_ATTR)).toEqual([]);
+    expect(text(one(root, TRIGGER_PREAPPROVAL_PANEL_ROW_ATTR, 'tpa_new'))).toContain('Every time it runs');
+    expect(text(root)).toContain('Always asks: Delete one daily reading.');
+  });
+
+  it('a page from a server before it keeps the writes to tick and the times a run', async () => {
+    const { root } = mount([choice()]);
+    await tick();
+    expect(all(root, TRIGGER_PREAPPROVAL_PANEL_PER_RUN_ATTR)).toHaveLength(1);
+    expect(one(root, TRIGGER_PREAPPROVAL_PANEL_WRITE_ATTR, POST).checked).toBe(true);
+  });
+});
+
 describe('D-341 slice B2b — "End it"', () => {
   it('asks once more, then ends it; Cancel puts focus back on "End it"', async () => {
     let listed = [choice({ preapprovals: [view()] })];
@@ -488,3 +524,54 @@ describe('D-341 — a server from before pre-approvals shows no "What it may do 
   });
 });
 
+
+describe('D-402 — a trigger\'s page reads its pre-approvals again when one changes anywhere', () => {
+  it('a trigger\'s change reads again, once for a burst; a caller\'s reads nothing; an end in flight reads when it settles; disposed, it stops', async () => {
+    vi.useFakeTimers();
+    try {
+      let listener: ((event: { holder: string }) => void) | undefined;
+      const unsubscribe = vi.fn();
+      const subscribe = vi.fn((_kind: string, fn: (event: { holder: string }) => void) => { listener = fn; return unsubscribe; });
+      let listed = [choice({ preapprovals: [view()] })];
+      let finish: (value: unknown) => void = () => undefined;
+      const revoke = vi.fn(() => new Promise<never>((resolve) => { finish = resolve as (value: unknown) => void; }));
+      const m = mount(async () => ({ recipes: listed }), { revoke }, SCHEDULE, subscribe);
+      await m.panel.whenLoaded();
+      expect(subscribe.mock.calls.map(([kind]) => kind)).toEqual(['contract.preapproval_changed']);
+      expect(m.callers.choices).toHaveBeenCalledTimes(1);
+      // "Always allow for this schedule", answered on another device: one read shows the new row.
+      listed = [choice({ preapprovals: [view(), view({ id: 'tpa_2' })] })];
+      listener!({ holder: 'trigger' });
+      listener!({ holder: 'trigger' });
+      expect(m.callers.choices).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS);
+      expect(m.callers.choices).toHaveBeenCalledTimes(2);
+      expect(all(m.root, TRIGGER_PREAPPROVAL_PANEL_ROW_ATTR).map((row) => row.getAttribute(TRIGGER_PREAPPROVAL_PANEL_ROW_ATTR)))
+        .toEqual(['tpa_1', 'tpa_2']);
+      // A caller's pre-approval is not this page's.
+      listener!({ holder: 'caller' });
+      await vi.advanceTimersByTimeAsync(TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS);
+      expect(m.callers.choices).toHaveBeenCalledTimes(2);
+      // While the owner's own end runs, a change waits for it: the end reads once it settles.
+      one(one(m.root, TRIGGER_PREAPPROVAL_PANEL_ROW_ATTR, 'tpa_1'), TRIGGER_PREAPPROVAL_PANEL_END_ATTR, '').click();
+      one(m.root, TRIGGER_PREAPPROVAL_PANEL_CONFIRM_ATTR).click();
+      listener!({ holder: 'trigger' });
+      await vi.advanceTimersByTimeAsync(TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS);
+      expect(m.callers.choices).toHaveBeenCalledTimes(2);
+      finish({ preapproval: view({ state: 'revoked', revoked_at: NOW }) });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(m.callers.choices).toHaveBeenCalledTimes(3);
+      listener!({ holder: 'trigger' });
+      m.panel.dispose();
+      await vi.advanceTimersByTimeAsync(TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS);
+      expect(m.callers.choices).toHaveBeenCalledTimes(3);
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the kinds it reads again on are ones the web client names (one it does not name never arrives)', () => {
+    for (const kind of TRIGGER_PREAPPROVAL_PANEL_BROADCAST_KINDS) expect(WEBCLIENT_DEFAULT_SUBSCRIPTIONS).toContain(kind);
+  });
+});

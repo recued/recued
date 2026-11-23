@@ -30,13 +30,33 @@ test.beforeEach(({ page }) => {
 });
 test.afterEach(() => expect(errors).toEqual([]));
 
+test('a highlighted search passage opens the full source record', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto('/universal-search-harness.html?navigation=mail&excerpts');
+  await page.waitForFunction(() => window.__universalSearch?.ready === true);
+  await page.getByRole('searchbox', { name: 'Search everything' }).fill('renewal deadline');
+  const result = page.locator('[data-search-record="work-1"]');
+  await expect(result.locator('.rq-row-excerpt')).toContainText('The renewal deadline is 30 November.');
+  await expect(result.locator('mark')).toHaveText(['renewal', 'deadline']);
+  await expect(result.locator('img')).toHaveCount(0);
+  await result.locator('mark').filter({ hasText: 'renewal' }).click();
+  await expect.poll(() => calls(page, 'instances')).toEqual(['mail']);
+  await release(page, 'instances');
+  await expect.poll(() => calls(page, 'list')).toEqual(['mail/work']);
+  await release(page, 'list');
+  await expect.poll(() => calls(page, 'get')).toEqual(['mail/work/work-1']);
+  await release(page, 'get');
+  await expect(page.locator('[data-recued-collection-detail-heading]')).toHaveText('work record');
+  await expect(page.getByText(/Routine account background\..*The renewal deadline.*Closing account background\./)).toBeVisible();
+});
+
 for (const platform of ['mail', 'calendar', 'file'] as const) {
   for (const action of ['group', 'record'] as const) {
     for (const width of [390, 1280]) {
       test(`${platform} ${action} handoff waits for its source at ${width}px`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         await open(page, platform);
-        const button = page.getByRole('button', { name: action === 'group' ? 'More in work' : /Search work/, exact: action === 'group' });
+        const button = page.getByRole('button', { name: action === 'group' ? 'More in work' : /^Search work(?:\s|$)/, exact: action === 'group' });
         await button.focus();
         await page.keyboard.press('Enter');
         await expect.poll(() => calls(page, 'instances')).toEqual([platform]);
@@ -93,7 +113,7 @@ for (const platform of ['mail', 'calendar', 'file'] as const) {
 
 test('changing accounts while a record handoff waits cannot open that record in the new account', async ({ page }) => {
   await open(page);
-  await page.getByRole('button', { name: /Search work/ }).click();
+  await page.getByRole('button', { name: /^Search work(?:\s|$)/ }).click();
   await expect.poll(() => calls(page, 'instances')).toEqual(['mail']);
   await release(page, 'instances');
   await expect.poll(() => calls(page, 'list')).toEqual(['mail/work']);
@@ -111,7 +131,7 @@ test('changing accounts while a record handoff waits cannot open that record in 
 
 test('leaving and returning to the same tab retires the earlier record handoff', async ({ page }) => {
   await open(page);
-  await page.getByRole('button', { name: /Search work/ }).click();
+  await page.getByRole('button', { name: /^Search work(?:\s|$)/ }).click();
   await expect.poll(() => calls(page, 'instances')).toEqual(['mail']);
   await tab(page, 'contact').click();
   await tab(page, 'mail').click();
@@ -175,7 +195,7 @@ test('retrying a failed source list preserves the source chosen from Search', as
 for (const phase of ['instances', 'list'] as const) {
   test(`Back retires a record handoff while ${phase} is pending`, async ({ page }) => {
     await open(page);
-    await page.getByRole('button', { name: /Search work/ }).click();
+    await page.getByRole('button', { name: /^Search work(?:\s|$)/ }).click();
     await expect.poll(() => calls(page, 'instances')).toEqual(['mail']);
     if (phase === 'list') {
       await release(page, 'instances');

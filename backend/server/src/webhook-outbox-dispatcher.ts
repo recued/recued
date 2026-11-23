@@ -44,6 +44,10 @@ export interface WebhookOutboxDispatcherOptions {
   /** Asked before each claimed event is dispatched: true ends the pass
    *  there, handing the rest back for the next boot. */
   shouldStop?: () => boolean;
+  /** Called after an event's row is durably `dispatched`. D-201 Slice 10A:
+   *  the recipe-dispatch worker runs a target only once its event's row is
+   *  marked, so this is when it can start. Never throws into the pass. */
+  onDispatched?: () => void;
 }
 
 export interface WebhookOutboxDispatchResult {
@@ -172,6 +176,11 @@ export const dispatchWebhookOutboxOnce = async (
       }), timeoutMs);
       store.markOutboxDispatched(claim.outbox_id, claim.claim_token);
       result.dispatched += 1;
+      try {
+        options.onDispatched?.();
+      } catch {
+        // A wake-up only: the worker's own poll finds the work regardless.
+      }
     } catch (error) {
       // The server refused to start the run because it is restarting: the
       // same "not run" as above, for this claim and every one after it. (A

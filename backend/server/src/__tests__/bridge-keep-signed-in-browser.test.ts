@@ -3,7 +3,9 @@
  *  keeps a page from being reloaded. The tick that runs them is driven over fakes
  *  (`apps/bridge/src/__tests__/keep-signed-in.test.ts`).
  *
- *  The site here signs a session out after 1.5 s without a request, as a console does after minutes. */
+ *  The site here signs a session out after 1.5 s without a request, as a console does after minutes. Follow-up 28: some
+ *  of its pages, once loaded, have their site answer a request elsewhere: at its sign-in page, at another of its pages,
+ *  at another site's, or not at all. */
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -28,6 +30,20 @@ describe('D-347 follow-up 19 — Keep signed in, in real Chrome', () => {
   // ⚠ 240s: the fixture bounds Chrome's MV3 worker start at 180s with a named error.
   beforeAll(async () => {
     server = createServer((request, response) => {
+      // Follow-up 28 — loaded, each of these pages has its request answered elsewhere.
+      if (request.headers['sec-fetch-mode'] !== 'navigate') {
+        const port = (server!.address() as { port: number }).port;
+        const sentOn = { '/to-sign-in': '/login?next=%2Fto-sign-in', '/moves-on': '/console',
+          '/to-another-site': `http://localhost:${String(port)}/signin?continue=%2Fto-another-site` }[request.url ?? ''];
+        if (sentOn !== undefined) {
+          response.writeHead(302, { location: sentOn }).end();
+          return;
+        }
+        if (request.url === '/drops') {
+          request.socket.destroy();
+          return;
+        }
+      }
       const sid = /(?:^|;\s*)sid=([^;]+)/.exec(request.headers.cookie ?? '')?.[1];
       const live = sid !== undefined && sessions.has(sid) && Date.now() - sessions.get(sid)! < IDLE_MS;
       if (request.url === '/alive') {
@@ -70,6 +86,22 @@ describe('D-347 follow-up 19 — Keep signed in, in real Chrome', () => {
     expect(await alive()).toBe(true);
     await wait(2_000);
     expect(await alive()).toBe(false);
+  }, 60_000);
+
+  it('follow-up 28 — the request says where its site sent it: to its sign-in page, to another of its pages, or on to another site', async () => {
+    await browser!.reset(`${base}/to-sign-in`);
+    expect(await browser!.page.evaluate(keepSessionAlive)).toEqual({ status: 200, redirected_to: `${base}/login?next=%2Fto-sign-in` });
+    await browser!.reset(`${base}/moves-on`);
+    expect(await browser!.page.evaluate(keepSessionAlive)).toEqual({ status: 200, redirected_to: `${base}/console` });
+    // Another site does not let the page read its answer, so the request fails: asked again without following, it was sent on.
+    await browser!.reset(`${base}/to-another-site`);
+    expect(await browser!.page.evaluate(keepSessionAlive)).toEqual({ elsewhere: true });
+    // One that fails for another reason is no such thing.
+    await browser!.reset(`${base}/drops`);
+    expect(await browser!.page.evaluate(keepSessionAlive)).toEqual({ failed: expect.any(String) });
+    // A page whose site answers it there, as before.
+    await browser!.reset(`${base}/console`);
+    expect(await browser!.page.evaluate(keepSessionAlive)).toEqual({ status: 200 });
   }, 60_000);
 
   it('something typed and not sent is told, in a field, a box or an editor; the page as it loaded is not', async () => {

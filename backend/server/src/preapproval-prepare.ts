@@ -91,7 +91,8 @@ export const prepareRecipeSnapshot = (loaded: PreapprovalRecipeSource, requested
   // reviewed lifecycle or be silently labelled part of complete coverage.
   if (loaded.definition.output.exchange) return unresolved('Post-run exchange delivery requires a frozen continuation before this recipe can be reviewed.');
   const config = mergeRecipeConfigLayers({ requested, install: loaded.install_config, bound_dish: loaded.bound_dish });
-  for (const [key, value] of Object.entries(loaded.definition.variables)) {
+  // D-201 Slice 10AW (10AS finding 30) — a recipe may leave its variables out.
+  for (const [key, value] of Object.entries(loaded.definition.variables ?? {})) {
     if (isPrototypeSensitiveKey(key)) return unresolved('A recipe variable uses an invalid name.');
     if (!Object.hasOwn(config, key)) {
       const defaultValue = extractVariableDefault(value);

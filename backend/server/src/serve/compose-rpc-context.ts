@@ -35,6 +35,7 @@ import {
 import {
   composePackListRpcDeps,
 } from '../composition/bin/wire-pack-list-rpc-deps.js';
+import { createThingTypeQueries } from '../next-steps/thing-steps.js';
 import {
   composePackUninstallRpcDeps,
 } from '../composition/bin/wire-pack-uninstall-rpc-deps.js';
@@ -405,6 +406,8 @@ export const composeRpcContext = (
     // D-320 audit — an update's Connect starts at the connection the pack's runs
     // use, so a deleted connection's dormant binding must not count.
     ...(app.connectionStoreRef ? { isConnectionSetUp: isConnectionSetUpIn(app.connectionStoreRef) } : {}),
+    // D-404 slice E — the types an installed pack ships that the owner has none of in Yours.
+    ...(storage.db ? { missingThings: createThingTypeQueries(storage.db).packMissingThings } : {}),
     // D-321 W2 / S8 — the packs a run resolves through: the SAME
     // `buildPackOpResolution` the run path lowers with and the runnability
     // read discloses from, so a row's missing packs are the ones a run refuses.
@@ -473,6 +476,8 @@ export const composeRpcContext = (
     gatedActionStore: storage.gatedActionStore,
     settledRunResults: storage.settledRunResults,
     triggerPreapprovals: storage.triggerPreapprovalStore,
+    // D-402 slice F5 — a run's page names the AI app whose "Always" let its writes through.
+    ...(options.execution.executeDeps.aiAppNameOf !== undefined ? { aiAppNameOf: options.execution.executeDeps.aiAppNameOf } : {}),
     serverInstanceId: storage.serverInstanceId,
     pairing: storage.pairing,
     circuitStore,

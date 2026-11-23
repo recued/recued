@@ -742,6 +742,42 @@ describe('CalDavProvider — initialScan', () => {
     expect(got).toEqual(['A', 'B']);
   });
 
+  it('D-407 Q8: CLASS PRIVATE or CONFIDENTIAL is the calendar\'s private marking, on each occurrence; an override keeps its own', async () => {
+    const ics = (lines: string[]) => lines.join('\r\n');
+    // A daily series marked private, its second day moved and written with no CLASS of its own
+    // (RFC 5545 §3.8.1.3: PUBLIC; a property is never inherited from the series).
+    const series = ics(['BEGIN:VCALENDAR', 'VERSION:2.0',
+      'BEGIN:VEVENT', 'UID:therapy', 'DTSTART:20260421T090000Z', 'DTEND:20260421T100000Z', 'RRULE:FREQ=DAILY;COUNT=3',
+      'SUMMARY:Therapy', 'CLASS:PRIVATE', 'END:VEVENT',
+      'BEGIN:VEVENT', 'UID:therapy', 'RECURRENCE-ID:20260422T090000Z', 'DTSTART:20260422T110000Z', 'DTEND:20260422T120000Z',
+      'SUMMARY:Therapy', 'END:VEVENT', 'END:VCALENDAR']);
+    const one = (uid: string, summary: string, cls?: string) => ics(['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', `UID:${uid}`,
+      'DTSTART:20260425T120000Z', 'DTEND:20260425T130000Z', `SUMMARY:${summary}`, ...(cls ? [`CLASS:${cls}`] : []), 'END:VEVENT', 'END:VCALENDAR']);
+    const entry = (name: string, body: string) => `<response><href>/calendars/alice/work/${name}.ics</href><propstat><prop>`
+      + `<getetag>"${name}"</getetag><c:calendar-data>${body}</c:calendar-data></prop></propstat></response>`;
+    const report = `<?xml version="1.0"?><multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">${[
+      entry('therapy', series), entry('lawyer', one('lawyer', 'Lawyer', ' confidential ')),
+      entry('standup', one('standup', 'Standup', 'PUBLIC')), entry('lunch', one('lunch', 'Lunch'))].join('')}</multistatus>`;
+    const { fetcher } = makeRouter([
+      { match: (u, init) => u.includes('/alice/') && init?.method === 'PROPFIND', response: { status: 207, body: homeXml } },
+      { match: (u, init) => u.includes('/alice/work/') && init?.method === 'REPORT', response: { status: 207, body: report } },
+    ]);
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), fetcher, etagStore: makeEtagStore(),
+      scheduler: () => () => undefined, now: () => Date.UTC(2026, 3, 20) });
+    cleanup.push(() => provider.close());
+    const got: Array<[string, number, boolean]> = [];
+    await provider.initialScan({ backfill_days: 7, expansion_future_days: 30, expansion_past_days: 7,
+      onEvent: async (p) => { got.push([p.event.summary, p.event.start_at, p.event.marked_private === true]); return true; } });
+    expect(got.sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))).toEqual([
+      ['Therapy', Date.UTC(2026, 3, 21, 9), true],
+      ['Therapy', Date.UTC(2026, 3, 22, 11), false],
+      ['Therapy', Date.UTC(2026, 3, 23, 9), true],
+      ['Lawyer', Date.UTC(2026, 3, 25, 12), true],
+      ['Lunch', Date.UTC(2026, 3, 25, 12), false],
+      ['Standup', Date.UTC(2026, 3, 25, 12), false],
+    ]);
+  });
+
   it('aborts when onEvent returns false', async () => {
     const { fetcher } = makeRouter([
       {
@@ -1814,6 +1850,36 @@ function mkText(
 }
 
 describe('CalDAV reviewed writes', () => {
+  it('reads an event\'s write permission whatever way the server spells its path (Radicale: `@` as `%40`)', async () => {
+    // D-407, live on Radicale: Recued names its events `…@recued.ics`, and the answer's href read `…%40recued.ics`.
+    const calendarHref = '/calendars/alice/work/', named = 'meeting@recued';
+    const homeWithPermission = '<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><response>'
+      + `<href>${calendarHref}</href><propstat><prop><displayname>Work</displayname><resourcetype><c:calendar/></resourcetype>`
+      + '<current-user-privilege-set><privilege><bind/></privilege></current-user-privilege-set></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>';
+    const object = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', `UID:${named}`, 'DTSTART:20261212T103000Z', 'DTEND:20261212T113000Z', 'SUMMARY:Dr. Lee',
+      'CLASS:PRIVATE', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    let spelled = `${calendarHref}meeting%40recued.ics`;
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), etagStore: makeEtagStore(), scheduler: () => () => undefined,
+      fetcher: async (url, init) => {
+        let body = object;
+        if (init?.method === 'PROPFIND') body = url.endsWith('@recued.ics')
+          ? `<multistatus xmlns="DAV:"><response><href>${spelled}</href><propstat><prop><current-user-privilege-set><privilege><all /></privilege><privilege><write /></privilege></current-user-privilege-set></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>`
+          : homeWithPermission;
+        return { status: 200, ok: true, headers: new Headers({ etag: '"e1"' }), async json() { return {}; }, async text() { return body; } };
+      } });
+    cleanup.push(() => provider.close());
+    const calendar = (await provider.listWritableCalendars!())[0]!;
+    const source = `${calendar.calendar_id}:${named}`;
+    const read = await provider.readEventForEdit!(calendar.calendar_id, source);
+    expect(read.read_only_reason).toBeUndefined();
+    expect(read.editable_fields).toEqual(['summary', 'description', 'location', 'start_at', 'end_at', 'marked_private', 'alert_minutes']);
+    // Spelled as sent, too; and another resource's answer still grants nothing.
+    spelled = `${calendarHref}meeting@recued.ics`;
+    expect((await provider.readEventForEdit!(calendar.calendar_id, source)).editable_fields).toContain('summary');
+    spelled = `${calendarHref}other%40recued.ics`;
+    expect((await provider.readEventForEdit!(calendar.calendar_id, source)).editable_fields).toEqual([]);
+  });
+
   it('verifies event write-content permission and preserves the original invitation and rich ICS details', async () => {
     const calendarHref = '/calendars/alice/work/', eventHref = calendarHref + 'meeting.ics';
     const homeWithPermission = '<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><response>'
@@ -1881,5 +1947,66 @@ describe('CalDAV reviewed writes', () => {
     await expect(provider.updateEvent({ calendar_id: '/calendars/alice/work/', source_id: 'x:meeting',
       expected_etag: '"reviewed-v1"', patch: { summary: 'New' } })).rejects.toMatchObject({ code: 'version_conflict' });
     expect(writes).toEqual([]);
+  });
+});
+
+// D-407 slice 4 — an occasion's own event: private in CalDAV (`CLASS:PRIVATE`), and its alarms as given, on create and
+// on update; an update replaces the alarms the event had.
+describe('D-407 slice 4 — CalDavProvider writes the private marking and the alarms as given', () => {
+  const homeXml = `<?xml version="1.0"?>
+<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/calendars/alice/work/</href>
+    <propstat>
+      <prop>
+        <displayname>Work</displayname>
+        <resourcetype><collection/><c:calendar/></resourcetype>
+      </prop>
+    </propstat>
+  </response>
+</multistatus>`;
+  const existing = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//test//EN', 'BEGIN:VEVENT', 'UID:occ-1', 'DTSTAMP:20261121T000000Z',
+    'DTSTART:20261212T103000Z', 'DTEND:20261212T113000Z', 'SUMMARY:Dr. Lee',
+    'BEGIN:VALARM', 'ACTION:DISPLAY', 'TRIGGER:-PT15M', 'DESCRIPTION:Old alarm', 'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR',
+  ].join('\r\n');
+  const writer = (stored = existing) => {
+    const puts: string[] = [];
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'GET') return mkText(200, stored);
+      if (init?.method === 'PUT') { puts.push((init.body as string) ?? ''); return mkText(201, ''); }
+      return mkText(404, 'unmapped');
+    };
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), fetcher, etagStore: makeEtagStore(), scheduler: () => () => undefined,
+      now: () => Date.UTC(2026, 10, 21) });
+    cleanup.push(() => provider.close());
+    return { provider, puts };
+  };
+
+  it('create: CLASS:PRIVATE and a display alarm 120 minutes before; none when none is given', async () => {
+    const { provider, puts } = writer();
+    const event = { calendar_id: '/calendars/alice/work/', summary: 'Dr. Lee', start_at: Date.UTC(2026, 11, 12, 10, 30), end_at: Date.UTC(2026, 11, 12, 11, 30),
+      timezone: 'UTC', is_all_day: false, status: 'confirmed' as const };
+    await provider.createEvent('/calendars/alice/work/', { ...event, marked_private: true, reminders: [{ method: 'popup', minutes: 120 }] });
+    await provider.createEvent('/calendars/alice/work/', event);
+    expect(puts[0]).toContain('CLASS:PRIVATE\r\n');
+    expect(puts[0]).toMatch(/BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT120M\r\nDESCRIPTION:Dr. Lee\r\nEND:VALARM\r\nEND:VEVENT/u);
+    expect(puts[1]).not.toContain('CLASS:');
+    expect(puts[1]).not.toContain('VALARM');
+  });
+
+  it('update: marks it private and replaces its alarm; then takes both away', async () => {
+    const first = writer();
+    await first.provider.updateEvent({ calendar_id: '/calendars/alice/work/', source_id: 'x:occ-1', patch: { marked_private: true, reminders: [{ method: 'popup', minutes: 30 }] } });
+    expect(first.puts[0]).toContain('CLASS:PRIVATE\r\n');
+    expect(first.puts[0]).toContain('TRIGGER:-PT30M\r\n');
+    expect(first.puts[0]).not.toContain('TRIGGER:-PT15M');
+    const second = writer(first.puts[0]);
+    await second.provider.updateEvent({ calendar_id: '/calendars/alice/work/', source_id: 'x:occ-1', patch: { marked_private: false, reminders: [] } });
+    expect(second.puts[0]).not.toContain('CLASS:');
+    expect(second.puts[0]).not.toContain('VALARM');
+    expect(second.puts[0]).toContain('SUMMARY:Dr. Lee\r\n');
   });
 });

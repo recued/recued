@@ -1,7 +1,7 @@
 /** D-210 A.8 slice 3d-2c — the `/ask` POST routing + the approver authority.
  *
  *  Two boundaries:
- *    - the PORT must route a body carrying `edit.*` to the approve funnel and
+ *    - the PORT must route an approval carrying `edit.*` to the approve funnel and
  *      NEVER fall through to `submitAnswer`, which takes an option and would
  *      release the hold with the ORIGINAL args while reporting success;
  *    - `handleReceptionInboxApprove` must accept the ask-landing capability
@@ -20,6 +20,7 @@ import {
   type AskLandingPortHandlerDeps,
 } from '../ask-landing-port.js';
 import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
+import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
 import {
   allowingAskLandingAbuseDeps,
   attachAskTestSocket,
@@ -96,6 +97,7 @@ const harness = (over: {
   nowAt?: number;
 } = {}) => {
   const current = ask();
+  let clock = over.nowAt ?? NOW;
   const submitAnswer = vi.fn(async () => {});
   const submitEditedApproval = vi.fn(
     over.submitEditedApproval ?? (async () => ({ ok: true })),
@@ -106,7 +108,7 @@ const harness = (over: {
     submitAnswer,
     getVerificationPhrase: async () => undefined,
     nonceStore,
-    now: () => over.nowAt ?? NOW,
+    now: () => clock,
     abuse: allowingAskLandingAbuseDeps(),
     resolveDetails: async () => ({
       heading: 'Create a booking',
@@ -121,8 +123,10 @@ const harness = (over: {
     ...(over.wireEdit === false ? {} : { submitEditedApproval }),
   };
   const handler = createAskLandingPortHandler(deps);
-  const nonce = (): string => nonceStore.issue('ask-1', over.nowAt ?? NOW);
-  return { handler, submitAnswer, submitEditedApproval, nonce, current };
+  const nonce = (): string => nonceStore.issue('ask-1', clock);
+  return { handler, submitAnswer, submitEditedApproval, nonce, current, deps,
+    setNow: (value: number) => { clock = value; },
+  };
 };
 
 const post = async (
@@ -148,13 +152,67 @@ describe('D-210 A.8 3d-2c — /ask POST routing', () => {
       ask_id: 'ask-1',
       option: 'approve',
       'edit.start_at': '2026-07-20T20:00',
+      via: 'slack',
     });
     expect(h.submitEditedApproval).toHaveBeenCalledTimes(1);
     expect(h.submitAnswer).not.toHaveBeenCalled();
     const call = h.submitEditedApproval.mock.calls[0]![0]!;
     expect(call.option).toBe('approve');
+    expect(call.via).toBe('slack');
     expect(call.rawEdits).toEqual({ start_at: '2026-07-20T20:00' });
     expect(call.ask.ask_id).toBe('ask-1');
+  });
+
+  it.each([
+    ['inside the edit window', NOW],
+    ['after editing closes', NOW + ASK_LANDING_EDIT_TTL_MS + 1],
+  ] as const)('records Deny without applying submitted edit fields %s', async (_label, nowAt) => {
+    const h = harness({ nowAt });
+    const nonce = h.nonce();
+    const res = await post(h, { form_nonce: nonce, ask_id: 'ask-1', option: 'deny',
+      via: 'telegram', 'edit.start_at': 'not a date',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(h.submitAnswer).toHaveBeenCalledExactlyOnceWith({ ask_id: 'ask-1', option: 'deny', via: 'telegram' });
+    expect(h.submitEditedApproval).not.toHaveBeenCalled();
+    const replay = await post(h, { form_nonce: nonce, ask_id: 'ask-1', option: 'deny' });
+    expect(replay.statusCode).toBe(403);
+    expect(h.submitAnswer).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the link expiry guard on a denial carrying edit fields', async () => {
+    const h = harness({ nowAt: NOW + ASK_LANDING_LINK_TTL_MS + 1 });
+    const res = await post(h, { form_nonce: h.nonce(), ask_id: 'ask-1', option: 'deny',
+      'edit.start_at': 'not a date',
+    });
+    expect(res.statusCode).toBe(404);
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(h.submitEditedApproval).not.toHaveBeenCalled();
+  });
+
+  it('keeps an empty edit form combined with session allowance on the narrow approval path', async () => {
+    const approve = vi.fn(async () => ({ released: true }));
+    const h = harness({ submitEditedApproval: createAskLandingEditApproval({
+      findHoldItem: async () => { throw new Error('Session allowance must be refused before lookup'); },
+      approve, timeZone: 'UTC',
+    }) });
+    const res = await post(h, { form_nonce: h.nonce(), ask_id: 'ask-1', option: 'allow_session', edit_form: '1' });
+    expect(res.ended).toContain('allowing this session');
+    expect(h.submitEditedApproval).toHaveBeenCalledOnce();
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it('routes a marked form with no edit fields through validation and consumes its nonce', async () => {
+    const h = harness();
+    const nonce = h.nonce();
+    const fields = { form_nonce: nonce, ask_id: 'ask-1', option: 'approve', edit_form: '1' };
+    const res = await post(h, fields);
+    expect(res.statusCode).toBe(200);
+    expect(h.submitEditedApproval).toHaveBeenCalledExactlyOnceWith({ ask: h.current, option: 'approve', rawEdits: {}, via: 'email' });
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect((await post(h, fields)).statusCode).toBe(403);
+    expect(h.submitEditedApproval).toHaveBeenCalledOnce();
   });
 
   it('leaves an edit-less submission on the untouched submitAnswer path', async () => {
@@ -323,15 +381,17 @@ describe('D-210 finding 6 — the /ask link TTL', () => {
 describe('D-210 finding 6b — the EDIT window closes before the link does', () => {
   const PAST_EDIT = NOW + ASK_LANDING_EDIT_TTL_MS + 1;
 
-  it('refuses an EDIT past 24h while the link itself is still live', async () => {
+  it('refuses expired edits and offers a fresh plain-answer retry without silently approving', async () => {
     // ⛔ The asymmetry: same capability, same 48h URL — but changing the
     // operation's args stops being available first.
     expect(PAST_EDIT).toBeLessThan(NOW + ASK_LANDING_LINK_TTL_MS);
     const h = harness({ nowAt: PAST_EDIT });
+    const originalNonce = h.nonce();
     const res = await post(h, {
-      form_nonce: h.nonce(),
+      form_nonce: originalNonce,
       ask_id: 'ask-1',
       option: 'approve',
+      via: 'telegram',
       'edit.start_at': '2026-07-20T20:00',
     });
 
@@ -341,6 +401,91 @@ describe('D-210 finding 6b — the EDIT window closes before the link does', () 
     // their change had landed.
     expect(h.submitAnswer).not.toHaveBeenCalled();
     expect(res.ended).toContain('no longer be used to change');
+    expect(res.ended).toContain('20 Jul 2026, 19:30 CEST');
+    expect(res.ended).not.toContain('name="edit.');
+    expect(res.ended).toContain('name="via" value="telegram"');
+    const retryNonce = res.ended.match(/name="form_nonce" value="([^"]+)"/)?.[1];
+    expect(retryNonce).toBeTruthy();
+    expect(retryNonce).not.toBe(originalNonce);
+    await post(h, { form_nonce: retryNonce!, ask_id: 'ask-1', option: 'approve', via: 'telegram' });
+    expect(h.submitAnswer).toHaveBeenCalledExactlyOnceWith({ ask_id: 'ask-1', option: 'approve', via: 'telegram' });
+    expect(h.submitEditedApproval).not.toHaveBeenCalled();
+    const replay = await post(h, { form_nonce: originalNonce, ask_id: 'ask-1', option: 'approve' });
+    expect(replay.statusCode).toBe(403);
+    expect(h.submitAnswer).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses an empty edit form after the deadline and offers an unmarked plain-answer retry', async () => {
+    const h = harness({ nowAt: PAST_EDIT });
+    const originalNonce = h.nonce();
+    const res = await post(h, { form_nonce: originalNonce, ask_id: 'ask-1', option: 'approve', edit_form: '1' });
+    expect(res.statusCode).toBe(200);
+    expect(res.ended).toContain('no longer be used to change');
+    expect(res.ended).not.toContain('name="edit_form"');
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(h.submitEditedApproval).not.toHaveBeenCalled();
+    const retryNonce = res.ended.match(/name="form_nonce" value="([^"]+)"/)?.[1];
+    expect(retryNonce).toBeTruthy();
+    expect(retryNonce).not.toBe(originalNonce);
+    await post(h, { form_nonce: retryNonce!, ask_id: 'ask-1', option: 'approve' });
+    expect(h.submitAnswer).toHaveBeenCalledOnce();
+    expect(h.submitEditedApproval).not.toHaveBeenCalled();
+  });
+
+  it('renders original values read-only after the edit deadline while keeping the answer form', async () => {
+    const h = harness({ nowAt: NOW + ASK_LANDING_EDIT_TTL_MS });
+    // The resolver can cache immutable rows. Closing the edit window must not
+    // mutate those rows, which remain editable for an in-window caller.
+    const detail = Object.freeze({ label: 'Slot start', value: '20 Jul 2026, 19:30 CEST',
+      edit: Object.freeze({ key: 'start_at', control: 'datetime-local' as const, value: '2026-07-20T19:30' }),
+    });
+    h.deps.resolveDetails = async () => ({ heading: 'Create a booking', details: Object.freeze([detail]) });
+    const get = async () => {
+      const res = makeRes();
+      await h.handler(buildReq({ method: 'GET', url: '/ask/ask-1' }), res as unknown as ServerResponse);
+      return res;
+    };
+    const atDeadline = await get();
+    expect(atDeadline.ended).toContain('name="edit.start_at"');
+    h.setNow(PAST_EDIT);
+    const afterDeadline = await get();
+    expect(afterDeadline.statusCode).toBe(200);
+    expect(afterDeadline.ended).toContain('Create a booking');
+    expect(afterDeadline.ended).toContain('20 Jul 2026, 19:30 CEST');
+    expect(afterDeadline.ended).not.toContain('name="edit.');
+    expect(afterDeadline.ended).toContain('value="approve"');
+    expect(afterDeadline.ended).toContain('value="deny"');
+    expect(afterDeadline.ended).toContain('name="form_nonce"');
+    expect(detail.edit.value).toBe('2026-07-20T19:30');
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(h.submitEditedApproval).not.toHaveBeenCalled();
+  });
+
+  it.each(['details', 'state'] as const)('closes editing when the deadline passes during the final %s read', async boundary => {
+    const h = harness({ nowAt: NOW + ASK_LANDING_EDIT_TTL_MS - 1 });
+    if (boundary === 'details') {
+      const resolveDetails = h.deps.resolveDetails!;
+      h.deps.resolveDetails = async current => {
+        const details = await resolveDetails(current);
+        h.setNow(PAST_EDIT);
+        return details;
+      };
+    } else {
+      let reads = 0;
+      h.deps.getAsk = async () => {
+        reads++;
+        await Promise.resolve();
+        if (reads === 2) h.setNow(PAST_EDIT);
+        return structuredClone(h.current);
+      };
+    }
+    const res = makeRes();
+    await h.handler(buildReq({ method: 'GET', url: '/ask/ask-1' }), res as unknown as ServerResponse);
+    expect(res.statusCode).toBe(200);
+    expect(res.ended).toContain('20 Jul 2026, 19:30 CEST');
+    expect(res.ended).not.toContain('name="edit.');
+    expect(res.ended).toContain('<form method="POST"');
+    expect(res.ended).toContain('name="form_nonce"');
   });
 
   it('a plain approve in the SAME window still works', async () => {

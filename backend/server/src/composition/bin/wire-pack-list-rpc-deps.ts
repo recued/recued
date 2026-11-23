@@ -37,6 +37,8 @@ export interface ComposePackListRpcDepsInput {
   isConnectionSetUp?: (connection_name: string) => boolean;
   /** D-321 W2 / S8 — `PackListRpcDeps.installedPackRefs`. */
   installedPackRefs?: () => ReadonlySet<string>;
+  /** D-404 slice E — `PackListRpcDeps.missingThings`. */
+  missingThings?: PackListRpcDeps['missingThings'];
 }
 
 export interface PackListRpcBundle {
@@ -62,6 +64,7 @@ export const composePackListRpcDeps = (
     ...(packDir !== undefined ? { packDir } : {}),
     ...(input.isConnectionSetUp !== undefined ? { isConnectionSetUp: input.isConnectionSetUp } : {}),
     ...(input.installedPackRefs !== undefined ? { installedPackRefs: input.installedPackRefs } : {}),
+    ...(input.missingThings !== undefined ? { missingThings: input.missingThings } : {}),
   };
 
   return { packListDeps };

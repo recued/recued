@@ -56,6 +56,31 @@ export interface SituationAssetDetails {
    *  can be, so a model that changes it has its name. */
   attributes?: Record<string, string | number | boolean | null>;
   left_out?: string[];
+  /** D-339 slice 6 (§5.3) — an asset whose values a model reads only when the owner allows it (a
+   *  Body): the names of its readings and states, in place of `readings`, which it then lacks. Since
+   *  slice 13, its dates and details too (a birth date, a gender), in place of `dates` and
+   *  `attributes`; each list only when the asset has some. */
+  values_on_request?: { readings: string[]; states: string[]; dates?: string[]; attributes?: string[];
+    /** D-339 slice 15 — a body goal's reading, in words, when the goal is held. */
+    goal?: string;
+    /** D-339 slice 16 — the readings the owner set a range for, in words, when the Body is held. */
+    ranges?: string[]; how: string };
+  /** D-339 slice 15 (D-342 §17) — a pursuit's body goal: the reading in words, its target, where it
+   *  started, and, where the read can work it out, where the Body is now. */
+  goal?: SituationGoalDetails;
+  /** D-339 slice 16 — the owner's own ranges on a Body: its normal for a reading, and the day it was set. */
+  ranges?: Array<{ reading: string; low?: number; high?: number; unit: string; set_on: string }>;
+}
+export interface SituationGoalDetails {
+  reading: string;
+  target: { value: number; unit: string };
+  start: { value: number; day: string };
+  now?: { value: number; day: string };
+  to_go?: number;
+  /** In the goal's unit a week, above 0 toward the target. */
+  per_week?: number;
+  weeks_left?: number;
+  looks_reached?: true;
 }
 /** D-343 slice 5 (§5) — the days of the last week, on the owner's clock, that they recorded doing or
  *  skipping a pursuit in Close the day, newest first, each as its weekday and date ("Thu
@@ -122,9 +147,11 @@ export interface SituationFact {
 export interface SituationItem {
   ref: SituationRef;
   kind: string;
-  /** The owner's notifications name it only as "a reminder in Yours": an occasion with people
-   * in it, a sensitive asset, or an item that cites one (the Agenda's rule). Set only on the
-   * copy a model reads, beside its title. */
+  /** The owner's notifications name it only as "a reminder in Yours": an occasion the owner keeps
+   * private (`occasionIsPrivate`, D-407 slice 3) and its calendar series, a sensitive asset, an
+   * event its own calendar marks private (D-407 Q8), or an item that cites one (the Agenda's
+   * rule). Set only on the copy a model reads, beside its title: the chat's and a recipe's or an
+   * MCP app's (the kernel `situation-query`). */
   private?: true;
   what: SituationDimension<string>;
   when: SituationDimension<SituationWindow>;
@@ -298,14 +325,23 @@ export interface SituationAgendaSettings {
    *  from a save, so a client offers it only to a server that named it. */
   suggestions?: boolean;
 }
+/** D-340 ruling 13 — how a stream message's AI suggestions went: inside it, or why it went without them.
+ *  The message names the reason in plain words; Today shows it beside when the message went. */
+export type SituationSuggestionsOutcome = 'included' | 'stuck' | 'failed' | 'unfinished' | 'approval' | 'not_started';
+/** D-340 ruling 13 — a stream run's timing, for Today: when Recued started preparing it (its set time), and
+ *  how its suggestions went. A run before it, or one with no suggestions asked for, has neither. */
+export interface SituationRunTiming {
+  prepared_at?: number;
+  suggestions?: SituationSuggestionsOutcome;
+}
 export interface SituationAgendaStatus {
   settings: SituationAgendaSettings;
   /** D-338 §11 — `mentions`: the names the text links in the app, each with the record it opens
    *  (a birthday's name opens the contact). A server before it sends none. */
-  last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[];
-    mentions?: Array<{ text: string; ref: { collection: string; id: string } }> } | null;
-  last_sent: { at: number; mode: string; text: string; delivered_to: string[];
-    mentions?: Array<{ text: string; ref: { collection: string; id: string } }> } | null;
+  last_run: ({ at: number; mode: string; state: string; text: string; delivered_to: string[];
+    mentions?: Array<{ text: string; ref: { collection: string; id: string } }> } & SituationRunTiming) | null;
+  last_sent: ({ at: number; mode: string; text: string; delivered_to: string[];
+    mentions?: Array<{ text: string; ref: { collection: string; id: string } }> } & SituationRunTiming) | null;
   pending: number;
   uncertain: number;
   /** When the next agenda goes, quiet hours included, and the server's zone to say it in.
@@ -349,7 +385,8 @@ export interface SituationStreamSettings {
   /** Daily only: what is due that day, on a day it lists no Agenda ("Due today", §3.2). */
   due_today: boolean;
   /** D-340 slice 5 (§3.4) — every part names a private item (an asset the owner marked sensitive,
-   *  an occasion with people in it, or an item citing either), in the channels it goes to, and its
+   *  a private occasion (`occasionIsPrivate`, D-407 slice 3) or event (D-407 Q8), or an item citing
+   *  one), in the channels it goes to, and its
    *  AI suggestions may name one too. Off, each reads "Reminder in Yours", as before. The daily
    *  stream's also decides Close the day's, which goes where it goes. */
   include_private: boolean;
@@ -397,6 +434,14 @@ export interface SituationCloseDaySettings {
   /** HH:MM in the server's zone. */
   time: string;
 }
+/** A proven email reply still waiting for Chat admission, or an older handoff with no receipt. */
+export interface EmailClosingReplyStatus {
+  id: string;
+  received_at: number;
+  reason: 'waiting' | 'retry' | 'source_unavailable' | 'unknown';
+  session_id?: string;
+  retry_available: boolean;
+}
 export interface SituationCloseDayStatus {
   settings: SituationCloseDaySettings;
   last_run: { at: number; mode: string; state: string; text: string; delivered_to: string[] } | null;
@@ -407,6 +452,8 @@ export interface SituationCloseDayStatus {
    *  is off or nothing can send. */
   next_at?: number;
   time_zone?: string;
+  /** Recent unresolved inbound replies; absent on servers without durable email handoff. */
+  email_replies?: EmailClosingReplyStatus[];
 }
 export interface SituationDeliveryStatus {
   settings: SituationDeliverySettings;
@@ -439,6 +486,9 @@ export interface ProactiveToday {
     renewal?: { field: string; current: string };
     /** The owner acknowledged its latest reminder: Today leaves it out until the next. */
     acknowledged?: true }>;
+  /** D-407 slice 2 — the occasions that come back whenever the last one says and wait for their next date ("When is
+   *  the next one?"), each with the date it last happened. Absent from an older server: Today asks nothing. */
+  occasions_waiting?: Array<{ id: string; title: string; last_on: string }>;
   proposal_count: number;
   newest_proposal: { id: string; title: string } | null;
   unmatched_replies: Array<{ id: string; text: string; reason: string; created_at: number }>;

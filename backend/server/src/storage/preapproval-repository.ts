@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   PREAPPROVAL_LIMITS, RpcError,
-  type Checkpoint, type PreparePreapproval,
+  type Checkpoint, type PreparePreapproval, type PreapprovalContinuationRequest,
   type PreapprovalDecisionReceipt, type PreapprovalDecisionRequest,
   type PreapprovalExecutionStatus, type PreapprovalGrantStatus,
   type PreapprovalInspection, type PreapprovalMemberOutcome, type PreapprovalMemberStatus,
@@ -20,6 +20,7 @@ import type {
 import {
   preapprovalHash, preapprovalOriginKey, preapprovalPathKey, preapprovalReviewDigest,
   preapprovalEffectHash, isPreapprovalMemberEligible, selectPreapprovalMembers, validatePreparedFutureExecution,
+  verifyPreparedFutureExecutionSnapshot,
 } from '../preapproval-invocations.js';
 import type { PreapprovalCodec } from './preapproval-codec.js';
 import type { PreapprovalWorkerAuthority } from './preapproval-workers.js';
@@ -134,6 +135,11 @@ export interface PreapprovalTelegramCallback {
 interface OrdinaryRecipeRow { run_id: string; future_ref: string; snapshot_ciphertext: string; snapshot_hash: string; json_size: number }
 interface LoadedPlan { execution: ExecutionRow; proposal: ProposalRow; plan: PreparedFutureExecution;
   ordinary: Array<{ row: OrdinaryRecipeRow; value: OrdinaryRecipeContinuation }> }
+interface ContinuationReplay {
+  schema_version: 1; origin: PreapprovalOrigin; request_hash: string; input_digest: string;
+  parent_snapshot_hash: string; parent_outcomes_hash: string;
+}
+interface RetiredReview { schema_version: number; inspection: PreapprovalInspection; creation_receipt?: unknown; continuation_replay?: unknown }
 interface PollRow {
   poll_id: string; future_ref: string; run_id: string; worker_id: string; fence: number;
   state: 'polling' | 'held' | 'qualified' | 'finished'; checkpoint_id: string | null; checkpoint_hash: string | null;
@@ -153,6 +159,9 @@ export class PreapprovalRepository {
   private readonly workers: PreapprovalWorkerAuthority;
   private readonly checkpoints: ReturnType<typeof createPreapprovalCheckpointParticipant>;
   private readonly localMutations: ReturnType<typeof createLocalMutationReceipts>;
+  private lineageStatement: Database.Statement | undefined;
+  private reconciliationStatement: Database.Statement | undefined;
+  private retirementCursor: Pick<ExecutionRow, 'updated_at' | 'future_ref'> | null = null;
   readonly limits: ReturnType<typeof createPreapprovalLimits>;
 
   constructor(private readonly db: Database.Database, options: PreapprovalRepositoryOptions) {
@@ -182,6 +191,10 @@ export class PreapprovalRepository {
         ON preapproval_executions(target_kind, target_key, target_incarnation);
       CREATE INDEX IF NOT EXISTS preapproval_execution_due
         ON preapproval_executions(state, not_before, dispatch_deadline);
+      -- Retention scans private terminal candidates instead of retired history.
+      CREATE INDEX IF NOT EXISTS preapproval_execution_retention
+        ON preapproval_executions(state, updated_at, future_ref)
+        WHERE state IN ('succeeded','partial','failed','cancelled','expired','invalidated') AND snapshot_ciphertext<>'';
       CREATE TABLE IF NOT EXISTS preapproval_proposals (
         proposal_id TEXT PRIMARY KEY, future_ref TEXT NOT NULL UNIQUE,
         origin_key TEXT NOT NULL, idempotency_key TEXT NOT NULL, input_digest TEXT NOT NULL,
@@ -275,6 +288,10 @@ export class PreapprovalRepository {
         event_id TEXT PRIMARY KEY, future_ref TEXT NOT NULL, kind TEXT NOT NULL,
         payload_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', worker_id TEXT,
         lease_until INTEGER NOT NULL DEFAULT 0);
+      CREATE INDEX IF NOT EXISTS preapproval_outbox_unfinished
+        ON preapproval_outbox(future_ref) WHERE state<>'done';
+      CREATE INDEX IF NOT EXISTS preapproval_outbox_delivery
+        ON preapproval_outbox(event_id) WHERE state<>'done';
     `);
     if (!(db.prepare('PRAGMA table_info(preapproval_reconciliations)').all() as { name: string }[])
       .some(column => column.name === 'adapter')) {
@@ -296,7 +313,8 @@ export class PreapprovalRepository {
   }
 
   private lineage(): string {
-    return (this.db.prepare('SELECT lineage FROM preapproval_state WHERE singleton = 1').get() as { lineage: string }).lineage;
+    return ((this.lineageStatement ??= this.db.prepare('SELECT lineage FROM preapproval_state WHERE singleton = 1'))
+      .get() as { lineage: string }).lineage;
   }
   private execution(futureRef: string): ExecutionRow {
     return this.db.prepare('SELECT * FROM preapproval_executions WHERE future_ref = ?').get(futureRef) as ExecutionRow
@@ -316,21 +334,64 @@ export class PreapprovalRepository {
       future_execution_ref: proposal.future_ref, status: proposal.status,
       coverage: uncovered === 0 ? 'complete' : 'partial', eligible_members: selected.length, uncovered_calls: uncovered };
   }
-  private resultFromInspection(value: PreapprovalInspection): PreapprovalResult {
-    return { proposal_id: value.proposal_id, revision: value.revision, future_execution_ref: value.future_execution_ref,
-      status: value.status, coverage: value.coverage, eligible_members: value.eligible_members, uncovered_calls: value.uncovered_calls };
+  private creationResult(proposal: ProposalRow, plan: PreparedFutureExecution): PreapprovalResult {
+    // Owner selection changes the proposal, not its original eligible graph.
+    const selected = selectPreapprovalMembers(plan);
+    const uncovered = plan.uncovered.length + plan.members.length - selected.length;
+    return { proposal_id: proposal.proposal_id, revision: 1, future_execution_ref: proposal.future_ref,
+      status: 'awaiting_owner', coverage: uncovered === 0 ? 'complete' : 'partial',
+      eligible_members: selected.length, uncovered_calls: uncovered };
   }
-  private async retiredInspection(proposalId: string): Promise<PreapprovalInspection | null> {
+  private async retiredReview(proposalId: string): Promise<RetiredReview | null> {
     const futureRef = this.proposal(proposalId).future_ref;
     const row = this.db.prepare('SELECT summary_ciphertext,summary_hash FROM preapproval_retired_reviews WHERE future_ref=?')
       .get(futureRef) as { summary_ciphertext: string; summary_hash: string } | undefined;
     if (!row) return null;
-    const value = await this.codec.open(row.summary_ciphertext) as { schema_version: number; inspection: PreapprovalInspection };
-    if (value.schema_version !== 1 || preapprovalHash(value) !== row.summary_hash
+    const value = await this.codec.open(row.summary_ciphertext) as RetiredReview;
+    if (!value || typeof value !== 'object' || value.schema_version !== 1 || preapprovalHash(value) !== row.summary_hash
+      || !value.inspection || typeof value.inspection !== 'object'
       || value.inspection.proposal_id !== proposalId || value.inspection.future_execution_ref !== futureRef) {
       fail('preapproval_stale', 'The retained outcome is invalid.');
     }
-    return value.inspection;
+    return value;
+  }
+  private async retiredCreationResult(proposal: ProposalRow): Promise<PreapprovalResult | null> {
+    const value = await this.retiredReview(proposal.proposal_id);
+    if (!value) return null;
+    if (value.creation_receipt === undefined) {
+      throw new RpcError('preapproval_expired', 'The original preparation receipt metadata is unavailable. The owner history remains available.',
+        409, undefined, { reason: 'creation_receipt_metadata_unavailable',
+          proposal_id: proposal.proposal_id, future_execution_ref: proposal.future_ref });
+    }
+    const receipt = value.creation_receipt as { schema_version?: unknown; result?: unknown } | null;
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) || receipt.schema_version !== 1
+      || Object.keys(receipt).length !== 2 || !receipt.result || typeof receipt.result !== 'object' || Array.isArray(receipt.result)) {
+      fail('preapproval_stale', 'The retained preparation receipt is invalid.');
+    }
+    const result = receipt.result as Partial<PreapprovalResult>;
+    if (Object.keys(result).length !== 7 || result.proposal_id !== proposal.proposal_id
+      || result.future_execution_ref !== proposal.future_ref || result.revision !== 1 || result.status !== 'awaiting_owner'
+      || typeof result.eligible_members !== 'number' || !Number.isSafeInteger(result.eligible_members) || result.eligible_members < 1
+      || typeof result.uncovered_calls !== 'number' || !Number.isSafeInteger(result.uncovered_calls) || result.uncovered_calls < 0
+      || !Number.isSafeInteger(result.eligible_members + result.uncovered_calls)
+      || result.coverage !== (result.uncovered_calls === 0 ? 'complete' : 'partial')
+      || result.eligible_members + result.uncovered_calls !== value.inspection.eligible_members + value.inspection.uncovered_calls
+      || result.eligible_members < value.inspection.eligible_members) {
+      fail('preapproval_stale', 'The retained preparation receipt is invalid.');
+    }
+    return { proposal_id: proposal.proposal_id, revision: 1, future_execution_ref: proposal.future_ref,
+      status: 'awaiting_owner', coverage: result.uncovered_calls === 0 ? 'complete' : 'partial',
+      eligible_members: result.eligible_members, uncovered_calls: result.uncovered_calls };
+  }
+  private async retiredInspection(proposalId: string): Promise<PreapprovalInspection | null> {
+    const value = await this.retiredReview(proposalId);
+    if (!value) return null;
+    const inspection = value.inspection;
+    if (!inspection.recovery) return inspection;
+    // Branch reservations can change after the terminal summary is captured.
+    // Resolve the current navigation target from its durable relation.
+    return { ...inspection, recovery: { ...inspection.recovery,
+      successor_proposal_id: this.blockingSuccessor(inspection.future_execution_ref)?.proposal_id ?? null } };
   }
   private async load(proposalId: string): Promise<LoadedPlan> {
     const proposal = this.proposal(proposalId);
@@ -338,9 +399,7 @@ export class PreapprovalRepository {
     if (!execution.snapshot_ciphertext) fail('preapproval_expired', 'The retained review content has expired. Its terminal outcome remains available.');
     const ordinaryRows = this.ordinaryRecipeRows(execution.future_ref);
     const value = await this.codec.open(execution.snapshot_ciphertext);
-    if (preapprovalHash(value) !== execution.snapshot_hash) fail('preapproval_stale', 'The prepared snapshot is corrupt.');
-    const plan = value as PreparedFutureExecution;
-    validatePreparedFutureExecution(plan);
+    const plan = verifyPreparedFutureExecutionSnapshot(value, execution.snapshot_hash);
     const ordinary = await Promise.all(ordinaryRows.map(async row => {
       const value = await this.codec.open(row.snapshot_ciphertext) as OrdinaryRecipeContinuation;
       if (preapprovalHash(value) !== row.snapshot_hash || value.schema_version !== 1) fail('preapproval_stale', 'The nested continuation is corrupt.');
@@ -380,8 +439,8 @@ export class PreapprovalRepository {
         this.stopRow(this.execution(loaded.execution.future_ref), 'applied_as_atomic_change_set', 'cancelled');
       } };
   }
-  inspectExecution(futureRef: string): Promise<PreapprovalInspection> {
-    return this.inspect(this.execution(futureRef).proposal_id);
+  inspectExecution(futureRef: string, includeReview = true): Promise<PreapprovalInspection> {
+    return this.inspect(this.execution(futureRef).proposal_id, includeReview);
   }
   // Evidence-only recovery can skip current ancestor outcomes. It still
   // verifies this sealed snapshot and realm lineage, and supplies no permit.
@@ -472,6 +531,78 @@ export class PreapprovalRepository {
         future_execution_ref: proposal.future_ref };
     }).immediate();
   }
+  private continuationReplay(plan: PreparedFutureExecution, proposal: ProposalRow): ContinuationReplay | null {
+    const parent = plan.continuation;
+    if (!parent) return null;
+    if (proposal.input_digest !== this.requestDigest(plan.request, parent.future_execution_ref)) {
+      fail('preapproval_stale', 'The continuation request identity changed.');
+    }
+    return { schema_version: 1, origin: plan.origin, input_digest: proposal.input_digest,
+      request_hash: preapprovalHash({ proposal_id: parent.proposal_id, idempotency_key: plan.request.idempotency_key,
+        activation: plan.request.activation, decision_deadline: plan.request.decision_deadline, dispatch_deadline: plan.request.dispatch_deadline }),
+      parent_snapshot_hash: parent.snapshot_hash, parent_outcomes_hash: parent.outcomes_hash };
+  }
+  /** Receipt-only fallback after parent retirement. No selection, grant or
+   * execution is created. The service must revalidate the returned origin. */
+  async retiredParentContinuation(request: PreapprovalContinuationRequest, responder: PreapprovalResponder):
+    Promise<{ result: PreapprovalResult; origin: PreapprovalOrigin } | null> {
+    const context = this.db.transaction(() => {
+      this.codec.assertUnlocked(); this.responder(responder);
+      if (responder.channel !== 'webclient') fail('preapproval_invalid_proof', 'Open continuation in your paired webclient.', 403);
+      const parent = this.execution(this.proposal(request.proposal_id).future_ref);
+      const prior = this.db.prepare('SELECT * FROM preapproval_proposals WHERE origin_key=? AND idempotency_key=?')
+        .get(parent.origin_key, request.idempotency_key) as ProposalRow | undefined;
+      if (!prior) return null;
+      if (!this.db.prepare('SELECT 1 FROM preapproval_continuations WHERE child_ref=? AND parent_ref=?').get(prior.future_ref, parent.future_ref)) {
+        fail('preapproval_idempotency_conflict', 'This request key was used for different content.');
+      }
+      return { parent, prior };
+    }).immediate();
+    if (!context || !await this.retiredReview(request.proposal_id)) return null;
+    const { parent, prior } = context;
+    let retained = await this.retiredReview(prior.proposal_id);
+    let replay: unknown;
+    if (!retained) {
+      try {
+        const loaded = await this.load(prior.proposal_id);
+        if (loaded.plan.continuation?.future_execution_ref !== parent.future_ref
+          || loaded.plan.continuation.proposal_id !== request.proposal_id) fail('preapproval_stale', 'The continuation parent changed.');
+        replay = this.continuationReplay(loaded.plan, prior);
+      } catch (error) {
+        if (!(error instanceof RpcError) || error.code !== 'preapproval_expired') throw error;
+        retained = await this.retiredReview(prior.proposal_id);
+        if (!retained) throw error;
+      }
+    }
+    if (retained) replay = retained.continuation_replay;
+    // Older terminal envelopes lack the original authorization context and
+    // closed continuation request hash. Preserve their expiry refusal.
+    if (replay === undefined) return null;
+    const value = replay as Partial<ContinuationReplay> | null;
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 6
+      || value.schema_version !== 1 || !value.origin || typeof value.origin !== 'object'
+      || Array.isArray(value.origin) || typeof value.request_hash !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(value.request_hash)
+      || value.input_digest !== prior.input_digest || value.parent_snapshot_hash !== parent.snapshot_hash
+      || typeof value.parent_outcomes_hash !== 'string') fail('preapproval_stale', 'The continuation replay metadata is invalid.');
+    let originKey: string;
+    try { originKey = preapprovalOriginKey(value.origin); }
+    catch { fail('preapproval_stale', 'The continuation replay origin is invalid.'); }
+    if (originKey !== parent.origin_key) fail('preapproval_stale', 'The continuation replay origin changed.');
+    if (value.request_hash !== preapprovalHash(request)) fail('preapproval_idempotency_conflict', 'This request key was used for different content.');
+    this.db.transaction(() => {
+      this.codec.assertUnlocked(); this.responder(responder);
+      const currentParent = this.execution(parent.future_ref), child = this.execution(prior.future_ref);
+      if (currentParent.snapshot_ciphertext !== '' || currentParent.snapshot_hash !== value.parent_snapshot_hash
+        || currentParent.origin_key !== originKey || child.origin_key !== originKey
+        || currentParent.lineage !== this.lineage() || child.lineage !== this.lineage()
+        || this.continuationOutcomesHash(parent.future_ref) !== value.parent_outcomes_hash
+        || !this.db.prepare('SELECT 1 FROM preapproval_continuations WHERE child_ref=? AND parent_ref=?').get(child.future_ref, parent.future_ref)
+        || this.proposal(prior.proposal_id).input_digest !== value.input_digest) {
+        fail('preapproval_stale', 'The original continuation proof changed.');
+      }
+    }).immediate();
+    return { origin: value.origin, result: await this.preparedResult(parent.origin_key, request.idempotency_key) };
+  }
   private assertContinuationParent(plan: PreparedFutureExecution, childRef?: string): void {
     const continuation = plan.continuation;
     if (!continuation) return;
@@ -516,12 +647,13 @@ export class PreapprovalRepository {
   }
 
   async preparedRequest(request: PreparePreapproval, origin: PreapprovalOrigin, parentRef?: string): Promise<PreapprovalResult | null> {
+    const originKey = preapprovalOriginKey(origin);
     const prior = this.db.prepare('SELECT * FROM preapproval_proposals WHERE origin_key = ? AND idempotency_key = ?')
-      .get(preapprovalOriginKey(origin), request.idempotency_key) as ProposalRow | undefined;
+      .get(originKey, request.idempotency_key) as ProposalRow | undefined;
     if (prior) {
       if (prior.input_digest !== this.requestDigest(request, parentRef)) fail('preapproval_idempotency_conflict', 'This request key was used for different content.');
-      // ⛔⛔ A REPLAY IS AN IDEMPOTENCY REPLAY, NOT A STATUS QUERY. Both returns
-      // below used to read the CURRENT status, which made re-calling with the
+      // ⛔⛔ A REPLAY IS AN IDEMPOTENCY REPLAY, NOT A STATUS QUERY. Replays
+      // used to read the CURRENT status, which made re-calling with the
       // same key a polling loop: a caller could watch `awaiting_owner →
       // approved` and learn, per request, that its framing worked. That is a
       // clean reward signal on the owner's decision, handed to whatever asked —
@@ -542,11 +674,7 @@ export class PreapprovalRepository {
       // purpose: no consumer of a prepare RESULT reads `status` (the owner
       // webclient uses `proposal_id` to navigate), so an exception for "trusted"
       // callers would buy nothing and is the kind that erodes.
-      const asCreated = (value: PreapprovalResult): PreapprovalResult => ({ ...value, status: 'awaiting_owner' });
-      const retired = await this.retiredInspection(prior.proposal_id);
-      if (retired) return asCreated(this.resultFromInspection(retired));
-      const stored = await this.load(prior.proposal_id);
-      return asCreated(this.result(this.proposal(prior.proposal_id), stored.plan));
+      return this.preparedResult(originKey, request.idempotency_key);
     }
     return null;
   }
@@ -627,10 +755,18 @@ export class PreapprovalRepository {
   private async preparedResult(originKey: string, key: string): Promise<PreapprovalResult> {
     const row = this.db.prepare('SELECT * FROM preapproval_proposals WHERE origin_key = ? AND idempotency_key = ?')
       .get(originKey, key) as ProposalRow;
-    const retired = await this.retiredInspection(row.proposal_id);
-    if (retired) return this.resultFromInspection(retired);
-    const loaded = await this.load(row.proposal_id);
-    return this.result(this.proposal(row.proposal_id), loaded.plan);
+    const retired = await this.retiredCreationResult(row);
+    if (retired) return retired;
+    let loaded: LoadedPlan;
+    try { loaded = await this.load(row.proposal_id); }
+    catch (error) {
+      if (error instanceof RpcError && error.code === 'preapproval_expired') {
+        const retained = await this.retiredCreationResult(row);
+        if (retained) return retained;
+      }
+      throw error;
+    }
+    return this.creationResult(loaded.proposal, loaded.plan);
   }
 
   async select(request: PreapprovalSelection, responder: PreapprovalResponder): Promise<PreapprovalResult> {
@@ -2108,7 +2244,16 @@ export class PreapprovalRepository {
   async inspect(proposalId: string, includeReview = true): Promise<PreapprovalInspection> {
     const retired = await this.retiredInspection(proposalId);
     if (retired) return retired;
-    const loaded = await this.load(proposalId);
+    let loaded: LoadedPlan;
+    try { loaded = await this.load(proposalId); }
+    catch (error) {
+      // Content retirement may have committed since the initial summary read.
+      if (error instanceof RpcError && error.code === 'preapproval_expired') {
+        const retained = await this.retiredInspection(proposalId);
+        if (retained) return retained;
+      }
+      throw error;
+    }
     const proposal = this.proposal(proposalId);
     const execution = this.execution(proposal.future_ref);
     const grant = this.grant(proposal.future_ref);
@@ -2124,8 +2269,8 @@ export class PreapprovalRepository {
         const result = await this.codec.open(row.result_ciphertext) as { message?: unknown };
         if (typeof result.message === 'string') message = result.message;
       }
-      const evidence = row?.attempt_id ? this.db.prepare(`SELECT outcome FROM preapproval_reconciliations
-        WHERE attempt_id = ? ORDER BY observed_at DESC, evidence_id DESC LIMIT 1`).get(row.attempt_id) as { outcome: 'succeeded' | 'failed' } | undefined : undefined;
+      const evidence = row?.attempt_id ? (this.reconciliationStatement ??= this.db.prepare(`SELECT outcome FROM preapproval_reconciliations
+        WHERE attempt_id = ? ORDER BY observed_at DESC, evidence_id DESC LIMIT 1`)).get(row.attempt_id) as { outcome: 'succeeded' | 'failed' } | undefined : undefined;
       const local = row ? this.localMutationReceipt(loaded, row, member) : null;
       const verifyMail = row?.state === 'in_doubt' && row.attempt_id && row.action_ref
         && member.ingredient_slug === 'mail-send' && supportsPreapprovalMailProof(member.input)
@@ -2208,41 +2353,65 @@ export class PreapprovalRepository {
       AND e.snapshot_ciphertext<>'' AND e.updated_at<=?
       AND NOT EXISTS(SELECT 1 FROM preapproval_members m WHERE m.future_ref=e.future_ref AND m.state IN ('dispatching','in_doubt'))
       AND NOT EXISTS(SELECT 1 FROM preapproval_outbox o WHERE o.future_ref=e.future_ref AND o.state<>'done')`;
-    const candidates = this.db.prepare(`SELECT e.* FROM preapproval_executions e WHERE ${eligible} ORDER BY e.updated_at LIMIT ?`)
-      .all(cutoff, limit) as ExecutionRow[];
+    const readBatch = (after: typeof this.retirementCursor) => this.db.prepare(`SELECT e.* FROM preapproval_executions e
+      WHERE ${eligible} AND (? IS NULL OR (e.updated_at,e.future_ref)>(?,?))
+      ORDER BY e.updated_at,e.future_ref LIMIT ?`)
+      .all(cutoff, after?.updated_at ?? null, after?.updated_at ?? null, after?.future_ref ?? null, limit) as ExecutionRow[];
+    let candidates = readBatch(this.retirementCursor);
+    if (candidates.length === 0 && this.retirementCursor) candidates = readBatch(null);
+    // Rotate before awaiting so overlapping drains can choose later windows.
+    // This is process-local cleanup progress, never an authority-row update.
+    // Reopening starts a fresh sweep; reaching the end retries earlier failures.
+    const last = candidates[candidates.length - 1];
+    this.retirementCursor = last ? { updated_at: last.updated_at, future_ref: last.future_ref } : null;
     let count = 0;
+    const errors: unknown[] = [];
     for (const candidate of candidates) {
-      const inspection = await this.inspect(candidate.proposal_id);
-      const { reviewed, ...outcome } = inspection;
-      const summary = { schema_version: 1, inspection: { ...outcome,
-        ...(outcome.recovery ? { recovery: { ...outcome.recovery, eligible: false,
-          reason: 'The retained review content has expired. Prepare a new full review.' } } : {}),
-        members: outcome.members.map(member => ({ ...member, status_message: null })),
-        retired_review: { at: this.now(), recipe_name: reviewed?.recipe.display_name ?? 'Reviewed execution' } } };
-      const ciphertext = await this.codec.seal(summary);
-      count += this.db.transaction(() => {
-        this.codec.assertUnlocked();
-        const current = this.db.prepare(`SELECT e.* FROM preapproval_executions e WHERE e.future_ref=? AND ${eligible}`)
-          .get(candidate.future_ref, cutoff) as ExecutionRow | undefined;
-        if (!current || preapprovalHash(current) !== preapprovalHash(candidate)) return 0;
-        this.db.prepare(`INSERT INTO preapproval_retired_reviews(future_ref,summary_ciphertext,summary_hash,retired_at) VALUES(?,?,?,?)`)
-          .run(current.future_ref, ciphertext, preapprovalHash(summary), summary.inspection.retired_review.at);
-        this.db.prepare("UPDATE preapproval_executions SET snapshot_ciphertext='' WHERE future_ref=?").run(current.future_ref);
-        this.db.prepare('UPDATE preapproval_members SET result_ciphertext=NULL WHERE future_ref=?').run(current.future_ref);
-        this.db.prepare('UPDATE preapproval_nested_calls SET result_ciphertext=NULL WHERE future_ref=?').run(current.future_ref);
-        this.db.prepare(`DELETE FROM checkpoints WHERE json_valid(data) AND EXISTS (
-          SELECT 1 FROM (
-            SELECT checkpoint_id,run_id FROM preapproval_run_checkpoints WHERE future_ref=?
-            UNION SELECT checkpoint_id,run_id FROM preapproval_polls WHERE future_ref=? AND checkpoint_id IS NOT NULL
-          ) owned WHERE owned.checkpoint_id=checkpoints.key AND owned.run_id=json_extract(checkpoints.data,'$.run_id'))`)
-          .run(current.future_ref, current.future_ref);
-        for (const table of ['preapproval_ordinary_recipes', 'preapproval_dependencies', 'preapproval_trigger_candidates']) {
-          // Names are fixed host literals, never input or persisted content.
-          this.db.prepare(`DELETE FROM ${table} WHERE future_ref=?`).run(current.future_ref);
+      try {
+        let loaded: LoadedPlan;
+        try { loaded = await this.load(candidate.proposal_id); }
+        catch (error) {
+          if (error instanceof RpcError && error.code === 'preapproval_expired' && await this.retiredReview(candidate.proposal_id)) continue;
+          throw error;
         }
-        return 1;
-      }).immediate();
+        const creation = this.creationResult(loaded.proposal, loaded.plan);
+        const inspection = await this.inspect(candidate.proposal_id);
+        const { reviewed, ...outcome } = inspection;
+        const replay = this.continuationReplay(loaded.plan, loaded.proposal);
+        const summary = { schema_version: 1, creation_receipt: { schema_version: 1, result: creation },
+          ...(replay ? { continuation_replay: replay } : {}), inspection: { ...outcome,
+          ...(outcome.recovery ? { recovery: { ...outcome.recovery, eligible: false,
+            reason: 'The retained review content has expired. Prepare a new full review.' } } : {}),
+          members: outcome.members.map(member => ({ ...member, status_message: null })),
+          retired_review: { at: this.now(), recipe_name: reviewed?.recipe.display_name ?? 'Reviewed execution' } } };
+        const ciphertext = await this.codec.seal(summary);
+        count += this.db.transaction(() => {
+          this.codec.assertUnlocked();
+          const current = this.db.prepare(`SELECT e.* FROM preapproval_executions e WHERE e.future_ref=? AND ${eligible}`)
+            .get(candidate.future_ref, cutoff) as ExecutionRow | undefined;
+          if (!current || preapprovalHash(current) !== preapprovalHash(candidate)) return 0;
+          this.db.prepare(`INSERT INTO preapproval_retired_reviews(future_ref,summary_ciphertext,summary_hash,retired_at) VALUES(?,?,?,?)`)
+            .run(current.future_ref, ciphertext, preapprovalHash(summary), summary.inspection.retired_review.at);
+          this.db.prepare("UPDATE preapproval_executions SET snapshot_ciphertext='' WHERE future_ref=?").run(current.future_ref);
+          this.db.prepare('UPDATE preapproval_members SET result_ciphertext=NULL WHERE future_ref=?').run(current.future_ref);
+          this.db.prepare('UPDATE preapproval_nested_calls SET result_ciphertext=NULL WHERE future_ref=?').run(current.future_ref);
+          this.db.prepare(`DELETE FROM checkpoints WHERE json_valid(data) AND EXISTS (
+            SELECT 1 FROM (
+              SELECT checkpoint_id,run_id FROM preapproval_run_checkpoints WHERE future_ref=?
+              UNION SELECT checkpoint_id,run_id FROM preapproval_polls WHERE future_ref=? AND checkpoint_id IS NOT NULL
+            ) owned WHERE owned.checkpoint_id=checkpoints.key AND owned.run_id=json_extract(checkpoints.data,'$.run_id'))`)
+            .run(current.future_ref, current.future_ref);
+          for (const table of ['preapproval_ordinary_recipes', 'preapproval_dependencies', 'preapproval_trigger_candidates']) {
+            // Names are fixed host literals, never input or persisted content.
+            this.db.prepare(`DELETE FROM ${table} WHERE future_ref=?`).run(current.future_ref);
+          }
+          return 1;
+        }).immediate();
+      } catch (error) { errors.push(error); }
     }
+    // Direct callers still observe failures even when another review retired.
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Some pre-approval review content could not be retired.');
     return count;
   }
 
@@ -2256,8 +2425,8 @@ export class PreapprovalRepository {
     if (!workerId || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('bad_request', 'Invalid outbox claim.', 400);
     return this.db.transaction(() => {
       const now = this.now();
-      const rows = this.db.prepare(`SELECT * FROM preapproval_outbox WHERE state = 'pending'
-        OR (state = 'leased' AND lease_until <= ?) ORDER BY event_id LIMIT ?`).all(now, limit) as PreapprovalOutboxItem[];
+      const rows = this.db.prepare(`SELECT * FROM preapproval_outbox WHERE state<>'done' AND (state = 'pending'
+        OR (state = 'leased' AND lease_until <= ?)) ORDER BY event_id LIMIT ?`).all(now, limit) as PreapprovalOutboxItem[];
       for (const row of rows) this.db.prepare(`UPDATE preapproval_outbox SET state = 'leased', worker_id = ?, lease_until = ?
         WHERE event_id = ?`).run(workerId, now + 60_000, row.event_id);
       return rows.map((row): PreapprovalOutboxItem => ({ ...row, state: 'leased', worker_id: workerId, lease_until: now + 60_000 }));

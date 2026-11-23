@@ -1,11 +1,13 @@
 import { OWNER_CONTRACT_ID, parseAssetFactContextRequest, parseSituationQueryInput, type AssetFactContext, type AssetFactContextRequest, type ExecutionSource, type SituationItem, type SituationQueryInput, type SituationRef, type SituationResult } from '@recued/contracts';
 import { resolveGrantGoverningContractId } from '../grant-governing-contract.js';
+import { withContractDispatchReservation } from '../contract-dispatch-reservation.js';
 import { createGatedReadGrantResolver, type ReadGrantChecker } from '../read-grant-checker.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
 import type { ContractStore } from '../storage/contract-store.js';
 import type { SphereStore } from '../storage/sphere-store.js';
 import type { createSituationQuery, SituationReadContext } from './query.js';
 import { situationSourceAccess } from './sources.js';
+import { withholdFactContextValues, withholdSituationValues, type WithheldValues } from './values-on-request.js';
 
 export const SITUATION_READ_OP = 'core.situation.read';
 export const SITUATION_PREFETCH_OP = 'core.situation.prefetch';
@@ -42,6 +44,13 @@ export const createSituationAccess = (deps: {
   /** D-340 slice 4 — a managed run's own tool rounds: the streams' AI suggestions
    *  (`ScheduledSituations.suggestionsToolRounds`). */
   toolRoundCap?: (source: ExecutionSource | undefined) => number | undefined;
+  /** D-339 slice 6 (§5.3) — the names an asset keeps when it withholds its values from a model's
+   *  general reads (`values_on_request`, a Body), or undefined. Absent ⇒ nothing is withheld. Slice 12a:
+   *  given the reader, so the owner's chats are told their switch for a Body's numbers. */
+  withheldValues?: (assetId: string, source: ExecutionSource | undefined) => WithheldValues | undefined;
+  /** D-339 slice 6 — whether a read sees those values all the same: only a stream's own AI
+   *  suggestions while that stream's Include private items is on (D-340 §3.4). */
+  showsWithheldValues?: (source: ExecutionSource | undefined) => boolean;
 }) => {
   const now = deps.now ?? Date.now;
   const definitions = createContractDefinitionStore(deps.contracts, { now });
@@ -52,6 +61,11 @@ export const createSituationAccess = (deps: {
     return JSON.stringify([current.owner, current.all_spheres, current.spheres,
       collections.map(collection => { const access = situationSourceAccess(collection)!; return [collection,
           current.grants.isVerbOpGranted(access.verb_op), current.grants.isCollectionReadGranted(access.collection)]; })]);
+  };
+  /** D-339 slice 6 — a model's general read: an asset that withholds its values keeps their names. */
+  const withheld = (source: ExecutionSource | undefined) => {
+    const of = deps.withheldValues;
+    return of !== undefined && deps.showsWithheldValues?.(source) !== true ? (assetId: string) => of(assetId, source) : undefined;
   };
   const ownerHost: ExecutionSource = { channel: 'chat', actor: 'user_self', user_id: 'owner', chat_session_id: 'situation-host-read' };
   const noReads: ReadGrantChecker = { isTopicReadGranted: () => false, isCollectionReadGranted: () => false, isVerbOpGranted: () => false };
@@ -127,22 +141,31 @@ export const createSituationAccess = (deps: {
       return (deps.eveningPursuits?.() ?? []).map(pursuit => ({ title: pursuit.name, ref: { collection: 'asset', id: pursuit.id }, private: pursuit.private }));
     },
     /** `time_zone` is the clock a named day is read on: the chat turn's. Without it, the server's. */
-    async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal, time_zone?: string): Promise<SituationResult> {
-      const access = context(source);
-      const before = authority(source, SITUATION_READ_OP);
+    async read(raw: unknown, source: ExecutionSource | undefined, signal?: AbortSignal, time_zone?: string,
+      dispatch?: { reservation?: object }): Promise<SituationResult> {
+      // Only kernel dispatches supply this host context. Even an unmetered
+      // dispatch clears inherited authority; a reserved use credits its own
+      // synchronous checks, never the query, fact reader or nested execution.
+      const check = <T>(read: () => T): T => dispatch
+        ? withContractDispatchReservation(dispatch.reservation, read) : read();
+      const snapshot = () => check(() => authority(source, SITUATION_READ_OP));
+      const access = check(() => context(source));
+      const before = snapshot();
       if (raw && typeof raw === 'object' && !Array.isArray(raw) && 'context' in raw) {
         if (Object.keys(raw).some(key => key !== 'context')) throw new Error('Use context by itself to inspect a fact or rule, or time and filters for a situation query.');
         if (!deps.factContext) throw new Error('Fact context is unavailable on this server');
         const request = parseAssetFactContextRequest(raw.context);
         const packet = await deps.factContext(request, { ...access, ...(signal ? { signal } : {}) });
-        if (signal?.aborted || before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the context read. Refresh before relying on it.');
-        return { clusters: [], omitted: 0, ambiguous: [], fact_context: packet };
+        if (signal?.aborted || before !== snapshot()) throw new SituationAccessError('Permissions changed during the context read. Refresh before relying on it.');
+        const names = withheld(source);
+        return { clusters: [], omitted: 0, ambiguous: [], fact_context: names ? withholdFactContextValues(packet, names) : packet };
       }
       const input: SituationQueryInput = parseSituationQueryInput(raw, time_zone ?? deps.timeZone?.());
       const result = await deps.query({ ...input, surface: 'tool', ...(deps.readsPursuits?.(source) === true ? { include_pursuits: true } : {}) },
         { ...access, ...(signal ? { signal } : {}) });
-      if (before !== authority(source, SITUATION_READ_OP)) throw new SituationAccessError('Permissions changed during the situation read. Ask the owner to refresh before relying on it.');
-      return result;
+      if (before !== snapshot()) throw new SituationAccessError('Permissions changed during the situation read. Ask the owner to refresh before relying on it.');
+      const names = withheld(source);
+      return names ? withholdSituationValues(result, names) : result;
     },
     async prefetch(text: string, source: ExecutionSource | undefined, signal: AbortSignal, citeSavedDetails = false): Promise<SituationResult> {
       // The alias is independently grantable. It confers no tool grant and
@@ -155,7 +178,8 @@ export const createSituationAccess = (deps: {
           ...(citeSavedDetails && access.owner && source?.channel === 'chat' && source.actor === 'user_self'
             && !('contract_id' in source) ? { citeAssetDetails: true as const } : {}) });
       if (before !== authority(source, SITUATION_PREFETCH_OP)) throw new SituationAccessError('Prefetch permissions changed');
-      return result;
+      const names = withheld(source);
+      return names ? withholdSituationValues(result, names) : result;
     },
   };
 };

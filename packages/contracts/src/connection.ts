@@ -1564,9 +1564,9 @@ export const ENRICHMENT_TRUST_MIN_DEFAULT = 0.8;
  *  into the policy verdict (the chat Tier-3 path picks the slug; the
  *  server's connection-adapter gate re-checks the classification at
  *  dispatch — see `community/ingredients/connection-mcp-{read,write}.json`).
- *  `connection-mcp-write` is additionally in
- *  `OUTBOUND_SEND_INGREDIENT_SLUGS`, so an attended `user_self` dispatch
- *  lifts to a preflight ask. */
+ *  `connection-mcp-write` is a `write`, so in the owner's chat (the `read`
+ *  ceiling, D-177 §N.15.6) it asks by its approval, as every write does; it
+ *  was lifted to an ask by name until then. */
 export const CONNECTION_MCP_READ_SLUG = 'connection-mcp-read';
 export const CONNECTION_MCP_WRITE_SLUG = 'connection-mcp-write';
 

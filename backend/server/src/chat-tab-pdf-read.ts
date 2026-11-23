@@ -9,6 +9,7 @@
  *  kept, by AS's own note, and swap that note, which told the model to read it, for one saying the read
  *  comes next. */
 import type { ChatDispatchResult } from '@recued/contracts';
+import { readBrowserFailure } from '@recued/contracts';
 import { pdfKeptNote, pdfReadForYouNote } from './bridges/pdf-tab-notes.js';
 
 /** A PDF a tab showed, kept among the owner's files. */
@@ -28,6 +29,11 @@ const MAX_DEPTH = 16;
 export const keptTabPdfs = (result: ChatDispatchResult): KeptTabPdf[] => {
   if (!result.ok) return [];
   const found = new Map<string, KeptTabPdf>();
+  const add = (pdf: unknown): void => {
+    if (isRecord(pdf) && typeof pdf.file_ref === 'string' && typeof pdf.filename === 'string'
+      && pdf.mime_type === 'application/pdf' && pdf.note === pdfKeptNote(pdf.filename, pdf.file_ref)
+      && !found.has(pdf.file_ref)) found.set(pdf.file_ref, { file_ref: pdf.file_ref, filename: pdf.filename });
+  };
   const walk = (value: unknown, depth: number): void => {
     if (depth > MAX_DEPTH || value === null || typeof value !== 'object') return;
     if (Array.isArray(value)) {
@@ -35,10 +41,13 @@ export const keptTabPdfs = (result: ChatDispatchResult): KeptTabPdf[] => {
       return;
     }
     const pdf = (value as Record<string, unknown>).pdf;
-    if (isRecord(pdf) && typeof pdf.file_ref === 'string' && typeof pdf.filename === 'string'
-      && pdf.mime_type === 'application/pdf' && pdf.note === pdfKeptNote(pdf.filename, pdf.file_ref)
-      && !found.has(pdf.file_ref)) {
-      found.set(pdf.file_ref, { file_ref: pdf.file_ref, filename: pdf.filename });
+    add(pdf);
+    // A failed recipe is still an ok dispatch with validated structured errors.
+    // Read only completed, trusted PDF captures; the batch remains failed.
+    const error = value as Record<string, unknown>;
+    if (isRecord(error.source) && error.source.ingredient_slug === 'dom-act') {
+      const failure = readBrowserFailure({ code: error.code, browser_failure: { slug: 'dom-act', details: error.details } });
+      for (const file of failure?.details.completed_files ?? []) add(file);
     }
     for (const inner of Object.values(value)) walk(inner, depth + 1);
   };

@@ -133,6 +133,8 @@ export const EXPOSURE_APEX_ROW_ATTR = 'data-recued-exposure-apex';
 export const EXPOSURE_APEX_WARNING_ATTR = 'data-recued-exposure-apex-warning';
 export const EXPOSURE_LOAD_ERROR_ATTR = 'data-recued-exposure-load-error';
 export const EXPOSURE_RETRY_BTN_ATTR = 'data-recued-exposure-retry';
+export const EXPOSURE_WRITE_STATUS_ATTR = 'data-recued-exposure-write-status';
+export const EXPOSURE_LAN_CHECK_STATUS_ATTR = 'data-recued-exposure-lan-check-status';
 /** The "Connection example" button on the public-MCP card, and its modal.
  *
  *  🔑 IT LIVES HERE RATHER THAN IN `#contracts` BECAUSE THIS IS WHERE THE
@@ -317,6 +319,8 @@ export interface ExposurePanelStateView {
 
 export interface ExposurePanelMount {
   getState(): ExposurePanelStateView;
+  hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   refresh(): Promise<void>;
   /** Reconcile the saved-address action without fetching or repainting the panel. */
   refreshConnectionExample(): void;
@@ -470,6 +474,34 @@ export const mountExposurePanel = (
   // submit) so a driver can await the round-trip (the click handler itself
   // is sync).
   let pendingWork: Promise<void> | null = null;
+  type ControlKey = `cell:${PathRole}.${'lan' | 'public'}` | `preset:${ExposurePreset}`
+    | `apex:${RootApexMode}` | `button:${string}` | 'lan';
+  const controlTargets = new Map<ControlKey, HTMLElement>();
+  const controlFallbacks = new Map<ControlKey, HTMLElement>();
+  let directTarget: ControlKey | null = null;
+  const mutationPending = (): boolean => busy || publicMcpModal.kind === 'submitting' || wsLockoutModal.kind === 'submitting';
+
+  const restoreControlFocus = (key: ControlKey): void => {
+    const control = controlTargets.get(key);
+    const enabled = control !== undefined && control.getAttribute('disabled') === null
+      && (control as HTMLInputElement).disabled !== true;
+    const target = enabled ? control : controlFallbacks.get(key) ?? readFocusTarget;
+    if (!enabled) target?.setAttribute('tabindex', '-1');
+    target?.focus?.({ preventScroll: true });
+  };
+
+  const renderWriteStatus = (key: ControlKey, into: HTMLElement): void => {
+    if (!busy || directTarget !== key) return;
+    const status = doc.createElement('span');
+    status.className = 'exposure-write-status';
+    status.setAttribute(EXPOSURE_WRITE_STATUS_ATTR, '');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-atomic', 'true');
+    status.setAttribute('tabindex', '-1');
+    status.textContent = 'Updating access…';
+    into.appendChild(status);
+    controlTargets.set(key, status);
+  };
 
   const wrapper = doc.createElement('div');
   wrapper.setAttribute(EXPOSURE_PANEL_ATTR, '');
@@ -508,7 +540,7 @@ export const mountExposurePanel = (
   let checkingLan = false;
 
   const runLanCheck = (): void => {
-    if (opts.checkLanFromOutside === undefined || lanPosture === null || checkingLan) return;
+    if (disposed || opts.checkLanFromOutside === undefined || lanPosture === null || checkingLan) return;
     checkingLan = true;
     render();
     void (async () => {
@@ -526,6 +558,9 @@ export const mountExposurePanel = (
 
   const renderLanPosture = (): void => {
     if (disposed || lanPostureHost === null) return;
+    const previous = controlTargets.get('lan');
+    const keepFocus = previous !== undefined && previous === doc.activeElement;
+    controlTargets.delete('lan');
     clearChildren(lanPostureHost);
     if (lanPosture === null) {
       lanPostureHost.setAttribute('hidden', '');
@@ -541,6 +576,7 @@ export const mountExposurePanel = (
     );
     const heading = doc.createElement('h4');
     heading.textContent = EXPOSURE_LAN_HEADING;
+    controlFallbacks.set('lan', heading);
     section.appendChild(heading);
     const reached = opts.readLanReachedFromOutside?.(lanPosture.lanPort) ?? null;
     const note = doc.createElement('p');
@@ -560,12 +596,29 @@ export const mountExposurePanel = (
       if (checkingLan) button.setAttribute('disabled', 'true');
       button.addEventListener('click', runLanCheck);
       section.appendChild(button);
+      controlTargets.set('lan', button);
+      if (checkingLan) {
+        button.setAttribute('aria-busy', 'true');
+        const status = doc.createElement('p');
+        status.className = 'exposure-write-status';
+        status.setAttribute(EXPOSURE_LAN_CHECK_STATUS_ATTR, '');
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-atomic', 'true');
+        status.setAttribute('tabindex', '-1');
+        status.textContent = 'Checking the local port…';
+        section.appendChild(status);
+        controlTargets.set('lan', status);
+      }
     }
     lanPostureHost.appendChild(section);
+    if (keepFocus) restoreControlFocus('lan');
   };
 
   const render = (): void => {
     if (disposed) return;
+    const controlOwner = [...controlTargets].find(([, node]) => node === doc.activeElement)?.[0];
+    controlTargets.clear();
+    controlFallbacks.clear();
     const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
     readFocusTarget = null;
     lanPostureHost = null;
@@ -607,6 +660,7 @@ export const mountExposurePanel = (
       if (connectExampleOpen) renderConnectExampleModal(connectFocusIndex, connectScrollTop, connectScrollLeft);
     }
     const modalOpen = publicMcpModal.kind !== 'idle' || wsLockoutModal.kind !== 'idle' || connectExampleOpen;
+    if (controlOwner !== undefined && !modalOpen) restoreControlFocus(controlOwner);
     if (keepReadFocus && !modalOpen && readFocusTarget && (readFocusTarget.getClientRects?.().length ?? 1) > 0) {
       readFocusTarget.focus?.();
     }
@@ -701,9 +755,10 @@ export const mountExposurePanel = (
   };
 
   // ── Dispatch firing (non-modal direct actions) ───────────────────
-  const fireDirect = async (dispatch: ExposureDispatch): Promise<void> => {
-    if (disposed || busy) return;
+  const fireDirect = async (dispatch: ExposureDispatch, target: ControlKey): Promise<void> => {
+    if (disposed || mutationPending()) return;
     actionError = null;
+    directTarget = target;
     setBusy(true);
     try {
       const resp = await fireDispatch(dispatch);
@@ -714,6 +769,7 @@ export const mountExposurePanel = (
       actionError = errorCopyOf(err);
     } finally {
       if (!disposed) setBusy(false);
+      directTarget = null;
     }
   };
 
@@ -752,7 +808,7 @@ export const mountExposurePanel = (
 
   // ── Preset interaction ───────────────────────────────────────────
   const onPresetClick = (preset: ExposurePreset): void => {
-    if (busy) return;
+    if (disposed || mutationPending()) return;
     const model = currentModel();
     if (model === null) return;
     const row = model.preset_rows.find((r) => r.preset === preset);
@@ -773,12 +829,12 @@ export const mountExposurePanel = (
       render();
       return;
     }
-    pendingWork = fireDirect(buildPresetDispatch({ preset }));
+    pendingWork = fireDirect(buildPresetDispatch({ preset }), `preset:${preset}`);
   };
 
   // ── Cell interaction ─────────────────────────────────────────────
   const onCellClick = (path: PathRole, cell: 'lan' | 'public'): void => {
-    if (busy || state === null) return;
+    if (disposed || mutationPending() || state === null) return;
     const current = state.resolution;
     const nextResolution = projectCellToggle({
       current_resolution: current,
@@ -831,13 +887,13 @@ export const mountExposurePanel = (
     }
 
     pendingWork = fireDirect(
-      buildPathResolutionDispatch({ path, resolution: nextForPath }),
+      buildPathResolutionDispatch({ path, resolution: nextForPath }), `cell:${path}.${cell}`,
     );
   };
 
   // ── Public-MCP card button ───────────────────────────────────────
   const onManagePublicMcpClick = (): void => {
-    if (busy || state === null) return;
+    if (disposed || mutationPending() || state === null) return;
     const active = isPublicMcpAcknowledgementActive(
       state.public_mcp_acknowledgement,
     );
@@ -851,10 +907,11 @@ export const mountExposurePanel = (
 
   // ── Apex (`GET /`) picker (R26.2 Delta 2) ────────────────────────
   const onApexSelect = (mode: RootApexMode): void => {
-    if (busy || mode === apexMode) return;
+    if (disposed || mutationPending() || mode === apexMode) return;
     const setApex = opts.runSetApex;
     if (!setApex) return;
     actionError = null;
+    directTarget = `apex:${mode}`;
     setBusy(true);
     pendingWork = (async () => {
       try {
@@ -869,12 +926,14 @@ export const mountExposurePanel = (
         actionError = errorCopyOf(err);
       } finally {
         if (!disposed) setBusy(false);
+        directTarget = null;
       }
     })();
   };
 
   // ── Public-MCP modal submit ──────────────────────────────────────
   const submitPublicMcp = async (): Promise<void> => {
+    if (disposed) return;
     const outcome = submitPublicMcpModal(publicMcpModal);
     if (!outcome.ok) {
       // Local guard (phrase missing / mismatch) — the submit button is
@@ -931,6 +990,7 @@ export const mountExposurePanel = (
 
   // ── /ws lockout modal submit ─────────────────────────────────────
   const submitWsLockout = async (): Promise<void> => {
+    if (disposed) return;
     const outcome = submitWsLockoutModal(wsLockoutModal);
     if (!outcome.ok) {
       render();
@@ -959,6 +1019,7 @@ export const mountExposurePanel = (
   };
 
   const cancelModal = (): void => {
+    if (disposed || publicMcpModal.kind === 'submitting' || wsLockoutModal.kind === 'submitting') return;
     connectExampleOpen = false;
     if (publicMcpModal.kind !== 'idle') {
       publicMcpModal = closePublicMcpModal();
@@ -1072,6 +1133,8 @@ export const mountExposurePanel = (
       if (row.is_current) input.checked = true;
       if (busy || row.requires_ddns) input.disabled = true;
       input.addEventListener('change', () => onPresetClick(row.preset));
+      controlTargets.set(`preset:${row.preset}`, input);
+      controlFallbacks.set(`preset:${row.preset}`, label);
 
       const body = doc.createElement('span');
       body.className = 'exposure-preset-body';
@@ -1094,6 +1157,7 @@ export const mountExposurePanel = (
         body.appendChild(hint);
       }
 
+      renderWriteStatus(`preset:${row.preset}`, body);
       label.appendChild(input);
       label.appendChild(body);
       fieldset.appendChild(label);
@@ -1171,6 +1235,10 @@ export const mountExposurePanel = (
           guidanceId,
         ),
       );
+      for (const axis of ['lan', 'public'] as const) {
+        controlFallbacks.set(`cell:${row.path}.${axis}`, pathCell);
+        renderWriteStatus(`cell:${row.path}.${axis}`, pathCell);
+      }
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
@@ -1201,6 +1269,7 @@ export const mountExposurePanel = (
       label.className += ' exposure-cell-target-disabled';
     }
     input.addEventListener('change', () => onCellClick(path, cell));
+    controlTargets.set(`cell:${path}.${cell}`, input);
     label.appendChild(input);
     td.appendChild(label);
     return td;
@@ -1366,6 +1435,8 @@ export const mountExposurePanel = (
       if (isCurrent) input.checked = true;
       if (busy || !interactive || gateDisabled) input.disabled = true;
       input.addEventListener('change', () => onApexSelect(mode));
+      controlTargets.set(`apex:${mode}`, input);
+      controlFallbacks.set(`apex:${mode}`, label);
 
       const body = doc.createElement('span');
       body.className = 'exposure-apex-body';
@@ -1390,6 +1461,7 @@ export const mountExposurePanel = (
         body.appendChild(hint);
       }
 
+      renderWriteStatus(`apex:${mode}`, body);
       label.appendChild(input);
       label.appendChild(body);
       fieldset.appendChild(label);
@@ -1710,6 +1782,9 @@ export const mountExposurePanel = (
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm exposure-btn`;
     if (disabledFlag) btn.disabled = true;
     btn.addEventListener('click', onClick);
+    if (attr !== EXPOSURE_MODAL_CANCEL_ATTR && attr !== EXPOSURE_MODAL_SUBMIT_ATTR) {
+      controlTargets.set(`button:${attr}`, btn);
+    }
     return btn;
   }
 
@@ -1773,6 +1848,11 @@ export const mountExposurePanel = (
   void refresh();
 
   return {
+    hasInFlightWork: () => !disposed && mutationPending(),
+    hasUnsavedChanges: () => !disposed && (
+      (publicMcpModal.kind !== 'idle' && publicMcpModal.typed_phrase !== '')
+      || (wsLockoutModal.kind !== 'idle' && wsLockoutModal.typed_phrase !== '')
+    ),
     getState: () => ({
       state,
       hasDdns,
@@ -1789,6 +1869,8 @@ export const mountExposurePanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      controlTargets.clear();
+      controlFallbacks.clear();
       connectionExampleHost = null;
       connectionExampleButton = null;
       connectExampleFocusNodes = [];

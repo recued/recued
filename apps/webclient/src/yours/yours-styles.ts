@@ -80,8 +80,21 @@ export const YOURS_STYLES = `
 [data-recued-yours] .yours-reading-row {background:transparent;border:0;border-bottom:1px solid var(--border);border-radius:0;padding:12px 0;gap:5px}
 [data-recued-yours] .yours-reading-row>h3 {font-size:14px}
 [data-recued-yours] .yours-reading-value {font-size:18px;font-weight:550;font-variant-numeric:tabular-nums}
+[data-recued-yours] .yours-reading-origin {font-size:14px;font-weight:400;color:var(--fg-muted)}
 [data-recued-yours] .yours-reading-row>.yours-actions {margin-top:4px}
 [data-recued-yours] .yours-reading-row>small {font-size:12px}
+[data-recued-yours] .yours-reading-trend {display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--fg-muted)}
+[data-recued-yours] .yours-reading-trend>svg {flex:none;overflow:visible}
+[data-recued-yours] .yours-reading-trend small {font-size:12px}
+[data-recued-yours] .yours-reading-words {flex:1 1 240px;min-width:0;display:grid;gap:2px}
+/* Above the page's own dl grid (a wide label column; one column on a phone), which would otherwise
+   win on specificity: the lenses keep a label column as wide as its longest label, at every width. */
+[data-recued-yours] .yours-reading-words>dl.yours-reading-lenses {display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 8px;margin:0;font-size:12px;line-height:1.4}
+[data-recued-yours] .yours-reading-lenses>dt {grid-column:1;font-weight:600;color:var(--fg);white-space:nowrap;overflow-wrap:normal}
+[data-recued-yours] .yours-reading-lenses>dd {grid-column:2;margin:0;overflow-wrap:anywhere}
+[data-recued-yours] .yours-reading-trend-usual {fill:currentColor;opacity:.2}
+[data-recued-yours] .yours-reading-trend-line {fill:none;stroke:var(--accent);stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round}
+[data-recued-yours] .yours-reading-trend-latest {fill:var(--accent)}
 [data-recued-yours] .yours-list {display:grid;gap:8px;min-width:0}
 [data-recued-yours] .yours-list>[data-yours-asset] {display:grid;grid-template-columns:minmax(180px,1fr) minmax(200px,1.5fr) 44px;gap:4px 24px;padding:14px 18px;align-items:start}
 [data-recued-yours] .yours-list>[data-yours-asset]>h3 {grid-column:1;grid-row:1}
@@ -128,6 +141,15 @@ export const YOURS_STYLES = `
 [data-recued-yours] .yours-steps li {counter-increment:setup-step}
 [data-recued-yours] .yours-steps li::before {content:counter(setup-step) ' ';font-variant-numeric:tabular-nums}
 [data-recued-yours] .yours-steps [aria-current] {color:var(--accent);font-weight:650}
+/* D-339 slice 21 — Connect Apple Health: its steps one under another, each value with its Copy beside it. */
+[data-recued-yours] .yours-guide-steps {display:grid;gap:20px;margin:0;padding-left:22px;list-style:decimal outside}
+[data-recued-yours] .yours-guide-steps>li::marker {font-weight:650;color:var(--fg-muted)}
+[data-recued-yours] .yours-guide-steps>li {min-width:0}
+[data-recued-yours] .yours-guide-steps>li>*+* {margin-top:6px}
+[data-recued-yours] .yours-guide-steps>li>h3 {margin:0;font-size:15px}
+[data-recued-yours] .yours-guide-steps>li>p {margin:0}
+[data-recued-yours] .yours-guide-value {display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;min-width:0}
+[data-recued-yours] .yours-guide-value code {overflow-wrap:anywhere;min-width:0}
 [data-recued-yours] .yours-writer-review {display:grid;gap:16px}
 [data-recued-yours] .yours-writer-review>.yours-actions {position:sticky;bottom:0;z-index:2;background:var(--surface);padding-block:12px}
 [data-recued-yours] dl.yours-review-facts {grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px}
@@ -166,6 +188,8 @@ export const YOURS_STYLES = `
 [data-recued-yours] [data-yours-evidence] {margin:0;padding-inline-start:20px;font-size:13px}
 [data-recued-yours] [data-yours-evidence] li+li {margin-top:8px}
 [data-recued-yours] [data-yours-evidence] li :is(a,button) {margin-inline-start:8px}
+[data-recued-yours] .yours-disclosure.yours-evidence-earlier {border:0;padding-top:0}
+[data-recued-yours] .yours-disclosure.yours-evidence-earlier[open]>*+* {margin-top:6px}
 [data-recued-yours] .yours-class-field-list {display:grid;gap:12px}
 [data-recued-yours] .yours-class-field-list:empty {display:none}
 [data-recued-yours] .yours-class-fields>button {justify-self:start}
@@ -178,6 +202,20 @@ export const YOURS_STYLES = `
 [data-recued-yours] .yours-editor .yours-actions {padding-top:16px;border-top:1px solid var(--border)}
 [data-recued-yours] .yours-editor [data-yours-editor-actions] {position:sticky;bottom:0;z-index:6;background:var(--surface);padding:12px 0;box-shadow:0 -8px 12px var(--surface)}
 [data-recued-yours] .yours-editor [data-yours-form-error] {flex-basis:100%;font-size:13px;padding:0;margin:0}
+/* D-339 slices 11 and 13 — "Ask with the numbers": choices as radios, and the message, word for word, in
+   a fixed-width font (it holds a table) that wraps rather than scrolling sideways on a phone. */
+[data-recued-yours] .yours-radio {display:flex;align-items:center;gap:10px;min-height:44px;cursor:pointer}
+/* D-339 slice 14 — a Body's readings with no value yet, folded after the rest. */
+[data-recued-yours] .yours-readings-unset {border-bottom:1px solid var(--border);padding:12px 0}
+/* D-339 slice 16 — the owner's own range for a reading. */
+[data-recued-yours] .yours-reading-range {margin:2px 0 0;font-size:13px}
+/* D-339 slice 15 — a reading's goal, with where it stands. */
+[data-recued-yours] .yours-reading-goal {margin:2px 0 0;font-size:13px}
+/* D-339 slice 14 — why a reading has probably changed since it was measured. */
+[data-recued-yours] .yours-reading-stale {margin:2px 0 0;font-size:13px;color:var(--warning-fg,var(--fg-muted,inherit))}
+[data-recued-yours] .yours-readings-unset>summary {cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}
+[data-recued-yours] .yours-radio input {width:20px;height:20px;margin:0;flex:none;accent-color:var(--accent)}
+[data-recued-yours] .yours-numbers-message {box-sizing:border-box;width:100%;min-height:280px;margin:0;padding:12px 14px;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--fg);background:var(--surface-sunk);border:1px solid var(--border);border-radius:var(--wc-radius,9px)}
 [data-recued-yours] [data-yours-form-error]:empty {display:none}
 [data-recued-yours] .yours-field-error {color:var(--danger);font-weight:400}
 [data-recued-yours] [aria-invalid=true] {border-color:var(--danger)}

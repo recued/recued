@@ -1,5 +1,10 @@
 import { mountPromptSchedulesPanel, promptScheduleChip, type PromptScheduleClient, type PromptSchedulesPanelState } from './prompt-schedules-panel.js';
 import { mountAlarmScheduleForm } from './alarm-schedule-form.js';
+import type { ReminderRecoveryStore } from '../reminders/reminder-draft-recovery.js';
+import type { PromptDraftEntry, PromptRecoveryStore } from './prompt-draft-recovery.js';
+import { promptScheduleHref, type PromptSelection } from './prompt-search.js';
+import { promptSearchTimingText } from './prompt-search-timing.js';
+import type { PromptSchedule } from '@recued/contracts';
 import { mountAutomationRehearsalPanel } from './automation-rehearsal-panel.js';
 import type { Conn, ServerRpcRegistry, RehearsalTarget } from '@recued/contracts';
 /** Reactive-substrate slice 1 — top-level Automation route.
@@ -81,6 +86,7 @@ import {
   type ConfigEditorOverlayHandle,
   type ConnectionLineSlot,
   type MailboxVariableCallers,
+  type BrowserVariableCallers,
   type MailTemplateVariableCallers,
   type MissedRunsAnswer,
 } from '@recued/ui-shared';
@@ -337,8 +343,20 @@ export type AuthStateCaller = () => Promise<{
   state: 'uninitialized' | 'locked' | 'unlocked';
 }>;
 
+export interface PromptListMemory {
+  returnHash: string; destinationHash: string; activeSection: AutomationSectionToken;
+  statusFilter: AutomationStatusFilter; chipFilter: AutomationChip | null; query: string; focusId: string; top: number;
+}
 export interface BootstrapAutomationRouteOptions {
   root: HTMLElement;
+  reminderRecovery?: ReminderRecoveryStore;
+  promptRecovery?: PromptRecoveryStore;
+  initialPromptDraft?: PromptDraftEntry;
+  initialPromptSelection?: PromptSelection;
+  initialPromptId?: string;
+  openPromptSchedule?: (row: PromptSchedule) => void;
+  promptSearchReturnHash?: string;
+  promptListMemory?: { value?: PromptListMemory };
   rehearsalCall?: Conn<ServerRpcRegistry>;
   beginRehearsalWork?(): () => void;
   document?: Document;
@@ -414,6 +432,8 @@ export interface BootstrapAutomationRouteOptions {
   /** The owner's mailboxes and calendars, for a setting that names one
    *  (`mailbox_settings`). Absent ⇒ a text box. */
   mailboxCallers?: MailboxVariableCallers;
+  /** D-402 slice H2b — the owner's paired browsers, for a dish's browser settings (`pair.browsers`). */
+  browserCallers?: BrowserVariableCallers;
   /** D-221 record picker for a `record_ref` setting, bound per recipe. */
   recordRefSearchCaller?: (
     owner: { publisher: string; pack_slug: string },
@@ -1489,6 +1509,11 @@ export const bootstrapAutomationRoute = (
       'bootstrapAutomationRoute: no document available - pass `opts.document` for non-browser environments',
     );
   }
+  const listMemory = opts.promptListMemory?.value;
+  const promptReturn = !opts.initialPromptId && listMemory && listMemory.returnHash === doc.defaultView?.location.hash ? listMemory : undefined;
+  let promptReturnInteracted = false, promptInteractions = 0;
+  const markPromptReturnInteraction = () => { promptReturnInteracted = true; promptInteractions++; };
+  opts.root.addEventListener('pointerdown', markPromptReturnInteraction, true); opts.root.addEventListener('keydown', markPromptReturnInteraction, true);
 
   if (doc.head.querySelector(`style[${AUTOMATION_ROUTE_STYLES_MARKER}]`) === null) {
     const style = doc.createElement('style');
@@ -1508,21 +1533,33 @@ export const bootstrapAutomationRoute = (
 
   let scheduleCreateKind: 'alarm' | 'prompt' | 'recipe' | null = null;
   let lastAlarm: import('@recued/contracts').ReminderCreateResult | undefined;
-  const closeScheduleCreate = (result?: import('@recued/contracts').ReminderCreateResult) => {
+  let keptAlarm = false;
+  const closeScheduleCreate = (result?: import('@recued/contracts').ReminderCreateResult, keptId?: string) => {
     const ownsFocus = doc.activeElement === doc.body || alarmHost.contains?.(doc.activeElement) || promptHost.contains?.(doc.activeElement);
     if (result) lastAlarm = result;
+    keptAlarm = Boolean(keptId);
     addPickerFor = null; scheduleCreateKind = null; render();
     if (ownsFocus) routeRoot.querySelector<HTMLElement>(`[${AUTOMATION_ROUTE_ADD_ATTR}="schedules"]`)?.focus();
   };
   const alarmHost = doc.createElement('div');
   const alarmForm = opts.rehearsalCall ? mountAlarmScheduleForm({ host: alarmHost,
+    recovery: opts.reminderRecovery,
     create: args => opts.rehearsalCall!('reminder.create', args), onClose: closeScheduleCreate,
     ...(opts.serverTimeZone ? { timeZone: opts.serverTimeZone } : {}) }) : undefined;
   const promptHost = doc.createElement('div');
   let promptState: PromptSchedulesPanelState = { rows: [], loaded: false, error: '' };
+  let comingUpSelections = new Map<string, PromptSchedule>();
+  let comingUpOpening: string | undefined, comingUpError = '';
   let renderPromptOverview = (): void => {};
   const promptPanel = opts.rehearsalCall ? mountPromptSchedulesPanel({ host: promptHost, call: opts.rehearsalCall as PromptScheduleClient,
-    hideCreate: true, onCreateClosed: closeScheduleCreate,
+    ...(opts.initialPromptId ? { selection: { id: opts.initialPromptId, ...(opts.initialPromptSelection?.id === opts.initialPromptId ? { identity: opts.initialPromptSelection.identity } : {}) } } : {}),
+    canFocusSelection: () => !promptReturnInteracted && (doc.activeElement === doc.body || doc.activeElement === doc.documentElement || opts.root.contains?.(doc.activeElement) === true),
+    initialQuery: promptReturn?.query,
+    openSchedule: row => openSavedPrompt(row),
+    hideCreate: true, recovery: opts.promptRecovery, onCreateClosed: keptId => {
+      closeScheduleCreate();
+      if (keptId) routeRoot.querySelector<HTMLElement>(`[data-prompt-focus="draft-resume:${keptId}"]`)?.focus();
+    },
     onStateChange: state => { promptState = state; renderPromptOverview(); },
     // D-341 slice B3 — each scheduled prompt's own standing pre-approvals, on its card.
     triggerPreapprovals: {
@@ -1563,7 +1600,7 @@ export const bootstrapAutomationRoute = (
   /** D-319 §5.4 — the one list's filter (On / Off / Needs you / Failing), or
    *  none; the recipes being switched on; and the section a rule's Details
    *  were opened from, which Back returns to. */
-  let chipFilter: AutomationChip | null = null;
+  let chipFilter: AutomationChip | null = promptReturn?.chipFilter ?? null;
   let switchOnBusy = new Set<string>();
   let detailReturnSection: AutomationSectionToken | null = null;
   /** False until a `dishes.list` caller has actually answered — an absent
@@ -1584,7 +1621,7 @@ export const bootstrapAutomationRoute = (
   // R21 — the visible section. A section deep-link seeds it; a legacy
   // recipe deep-link leaves it on the default and the post-load one-shot
   // below repoints it at the first section with rows for that recipe.
-  let activeSection: AutomationSectionToken = opts.initialSection ?? 'all';
+  let activeSection: AutomationSectionToken = promptReturn?.activeSection ?? opts.initialSection ?? 'all';
   /** R21 detail — the open rule id within `activeSection`, or null (list). */
   let detailId: string | null =
     opts.initialSection !== undefined && opts.initialDetailId !== undefined
@@ -1901,7 +1938,13 @@ export const bootstrapAutomationRoute = (
     recipeFilter === null || recipe_id === recipeFilter;
 
   // R21 filters — status (all sections) + origin (Triggers only).
-  let statusFilter: AutomationStatusFilter = 'all';
+  let statusFilter: AutomationStatusFilter = promptReturn?.statusFilter ?? 'all';
+  const openSavedPrompt = (row: PromptSchedule, top = opts.root.scrollTop): void => {
+    const destinationHash = promptScheduleHref(row.schedule_id);
+    if (opts.promptListMemory) opts.promptListMemory.value = { returnHash: doc.defaultView?.location.hash ?? '#automation/schedules',
+      destinationHash, activeSection, statusFilter, chipFilter, query: promptPanel?.getQuery() ?? '', focusId: row.schedule_id, top };
+    if (opts.openPromptSchedule) opts.openPromptSchedule(row); else if (doc.defaultView) doc.defaultView.location.hash = destinationHash;
+  };
   let originFilter: AutomationOriginFilter = 'all';
   const matchesStatus = (armed: ArmedState): boolean =>
     statusFilter === 'all' || armed === statusFilter;
@@ -2855,8 +2898,9 @@ export const bootstrapAutomationRoute = (
     for (const prompt of overviewPrompts()) {
       if (!prompt.enabled || prompt.next_run_at === null) continue;
       out.push({ at: prompt.next_run_at, recipe_name: prompt.title,
-        href: serializeChatSessionAddress({ sessionId: prompt.session_id }), dish_name: null,
-        what: `Prompt · ${prompt.mode === 'one_shot' ? 'Once' : describeCron(prompt.cron_expression!)} · ${prompt.time_zone}` });
+        href: promptScheduleHref(prompt.schedule_id), dish_name: null,
+        prompt: { id: prompt.schedule_id, conversationHref: serializeChatSessionAddress({ sessionId: prompt.session_id }) },
+        what: `Prompt · ${promptSearchTimingText(prompt)}` });
     }
     return out;
   };
@@ -3043,6 +3087,7 @@ export const bootstrapAutomationRoute = (
         ${section === 'schedules' && lastAlarm
           ? `<p class="automation-alarm-notice" role="status">${lastAlarm.reminder.state === 'pending' ? 'Alarm set' : 'Alarm history'}: ${e(lastAlarm.reminder.text)}. ${e(lastAlarm.confirmation)}
               <a href="#data/reminder">View or change alarms</a></p>` : ''}
+        ${section === 'schedules' && keptAlarm ? '<p class="automation-alarm-notice" role="status">Alarm draft kept in this tab. <a href="#data/reminder">Resume from Reminders</a>, or find it in Universal Search.</p>' : ''}
         ${open ? `<div class="automation-create-surface">
           <h2 class="automation-create-heading">${section === 'schedules' ? 'New schedule' : section === 'triggers' ? 'New trigger' : 'New dish'}</h2>
           <p class="automation-create-description">${section === 'schedules' ? 'Choose what happens at the scheduled time.' : 'Choose the recipe you want to use.'}</p>` : ''}
@@ -3121,10 +3166,13 @@ export const bootstrapAutomationRoute = (
             : '');
       }
       case 'coming-up': {
+        comingUpSelections = new Map(overviewPrompts().map(row => [row.schedule_id, { ...row }]));
         const entries = comingUpEntries();
         const readingPrompts = promptPanel && recipeFilter === null && !promptState.loaded && !promptState.error;
         const promptError = recipeFilter === null ? promptState.error : '';
-        return (entries.length > 0 ? renderComingUp(entries)
+        return (comingUpOpening ? '<p class="automation-section-hint" role="status">Checking this scheduled prompt…</p>' : '')
+          + (comingUpError ? `<p class="automation-load-error" role="alert" tabindex="-1" data-coming-up-prompt-error>${e(comingUpError)}</p>` : '')
+          + (entries.length > 0 ? renderComingUp(entries)
           : loading || readingPrompts ? '<p class="automation-section-hint" role="status">Loading upcoming runs…</p>'
             : promptError ? '' : renderComingUp([], filtered ? 'This Recipe has no upcoming runs.' : undefined))
           + (readingPrompts && entries.length > 0 ? '<p class="automation-section-hint" role="status">Loading scheduled prompts…</p>' : '')
@@ -3528,7 +3576,7 @@ export const bootstrapAutomationRoute = (
             choices: (args) => call('collection.contract.triggerPreapprovalChoices', args),
             grant: (args) => call('collection.contract.grantTriggerPreapproval', args),
             revoke: (args) => call('collection.contract.revokeTriggerPreapproval', args),
-          } });
+          }, ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}) });
         });
       }
       routeRoot.querySelector?.('[data-recued-automation-detail]')?.append(entry.host);
@@ -3731,6 +3779,10 @@ export const bootstrapAutomationRoute = (
     for (const item of localWritePanels.values()) item.host.remove();
     for (const item of preapprovalPanels.values()) item.host.remove();
     const promptFocus = promptHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
+    const comingUpFocus = activeElement?.getAttribute?.('data-coming-up-prompt');
+    const comingUpConversationFocus = activeElement?.getAttribute?.('data-coming-up-conversation');
+    const comingUpErrorFocus = activeElement?.hasAttribute?.('data-coming-up-prompt-error');
+    const promptBackFocus = activeElement?.hasAttribute?.('data-prompt-detail-back');
     const alarmFocus = alarmHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     if (alarmForm) alarmHost.remove();
     if (promptPanel) promptHost.remove();
@@ -3747,14 +3799,20 @@ export const bootstrapAutomationRoute = (
       <div ${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}
         id="recued-automation-section-panel" role="tabpanel"
         aria-labelledby="recued-automation-section-tab-${activeSection}">
-        ${detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
+        ${opts.initialPromptId ? `<p><button type="button" class="automation-button" data-prompt-detail-back>${opts.promptSearchReturnHash ? 'Back to search' : listMemory?.activeSection === 'coming-up' && listMemory.destinationHash === doc.defaultView?.location.hash ? 'Back to Coming up' : 'Back to schedules'}</button></p><div data-prompt-selected-slot></div>`
+          : detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
       </div>
     `;
-    promptPanel?.setFilter(promptViewFilter());
+    if (comingUpOpening) for (const link of routeRoot.querySelectorAll?.('[data-coming-up-prompt]') ?? []) link.setAttribute('aria-disabled', 'true');
+    if (comingUpFocus) findComingUpPrompt(comingUpFocus)?.focus({ preventScroll: true });
+    if (comingUpConversationFocus) findComingUpPrompt(comingUpConversationFocus, 'conversation')?.focus({ preventScroll: true });
+    if (comingUpErrorFocus) routeRoot.querySelector<HTMLElement>('[data-coming-up-prompt-error]')?.focus({ preventScroll: true });
+    if (promptBackFocus) routeRoot.querySelector<HTMLElement>('[data-prompt-detail-back]')?.focus({ preventScroll: true });
+    promptPanel?.setFilter(opts.initialPromptId ? null : promptViewFilter());
     if (promptPanel && detailId === null && (activeSection === 'all' || activeSection === 'schedules')
-      && (promptPanel.hasDraft() || scheduleCreateKind === 'prompt' || shownPrompts().length > 0
+      && (opts.initialPromptId || promptPanel.hasSearch() || promptPanel.hasDraft() || promptPanel.hasRecoveries() || scheduleCreateKind === 'prompt' || shownPrompts().length > 0
         || recipeFilter === null && (!promptState.loaded || !!promptState.error))) {
-      const slot = routeRoot.querySelector('[data-prompt-create-slot]')
+      const slot = routeRoot.querySelector('[data-prompt-selected-slot]') ?? routeRoot.querySelector('[data-prompt-create-slot]')
         ?? routeRoot.querySelector(`[${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}]`);
       slot?.appendChild(promptHost);
       promptFocus?.focus?.({ preventScroll: true });
@@ -4183,6 +4241,13 @@ export const bootstrapAutomationRoute = (
           ? { mailboxes: { settings, callers: opts.mailboxCallers } }
           : {};
       })(),
+      // D-402 slice H2b — and which name a browser.
+      ...((): { browsers?: { settings: NonNullable<ServerRecipeListEntry['browser_settings']>; callers: BrowserVariableCallers } } => {
+        const settings = (recipeEntries ?? []).find((row) => row.recipe_id === entry.recipe_id)?.browser_settings;
+        return opts.browserCallers !== undefined && settings !== undefined && settings.length > 0
+          ? { browsers: { settings, callers: opts.browserCallers } }
+          : {};
+      })(),
       // `mode: 'resume'` re-enables in the same call (arm-time is a config
       // adjustment point); `'edit'` leaves the enable state untouched.
       // D-319 — a row with no dish switches the recipe on: its main dish is
@@ -4210,6 +4275,7 @@ export const bootstrapAutomationRoute = (
       ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
       ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
       ...(opts.mailboxCallers !== undefined ? { mailboxes: opts.mailboxCallers } : {}),
+      ...(opts.browserCallers !== undefined ? { browsers: opts.browserCallers } : {}),
     };
   };
 
@@ -4470,6 +4536,11 @@ export const bootstrapAutomationRoute = (
   };
 
   const activateSection = (token: AutomationSectionToken): boolean => {
+    if (opts.initialPromptId) {
+      if (promptPanel?.protectDraft()) return false;
+      if (doc.defaultView) doc.defaultView.location.hash = serializeShellRoute('automation', token);
+      return false;
+    }
     if (busy.size > 0) {
       focusPendingMutationOwner();
       return false;
@@ -4561,6 +4632,28 @@ export const bootstrapAutomationRoute = (
   };
 
   const onClick = (ev: Event): void => {
+    const promptLink = (ev.target as Element | null)?.closest?.('[data-coming-up-prompt]');
+    if (promptLink) {
+      const mouse = ev as MouseEvent;
+      if (mouse.button > 0 || mouse.ctrlKey || mouse.metaKey || mouse.shiftKey || mouse.altKey) return;
+      ev.preventDefault();
+      const row = comingUpSelections.get(promptLink.getAttribute('data-coming-up-prompt') ?? '');
+      if (!row || comingUpOpening || !promptPanel || promptPanel.protectDraft()) return;
+      const interaction = promptInteractions, hash = doc.defaultView?.location.hash, top = opts.root.scrollTop;
+      comingUpOpening = row.schedule_id; comingUpError = ''; render();
+      const ownsVisit = () => !disposed && activeSection === 'coming-up' && doc.defaultView?.location.hash === hash && interaction === promptInteractions;
+      void promptPanel.resolveSchedule(row).then(fresh => {
+        if (fresh && ownsVisit()) openSavedPrompt(fresh, top);
+      }).catch(failure => {
+        if (ownsVisit()) comingUpError = humanizeRpcError(failure);
+      }).finally(() => {
+        comingUpOpening = undefined;
+        if (disposed) return;
+        render();
+        if (comingUpError && ownsVisit()) routeRoot.querySelector<HTMLElement>('[data-coming-up-prompt-error]')?.focus({ preventScroll: true });
+      });
+      return;
+    }
     if ((ev.target as Element | null)?.closest?.('[data-prompt-overview-retry]')) {
       void promptPanel?.refresh(); return;
     }
@@ -4660,6 +4753,14 @@ export const bootstrapAutomationRoute = (
       if (token === null || !isAutomationSectionToken(token) || loading) return;
       pendingRetryFocus = doc.activeElement === retryButton ? token : null;
       void loadAll();
+      return;
+    }
+    const promptBack = (ev.target as Element | null)?.closest?.('[data-prompt-detail-back]');
+    if (promptBack) {
+      if (promptPanel?.protectDraft()) return;
+      const origin = opts.promptListMemory?.value;
+      const hash = opts.promptSearchReturnHash ?? (origin && origin.destinationHash === doc.defaultView?.location.hash ? origin.returnHash : '#automation/schedules');
+      if (doc.defaultView) doc.defaultView.location.hash = hash;
       return;
     }
     // R21 detail — the back button returns to the section list.
@@ -5021,6 +5122,33 @@ export const bootstrapAutomationRoute = (
 
   render();
   const initialLoad = loadAll();
+  function findComingUpPrompt(id: string, kind: 'prompt' | 'conversation' = 'prompt'): HTMLElement | undefined {
+    const attr = 'data-coming-up-' + kind;
+    return Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${attr}]`) ?? [])
+      .find(el => el.getAttribute(attr) === id);
+  }
+  // Only the prompt list owns this return. Unrelated recipe/capability reads
+  // may still be pending, and later overview paints preserve this control.
+  if (promptReturn) void promptPanel?.whenLoaded().then(() => {
+    if (disposed || promptReturnInteracted || doc.defaultView?.location.hash !== promptReturn.returnHash) return;
+    if (promptReturn.activeSection === 'coming-up') {
+      const target = findComingUpPrompt(promptReturn.focusId);
+      if (target) target.focus({ preventScroll: true });
+      else {
+        comingUpError = 'This scheduled prompt is no longer in Coming up. Review its current schedule in Overview.';
+        render(); routeRoot.querySelector<HTMLElement>('[data-coming-up-prompt-error]')?.focus({ preventScroll: true });
+      }
+      opts.root.scrollTop = promptReturn.top;
+    } else if (promptPanel?.focusSchedule(promptReturn.focusId)) opts.root.scrollTop = promptReturn.top;
+  });
+  if (opts.initialPromptDraft && promptPanel) {
+    activeSection = 'schedules'; detailId = null;
+    addPickerFor = opts.initialPromptDraft.original ? null : 'schedules'; scheduleCreateKind = opts.initialPromptDraft.original ? null : 'prompt'; render();
+    if (!promptPanel.resumeDraft(opts.initialPromptDraft.id, opts.initialPromptDraft)) {
+      addPickerFor = null; scheduleCreateKind = null;
+      promptPanel.showRecoveryNotice('This recovery copy changed or is no longer available. Review the current drafts.'); render();
+    }
+  }
   const hasAutomationInFlightWork = (): boolean =>
     busy.size > 0
     || promptPanel?.pending() === true || promptPanel?.hasDraft() === true
@@ -5053,6 +5181,7 @@ export const bootstrapAutomationRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      opts.root.removeEventListener('pointerdown', markPromptReturnInteraction, true); opts.root.removeEventListener('keydown', markPromptReturnInteraction, true);
       promptPanel?.dispose();
       alarmForm?.dispose();
       oneOffEditor?.panel.dispose(); oneOffEditor = null;

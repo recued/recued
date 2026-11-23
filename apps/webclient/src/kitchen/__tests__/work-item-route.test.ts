@@ -1,7 +1,7 @@
 /** D-333 — one item of work in progress, opened straight into its editor and kept as typed. */
 import { describe, expect, it, vi } from 'vitest';
 import type { KitchenImportDraft, RecipeDefinition } from '@recued/contracts';
-import { mountKitchenWorkItemRoute, type WorkItemEditorHooks } from '../work-item-route.js';
+import { KITCHEN_WORK_ITEM_NOTES_ATTR, mountKitchenWorkItemRoute, type WorkItemEditorHooks } from '../work-item-route.js';
 import { allOf, byText, FakeEl, fakeDocument, rpcError, settle } from './kitchen-fake-dom.js';
 
 const recipeSource = '{"recipe_id":"morning","metadata":{"name":"Morning briefing"}}';
@@ -72,6 +72,20 @@ describe('Kitchen work in progress — the item page (D-333)', () => {
     r.hooks().onSaved();
     await settle();
     expect(r.discard).toHaveBeenCalledWith('w1', 5); // the revision its last write made
+  });
+
+  it('shows what to look at first in a draft Recued compiled, and nothing for one without notes (D-402)', async () => {
+    const notes = ['Step 2 has no selector: fill it in.', 'Asked for at each run: the search'];
+    const compiled = mount({ draftId: 'w1', get: async () => item({ notes,
+      made_from: { kind: 'chat_request', session_id: 'chat-1', turn_id: 't-1' } }) });
+    await settle();
+    const list = allOf(compiled.root).find((el) => el.attrs.has(KITCHEN_WORK_ITEM_NOTES_ATTR))!;
+    expect(list.hidden).toBe(false);
+    expect(list.children.map((child) => typeof child === 'string' ? child : child.textContent)).toEqual(notes);
+    expect(compiled.openRecipe).toHaveBeenCalled();
+    const plain = mount({ draftId: 'w1' });
+    await settle();
+    expect(allOf(plain.root).find((el) => el.attrs.has(KITCHEN_WORK_ITEM_NOTES_ATTR))!.hidden).toBe(true);
   });
 
   it('hands a pack to the builder, and the item is done once the builder keeps the work', async () => {

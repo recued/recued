@@ -28,8 +28,12 @@ export const captureCalendarResource = (deps: CalendarDispatcherDeps,
     throw new RpcError('resource_version_unavailable',
       'This calendar event has no usable provider version. Sync the calendar, then request a new review.', 409);
   }
-  const patch = operation === 'calendar-update'
+  const normalized = operation === 'calendar-update'
     ? normalizeCalendarMutationPatch(input.patch as Partial<CanonicalEvent>, row.event) : undefined;
+  // D-407 slice 4 — a marking taken away and no alert left are kept as no field, as the event reads back.
+  const patch = normalized === undefined ? undefined : { ...normalized,
+    ...(normalized.marked_private === false ? { marked_private: undefined } : {}),
+    ...(normalized.reminders !== undefined && normalized.reminders.length === 0 ? { reminders: undefined } : {}) };
   const keys = new Set(['summary', 'start_at', 'end_at', 'timezone', 'is_all_day', 'status', 'location',
     ...Object.keys(patch ?? {})]);
   const before: Record<string, unknown> = {};

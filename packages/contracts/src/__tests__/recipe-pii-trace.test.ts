@@ -52,7 +52,7 @@ const tag = (path: string, kind: string) => ({ path, kind });
 
 describe('tracePiiFlow', () => {
   it('keeps PII in deciding series evidence and distance matches tainted through nested reads', () => {
-    for (const transform of ['held', 'transitions', 'window_change', 'baseline', 'within_distance']) {
+    for (const transform of ['held', 'transitions', 'window_change', 'baseline', 'trend', 'within_distance']) {
       const steps = [{ id: 'source', ingredient: 'contact-source' },
         { id: 'series', transform, rows: '{{step.source}}', place: { latitude: 1, longitude: 2 } },
         { id: 'ai', ingredient: 'core-ai-classify', input: { 'llm.data': '{{step.series.evidence.0.email}}' } }];

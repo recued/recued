@@ -87,9 +87,9 @@ const salesforceCtx = (overrides: Partial<PackResolutionContext> = {}): PackReso
 });
 
 /** A connection-picker variable def (the ValueHint object form). */
-const connectionVariable = (): RecipeDefinition['variables'][string] => {
+const connectionVariable = (): NonNullable<RecipeDefinition['variables']>[string] => {
   const def = { label: 'CRM connection', type: 'connection', connection_kind: 'api', default: '' };
-  return def as unknown as RecipeDefinition['variables'][string];
+  return def as unknown as NonNullable<RecipeDefinition['variables']>[string];
 };
 
 const testRecipe = (
@@ -203,7 +203,7 @@ describe('per-step connection slot override (resolver)', () => {
   it('fails closed when the slot names a variable that is not type:connection', () => {
     const recipe = testRecipe([opStep({ connection: '{{config.top_n}}' })], {
       top_n: { label: 'How many', type: 'number', default: 10 } as unknown as
-        RecipeDefinition['variables'][string],
+        NonNullable<RecipeDefinition['variables']>[string],
     });
     expectThrows(
       () => resolveConnectionAgnosticRecipe(recipe, hubspotCtx()),
@@ -273,7 +273,7 @@ describe('connectionVariableNames', () => {
         variables: {
           crm_b: connectionVariable(),
           top_n: { label: 'n', type: 'number', default: 10 } as unknown as
-            RecipeDefinition['variables'][string],
+            NonNullable<RecipeDefinition['variables']>[string],
           crm_a: connectionVariable(),
         },
       }),
@@ -367,7 +367,7 @@ describe('opStepConnectionSlots (dispatch slot derivation)', () => {
   it('fails when the slot names a declared variable that is NOT type:connection', () => {
     const recipe = testRecipe([opStep({ connection: '{{config.top_n}}' })], {
       top_n: { label: 'n', type: 'number', default: 10 } as unknown as
-        RecipeDefinition['variables'][string],
+        NonNullable<RecipeDefinition['variables']>[string],
     });
     const slots = opStepConnectionSlots(recipe);
     expect(slots.ok).toBe(false);

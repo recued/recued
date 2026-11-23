@@ -1332,3 +1332,77 @@ describe('D-221 fixed Records store', () => {
     });
   });
 });
+
+// D-403 — the owner's purge reads a kind's rows by when they were last saved, and deletes those older
+// than a date through the owner delete: CAS, references, quota and outbox as any owner delete, with no
+// watcher event, so no recipe wakes.
+describe('D-403 — a kind\'s rows older than a date, for the owner\'s purge', () => {
+  const DAY = 86_400_000;
+  const T0 = 1_800_000_000_000;
+  let db: Database.Database;
+  let store: RecordsStore;
+  let tick: number;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    tick = T0;
+    store = createRecordsStore(db, { now: () => tick });
+    install(store);
+  });
+
+  afterEach(() => db.close());
+
+  const create = (customer: string, at: number, parent?: string): string => {
+    tick = at;
+    const fields = values(customer);
+    if (parent !== undefined) fields.parent = `job/${encodeURIComponent(parent)}`;
+    return (store.execute({ binding: bindings().create, args: { values: fields }, principal: 'owner' }) as { record: { id: string } }).record.id;
+  };
+
+  it('reads each kind\'s rows, bytes and oldest save, and the rows added since a time', () => {
+    create('a', T0); create('b', T0 + DAY); create('c', T0 + 40 * DAY);
+    tick = T0 + 41 * DAY;
+    const ages = store.ownerKindAges(T0 + 10 * DAY);
+    expect(ages).toEqual([{ owner: OWNER, kind: 'job', rows: 3, payload_bytes: store.getNamespace(OWNER)!.quota.payload_bytes,
+      oldest_updated_at: T0, added_since: 1 }]);
+  });
+
+  it('deletes only the rows last saved before the cutoff, as an owner delete that wakes no recipe', () => {
+    const ids = [create('a', T0), create('b', T0 + DAY), create('c', T0 + 40 * DAY)];
+    tick = T0 + 41 * DAY;
+    const outbox = store.listOutbox(OWNER).length;
+    expect(store.ownerCountOlderThan(OWNER, 'job', T0 + 2 * DAY)).toMatchObject({ rows: 2, oldest: T0, newest: T0 + DAY });
+    const before = store.getNamespace(OWNER)!.quota.payload_bytes;
+    const result = store.ownerDeleteOlderThan(OWNER, 'job', T0 + 2 * DAY);
+    expect(result).toMatchObject({ deleted: 2, blocked: 0 });
+    expect(ids.map((id) => store.ownerGet(OWNER, 'job', id) !== null)).toEqual([false, false, true]);
+    expect(store.getNamespace(OWNER)!.quota).toMatchObject({ row_count: 1, payload_bytes: before - result.payload_bytes });
+    // `owner_bulk_delete` emits nothing: no watcher event, so no recipe wakes.
+    expect(store.listOutbox(OWNER)).toHaveLength(outbox);
+    expect(store.ownerCountOlderThan(OWNER, 'job', T0 + 2 * DAY).rows).toBe(0);
+  });
+
+  it('leaves a row another row points at, counts it, and goes on past it', () => {
+    const parent = create('parent', T0);
+    const old = create('old', T0 + DAY);
+    create('child', T0 + 30 * DAY, parent);
+    tick = T0 + 41 * DAY;
+    expect(store.ownerDeleteOlderThan(OWNER, 'job', T0 + 2 * DAY, 1)).toMatchObject({ deleted: 0, blocked: 1 });
+    // The held rows stay the oldest, so the next batch starts after them.
+    expect(store.ownerDeleteOlderThan(OWNER, 'job', T0 + 2 * DAY, 1, 1)).toMatchObject({ deleted: 1, blocked: 0 });
+    expect(store.ownerGet(OWNER, 'job', parent)).not.toBeNull();
+    expect(store.ownerGet(OWNER, 'job', old)).toBeNull();
+  });
+
+  it('refuses a namespace that is not ready, and a bad cutoff, batch or skip', () => {
+    create('a', T0);
+    tick = T0 + 41 * DAY;
+    expect(() => store.ownerDeleteOlderThan(OWNER, 'job', T0 + DAY, 0)).toThrow(/batch size/);
+    expect(() => store.ownerDeleteOlderThan(OWNER, 'job', T0 + DAY, 10, -1)).toThrow(/skip/);
+    expect(() => store.ownerDeleteOlderThan(OWNER, 'job', Number.NaN)).toThrow(/cutoff/);
+    expect(() => store.ownerCountOlderThan(OWNER, 'job', 1.5)).toThrow(/cutoff/);
+    store.orphanNamespace(OWNER, store.getNamespace(OWNER)!.state_generation);
+    expect(() => store.ownerDeleteOlderThan(OWNER, 'job', T0 + DAY)).toThrow(/ready namespace/);
+  });
+});

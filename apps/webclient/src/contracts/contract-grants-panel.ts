@@ -70,6 +70,7 @@ import {
   type GrantSwitchText,
   type RegistryDescribeRpcOutput,
   type Tier1ToolGuide,
+  type Tier1ToolNeed,
   type SetContractDoorTypesRequest,
 } from '@recued/contracts';
 
@@ -443,6 +444,10 @@ export const CONTRACT_GRANTS_NEEDS_ATTR = 'data-recued-contract-grants-needs';
  *  off in place, the same switch as its own row. Carries `data-entry` (the needed
  *  switch), `data-tool` and `data-effective`. */
 export const CONTRACT_GRANTS_NEED_ATTR = 'data-recued-contract-grants-need';
+/** The owner, 2026-11-21 ("make that binding better visibly … and set if necessary") — what a switched-on AI tool
+ *  can do with the switches it needs: `data-state` `blocked` (every call is refused until one is on) or `works` (the
+ *  kinds it works for). Shown only while the tool is on. */
+export const CONTRACT_GRANTS_NEEDS_STATUS_ATTR = 'data-recued-contract-grants-needs-status';
 /** D-327 follow-on — the group the AI tools head, above every entity group. */
 export const CONTRACT_GRANTS_AI_TOOLS_GROUP = 'AI tools';
 export const CONTRACT_GRANTS_AI_TOOLS_NOTE_ATTR = 'data-recued-contract-grants-ai-tools-note';
@@ -1044,13 +1049,37 @@ export const mountContractGrantsPanel = (
     line.setAttribute(CONTRACT_GRANTS_NEEDS_ATTR, '');
     line.setAttribute('data-entry', tool.entry_key);
     line.className = 'cg-needs';
-    if (guide.needs.length > 0) {
+    // The owner, 2026-11-21 — the binding made plain. A switch every call needs is "Also needs"; a switch for one
+    // kind of item is one of "One switch per kind", which the tool cannot do without (`work.create` alone adds
+    // nothing: live, an app saw it listed and every task refused). While the tool is on, a line says what it can do.
+    const plain = guide.needs.filter((need) => need.kind === undefined);
+    const perKind = guide.needs.filter((need) => need.kind !== undefined);
+    const isOn = (need: Tier1ToolNeed): boolean => { const target = entryByKey.get(need.entry); return target !== undefined && effective(target) === 'on'; };
+    const titleOf = (need: Tier1ToolNeed): string => grantSwitchText(need.entry)?.title ?? need.entry;
+    if (effective(tool) === 'on' && guide.needs.length > 0) {
+      const missing = plain.filter((need) => !isOn(need)).map(titleOf);
+      const working = perKind.filter(isOn).map(titleOf);
+      const blocked = missing.length > 0 || (perKind.length > 0 && working.length === 0);
+      if (blocked || perKind.length > 0) {
+        const status = doc.createElement('span');
+        status.setAttribute(CONTRACT_GRANTS_NEEDS_STATUS_ATTR, '');
+        status.setAttribute('data-state', blocked ? 'blocked' : 'works');
+        status.setAttribute('role', 'status');
+        status.className = 'cg-needs-status';
+        const until = [...(missing.length > 0 ? [missing.join(' and ')] : []), ...(perKind.length > 0 && working.length === 0 ? ['one switch per kind below'] : [])];
+        status.textContent = blocked ? `Every call is refused until ${until.join(', and ')} is on.` : `Works for: ${working.join(', ')}.`;
+        line.appendChild(status);
+      }
+    }
+    const heading = (text: string): void => {
       const label = doc.createElement('span');
       label.className = 'cg-needs-label';
-      label.textContent = 'Also needs:';
+      label.textContent = text;
       line.appendChild(label);
-    }
-    for (const need of guide.needs) {
+    };
+    for (const need of [...plain, ...perKind]) {
+      if (need === plain[0]) heading('Also needs:');
+      if (need === perKind[0]) heading('One switch per kind:');
       const target = entryByKey.get(need.entry);
       const on = target !== undefined && effective(target) === 'on';
       const name = grantSwitchText(need.entry)?.title ?? need.entry;
@@ -1807,6 +1836,21 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-need[data-effective='on'] {
   border-color: var(--accent, var(--fg));
+  background: var(--accent-weak, transparent);
+  font-weight: 600;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-needs-status {
+  /* A line of its own above the switches: a capped width would let them share it. */
+  flex: 0 0 100%;
+  font-size: 12px;
+  color: var(--fg);
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-needs-status[data-state='blocked'] {
+  color: var(--danger, var(--fg));
+  font-weight: 600;
+}
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-needs-label {
+  flex-basis: auto;
 }
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-need[disabled],
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-need[aria-disabled='true'] {

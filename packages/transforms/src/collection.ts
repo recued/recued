@@ -102,7 +102,7 @@ export const map: TransformFn = (p, ctx) => {
   if (p.expression !== undefined) {
     const outputField = p.output_field as string | undefined;
     return arr.map(item => {
-      const value = resolveExpression(p.expression, item);
+      const value = resolveExpression(p.expression, item, ctx.numericExpressionValue);
       if (outputField) {
         // Spread on item already preserves `_*`; nothing extra needed.
         const out = { ...(item as Record<string, unknown>) };
@@ -191,10 +191,10 @@ export const map: TransformFn = (p, ctx) => {
  *  `{{item.x | date_ms}}` date coercions, nested object/array templates, and
  *  pure-ref type-preservation all behave identically to the `map` expression path.
  *  A null / non-object (incl. array) input → `null`. */
-export const project: TransformFn = (p) => {
+export const project: TransformFn = (p, ctx) => {
   const obj = p.object;
   if (obj === null || obj === undefined || typeof obj !== 'object' || Array.isArray(obj)) return null;
-  return resolveExpression(p.expression, obj);
+  return resolveExpression(p.expression, obj, ctx.numericExpressionValue);
 };
 
 /** Regex used to both detect and substitute {{item.path}} references. */
@@ -292,7 +292,7 @@ const itemField = (item: unknown, path: string | undefined): unknown =>
  *      preserving structure. Used when projecting items into a new shape.
  *   4. Anything else: returned as-is.
  */
-function resolveExpression(expr: unknown, item: unknown): unknown {
+function resolveExpression(expr: unknown, item: unknown, numericValue?: (value: unknown) => number): unknown {
   if (typeof expr === 'string') {
     // Case 1: single ref, entire string is {{item.path}} (an optional
     // `:hint` is accepted and IGNORED — the value-system rule: pure refs
@@ -402,10 +402,12 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
       ITEM_REF_RE.lastIndex = 0; // reset after .test()
       const substituted = expr.replace(ITEM_REF_RE, (_, path) => {
         const v = itemField(item, path);
-        const n = Number(v);
+        const n = numericValue ? numericValue(v) : Number(v);
+        if (numericValue && !Number.isFinite(n)) throw new Error('arithmetic item reference is not a finite number');
         return Number.isFinite(n) ? String(n) : '0';
       });
-      return evaluateMathExpression(substituted);
+      const answer = evaluateMathExpression(substituted);
+      return numericValue ? numericValue(answer) : answer;
     }
 
     // Case 2.5: interpolation — has {{item.*}} ref(s) but NO math operators
@@ -435,7 +437,7 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
   }
 
   if (typeof expr === 'object' && expr != null) {
-    if (Array.isArray(expr)) return expr.map(e => resolveExpression(e, item));
+    if (Array.isArray(expr)) return expr.map(e => resolveExpression(e, item, numericValue));
     // Case 3.5: conditional construct `{ $ternary: { if, then, else } }`. Resolve
     // `if`, BOOL-coerce it, and return the resolved `then` (truthy) or `else`. The
     // branches resolve recursively, so a `$ternary` can nest (the CRM closed-state
@@ -445,9 +447,9 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     const ternary = (expr as Record<string, unknown>).$ternary;
     if (ternary !== undefined && typeof ternary === 'object' && ternary !== null && !Array.isArray(ternary)) {
       const t = ternary as Record<string, unknown>;
-      return coerceBool(resolveExpression(t.if, item))
-        ? resolveExpression(t.then, item)
-        : resolveExpression(t.else, item);
+      return coerceBool(resolveExpression(t.if, item, numericValue))
+        ? resolveExpression(t.then, item, numericValue)
+        : resolveExpression(t.else, item, numericValue);
     }
     // Case 3.6: string concat `{ $concat: { parts: [...], separator?, fallback? } }`.
     // Resolve each part, DROP empty/whitespace ones, join the rest with `separator`
@@ -461,17 +463,17 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
       const parts = Array.isArray(c.parts) ? c.parts : [];
       const separator = typeof c.separator === 'string' ? c.separator : '';
       const asStr = (v: unknown): string => (v === null || v === undefined ? '' : safeString(v).trim());
-      const pieces = parts.map((p) => asStr(resolveExpression(p, item))).filter((s) => s.length > 0);
+      const pieces = parts.map((p) => asStr(resolveExpression(p, item, numericValue))).filter((s) => s.length > 0);
       if (pieces.length > 0) return pieces.join(separator);
       if (c.fallback !== undefined) {
-        const fb = asStr(resolveExpression(c.fallback, item));
+        const fb = asStr(resolveExpression(c.fallback, item, numericValue));
         return fb.length > 0 ? fb : null;
       }
       return null;
     }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(expr)) {
-      setSafe(out, k, resolveExpression(v, item));
+      setSafe(out, k, resolveExpression(v, item, numericValue));
     }
     return out;
   }
@@ -480,7 +482,9 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
 
 export const reduce: TransformFn = (p) => {
   const arr = p.array as unknown[];
-  if (!Array.isArray(arr) || arr.length === 0) return p.initial ?? null;
+  if (!Array.isArray(arr)) return p.initial ?? null;
+  if (p.operator === 'count') return arr.length;
+  if (arr.length === 0) return p.initial ?? null;
   return applyReduce(arr, p.field as string, p.operator as ReduceOp, p.initial);
 };
 
@@ -497,6 +501,10 @@ function safeString(v: unknown): string {
 export function applyReduce(arr: unknown[], field: string, op: ReduceOp, initial?: unknown): unknown {
   if (op === 'count') return arr.length;
   const values = field ? arr.map(item => getField(item, field)) : arr;
+  // Preserve observed order and types. Last listed is not the numeric maximum;
+  // an absent field on that row stays null rather than selecting another row.
+  if (op === 'first') return values[0] ?? null;
+  if (op === 'last') return values.at(-1) ?? null;
   const nums = values.map(safeNumber).filter(n => !isNaN(n));
 
   if (op === 'sum') return nums.reduce((a, b) => a + b, Number(initial ?? 0));

@@ -75,8 +75,8 @@ describe('D-338 the Agenda in the owner\'s chat with Recued is a notice', () => 
 
     expect((await s.send()).delivered_to).toContain('telegram');
 
-    expect(s.telegram).toEqual([{ chat_id: 3001, text: 'Notice · Agenda · Sat 7 Nov\n\n09:00  Run 5 km\n18:00  Spanish lesson\n\n'
-      + 'Not part of your chat with Recued. To ask about it, use Reply on this message.' }]);
+    expect(s.telegram).toEqual([{ chat_id: 3001, text: 'Agenda · Sat 7 Nov\n\n09:00  Run 5 km\n18:00  Spanish lesson\n\n'
+      + '— Sent by Recued. The chat sees it once you reply to it.' }]);
     const notice = (await s.store.listMessages('s')).filter((m) => m.role === 'notice');
     expect(notice).toEqual([expect.objectContaining({ content: AGENDA.text, notice: expect.objectContaining({ vendor: 'telegram', title: AGENDA.title }) })]);
     // The owner replies to message 102 on Telegram: it resolves to the notice, with what they saw.

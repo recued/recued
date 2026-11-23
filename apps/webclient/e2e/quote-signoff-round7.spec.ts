@@ -298,13 +298,21 @@ async function reply(page: Page, kind: Kind) {
 }
 async function dragStart(page: Page, node: Locator, backwards = false) {
   await node.scrollIntoViewIfNeeded();
-  const rect = await node.evaluate(node => {
+  const points = await node.evaluate((node, backwards) => {
+    // Hit glyph interiors; the outside edge of the first glyph can collapse a
+    // backwards drag to a caret at smaller font sizes in Chromium.
+    const point = (offset: number) => {
+      const range = document.createRange(); range.setStart(node.firstChild!, offset); range.setEnd(node.firstChild!, offset + 1);
+      const rect = range.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    };
+    if (backwards) return { start: point(2), end: point(24) };
     const range = document.createRange(); range.setStart(node.firstChild!, 0); range.setEnd(node.firstChild!, 24);
-    const r = range.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height };
-  });
-  const left = rect.x + 1; const right = rect.x + rect.w - 1; const y = rect.y + rect.h / 2;
-  await page.mouse.move(backwards ? right : left, y); await page.mouse.down();
-  await page.mouse.move(backwards ? left : right, y, { steps: 12 });
+    const rect = range.getBoundingClientRect();
+    return { start: { x: rect.x + 1, y: rect.y + rect.height / 2 }, end: { x: rect.right - 1, y: rect.y + rect.height / 2 } };
+  }, backwards);
+  const from = backwards ? points.end : points.start; const to = backwards ? points.start : points.end;
+  await page.mouse.move(from.x, from.y); await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 12 });
 }
 async function deferHistory(page: Page, kind: Kind) {
   const method = kind === 'quote' ? 'reception.signoff.list' : 'reception.signoff.completion.list';
@@ -327,7 +335,9 @@ test.describe('6. Native customer reply selection', () => {
     for (const backwards of [false, true]) test(kind + ' keeps a finished native selection (backwards=' + backwards + ')', async ({ page }) => {
       const pre = await reply(page, kind); await dragStart(page, pre, backwards); await page.mouse.up();
       const before = await page.evaluate(() => { const s = getSelection()!; return { text: s.toString(), anchor: s.anchorOffset, focus: s.focusOffset }; });
-      expect(before.text.length).toBeGreaterThan(8); const original = (await pre.elementHandle())!;
+      expect(before.text.length).toBeGreaterThan(8);
+      expect(backwards ? before.anchor > before.focus : before.anchor < before.focus).toBe(true);
+      const original = (await pre.elementHandle())!;
       await page.evaluate(() => window.__quoteSignoff.update());
       await expect.poll(() => original.evaluate(node => node.isConnected)).toBe(false);
       expect(await page.evaluate(() => { const s = getSelection()!; return { text: s.toString(), anchor: s.anchorOffset, focus: s.focusOffset }; })).toEqual(before);

@@ -456,8 +456,12 @@ export interface ContractDefinition {
    *  dispatch (so it keeps the `arg_shape_hash` + exact `canonical_payload_hash`
    *  identity) but NO `bound_recipe` (there is no recipe), binding instead on
    *  the explicit op (ingredient + operation) + connection scope. Session-only
-   *  in v1. */
-  readonly grant_mode?: 'exact' | 'batch' | 'open' | 'scoped' | 'raw_op';
+   *  in v1. `'kind'` (D-177 N.15) — "Allow in this chat": the
+   *  explicit op (ingredient + operation), the connection when the call has one,
+   *  and the recipe's version only when a stored recipe made the call (an inline
+   *  one carries the AI's own call) — and NO argument pin, which is the
+   *  widening. Session-only. */
+  readonly grant_mode?: 'exact' | 'batch' | 'open' | 'scoped' | 'raw_op' | 'kind';
   /** REQUIRED on session rows (D6) — the D-153 tier-1 channel session the
    *  grant is bound to. The session index keys lookups on it. */
   readonly channel_session_id?: string;
@@ -904,9 +908,15 @@ export interface SessionGrantView {
    *  (3 items)" / "Session grant (raw op) — …"). The row title. */
   readonly display_name: string;
   /** Resolved grant mode (`def.grant_mode ?? 'exact'`). */
-  readonly grant_mode: 'exact' | 'batch' | 'open' | 'scoped' | 'raw_op';
+  readonly grant_mode: 'exact' | 'batch' | 'open' | 'scoped' | 'raw_op' | 'kind';
   /** What the pass lets through — op-scope axes (see {@link SessionGrantPermits}). */
   readonly permits: SessionGrantPermits;
+  /** The actions it lets through as the owner knows them ("Send mail"), one per
+   *  `permits.operation_ids` entry, or per `permits.ingredient_ids` entry when it
+   *  names no operation; an action no manifest names keeps its id. Display only,
+   *  named by the server at list time. Absent from an older server: the lists
+   *  then show the ids (`passActionNames`). */
+  readonly permit_names?: ReadonlyArray<string>;
   /** The approved risk tier (present on every well-formed session row). */
   readonly risk_tier?: RiskTier;
   /** The D-153 channel session the grant is bound to (auto-retires with it). */

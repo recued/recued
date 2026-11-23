@@ -42,6 +42,8 @@ export interface StartBootRecoveryAndAdaptersOptions {
   readonly auditLog: AuditLogStore | undefined;
   readonly commitStore: CommitStore | undefined;
   readonly gatedActionStore?: GatedActionStore;
+  /** D-201 Slice 10R (10Q finding 17) — swept after the checkpoint sweep. */
+  readonly approvalRestartContinuations?: import('../storage/approval-restart-continuation-store.js').ApprovalRestartContinuationStore;
   readonly preapprovalStorage?: Pick<PreapprovalStorage, 'recover'> & Partial<Pick<PreapprovalStorage, 'repository'>>;
   /** D-287 follow-on — one torn-saga disclosure pass, pre-bound by the
    *  composition root (it holds the annotation store and the manifest map this
@@ -230,6 +232,9 @@ export const startBootRecoveryAndAdapters = async (
         checkpointStore,
         auditLog,
         ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
+        ...(options.approvalRestartContinuations !== undefined
+          ? { approvalRestartContinuations: options.approvalRestartContinuations }
+          : {}),
         ...(options.getBatch !== undefined ? { getBatch: options.getBatch } : {}),
         ...(options.reconcileOpenBatch !== undefined
           ? { reconcileOpenBatch: options.reconcileOpenBatch }
@@ -258,6 +263,14 @@ export const startBootRecoveryAndAdapters = async (
         await raiseInDoubtForSweptCommits({
           block: notificationBlock,
           sweptCommits,
+          // D-201 Slice 10AV (10AS finding 29) — a run held for the owner's try
+          // again has its dead letter for what the death left in doubt.
+          ...(options.approvalRestartContinuations !== undefined
+            ? {
+                heldForTryAgain: (runId: string) =>
+                  options.approvalRestartContinuations!.getHeldForRun(runId)?.held !== undefined,
+              }
+            : {}),
         });
       }
     }

@@ -221,6 +221,8 @@ export interface ReceptionIntakeRecipePairSectionOptions {
 export interface ReceptionIntakeRecipePairSectionMount {
   /** Re-read both the exact pair and the complete durable recipe list. */
   update(): void;
+  hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   /** Detach dispatch/broadcast listeners and clear the host. Idempotent. */
   dispose(): void;
 }
@@ -420,8 +422,7 @@ const claimConfigurationAuthoringPanel = (
   const pair = state.pair;
   if (pair === null
     || pair.status !== 'ready'
-    || pair.pair_subject !== 'form'
-    || !state.authorityCurrent) return '';
+    || pair.pair_subject !== 'form') return '';
   const authoring = pair.claim_configuration_authoring;
   if (authoring.status === 'fork_required') {
     return panel({
@@ -451,7 +452,7 @@ const claimConfigurationAuthoringPanel = (
 
   const draft = state.configurationDraft;
   const configuration = claimConfigurationFromDraft(draft);
-  const disabled = state.loading || state.pairRefreshing || state.saving;
+  const disabled = state.loading || state.pairRefreshing || state.saving || !state.authorityCurrent;
   return panel({
     title: 'Payment set-up',
     body: `
@@ -629,7 +630,7 @@ const renderPairSection = (
         </p>
         <label class="reception-pair-help reception-door-consent-standing">
           <input type="checkbox" data-action="reception-pair-consent-standing"
-                 ${state.standingClosure ? 'checked' : ''} />
+                 ${state.standingClosure ? 'checked' : ''} ${state.saving || !state.authorityCurrent ? 'disabled' : ''} />
           Let this form run unattended
         </label>
         <p class="reception-pair-help">
@@ -695,14 +696,14 @@ const renderPairSection = (
         <a class="reception-pair-back" href="${e(serializeShellRoute('reception', 'endpoints'))}">← Endpoints</a>
         <div>
           <div class="reception-pair-title-row">
-            <h2 class="reception-pair-title">Checkout recipe</h2>
+            <h2 class="reception-pair-title">Recipe pairing</h2>
             ${statusBadge(
               pair,
               state.loading || state.pairRefreshing,
               state.authorityCurrent,
             )}
           </div>
-          <p class="reception-pair-endpoint">Intake endpoint <code>${e(endpointId)}</code></p>
+          <p class="reception-pair-endpoint">Endpoint <code>${e(endpointId)}</code></p>
         </div>
       </header>
       ${state.loading || state.pairRefreshing ? '<div class="reception-loading-bar" role="status" aria-label="Loading pair…"></div>' : ''}
@@ -787,22 +788,56 @@ export const mountReceptionIntakeRecipePairSection = (
     notice: null,
   };
 
-  const render = (): void => {
+  let displacedAction: string | null = null;
+  let displacedSelection: readonly [number, number, 'forward' | 'backward' | 'none' | null] | null = null;
+  let savedConfiguration = JSON.stringify(EMPTY_CLAIM_CONFIGURATION_DRAFT);
+  const hasConfigurationDraft = () => JSON.stringify(state.configurationDraft) !== savedConfiguration;
+  const hasUnsavedChanges = () => hasConfigurationDraft()
+    || state.selectedRecipeId !== (state.pair ? selectedRecipeFor(state.pair, state.recipes) : '')
+    || state.pendingDoorConsent !== null;
+  const render = (preferredAction?: string): void => {
     if (disposed) return;
+    const active = host.ownerDocument?.activeElement as HTMLInputElement | null;
+    const inside = active && host.contains(active);
+    const action = inside ? active.dataset.action ?? displacedAction : null;
+    const href = inside ? active.getAttribute('href') : null;
+    const selection = inside && typeof active.selectionStart === 'number'
+      ? [active.selectionStart, active.selectionEnd!, active.selectionDirection] as const
+      : inside && !active.dataset.action ? displacedSelection : null;
     host.innerHTML = renderPairSection(endpointId, state);
+    if (!inside && !preferredAction) return;
+    const candidates = [...host.querySelectorAll?.<HTMLInputElement>('[data-action],a[href]') ?? []];
+    const next = candidates.find(node => !node.disabled && (preferredAction
+      ? node.dataset.action === preferredAction
+      : action ? node.dataset.action === action : href && node.getAttribute('href') === href));
+    const target = next ?? host.querySelector?.<HTMLElement>('.reception-intake-recipe-pair-section');
+    if (target) {
+      if (!next) target.tabIndex = -1;
+      target.focus?.({ preventScroll: true });
+      if (next && selection && typeof next.selectionStart === 'number') next.setSelectionRange(selection[0], selection[1], selection[2] ?? undefined);
+    }
+    displacedAction = next ? null : action ?? null;
+    displacedSelection = next ? null : selection;
   };
 
   const applyPair = (
     pair: ReceptionIntakeRecipePairView,
     preserveNotice = false,
   ): void => {
+    const sameObservation = JSON.stringify(state.pair) === JSON.stringify(pair);
+    const retainDraft = sameObservation && hasConfigurationDraft();
+    const selectedRecipeId = sameObservation ? state.selectedRecipeId : selectedRecipeFor(pair, state.recipes);
+    const configurationDraft = retainDraft ? state.configurationDraft : claimConfigurationDraftFor(pair);
+    savedConfiguration = JSON.stringify(claimConfigurationDraftFor(pair));
     state = {
       ...state,
       pair,
       pairRefreshing: false,
       authorityCurrent: true,
-      selectedRecipeId: selectedRecipeFor(pair, state.recipes),
-      configurationDraft: claimConfigurationDraftFor(pair),
+      selectedRecipeId,
+      configurationDraft,
+      pendingDoorConsent: null,
+      standingClosure: false,
       confirmingClear: false,
       error: null,
       notice: preserveNotice ? state.notice : null,
@@ -827,6 +862,8 @@ export const mountReceptionIntakeRecipePairSection = (
       error: null,
       notice: null,
       confirmingClear: false,
+      pendingDoorConsent: null,
+      standingClosure: false,
     };
     render();
     try {
@@ -835,16 +872,9 @@ export const mountReceptionIntakeRecipePairSection = (
         listAllRecipes((request) => conn('recipe.list', request)),
       ]);
       if (disposed || token !== loadToken) return;
-      state = {
-        ...state,
-        loading: false,
-        pairRefreshing: false,
-        authorityCurrent: true,
-        pair,
-        recipes: listed.recipes,
-        selectedRecipeId: selectedRecipeFor(pair, listed.recipes),
-        configurationDraft: claimConfigurationDraftFor(pair),
-      };
+      state = { ...state, loading: false, recipes: listed.recipes };
+      applyPair(pair);
+      if (!listed.recipes.some(row => row.recipe_id === state.selectedRecipeId)) state = { ...state, selectedRecipeId: '' };
     } catch (error) {
       if (disposed || token !== loadToken) return;
       state = {
@@ -875,6 +905,8 @@ export const mountReceptionIntakeRecipePairSection = (
       ...state,
       pairRefreshing: true,
       authorityCurrent: false,
+      pendingDoorConsent: null,
+      standingClosure: false,
       error: null,
     };
     render();
@@ -965,6 +997,7 @@ export const mountReceptionIntakeRecipePairSection = (
       || observed === null
       || (observed.status === 'stale' && observed.binding === null)
       || state.selectedRecipeId === ''
+      || confirmCapability && state.pendingDoorConsent?.recipeId !== state.selectedRecipeId
     ) return;
     const recipeId = state.selectedRecipeId;
     // Invalidate a same-endpoint refresh that began before this observed
@@ -1180,6 +1213,7 @@ export const mountReceptionIntakeRecipePairSection = (
       || state.pair.claim_configuration_authoring.status !== 'editable') return;
     const value = (element as HTMLInputElement).value;
     if (typeof value !== 'string') return;
+    const hadFeedback = state.error !== null || state.notice !== null;
     state = {
       ...state,
       configurationDraft: {
@@ -1190,9 +1224,8 @@ export const mountReceptionIntakeRecipePairSection = (
       notice: null,
       confirmingClear: false,
     };
+    if (hadFeedback) render();
   };
-
-
 
   const handlers = {
     'reception-pair-select': (_d: DOMStringMap, event: Event, element: HTMLElement) => {
@@ -1202,6 +1235,8 @@ export const mountReceptionIntakeRecipePairSection = (
       state = {
         ...state,
         selectedRecipeId: value,
+        pendingDoorConsent: null,
+        standingClosure: false,
         error: null,
         notice: null,
         confirmingClear: false,
@@ -1235,13 +1270,13 @@ export const mountReceptionIntakeRecipePairSection = (
         && state.pair.status !== 'unpaired'
       ) {
         state = { ...state, confirmingClear: true, error: null, notice: null };
-        render();
+        render('reception-pair-clear-confirm');
       }
     },
     'reception-pair-clear-confirm': () => void clearObserved(),
     'reception-pair-clear-cancel': () => {
       state = { ...state, confirmingClear: false };
-      render();
+      render('reception-pair-clear-request');
     },
     // D-207 slice 1c — re-bind with consent. The server re-derives the closure from the
     // saved recipe; this flag only tells it the owner has SEEN the list.
@@ -1299,6 +1334,8 @@ export const mountReceptionIntakeRecipePairSection = (
 
   return {
     update: () => void load(),
+    hasInFlightWork: () => state.saving,
+    hasUnsavedChanges,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -1458,4 +1495,45 @@ export const RECEPTION_INTAKE_RECIPE_PAIR_SECTION_STYLES = `
   .reception-pair-config-grid { grid-template-columns: 1fr; }
   .reception-pair-config-wide { grid-column: auto; }
 }
+/* Quiet canvas alignment shared with the endpoint inventory and authoring routes. */
+.reception-intake-recipe-pair-section { max-width: 1100px; margin: 0; display: grid; gap: 16px; min-width: 0; }
+.reception-pair-head { display: grid; gap: 12px; }
+.reception-pair-back { display: inline-flex; align-items: center; justify-self: start; min-height: var(--wc-control-h, 40px); font-size: 12px; color: var(--muted); }
+.reception-pair-title { font-size: 18px; font-weight: 650; line-height: 1.4; }
+.reception-pair-title-row { gap: 8px 12px; }
+.reception-intake-recipe-pair-section > .rx-panel { margin: 0; padding: 20px; border-radius: var(--wc-radius, 9px); box-shadow: none; min-width: 0; }
+.reception-intake-recipe-pair-section :is(p, dt, dd, label, code) { overflow-wrap: anywhere; }
+.reception-pair-binding > div { grid-template-columns: 160px minmax(0, 1fr); gap: 12px; }
+.reception-pair-binding { gap: 8px; }
+.reception-pair-binding dt { font-weight: 600; }
+.reception-pair-copy, .reception-pair-help, .reception-pair-endpoint { line-height: 1.6; }
+.reception-pair-config-grid { gap: 16px; margin-top: 16px; align-items: start; }
+.reception-pair-config-grid .reception-pair-label { display: grid; gap: 6px; margin: 0; min-width: 0; }
+.reception-pair-input, .reception-pair-select { box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); padding: 8px 11px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.5; margin: 0; }
+.reception-pair-select { overflow: hidden; text-overflow: ellipsis; }
+.reception-intake-recipe-pair-section .rx-action-bar { gap: 8px; padding-top: 12px; }
+.reception-intake-recipe-pair-section .rx-btn { min-height: var(--wc-control-h, 40px); border-radius: var(--wc-radius, 9px); font-size: 12px; font-weight: 600; }
+.reception-door-consent { border-color: var(--accent); border-radius: var(--wc-radius, 9px); background: var(--surface-sunk); padding: 16px; }
+.reception-door-consent-standing { display: flex; align-items: flex-start; gap: 8px; }
+.reception-door-consent-standing input { width: 18px; height: 18px; flex: 0 0 18px; margin: 2px 0 0; }
+.reception-pair-preapprovals-host { max-width: 1100px; margin: 16px 0 0; }
+.reception-pair-preapprovals { border-radius: var(--wc-radius, 9px); padding: 20px; box-shadow: none; min-width: 0; }
+.reception-pair-preapprovals > summary { min-height: var(--wc-control-h, 40px); line-height: 1.6; }
+.reception-pair-preapprovals [data-recued-trigger-preapproval-panel] { min-width: 0; }
+.reception-pair-preapprovals :is(.tpa-primary,.tpa-secondary,.tpa-danger) { min-height: var(--wc-control-h, 40px); border-radius: var(--wc-radius, 9px); white-space: normal; }
+.reception-pair-preapprovals .tpa-input { min-height: var(--wc-control-h, 40px); box-sizing: border-box; }
+.reception-intake-recipe-pair-section:focus-visible, .reception-pair-input:focus-visible, .reception-pair-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@supports (grid-template-rows: subgrid) {
+ .reception-pair-config-grid .reception-pair-label { grid-template-rows: subgrid; grid-row: span 2; }
+}
+@media (max-width: 640px) {
+ .reception-intake-recipe-pair-section > .rx-panel, .reception-pair-preapprovals { padding: 14px; }
+ .reception-pair-binding > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+ .reception-pair-config-grid { grid-template-columns: minmax(0, 1fr); }
+ .reception-pair-config-wide { grid-column: auto; }
+ .reception-intake-recipe-pair-section .rx-action-bar { display: grid; grid-template-columns: minmax(0, 1fr); }
+ .reception-intake-recipe-pair-section .rx-action-bar .rx-btn { width: 100%; white-space: normal; }
+ .reception-door-consent { padding: 12px; }
+}
+
 `;

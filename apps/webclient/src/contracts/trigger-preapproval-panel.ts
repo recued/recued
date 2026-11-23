@@ -9,6 +9,10 @@
  *    asking**. It lasts until the owner ends it (ruling 10: no end date, no use cap). A write that
  *    always asks is listed, not offered. For a recipe that asks an AI, the page says its AI decides
  *    what it writes (ruling 8).
+ *  - **D-402 ruling 5:** from a server that grants every write of the version from here
+ *    (`grants_whole_recipe`), the page lists the changes it makes and what still asks, and **Allow
+ *    without asking** covers them all, every time it runs (`writes: ["*"]`). One that predates it
+ *    gets the form above.
  *  - **A scheduled prompt** (B3) lists its prompt and its pre-approvals, and offers none here: its
  *    changes are its AI's, so each is allowed from its own ask ("Always allow for this scheduled
  *    prompt"), which names exactly what it does.
@@ -17,7 +21,9 @@
  *  mounted across its route's refreshes, like the scheduled local writes panel. */
 
 import {
+  coversWholeRecipe,
   TRIGGER_PREAPPROVAL_AI_NOTE,
+  TRIGGER_PREAPPROVAL_ALL_WRITES,
   TRIGGER_PREAPPROVAL_MAX_PER_RUN,
   TRIGGER_PREAPPROVAL_TRIGGER_NOUNS,
   triggerPreapprovalOption,
@@ -29,7 +35,14 @@ import {
   type TriggerPreapprovalView,
 } from '@recued/contracts';
 
+import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+
+/** D-402 — what the panel reads again on: a trigger's pre-approval granted (from its ask, on another
+ *  device), a use spent, or ended. Pinned in `WEBCLIENT_DEFAULT_SUBSCRIPTIONS` by the panel's test. */
+export const TRIGGER_PREAPPROVAL_PANEL_BROADCAST_KINDS = ['contract.preapproval_changed'] as const;
+/** A burst of changes (a run's writes each spend a use) is read once. */
+export const TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS = 250;
 
 export interface TriggerPreapprovalPanelCallers {
   readonly choices: (args: { trigger: TriggerPreapprovalTrigger }) => Promise<{ recipes: ReadonlyArray<TriggerPreapprovalChoice> }>;
@@ -128,6 +141,10 @@ export const mountTriggerPreapprovalPanel = (options: {
   readonly host: HTMLElement;
   readonly trigger: TriggerPreapprovalTrigger;
   readonly callers: TriggerPreapprovalPanelCallers;
+  /** D-402 — live updates: a trigger's pre-approval granted, used or ended anywhere (its ask answered
+   *  on another device, a run spending a use, Contracts) reads the list again. The broadcast names the
+   *  row, not its trigger, and a new grant's row is not on this page yet: any trigger's change reads. */
+  readonly subscribe?: BroadcastSubscriber['on'];
   readonly document?: Document;
 }): TriggerPreapprovalPanelMount => {
   const { host, trigger, callers } = options;
@@ -153,6 +170,16 @@ export const mountTriggerPreapprovalPanel = (options: {
    *  next paint puts focus back on: a repaint replaces every node, the focused one too. */
   const focusables = new Map<string, HTMLElement>();
   let focusNext: string | null = null;
+  // Read again once for a burst. A grant or an end in flight reads again when it settles (`act`).
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopListening = options.subscribe === undefined ? [] : TRIGGER_PREAPPROVAL_PANEL_BROADCAST_KINDS.map((kind) =>
+    options.subscribe!(kind, (event) => {
+      if (event.holder !== 'trigger' || disposed || liveTimer !== undefined) return;
+      liveTimer = setTimeout(() => {
+        liveTimer = undefined;
+        if (!disposed && busy === null) void refresh();
+      }, TRIGGER_PREAPPROVAL_LIVE_REFRESH_MS);
+    }));
 
   const el = (tag: string, className?: string, text?: string): HTMLElement => {
     const node = doc.createElement(tag);
@@ -272,6 +299,34 @@ export const mountTriggerPreapprovalPanel = (options: {
     if (offerable.length === 0 && asking.length === 0) {
       if (covered.size > 0) return null;
       form.appendChild(el('p', 'tpa-copy', 'It makes no change that asks you.'));
+      return form;
+    }
+    // D-402 ruling 5 — every write of the version, every time it runs: no write to pick, no count.
+    if (choice.grants_whole_recipe === true) {
+      const whole = choice.preapprovals.some((row) => row.state === 'live' && coversWholeRecipe(row));
+      if (!whole && offerable.length > 0) {
+        form.appendChild(el('p', 'tpa-copy', `${covered.size > 0 ? 'Also let' : 'Let'} these happen without asking `
+          + `${runsHere(trigger.kind)}:`));
+        for (const write of offerable) {
+          const line = el('p', 'tpa-write', write.label);
+          line.setAttribute(TRIGGER_PREAPPROVAL_PANEL_WRITE_ATTR, write.op);
+          form.appendChild(line);
+        }
+      }
+      for (const write of asking) {
+        form.appendChild(el('p', 'tpa-asks', `Always asks: ${write.label}. ${write.reason ?? ''}`.trim()));
+      }
+      if (whole || offerable.length === 0) return asking.length > 0 ? form : null;
+      form.appendChild(el('p', 'tpa-asks', 'Every time it runs, until you end it. A change to the recipe asks you again.'));
+      const wholeId = `grant:${choice.recipe_id}`;
+      const wholeActions = el('div', 'tpa-actions');
+      const allow = button(wholeId, TRIGGER_PREAPPROVAL_PANEL_GRANT_ATTR, 'tpa-primary', 'Allow without asking', () => {
+        void act(wholeId, wholeId, () => callers.grant({ trigger, recipe_id: choice.recipe_id, writes: [TRIGGER_PREAPPROVAL_ALL_WRITES] }));
+      });
+      wholeActions.appendChild(busy === wholeId ? working(allow) : allow);
+      form.appendChild(wholeActions);
+      const wholeError = errorLine(wholeId);
+      if (wholeError !== null) form.appendChild(wholeError);
       return form;
     }
     const off = unticked.get(choice.recipe_id) ?? new Set<string>();
@@ -416,6 +471,9 @@ export const mountTriggerPreapprovalPanel = (options: {
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      for (const stop of stopListening.splice(0)) stop();
+      if (liveTimer !== undefined) clearTimeout(liveTimer);
+      liveTimer = undefined;
       try { host.removeChild(root); } catch { /* a detached host */ }
     },
   };

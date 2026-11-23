@@ -62,18 +62,18 @@ describe('D-335 slice J — parsing a sequence', () => {
 
   it('refuses a key a step does not take, naming the step as the model counts it', () => {
     expect(error([LOGIN[0], { do: 'click', ref: 'e2', value: 'x' }]))
-      .toBe('step 2: a click step takes do, ref, selector, text, role, success_when, fail_when, then_read, page, url, not value');
+      .toBe('step 2: a click step takes do, ref, selector, text, role, within, success_when, fail_when, then_read, then_read_form, page, url, not value');
     expect(error([{ do: 'type', ref: 'e1', value: 'x', enter: true }]))
-      .toBe('step 1: a type step takes do, ref, selector, text, role, value, secret, submit, pick, success_when, fail_when, then_read, page, url, not enter');
+      .toBe('step 1: a type step takes do, ref, selector, text, role, within, value, secret, submit, pick, success_when, fail_when, then_read, then_read_form, page, url, not enter');
     // Slice K renamed `expect`; it was never released, so it is refused like any other key.
     expect(error([{ do: 'click', ref: 'e1', expect: { shows: '#x' } }]))
-      .toBe('step 1: a click step takes do, ref, selector, text, role, success_when, fail_when, then_read, page, url, not expect');
+      .toBe('step 1: a click step takes do, ref, selector, text, role, within, success_when, fail_when, then_read, then_read_form, page, url, not expect');
     expect(error([{ do: 'click', ref: 'e1', success_when: { shows: '#x', waits: 3 } }]))
       .toBe('step 1: success_when takes page_changes, url_includes, shows, gone, text, seconds, not waits');
     // Slice U made press a kind, and slice X hover among others; a kind that is none is still
     // refused, naming the kinds.
     expect(error([{ do: 'drag', ref: 'e1' }]))
-      .toBe('step 1: "do" is type, click, press, submit, wait, read, ask, scroll, go, back, reload, close, hover, download or upload, not "drag"');
+      .toBe('step 1: "do" is type, click, press, submit, wait, read, collect, data, table, ask, scroll, go, back, reload, close, hover, download or upload, not "drag"');
     expect(error([LOGIN[0], 'click e2'])).toBe('step 2 is not an object');
   });
 
@@ -92,11 +92,11 @@ describe('D-335 slice J — parsing a sequence', () => {
       .toBe('step 1 says what it does twice, in "type" and "action": say it once, in "do"');
     // Beside "do", either is a key the step does not take.
     expect(error([{ do: 'click', ref: 'e1', type: 'button' }]))
-      .toBe('step 1: a click step takes do, ref, selector, text, role, success_when, fail_when, then_read, page, url, not type');
+      .toBe('step 1: a click step takes do, ref, selector, text, role, within, success_when, fail_when, then_read, then_read_form, page, url, not type');
     // One that names no kind is no kind: the step has none (a live run keyed it by an address).
     expect(error([{ action: 'fill', ref: 'e1' }])).toBe(error([{ 'https://example.org/': 'type', ref: 'e1' }]));
     expect(error([{ action: 'fill', ref: 'e1' }]))
-      .toBe('step 1 has no "do", which says what it does: type, click, press, submit, wait, read, ask, scroll, go, back, reload, close, hover, download or upload, such as {"do":"click","ref":"e7"}');
+      .toBe('step 1 has no "do", which says what it does: type, click, press, submit, wait, read, collect, data, table, ask, scroll, go, back, reload, close, hover, download or upload, such as {"do":"click","ref":"e7"}');
   });
 
   it('names each element one way, by a ref or by a selector', () => {
@@ -112,8 +112,10 @@ describe('D-335 slice J — parsing a sequence', () => {
     const many = Array.from({ length: BROWSER_ACT_MAX_STEPS + 1 }, () => ({ do: 'click', ref: 'e1' }));
     expect(error(many)).toBe(`at most ${BROWSER_ACT_MAX_STEPS} steps, and this has ${BROWSER_ACT_MAX_STEPS + 1}`);
     expect(parseBrowserActSteps(many.slice(1)).ok).toBe(true);
-    expect(error([{ do: 'wait', seconds: 11 }])).toBe('step 1: seconds is a number above 0, at most 10');
-    expect(error([{ do: 'wait', seconds: 0 }])).toBe('step 1: seconds is a number above 0, at most 10');
+    // 2026-11-21 (D-402, task H) — one wait may take 30 seconds, as long as a whole sequence may wait.
+    expect(error([{ do: 'wait', seconds: 31 }])).toBe('step 1: seconds is a number above 0, at most 30');
+    expect(error([{ do: 'wait', seconds: 0 }])).toBe('step 1: seconds is a number above 0, at most 30');
+    expect(parseBrowserActSteps([{ do: 'wait', selector: '.quote', seconds: 30 }, { do: 'read' }]).ok).toBe(true);
     // Four pauses of 10 seconds are 40, over the 30 a sequence may wait.
     const pauses = [LOGIN[0], ...Array.from({ length: 4 }, () => ({ do: 'wait', seconds: 10 }))];
     expect(error(pauses)).toBe(`the waits and checks add up to 40 seconds, and a sequence may wait at most ${BROWSER_ACT_MAX_TOTAL_WAIT_SECONDS}`);
@@ -121,6 +123,8 @@ describe('D-335 slice J — parsing a sequence', () => {
   });
 
   it('needs a step that does something, and a wait that waits for something', () => {
+    expect(error([{ do: 'click', ref: 'e1' }, { do: 'wait', gone: '.loading', seconds: 10 }, { do: 'read' }]))
+      .toContain('"selector":"<observed selector>","until":"gone"');
     expect(error([{ do: 'wait', seconds: 2 }])).toBe('a sequence needs a step that does more than wait');
     expect(error([{ do: 'wait' }])).toBe('step 1: a wait takes seconds, a selector to wait for, or url_includes');
     expect(error([{ do: 'wait', until: 'gone', seconds: 2 }])).toBe('step 1: until and text need a selector');
@@ -167,7 +171,7 @@ describe('D-335 slice K — a step\'s fail_when', () => {
     expect(on({ seconds: 3 })).toBe('step 1: fail_when names a check: shows, text or url_includes');
     expect(on({ gone: '.spinner' })).toBe('step 1: fail_when takes shows, text, url_includes, seconds, not gone');
     expect(on({ text: '' })).toBe('step 1: fail_when.text is text');
-    expect(on({ shows: '.e', seconds: 11 })).toBe('step 1: fail_when.seconds is a number above 0, at most 10');
+    expect(on({ shows: '.e', seconds: 31 })).toBe('step 1: fail_when.seconds is a number above 0, at most 30');
     expect(on('an error')).toBe('step 1: fail_when is an object');
   });
 
@@ -264,7 +268,7 @@ describe('D-335 slice L — a typed field that picks its suggestion', () => {
     expect(error([{ do: 'type', ref: 'e3', value: ' ', pick: 'London, UK' }]))
       .toBe('step 1: pick needs something typed, which shows the suggestions');
     expect(error([{ do: 'click', ref: 'e3', pick: 'London, UK' }]))
-      .toBe('step 1: a click step takes do, ref, selector, text, role, success_when, fail_when, then_read, page, url, not pick');
+      .toBe('step 1: a click step takes do, ref, selector, text, role, within, success_when, fail_when, then_read, then_read_form, page, url, not pick');
   });
 
   it('may load a new page, since a suggestion can be a link; typing alone and a wait cannot', () => {
@@ -331,7 +335,7 @@ describe('D-335 slice U — keys', () => {
       error: 'step 1: key is a key to press, such as Enter, Escape, Tab, ArrowDown, a letter or a digit, after any of Control, '
         + 'Meta, Alt and Shift joined with + (Control+Enter)' });
     expect(parseBrowserActSteps([{ do: 'press', ref: 'e3', key: 'Enter', value: 'x' }])).toEqual({ ok: false,
-      error: 'step 1: a press step takes do, ref, selector, text, role, key, success_when, fail_when, then_read, page, url, not value' });
+      error: 'step 1: a press step takes do, ref, selector, text, role, key, success_when, fail_when, then_read, then_read_form, page, url, not value' });
     // A key may load a new page, as a click may.
     if (!parsed.ok) throw new Error(parsed.error);
     const step = parsed.steps[0]!;
@@ -366,13 +370,21 @@ describe('D-335 slice X — one batch across tabs, reading as it goes', () => {
 
   it('a read is an outline or the text, a part or one section, and refuses what Inspect a web page refuses', () => {
     expect(steps([{ do: 'read', from: 213, chars: 4000 }])).toEqual([{ do: 'read', from: 213, chars: 4000 }]);
-    expect(error([{ do: 'read', form: 'html' }])).toBe('step 1: form is outline (the default) or text');
+    expect(error([{ do: 'read', form: 'html' }])).toContain('form is outline (the default) or text');
+    expect(error([{ do: 'read', form: 'entries' }])).toContain('"data_format":"entries"');
+    expect(parseBrowserActSteps([{ do: 'read', data_format: 'entries' }])).toMatchObject({ ok: true });
     expect(error([{ do: 'read', find: 'History', from: 3 }])).toBe('step 1: give one of find and from');
     expect(error([{ do: 'read', find: 'History', chars: 3000 }]))
       .toBe('step 1: chars sizes a part of the page, and find answers its sections: give one of the two');
     expect(error([{ do: 'read', chars: 60_001 }])).toBe('step 1: chars is how many characters the part holds, at most 60000');
     expect(error([{ do: 'read', from: '213' }])).toBe('step 1: from is a line number, such as 213');
-    expect(error([{ do: 'read', selector: 'main' }])).toBe('step 1: a read step takes do, form, find, from, chars, page, url, not selector');
+    expect(steps([{ do: 'read', selector: ' main ', form: 'outline', from: 2 }, { do: 'read', ref: 'e12', form: 'text' }]))
+      .toEqual([{ do: 'read', selector: 'main', form: 'outline', from: 2 }, { do: 'read', ref: 'e12', form: 'text' }]);
+    expect(error([{ do: 'read', selector: 'main', ref: 'e12' }])).toContain('give one of ref and selector');
+    expect(error([{ do: 'read', ref: 'e12', find: 'History' }])).toContain('omit find');
+    expect(error([{ do: 'read', ref: 'e0' }])).toContain('observed element reference');
+    expect(error([{ do: 'read', selector: '' }])).toContain('observed CSS selector');
+    expect(error([{ do: 'read', selector: 'x'.repeat(1001) }])).toContain('observed CSS selector');
   });
 
   it('scrolls the page or a panel, goes to an http address only, and points at an element it names', () => {
@@ -387,7 +399,7 @@ describe('D-335 slice X — one batch across tabs, reading as it goes', () => {
     expect(error([{ do: 'go', address: 'https://me:secret@example.com/' }]))
       .toBe('step 1: address is the http or https address to load in the tab');
     expect(error([{ do: 'hover' }])).toBe('step 1: name the element by ref, by selector or by text, one of them');
-    expect(error([{ do: 'back', ref: 'e1' }])).toBe('step 1: a back step takes do, then_read, page, url, not ref');
+    expect(error([{ do: 'back', ref: 'e1' }])).toBe('step 1: a back step takes do, then_read, then_read_form, page, url, not ref');
   });
 
   it('a wait for an address, which is no wait for a selector too', () => {
@@ -510,7 +522,7 @@ describe('D-335 slice Z — a secret the model never holds', () => {
     expect(error([{ do: 'type', ref: 'e3', secret: 3 }])).toBe(kinds);
     expect(error([{ do: 'type', ref: 'e3', secret: 'password', pick: 'x' }])).toBe('step 1: a secret is typed, never picked from suggestions');
     expect(error([{ do: 'click', ref: 'e3', secret: 'password' }]))
-      .toBe('step 1: a click step takes do, ref, selector, text, role, success_when, fail_when, then_read, page, url, not secret');
+      .toBe('step 1: a click step takes do, ref, selector, text, role, within, success_when, fail_when, then_read, then_read_form, page, url, not secret');
   });
 });
 
@@ -538,10 +550,13 @@ describe('D-335 slice AC — then_read: the part of the page an action\'s result
 
   it('a step that reads, waits, scrolls or closes the tab takes none, and it is a CSS selector', () => {
     const error = (steps: unknown[]) => (parseBrowserActSteps(steps) as { error?: string }).error;
-    expect(error([{ do: 'read', then_read: 'main' }])).toBe('step 1: a read step takes do, form, find, from, chars, page, url, not then_read');
+    expect(error([{ do: 'read', then_read: 'main' }])).toBe('step 1: a read step takes do, form, data_format, find, from, chars, ref, selector, page, url, not then_read');
     expect(error([{ do: 'close', then_read: 'main' }])).toBe('step 1: a close step takes do, page, url, not then_read');
     expect(error([{ do: 'click', ref: 'e1', then_read: '' }]))
-      .toBe('step 1: then_read is a CSS selector for the part of the page to read once the step is done, such as #results');
+      .toContain('then_read is a CSS selector observed on the page');
+    const refused = error([{ do: 'submit', ref: 'e1', then_read_form: 'text' }]);
+    expect(refused).toContain('remove then_read_form and add a separate {"do":"read","form":"text"} step');
+    expect(parseBrowserActSteps([{ do: 'submit', ref: 'e1' }, { do: 'read', form: 'text' }])).toMatchObject({ ok: true });
   });
 });
 
@@ -672,7 +687,7 @@ describe('D-335 slice AQ — an upload step', () => {
       error: expect.stringMatching(/^step 1: name the element by ref, by selector or by text, one of them/) });
     for (const file of [undefined, '/Users/ada/october.pdf', 'file:xyz', `${REF}0`]) {
       expect(parseBrowserActSteps([{ do: 'upload', ref: 'e7', ...(file !== undefined ? { file } : {}) }])).toEqual({ ok: false,
-        error: 'step 1: file is the file: ref of one of the user\'s files, such as a download or file.search answered' });
+        error: expect.stringContaining('malformed upload file reference') });
     }
   });
 });
@@ -725,4 +740,36 @@ describe('a wait written with page_changes', () => {
     expect(error([{ do: 'click', ref: 'e1' }, { do: 'wait', page_changes: true, seconds: 0 }])).toBe(where(2));
     expect(error([{ do: 'click', ref: 'e1', page: 'p1' }, { do: 'wait', page_changes: true, page: 'p2' }])).toBe(where(2));
   });
+});
+
+it('reports independent type-target and input failures together without exposing field values', () => {
+  const raw = [{ do: 'click', ref: 'e7' },
+    { do: 'type', secret: 'password', value: 'secret-must-not-echo' },
+    { do: 'type', text: 'Email' }];
+  const original = JSON.stringify(raw), result = parseBrowserActSteps(raw);
+  expect(result).toMatchObject({ ok: false, error: 'step 2: name the element by ref, by selector or by text, one of them',
+    violations: [
+      { path: 'steps[1]', code: 'required' },
+      { path: 'steps[1].value', code: 'invalid_value' },
+      { path: 'steps[2].value', code: 'required' },
+    ] });
+  expect(JSON.stringify(result)).not.toContain('secret-must-not-echo');
+  expect(JSON.stringify(raw)).toBe(original);
+  expect(parseBrowserActSteps([{ do: 'type', ref: 'e24', secret: 'password' }])).toMatchObject({ ok: true });
+  expect(parseBrowserActSteps([{ do: 'type', selector: '#search', value: '' }, { do: 'press', key: 'Enter' }]))
+    .toMatchObject({ ok: true, steps: [{ do: 'type', value: '' }, { do: 'press', selector: '#search' }] });
+  expect(error([{ do: 'type', text: 'Email', value: 'Ada' }, { do: 'press', key: 'Enter', role: 'x'.repeat(41) }]))
+    .toContain('role narrows an element named by text');
+});
+
+it('bounds multiple form errors while retaining an earlier unrelated refusal', () => {
+  const result = parseBrowserActSteps([{ do: 'close', value: 'not-allowed' },
+    ...Array.from({ length: 19 }, () => ({ do: 'type', secret: 'not-a-secret-kind', value: 'secret-must-not-echo', submit: 'yes' }))]);
+  expect(result.ok).toBe(false);
+  if (result.ok) throw Error('invalid plan accepted');
+  expect(result.error).toContain('a close step takes');
+  expect(result.violations?.[0]).toMatchObject({ path: 'steps', message: result.error });
+  expect(result.violations).toHaveLength(16);
+  expect(result.violations_truncated).toBe(true);
+  expect(JSON.stringify(result)).not.toMatch(/secret-must-not-echo|not-a-secret-kind/);
 });

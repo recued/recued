@@ -1,4 +1,5 @@
-import {focusCustomerWorkspace} from './customer-workspace-focus.js';
+import { mountCustomerFinancialWorkspaceStyles } from './customer-financial-workspace-styles.js';
+import {focusCustomerWorkspace,trackCustomerWorkspaceFocus} from './customer-workspace-focus.js';
 import { setCustomerReviewLink } from './customer-review-link.js';
 import { accountPaymentDocument } from './customer-financial-document.js';
 import { readCustomerAccountContactDefaults,type CustomerAccountContactDefaultsReadConn } from './customer-account-contact-defaults.js';
@@ -18,10 +19,12 @@ export const mountCustomerAccountPayments = (opts: {
   canReview: () => boolean;onChanged: () => void;onStateChanged: () => void;
 }) => {
   const { document: doc,conn } = opts;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const add = <K extends keyof HTMLElementTagNameMap>(tag: K,text: string,host: HTMLElement) => {
     const node = doc.createElement(tag);node.textContent = text;host.appendChild(node);return node;
   };
   const root = add('section','',opts.host);root.hidden = true;root.tabIndex = -1;root.setAttribute('data-customer-account-payments','');root.setAttribute('aria-label','Customer account payments');
+  mountCustomerFinancialWorkspaceStyles(doc,root);
   const button = (text: string,host: HTMLElement,click: () => void) => { const node = add('button',text,host);node.type = 'button';node.addEventListener('click',click);return node; };
   add('style',`[data-customer-account-payments] [hidden]{display:none!important}
     [data-customer-account-payments] pre{white-space:pre-wrap;overflow-wrap:anywhere}
@@ -31,7 +34,7 @@ export const mountCustomerAccountPayments = (opts: {
   const heading = add('h3','Customer account payments',root);
   const status = add('p','',root);status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   add('p','Record money already received. Choose invoices from this saved account, use one currency and allocate the exact payment amount.',root);
-  const actions = add('div','',root);
+  const actions = add('div','',root);actions.className = 'financial-actions';
   const refresh = button('Refresh account payments',actions,() => { if (canReplace()) void load(); });
   const close = button('Close account payments',actions,() => {
     if (!canReplace()) return;generation++;root.hidden = true;returnFocus?.();opts.onStateChanged();
@@ -40,7 +43,7 @@ export const mountCustomerAccountPayments = (opts: {
   const input = (label: string,name: string,type = 'text',required = false,max = 512) => {
     const host = add('label',label,form);const node = add('input','',host);node.name = name;node.type = type;node.required = required;node.maxLength = max;return node;
   };
-  const currencyLabel = add('label','Payment currency',form);const currency = add('select','',form);currency.id = 'recued-account-payment-currency';currencyLabel.setAttribute('for',currency.id);currency.required = true;
+  const currencyField = add('div','',form);currencyField.className = 'financial-field';const currencyLabel = add('label','Payment currency',currencyField);const currency = add('select','',currencyField);currency.id = 'recued-account-payment-currency';currencyLabel.setAttribute('for',currency.id);currency.required = true;
   const amount = input('Amount received','account_payment_amount','text',true,24);amount.inputMode = 'decimal';
   const received = input('Received on','account_payment_received_on','date',true);
   const method = input('Payment method','account_payment_method');const reference = input('Payment reference','account_payment_reference');
@@ -51,12 +54,13 @@ export const mountCustomerAccountPayments = (opts: {
     if (busy || correction.isOpen()) return;if (!receipt.reset()) { status.textContent = 'Close the receipt email before changing this payment.';return; }if (queued) { dirty = false;queued = false;void load();return; }dirty = false;queued = false;prepared = null;requestKey = crypto.randomUUID();values.clear();form.reset();
     if (copy) { currency.value = copy.balances[0]!.currency;renderChoices(); }previewHost.replaceChildren();review.hidden = true;controls();opts.onStateChanged();amount.focus();
   });
+  const formActions = add('div','',form);formActions.className = 'financial-actions';formActions.appendChild(prepare);formActions.appendChild(discard);
   const previewHost = add('div','',root);previewHost.setAttribute('data-account-payment-preview','');
   const review = button('Review account payment',root,() => { void submitReview(); });review.hidden = true;
   const runs = add('a','Review in Runs',root);runs.hidden = true;
   add('h4','Account payment history',root);const historyStatus = add('p','',root);historyStatus.setAttribute('role','status');
   const history = add('div','',root);history.setAttribute('data-account-payment-history','');
-  const paging = add('div','',root);
+  const paging = add('div','',root);paging.className = 'financial-actions';
   const newer = button('Newer account payments',paging,() => { if (previous.length && canReplace()) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
   const older = button('Older account payments',paging,() => { if (next && canReplace()) void loadHistory(next,[...previous,cursor]); });
   let disposed = false;let busy = false;let historyBusy = false;let dirty = false;let queued = false;let generation = 0;let historyGeneration = 0;let accountId = '';
@@ -186,9 +190,9 @@ export const mountCustomerAccountPayments = (opts: {
   controls();
   return {
     async open(id: string,onClosed?: () => void) {
-      if (!canReplace() || !receipt.reset()) return;accountId = id;returnFocus = onClosed;root.hidden = false;cursor = next = undefined;previous = [];history.replaceChildren();await load();if(!disposed)focusCustomerWorkspace(root);
+      if (!canReplace() || !receipt.reset()) return;const ownsFocus = focusOwner.capture();accountId = id;returnFocus = onClosed;root.hidden = false;cursor = next = undefined;previous = [];history.replaceChildren();await load();if(!disposed && ownsFocus())focusCustomerWorkspace(root);
     },
     updateControls: controls,hasOpenEmail: receipt.hasOpenEmail,hasUnsavedChanges: () => dirty || correction.isOpen() || receipt.hasUnsavedChanges(),hasInFlightWork: inFlight,
-    dispose() { disposed = true;generation++;historyGeneration++;receipt.dispose();correction.dispose();root.remove(); },
+    dispose() { disposed = true;generation++;historyGeneration++;focusOwner.dispose();receipt.dispose();correction.dispose();root.remove(); },
   };
 };

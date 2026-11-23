@@ -14,8 +14,8 @@ declare global { interface Window { __timezoneReadRecovery: TimezoneReadFixture 
 
 const panel = (page: Page) => page.locator('[data-recued-server-timezone-panel]');
 const retry = (page: Page) => panel(page).getByRole('button', { name: 'Retry loading timezone', exact: true });
-const loading = (page: Page) => panel(page).getByRole('status', { name: '', exact: true });
-const zone = (page: Page) => panel(page).getByRole('textbox', { name: 'Server timezone', exact: true });
+const loading = (page: Page) => panel(page).locator('[data-recued-server-timezone-loading]');
+const zone = (page: Page) => panel(page).getByRole('combobox', { name: 'Server timezone', exact: true });
 const follows = (page: Page) => panel(page).locator('[data-recued-server-timezone-mode="follows_host"]');
 const outside = (page: Page) => page.getByRole('button', { name: 'Outside timezone settings', exact: true });
 const release = (page: Page, index: number, outcome: Outcome) =>

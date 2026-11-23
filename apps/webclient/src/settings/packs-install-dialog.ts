@@ -33,13 +33,14 @@ import type {
   MailFactSourcesPreview,
   MailTemplateCondition,
   MailTemplateInstallPreview,
+  PackWebhookPublisherChange,
   PackListEntry,
   PackToolStatus,
   PackWebhookPlanEntry,
 } from '@recued/contracts';
 // Same byte formatter the Records explorer uses — these are the same quota
 // ceilings, shown one screen earlier.
-import { describeTestedRange, formatPressureBytes, installRecipeRiskFromPreview, isRecordsQuotaUnlimited } from '@recued/contracts';
+import { describeTestedRange, formatPressureBytes, installRecipeRiskFromPreview, isRecordsQuotaUnlimited, THING_PAGE_SETUPS } from '@recued/contracts';
 import {
   ACCESS_LABEL,
   OWN_NEEDS_WHAT,
@@ -479,6 +480,10 @@ export interface InstallPreview {
   /** D-315 §5.2 — the templates the recipes bring, and where one reads the
    *  same mail as a template already on. Absent from an older server. */
   readonly mail_templates?: readonly MailTemplateInstallPreview[];
+  /** D-201 Slice 10AF — recipes this update brings from another publisher,
+   *  each with the state its webhook door was left in. Absent from an older
+   *  server, and when none. */
+  readonly webhook_publisher_changes?: readonly PackWebhookPublisherChange[];
   /** D-315 §5.2 — for each recipe that starts on facts, where they would come
    *  from here. Absent from an older server, or when none does. */
   readonly mail_fact_sources?: readonly MailFactSourcesPreview[];
@@ -814,6 +819,9 @@ export const PACKS_DIALOG_WEBHOOKS_ATTR = 'data-recued-packs-dialog-webhooks';
  *  `existing`) on its radios. */
 export const PACKS_DIALOG_MAIL_TEMPLATES_ATTR = 'data-recued-packs-dialog-mail-templates';
 export const PACKS_DIALOG_MAIL_TEMPLATE_KEEP_ATTR = 'data-recued-packs-dialog-mail-template-keep';
+/** D-201 Slice 10AF — the switches a pack update from another publisher raises. */
+export const PACKS_DIALOG_WEBHOOK_DOORS_ATTR = 'data-recued-packs-dialog-webhook-doors';
+export const PACKS_DIALOG_WEBHOOK_DOOR_ATTR = 'data-recued-packs-dialog-webhook-door';
 /** D-315 §5.2 — the "Where its facts come from" section. */
 export const PACKS_DIALOG_FACT_SOURCES_ATTR = 'data-recued-packs-dialog-fact-sources';
 
@@ -874,6 +882,73 @@ const renderMailFactSources = (doc: Document, props: PacksInstallDialogProps): H
       }
       section.appendChild(block);
     }
+  }
+  return section;
+};
+
+/** D-201 Slice 10AF (10AE finding 17; the owner's ruling of 2026-11-20) — a
+ *  recipe this update brings from another publisher, its webhook door's switch
+ *  raised as Kitchen raises it before a save: set to the state the owner left
+ *  it in, and the owner's answer decides. */
+export interface InstallWebhookDoorChoice {
+  /** `<pack_slug>\u0000<recipe_id>` — unique across the install. */
+  readonly key: string;
+  readonly entry: PackWebhookPublisherChange;
+  readonly door: 'open' | 'closed';
+}
+
+const renderWebhookDoorChoices = (
+  doc: Document,
+  props: PacksInstallDialogProps,
+  installing: boolean,
+): HTMLElement => {
+  const section = doc.createElement('section');
+  section.setAttribute(PACKS_DIALOG_WEBHOOK_DOORS_ATTR, '');
+  section.className = 'packs-dialog-webhooks';
+  const heading = doc.createElement('p');
+  heading.className = 'packs-dialog-summary';
+  heading.textContent = 'Webhook doors';
+  section.appendChild(heading);
+  const intro = doc.createElement('p');
+  intro.className = 'packs-dialog-webhooks-intro';
+  intro.textContent = 'These Recipes now come from another publisher. Each webhook door starts as you left it. '
+    + 'Choose whether what is sent to each runs this version.';
+  section.appendChild(intro);
+  for (const choice of props.webhookDoorChoices ?? []) {
+    const { entry } = choice;
+    const block = doc.createElement('div');
+    block.className = 'packs-dialog-webhook';
+    block.setAttribute('data-webhook-door-key', choice.key);
+    const what = doc.createElement('p');
+    what.className = 'packs-dialog-webhook-what';
+    what.textContent = `“${entry.name ?? entry.recipe_id}” was made by ${entry.from_publisher}. `
+      + (entry.door === 'closed' ? 'You closed its door.' : 'Its door was open.');
+    block.appendChild(what);
+    const options: Array<['open' | 'closed', string]> = [
+      ['open', 'Open: what is sent to it runs this version'],
+      // D-201 Slice 10AJ (10AI finding 10) — it waits to be tried again: opening
+      // the door runs none of it.
+      ['closed', 'Closed: what is sent to it waits with the messages that did not reach their recipes, to try '
+        + 'again once you open its door on its webhook, in Connections'],
+    ];
+    for (const [door, text] of options) {
+      const label = doc.createElement('label');
+      label.className = 'packs-dialog-webhook-option';
+      const radio = doc.createElement('input');
+      radio.setAttribute('type', 'radio');
+      radio.setAttribute('name', `packs-dialog-webhook-door-${choice.key}`);
+      radio.setAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR, door);
+      radio.setAttribute('data-webhook-door-key', choice.key);
+      radio.checked = choice.door === door;
+      if (installing) radio.setAttribute('disabled', '');
+      else radio.addEventListener('change', () => props.onPickWebhookDoor?.(choice.key, door));
+      label.appendChild(radio);
+      const span = doc.createElement('span');
+      span.textContent = text;
+      label.appendChild(span);
+      block.appendChild(label);
+    }
+    section.appendChild(block);
   }
   return section;
 };
@@ -976,6 +1051,8 @@ const renderMailTemplateChoices = (
   }
   return section;
 };
+/** D-339 slice 24 — the link to a pack's setup on the page of the thing it feeds, when no webhook fits. */
+export const PACKS_DIALOG_WEBHOOK_SETUP_ATTR = 'data-recued-packs-dialog-webhook-setup';
 /** One webhook radio; value = the ingress id, `data-webhook-key` = its choice. */
 export const PACKS_DIALOG_WEBHOOK_OPTION_ATTR = 'data-recued-packs-dialog-webhook-option';
 
@@ -1025,10 +1102,25 @@ const renderWebhookChoices = (
       const none = doc.createElement('p');
       none.className = 'packs-dialog-webhooks-hint';
       none.textContent = `None of your webhooks can deliver these yet. `;
+      // D-339 slice 24 (2026-11-19, the owner: "fix the gap") — a pack set up on the page of the thing it feeds makes
+      // its webhook there in one step: Body signals from Apple Health by Connect Apple Health on a Body's page, which
+      // `#yours/setup/<pack>` finds. The way by hand stays beside it.
+      const setup = Object.prototype.hasOwnProperty.call(THING_PAGE_SETUPS, entry.pack_slug) ? THING_PAGE_SETUPS[entry.pack_slug] : undefined;
+      if (setup !== undefined) {
+        const here = doc.createElement('a');
+        here.setAttribute('href', `#yours/setup/${encodeURIComponent(entry.pack_slug)}`);
+        here.setAttribute(PACKS_DIALOG_WEBHOOK_SETUP_ATTR, entry.pack_slug);
+        here.className = 'rx-link';
+        here.textContent = setup;
+        none.appendChild(here);
+        const rest = doc.createElement('span');
+        rest.textContent = ' makes one in one step. Or ';
+        none.appendChild(rest);
+      }
       const link = doc.createElement('a');
       link.setAttribute('href', '#connections/webhooks');
       link.className = 'rx-link';
-      link.textContent = 'Set one up in Connections → Webhooks';
+      link.textContent = setup !== undefined ? 'set one up in Connections → Webhooks' : 'Set one up in Connections → Webhooks';
       none.appendChild(link);
       block.appendChild(none);
     }
@@ -1221,6 +1313,10 @@ export interface PacksInstallDialogProps {
   mailTemplates?: readonly InstallMailTemplateChoice[];
   /** D-315 §5.2 — keep the recipe's template on, or the one already there. */
   onPickMailTemplate?(key: string, keep: 'recipe' | 'existing'): void;
+  /** D-201 Slice 10AF — the switches a pack update from another publisher raises. */
+  webhookDoorChoices?: readonly InstallWebhookDoorChoice[];
+  /** D-201 Slice 10AF — open or close one of them. */
+  onPickWebhookDoor?(key: string, door: 'open' | 'closed'): void;
   /** D-315 §5.2 — where the facts the recipes start on would come from. */
   mailFactSources?: readonly MailFactSourcesPreview[];
   onSubmit(): void;
@@ -1839,6 +1935,10 @@ export const renderPacksInstallDialog = (
   // already reads that mail.
   if ((props.mailTemplates?.length ?? 0) > 0) {
     container.appendChild(renderMailTemplateChoices(doc, props, installing));
+  }
+  // D-201 Slice 10AF — a recipe from another publisher: its door's switch.
+  if ((props.webhookDoorChoices?.length ?? 0) > 0) {
+    container.appendChild(renderWebhookDoorChoices(doc, props, installing));
   }
   if ((props.mailFactSources?.length ?? 0) > 0) {
     container.appendChild(renderMailFactSources(doc, props));

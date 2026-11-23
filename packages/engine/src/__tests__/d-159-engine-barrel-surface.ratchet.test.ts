@@ -141,6 +141,12 @@ const EXPECTED_RUNTIME_EXPORTS = [
   // disagree SILENTLY — no ids emitted, indistinguishable from an empty result.
   // The pagination follower consumes the same function.
   'resolveCatalogRecordsPath',
+  // D-201 Slice 10BN (10BM finding 3) — how a loop's progress at its ask reads.
+  // The server's stop decides from it whether a restart keeps the loop, and the
+  // engine's replay whether the loop's value can stand in for it. Each held its
+  // own copy of the rule, and both read an item the loop's filter skipped as
+  // one that ran: one predicate, read by both.
+  'loopAskedBeforeAnyItemRan',
 ].sort();
 
 const reexportSpecifiers = (txt: string): string[] =>

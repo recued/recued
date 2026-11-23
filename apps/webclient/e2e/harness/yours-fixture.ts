@@ -49,6 +49,12 @@ export const createYoursFixture = () => {
       rules: [], audience: 'household', retirement: 'part' },
     { id: 'visa', name: 'Visa', version: 1, origin: 'builtin', fields: { dates: { expires_on: null, issued_on: null }, readings: {}, observations: {}, settings: { sensitive: true } },
       rules: [], audience: 'owner', retirement: 'part' }];
+  // `&with_pursuit_type=1` — the Pursuit type a real server lists beside the others (D-404 slice A:
+  // `#yours/new/pursuit` must not open the asset form with it, since a pursuit has its own tab).
+  if (new URLSearchParams(location.search).has('with_pursuit_type')) {
+    classes.push({ id: 'pursuit', name: 'Pursuit', version: 1, origin: 'builtin', fields: { dates: { target_on: null }, readings: { progress: null },
+      observations: {}, settings: {} }, rules: [], audience: 'owner', sphere: 'personal', retirement: 'part' });
+  }
   const make = (id: string, input: Partial<Asset> & { name: string }): Asset => ({ id, source_id: 'recued.asset',
     status: input.status ?? 'active', dates: input.dates ?? {}, readings: {}, observations: {}, values: [], anchors: [], attributes: {}, settings: {}, rules: [],
     retirement: 'part', created_at: time, updated_at: time, last_seen_at: time, sync_state: 'live', conflict_policy: 'recued_wins', field_sources: {}, ...input });
@@ -382,6 +388,9 @@ export const createYoursFixture = () => {
         observation_bindings: [{ id: 'porch', asset_id: 'passport', actor_ref: 'recipe:porch', source_ref: 'recipe:fixture/porch#hash', fields: ['observations.flickering'], enabled: true, available: true }],
       } : {}),
       ...(enrolledWriters.length ? { observation_bindings: enrolledWriters } : {}),
+      // D-404 slice E — `&yours_thing_recipes=1`: on the passport's page, the installed recipes that work on a passport.
+      ...(input.asset_id === 'passport' && new URLSearchParams(location.search).has('yours_thing_recipes')
+        ? { thing_recipes: [{ id: 'check-passport-for-trip', name: 'Check a passport for a trip' }, { id: 'renew-passport', name: 'Renew a passport' }] } : {}),
       // `&yours_holder_gone=1` — the server says the holder's contact is no longer on file.
       ...(input.asset_id === 'passport' && new URLSearchParams(location.search).has('yours_holder_gone') ? { holder: { contact_id: 'ana', name: null } } : {}),
       intake: { emails_read: 42, receipts_found: 3, likely_assets: proposals.size, last_scan_at: time }, unmatched_replies: [], phone_ready: false,

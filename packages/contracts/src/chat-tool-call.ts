@@ -1,3 +1,4 @@
+import { isLocalMutationReceiptSummary, type LocalMutationReceiptSummary } from './resource-review.js';
 import { isToolProgress, type ToolProgress } from './tool-progress.js';
 
 /** Durable chat tool-call display state. This is evidence, never retry authority
@@ -10,6 +11,10 @@ export interface ChatToolCallRecord {
   tool_name: string;
   run_id?: string;
   recipe_id?: string;
+  /** The installed recipe the call names, by its name as the owner sees it
+   *  (`ChatToolCall.recipe_name`), so Live control lists the call by it. Display only; absent on
+   *  any other call and on calls an older server recorded. */
+  recipe_name?: string;
   state: 'running' | 'held' | 'succeeded' | 'failed' | 'interrupted';
   started_at: number;
   updated_at: number;
@@ -30,6 +35,9 @@ export interface ChatToolCallRecord {
    *  before it expired (D-337 slice R): "no one answered in time" is neither "you
    *  said no" nor "it broke". */
   expired?: true;
+  /** D-348 §7.8 — the change a standing permission let this call make without asking, kept with
+   *  its receipt in the same transaction, so its line offers Undo. Absent on every other call. */
+  local_receipt?: LocalMutationReceiptSummary;
 }
 
 export const isChatToolCallRecord = (value: unknown): value is ChatToolCallRecord => {
@@ -40,11 +48,12 @@ export const isChatToolCallRecord = (value: unknown): value is ChatToolCallRecor
     && typeof row.state === 'string'
     && ['running', 'held', 'succeeded', 'failed', 'interrupted'].includes(row.state)
     && ['started_at', 'updated_at'].every(key => typeof row[key] === 'number' && Number.isFinite(row[key]))
-    && ['run_id', 'recipe_id'].every(key => row[key] === undefined || typeof row[key] === 'string')
+    && ['run_id', 'recipe_id', 'recipe_name'].every(key => row[key] === undefined || typeof row[key] === 'string')
     && ['last_signal_at', 'reviewed_at', 'held_at'].every(key => row[key] === undefined
       || typeof row[key] === 'number' && Number.isFinite(row[key]))
     && (row.stalled === undefined || typeof row.stalled === 'boolean')
     && (row.progress === undefined || isToolProgress(row.progress))
     && (row.denied === undefined || row.denied === true)
-    && (row.expired === undefined || row.expired === true);
+    && (row.expired === undefined || row.expired === true)
+    && (row.local_receipt === undefined || isLocalMutationReceiptSummary(row.local_receipt));
 };

@@ -4,7 +4,7 @@
  *  `/reception/claim`): the owner reschedules a booking from a link on their
  *  phone, no webclient login. The credential is single-use, short-TTL, scoped
  *  to ONE booking record; GET is non-consuming (mail scanners can't burn it),
- *  POST consumes. The move HOLDS for the owner's approval (approach A) —
+ *  POST consumes when a valid choice is admitted. The move HOLDS for the owner's approval (approach A) —
  *  `manage.ts` renders the held page; the recipe (run by the injected runner)
  *  renders nothing.
  *
@@ -301,6 +301,36 @@ const enumerateManageSlots = (
   }));
 };
 
+/** Both an initial visit and a stale-slot recovery mint a nonce bound to this
+ *  credential, without spending the credential itself. */
+const writeManageForm = (
+  deps: ReceptionManageHandlerDeps,
+  res: ServerResponse,
+  input: {
+    secret: string;
+    credential_id: string;
+    target: ResolvedManageTarget;
+    slots: ReadonlyArray<SchedulingSlot>;
+    status: 200 | 409;
+    notice?: string;
+  },
+): void => {
+  const nonce = deps.getFormNonceStore().issue(
+    receptionManageNonceScope(input.credential_id),
+    deps.now(),
+  );
+  writeHtml(res, renderManageReschedulePage({
+    display_name: input.target.config.display_name,
+    tz_label: input.target.config.available_window_definition.tz,
+    current_slot_label: input.target.current_slot_label,
+    slots: input.slots,
+    post_action: `${RECEPTION_MANAGE_PATH}/${encodeURIComponent(input.secret)}`,
+    form_nonce: nonce,
+    ...(input.target.config.instructions !== undefined ? { instructions: input.target.config.instructions } : {}),
+    ...(input.notice !== undefined ? { notice: input.notice } : {}),
+  }), input.status);
+};
+
 /** Parse the POST body → `{ slot, form_nonce }`, closed-list keys only. */
 const parseManageBody = (
   raw: string,
@@ -379,25 +409,7 @@ export const createReceptionManageHandler = (
       return { action_taken: 'reject', outcome: 'rejected' };
     }
     const slots = enumerateManageSlots(deps, target.config, target.duration_minutes);
-    const nonce = deps.getFormNonceStore().issue(
-      receptionManageNonceScope(resolved.credential_id),
-      deps.now(),
-    );
-    writeHtml(
-      res,
-      renderManageReschedulePage({
-        display_name: target.config.display_name,
-        tz_label: target.config.available_window_definition.tz,
-        current_slot_label: target.current_slot_label,
-        slots,
-        post_action: `${RECEPTION_MANAGE_PATH}/${encodeURIComponent(secret)}`,
-        form_nonce: nonce,
-        ...(target.config.instructions !== undefined
-          ? { instructions: target.config.instructions }
-          : {}),
-      }),
-      200,
-    );
+    writeManageForm(deps, res, { secret, credential_id: resolved.credential_id, target, slots, status: 200 });
     return { action_taken: 'view', outcome: 'ok' };
   }
 
@@ -448,40 +460,38 @@ export const createReceptionManageHandler = (
     res.end('forbidden');
     return { action_taken: 'reject', outcome: 'rejected' };
   }
-  const consumed = deps.getCredentialStore().consume(secret, now, 'manage');
-  if (consumed.status !== 'ok') {
-    writeHtml(res, UNAVAILABLE(), 410);
-    // A replay of a spent link vs a late click after expiry — both are a
-    // rejected POST, but distinguish them so the Abuse Inbox can tell a
-    // double-submit from a stale link.
-    return consumed.status === 'expired'
-      ? { action_taken: 'expired', outcome: 'expired' }
-      : { action_taken: 'invalid_token', outcome: 'invalid_token' };
-  }
-  // The store contract makes this stable, but enforce it at the boundary so a
-  // future implementation cannot swap the credential between peek and CAS.
-  if (consumed.credential_id !== preflight.credential_id) {
-    writeHtml(res, UNAVAILABLE(), 410);
-    return { action_taken: 'invalid_token', outcome: 'invalid_token' };
-  }
-  const target = resolveTarget(deps, consumed.scope);
+  const target = resolveTarget(deps, preflight.scope);
   if (target === null) {
     writeHtml(res, UNAVAILABLE(), 404);
     return { action_taken: 'reject', outcome: 'rejected' };
   }
   const candidates = enumerateManageSlots(deps, target.config, target.duration_minutes);
   const picked = parsePickedSlot(parsed.slot, candidates);
+  // A stale choice spends its form nonce, not its link. Recheck liveness after
+  // reading availability; only a valid choice competes for atomic single use.
+  const authorized = picked === null
+    ? deps.getCredentialStore().peek(secret, deps.now(), 'manage')
+    : deps.getCredentialStore().consume(secret, deps.now(), 'manage');
+  if (authorized.status !== 'ok') {
+    writeHtml(res, UNAVAILABLE(), 410);
+    // A replay of a spent link vs a late click after expiry — both are a
+    // rejected POST, but distinguish them so the Abuse Inbox can tell a
+    // double-submit from a stale link.
+    return authorized.status === 'expired'
+      ? { action_taken: 'expired', outcome: 'expired' }
+      : { action_taken: 'invalid_token', outcome: 'invalid_token' };
+  }
+  // The store contract makes this stable, but enforce it at the boundary so a
+  // future implementation cannot swap the credential between peek and CAS.
+  if (authorized.credential_id !== preflight.credential_id) {
+    writeHtml(res, UNAVAILABLE(), 410);
+    return { action_taken: 'invalid_token', outcome: 'invalid_token' };
+  }
   if (picked === null) {
-    writeHtml(
-      res,
-      renderManageResultHtml({
-        display_name: target.config.display_name,
-        tz_label: target.config.available_window_definition.tz,
-        heading: 'That time is no longer available',
-        message: 'The slot you picked is not available. Please request a new link and try again.',
-      }),
-      409,
-    );
+    writeManageForm(deps, res, { secret, credential_id: authorized.credential_id, target,
+      slots: candidates, status: 409,
+      notice: 'That time is no longer available. Availability has been refreshed.',
+    });
     return { action_taken: 'submit', outcome: 'rejected' };
   }
   // New end preserves the booking's duration (picked.end_at already = start +
@@ -491,7 +501,7 @@ export const createReceptionManageHandler = (
     booking_id: target.booking_id,
     new_start_at: picked.start_at,
     new_end_at: picked.end_at,
-    credential_id: consumed.credential_id,
+    credential_id: authorized.credential_id,
   });
   if (outcome.kind === 'held' || outcome.kind === 'completed') {
     writeHtml(
@@ -511,8 +521,8 @@ export const createReceptionManageHandler = (
   //
   // ⛔ "Try again later" would be a LIE: the credential was consumed above and
   // is single-use, so THIS link is already dead. Send them where a retry can
-  // actually succeed — the same instruction the slot-conflict branch above
-  // gives, for the same reason. A page that names an impossible next step
+  // actually succeed. Unlike a stale slot, this request passed admission and
+  // entered the runner. A page that names an impossible next step
   // costs the owner a booking while they retry a URL that can never work.
   writeHtml(
     res,

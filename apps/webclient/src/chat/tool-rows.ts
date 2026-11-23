@@ -22,13 +22,17 @@
  *  ⚠ The parse is lenient on purpose: a body the server capped, or a format this
  *  client does not know, falls back to the raw text — never to an error. */
 
-import type { ChatMessage } from '@recued/contracts';
+import type { ChatMessage, ChatToolCallRecord } from '@recued/contracts';
+import { callName } from './activity.js';
 
 export interface LateToolResult {
   readonly message_id: string;
   readonly run_id: string;
-  /** As the answer's own activity row names it, when the answer lists the run. */
+  /** As the answer's own activity row names it, when the answer lists the run: its tool, the
+   *  arguments that refine its title, and the recipe it ran. */
   readonly tool_name: string;
+  readonly args?: unknown;
+  readonly recipe_name?: string;
   readonly text: string;
 }
 
@@ -89,10 +93,13 @@ export const planToolRows = (messages: readonly ChatMessage[]): ToolRowPlan => {
         (answer.tool_calls ?? []).some((call) => call.run_id === run_id));
       const answer = byRun ?? (row.turn_id !== undefined ? answerByTurn.get(row.turn_id) : undefined);
       if (answer === undefined) continue;
-      const listedName = (answer.tool_calls ?? []).find((call) => call.run_id === run_id)?.tool_name;
+      const listed = (answer.tool_calls ?? []).find((call) => call.run_id === run_id);
       const list = late_results.get(answer.id) ?? [];
       list.push({ message_id: row.id, run_id,
-        tool_name: listedName ?? toolNameOfRow(row.content) ?? 'the call', text: row.content });
+        tool_name: listed?.tool_name ?? toolNameOfRow(row.content) ?? 'the call',
+        ...(listed !== undefined ? { args: listed.args } : {}),
+        ...(listed?.recipe_name !== undefined ? { recipe_name: listed.recipe_name } : {}),
+        text: row.content });
       late_results.set(answer.id, list);
       folded.add(row.id);
       continue;
@@ -158,9 +165,17 @@ export const readToolResult = (text: string): ReadableToolResult => {
   };
 };
 
-/** The one sentence a tool row drawn on its own leads with. */
-export const describeToolRow = (row: ChatMessage): string => {
-  const name = row.tool_call?.tool_name ?? toolNameOfRow(row.content) ?? 'a tool';
+/** The one sentence a tool row drawn on its own leads with. A call that names an installed recipe
+ *  is named by it ("Called “Weekly digest”", where it read "Called recued-core/weekly-digest"),
+ *  from its call's record: the row's own, or, for a later result, its run's (`records`, by run). */
+export const describeToolRow = (
+  row: ChatMessage,
+  records?: Readonly<Record<string, ChatToolCallRecord>>,
+): string => {
+  const tool = row.tool_call?.tool_name ?? toolNameOfRow(row.content);
+  const recipe_name = row.tool_call?.recipe_name
+    ?? (row.id.startsWith(SETTLE_PREFIX) ? records?.[row.id.slice(SETTLE_PREFIX.length)]?.recipe_name : undefined);
+  const name = tool !== undefined ? callName({ tool_name: tool, recipe_name }) : 'a tool';
   if (row.id.startsWith(SETTLE_PREFIX)) return `A later result from ${name}`;
   if (row.id.endsWith(RESULT_SUFFIX)) return `The result from ${name}`;
   return `Called ${name}`;

@@ -1,4 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createWebhookIngressStore } from '../storage/webhook-ingress-store.js';
+import {
+  createWebhookManagedRegistrationService,
+  WEBHOOK_UNSETTLED_CREATE_GIVE_UP_MS,
+  WEBHOOK_UNSETTLED_CREATE_WINDOW_MS,
+} from '../webhook-registration-reconciler.js';
+import {
+  createWebhookRegistrationRuntimeRegistry,
+  WebhookRegistrationAdapterError,
+} from '../webhook-registration-runtime.js';
 import {
   createStripeWebhookRegistrationAdapter,
   type StripeWebhookRegistrationDeps,
@@ -343,12 +354,24 @@ describe('D-201 Slices 6A + 9AI-9AJ + 9AP + 9AS-9AT + 9AY + 9BB Stripe managed w
       fetchImpl,
     });
 
-    await expect(adapter.find(desired)).rejects.toMatchObject({
+    // D-201 Slice 10G — create and update check the desired names, before
+    // any connection or request...
+    await expect(adapter.create(desired, 'create-key')).rejects.toMatchObject({
+      code: 'registration_input_invalid',
+      message: 'Stripe managed registration input is invalid',
+    });
+    await expect(adapter.update(desired, REMOTE_ID, 'update-key')).rejects.toMatchObject({
       code: 'registration_input_invalid',
       message: 'Stripe managed registration input is invalid',
     });
     expect(resolveConnection).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
+    // ...and a search, which cleanup runs, does not depend on them.
+    await expect(adapter.find(desired)).resolves.toMatchObject([{
+      endpoint: { event_types: ['*'] },
+    }]);
+    resolveConnection.mockClear();
+    fetchImpl.mockClear();
 
     const shortDesired = {
       ...desired,
@@ -679,5 +702,571 @@ describe('D-201 Slices 6A + 9AI-9AJ + 9AP + 9AS-9AT + 9AY + 9BB Stripe managed w
       code: 'upstream_response_invalid',
       message: 'Stripe webhook registration returned invalid UTF-8',
     });
+  });
+});
+
+/** D-201 Slice 10K — a Stripe that keeps idempotency as Stripe does: the first
+ *  result to a key is what every later request with that key gets, whatever
+ *  happened since. D-201 Slice 10T — a result once the request ran, a 5xx
+ *  included; a request refused before it ran keeps none. Endpoints live in `endpoints`; `faults`
+ *  makes the next reads fail, the next updates not hold, or the next creates be
+ *  refused.
+ *  D-201 Slice 10O — `faults.loseCreates` / `loseUpdates`: the request reaches
+ *  Stripe and no response comes back, while Stripe is still carrying it out.
+ *  Until `land()` finishes it, a request with its key is refused (409: no
+ *  result is kept for it); after, the key gives that request's result. */
+/** `idBase` — D-201 Slice 10Z: each account's endpoint ids start apart, as
+ *  Stripe's are unique across accounts. */
+const stripeApi = (idBase = 0) => {
+  const endpoints = new Map<string, Record<string, unknown>>();
+  const firstResponses = new Map<string, { status: number; body: unknown }>();
+  const requests: Array<{ method: string; path: string; key: string | null }> = [];
+  const faults = {
+    failReads: 0, ignoreUpdates: 0, refuseCreates: 0, failUpdates: 0, loseCreates: 0, loseUpdates: 0,
+  };
+  /** Requests Stripe is still carrying out, by key. */
+  const inFlight = new Map<string, () => void>();
+  let made = 0;
+  const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    const key = (init?.headers as Headers | undefined)?.get('Idempotency-Key') ?? null;
+    requests.push({ method, path: url.pathname, key });
+    if (key !== null && inFlight.has(key)) {
+      return json({ error: { type: 'idempotency_error', message: 'Another request with this key is in progress' } }, 409);
+    }
+    const first = key === null ? undefined : firstResponses.get(key);
+    if (first !== undefined) return json(first.body, first.status);
+    const answer = (body: unknown, status = 200): Response => {
+      // D-201 Slice 10T (10Q finding 21) — Stripe saves a key's result once its
+      // endpoint began running, a 5xx included. A request refused before that
+      // saves none, so the key can be sent again: failed validation (this
+      // fake's only 4xx here), or a 409 for a request still running under it.
+      if (key !== null && (status < 400 || status >= 500)) firstResponses.set(key, { status, body });
+      return json(body, status);
+    };
+    const form = new URLSearchParams(typeof init?.body === 'string' ? init.body : '');
+    if (url.pathname === '/v1/webhook_endpoints' && method === 'GET') {
+      return json({ object: 'list', data: [...endpoints.values()], has_more: false });
+    }
+    if (url.pathname === '/v1/webhook_endpoints' && method === 'POST') {
+      if (faults.loseCreates > 0 && key !== null) {
+        faults.loseCreates -= 1;
+        const urlValue = form.get('url');
+        const events = form.getAll('enabled_events[]');
+        inFlight.set(key, () => {
+          made += 1;
+          const id = `we_${(idBase + made).toString(16).padStart(16, '0')}`;
+          const created = endpoint({ id, url: urlValue, enabled_events: events });
+          endpoints.set(id, created);
+          firstResponses.set(key, { status: 200, body: { ...created, secret: `whsec_ReplayFakeSecret${made}` } });
+        });
+        throw new TypeError('fetch failed');
+      }
+      if (faults.refuseCreates > 0) {
+        faults.refuseCreates -= 1;
+        return answer({ error: { type: 'invalid_request_error', message: 'Not allowed' } }, 400);
+      }
+      made += 1;
+      const id = `we_${(idBase + made).toString(16).padStart(16, '0')}`;
+      const created = endpoint({
+        id,
+        url: form.get('url'),
+        enabled_events: form.getAll('enabled_events[]'),
+      });
+      endpoints.set(id, created);
+      return answer({ ...created, secret: `whsec_ReplayFakeSecret${made}` });
+    }
+    const id = /^\/v1\/webhook_endpoints\/(we_[0-9a-f]+)$/.exec(url.pathname)?.[1];
+    if (id !== undefined) {
+      const current = endpoints.get(id);
+      if (method === 'GET') {
+        if (faults.failReads > 0) {
+          faults.failReads -= 1;
+          return json({ error: { type: 'api_error', message: 'Stripe is unavailable' } }, 500);
+        }
+        return current === undefined
+          ? json({ error: { type: 'invalid_request_error', code: 'resource_missing' } }, 404)
+          : json(current);
+      }
+      if (method === 'POST' && current !== undefined) {
+        if (faults.loseUpdates > 0 && key !== null) {
+          faults.loseUpdates -= 1;
+          const urlValue = form.get('url');
+          const events = form.getAll('enabled_events[]');
+          inFlight.set(key, () => {
+            Object.assign(current, { url: urlValue, enabled_events: events });
+            firstResponses.set(key, { status: 200, body: { ...current } });
+          });
+          throw new TypeError('fetch failed');
+        }
+        if (faults.failUpdates > 0) {
+          faults.failUpdates -= 1;
+          return answer({ error: { type: 'api_error', message: 'Stripe is unavailable' } }, 500);
+        }
+        if (faults.ignoreUpdates > 0) {
+          faults.ignoreUpdates -= 1;
+          return answer(current);
+        }
+        Object.assign(current, {
+          url: form.get('url'),
+          enabled_events: form.getAll('enabled_events[]'),
+          status: form.get('disabled') === 'true' ? 'disabled' : 'enabled',
+        });
+        return answer(current);
+      }
+      if (method === 'DELETE') {
+        endpoints.delete(id);
+        return json({ id, object: 'webhook_endpoint', deleted: true });
+      }
+    }
+    throw new Error(`unexpected Stripe call ${method} ${url.pathname}`);
+  });
+  const keysOf = (method: string, path: RegExp) => requests
+    .filter((call) => call.method === method && path.test(call.path))
+    .map((call) => call.key);
+  /** D-201 Slice 10O — Stripe finishes what it was still carrying out. */
+  const land = (): void => {
+    for (const [key, finish] of inFlight) {
+      inFlight.delete(key);
+      finish();
+    }
+  };
+  return { endpoints, requests, faults, fetchImpl, keysOf, land };
+};
+
+const databases: Database.Database[] = [];
+afterEach(() => {
+  while (databases.length > 0) databases.pop()!.close();
+});
+
+/** A managed Stripe webhook on the real store, reconciler and adapter. */
+const managedStripe = () => {
+  const db = new Database(':memory:');
+  databases.push(db);
+  const store = createWebhookIngressStore(db, {
+    getEncryptionKey: () => new Uint8Array(32).fill(5),
+    newIngressId: () => desired.desired.ingress_id,
+    newPublicId: () => 'opaquePublicId_0123456789abcdef',
+    newCredentialSetRef: () => 'whc_0123456789abcdef0123456789abcdef',
+  });
+  const ingress = store.create({
+    display_name: 'Stripe test events',
+    profile_id: 'stripe.event.v1',
+    environment: 'test',
+    paired_connection_id: 'stripe-test',
+    registration_mode: 'managed_endpoint',
+    selected_event_types: [...desired.desired.event_types],
+  });
+  const api = stripeApi();
+  const service = createWebhookManagedRegistrationService({
+    store,
+    adapters: createWebhookRegistrationRuntimeRegistry([
+      makeAdapter({ fetchImpl: api.fetchImpl as unknown as typeof fetch }),
+    ]),
+    resolveCanonicalEndpoint: () => desired.desired.endpoint_url,
+  });
+  return { store, ingress, api, service };
+};
+
+describe('D-201 Slice 10K — a Stripe registration that can be retried', () => {
+  const CREATES = /^\/v1\/webhook_endpoints$/;
+  const UPDATES = /^\/v1\/webhook_endpoints\/we_[0-9a-f]+$/;
+
+  it("removes an unconfirmed create and makes the next one under a new key, not Stripe's replay of the removed one", async () => {
+    // 10H finding 7: the next pass sent the same key, Stripe answered with the
+    // removed endpoint, and setup stopped on `remote_missing` for a day.
+    const h = managedStripe();
+    h.api.faults.failReads = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    expect(h.api.endpoints.size).toBe(0);
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.api.keysOf('POST', CREATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+    expect([...h.api.endpoints.keys()]).toEqual([h.store.get(h.ingress.ingress_id)!.remote_endpoint_id]);
+  });
+
+  it('sends a repair update that did not hold again under a new key, so it can hold', async () => {
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.api.faults.ignoreUpdates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.api.keysOf('POST', UPDATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+    expect(h.api.endpoints.get(remoteId)!.enabled_events).toEqual(desired.desired.event_types);
+  });
+
+  it('after a repair update Stripe answered with a failure, the next one is not answered with it again', async () => {
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.api.faults.failUpdates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.api.keysOf('POST', UPDATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it('after a refused create, the next pass is not answered with the refusal again', async () => {
+    const h = managedStripe();
+    h.api.faults.refuseCreates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.api.keysOf('POST', CREATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+});
+
+describe('D-201 Slice 10O — Stripe keys kept and moved as the responses say', () => {
+  const CREATES = /^\/v1\/webhook_endpoints$/;
+  const UPDATES = /^\/v1\/webhook_endpoints\/we_[0-9a-f]+$/;
+
+  it('a create that got no response keeps its key, so the one Stripe is still making never lands beside another', async () => {
+    // 10L finding 11: under a new key, the next pass's create committed a
+    // second endpoint, and the first then landed holding a secret Recued never
+    // stored.
+    const h = managedStripe();
+    h.api.faults.loseCreates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    // Still being made: the search finds nothing, and the same key is refused.
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    expect(h.api.endpoints.size).toBe(0);
+    const [first, second] = h.api.keysOf('POST', CREATES);
+    expect(second).toBe(first);
+    // It lands: the next pass finds it by its URL, removes it (its secret was
+    // never stored) and makes the one it keeps.
+    h.api.land();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    expect([...h.api.endpoints.keys()]).toEqual([h.store.get(h.ingress.ingress_id)!.remote_endpoint_id]);
+  });
+
+  it('a create whose response came back still moves its key on, as 10K made it', async () => {
+    const h = managedStripe();
+    h.api.faults.refuseCreates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    h.api.faults.loseCreates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    const keys = h.api.keysOf('POST', CREATES);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it('a repair update that got no response keeps its key for the next pass', async () => {
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.api.faults.loseUpdates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    const [first, second] = h.api.keysOf('POST', UPDATES);
+    expect(second).toBe(first);
+    h.api.land();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    expect(h.api.endpoints.get(remoteId)!.enabled_events).toEqual(desired.desired.event_types);
+  });
+
+  it('a repair back to a set an earlier repair reached holds the first time: a repair that held moved its key on', async () => {
+    // 10L finding 12: the second repair sent the first one's key, Stripe
+    // answered with that success without making the change, and the pass
+    // failed once before the next one held.
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.api.keysOf('POST', UPDATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+    expect(h.api.endpoints.get(remoteId)!.enabled_events).toEqual(desired.desired.event_types);
+  });
+
+  it('records a repair that did not hold before it moves the key on, so the webhook reads drifted (10L finding 14)', async () => {
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.api.faults.ignoreUpdates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    // Moved on first, the record would lose its compare-and-set: still registered.
+    expect(h.store.get(h.ingress.ingress_id)).toMatchObject({
+      registration_state: 'drifted',
+      last_error_code: 'managed_registration_drift',
+    });
+  });
+});
+
+describe('D-201 Slice 10T — a Stripe key kept while its request runs, and moved once confirmed', () => {
+  const CREATES = /^\/v1\/webhook_endpoints$/;
+  const UPDATES = /^\/v1\/webhook_endpoints\/we_[0-9a-f]+$/;
+
+  // D-201 Slice 10Z (10V finding 10) — this said "so one endpoint lands": the
+  // one Stripe was making lands, and the next pass finds it, removes it (its
+  // secret was never stored) and makes the one it keeps. One stands.
+  it('a create Stripe is still making keeps its key through every pass it refuses, so no second lands beside it, and one stands (10Q finding 6)', async () => {
+    // 10O kept the key after no response, and a 409 then moved it on: a third
+    // pass created under a new key, and two endpoints stood at the URL.
+    const h = managedStripe();
+    h.api.faults.loseCreates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    expect(h.api.endpoints.size).toBe(0);
+    const keys = h.api.keysOf('POST', CREATES);
+    expect(keys).toHaveLength(3);
+    expect(new Set(keys).size).toBe(1);
+    h.api.land();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    expect([...h.api.endpoints.keys()]).toEqual([h.store.get(h.ingress.ingress_id)!.remote_endpoint_id]);
+  });
+
+  it('a repair Stripe is still making keeps its key too', async () => {
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.api.faults.loseUpdates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .rejects.toMatchObject({ code: 'upstream_unavailable' });
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    const keys = h.api.keysOf('POST', UPDATES);
+    expect(keys).toHaveLength(3);
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  it('a repair that got no response but landed is confirmed by a read, and its key still moves on (10Q finding 18)', async () => {
+    const h = managedStripe();
+    await h.service.reconcile(h.ingress.ingress_id);
+    const remoteId = h.store.get(h.ingress.ingress_id)!.remote_endpoint_id!;
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.api.faults.loseUpdates = 1;
+    await expect(h.service.reconcile(h.ingress.ingress_id)).rejects.toBeDefined();
+    h.api.land();
+    // Confirmed by its read: nothing is sent.
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    expect(h.api.keysOf('POST', UPDATES)).toHaveLength(1);
+    // It drifts back within Stripe's day: the repair goes out under a new key,
+    // and is made, not answered with the landed one's success.
+    h.api.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    await expect(h.service.reconcile(h.ingress.ingress_id))
+      .resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.api.keysOf('POST', UPDATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+    expect(h.api.endpoints.get(remoteId)!.enabled_events).toEqual(desired.desired.event_types);
+  });
+});
+
+/** D-201 Slice 10Z — Stripe with two accounts, a request going to the one its
+ *  key belongs to: `stripe-test` and `stripe-alias` reach account A, and
+ *  `stripe-other` account B. Keys are kept per account, as Stripe keeps them. */
+const managedStripeAccounts = () => {
+  const clock = { now: 2_000_000_000_000 };
+  const db = new Database(':memory:');
+  databases.push(db);
+  const store = createWebhookIngressStore(db, {
+    now: () => clock.now,
+    getEncryptionKey: () => new Uint8Array(32).fill(5),
+    newIngressId: () => desired.desired.ingress_id,
+    newPublicId: () => 'opaquePublicId_0123456789abcdef',
+    newCredentialSetRef: () => 'whc_0123456789abcdef0123456789abcdef',
+  });
+  const ingress = store.create({
+    display_name: 'Stripe test events',
+    profile_id: 'stripe.event.v1',
+    environment: 'test',
+    paired_connection_id: 'stripe-test',
+    registration_mode: 'managed_endpoint',
+    selected_event_types: [...desired.desired.event_types],
+  });
+  const accounts = { a: stripeApi(), b: stripeApi(0x100000) };
+  const keyOf: Record<string, string> = {
+    'stripe-test': 'sk_test_ACCOUNTAKEYONE',
+    'stripe-alias': 'sk_test_ACCOUNTAKEYTWO',
+    'stripe-other': 'sk_test_ACCOUNTBKEYONE',
+  };
+  const accountOf: Record<string, ReturnType<typeof stripeApi>> = {
+    sk_test_ACCOUNTAKEYONE: accounts.a,
+    sk_test_ACCOUNTAKEYTWO: accounts.a,
+    sk_test_ACCOUNTBKEYONE: accounts.b,
+  };
+  /** Connections that cannot be reached: their account cannot be searched. */
+  const unreachable = new Set<string>();
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const basic = (init?.headers as Headers).get('Authorization')!.slice('Basic '.length);
+    const apiKey = Buffer.from(basic, 'base64').toString('utf8').replace(/:$/, '');
+    return accountOf[apiKey]!.fetchImpl(input, init);
+  };
+  const service = createWebhookManagedRegistrationService({
+    store,
+    adapters: createWebhookRegistrationRuntimeRegistry([
+      makeAdapter({
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        resolveConnection: async (connectionId) => {
+          if (unreachable.has(connectionId)) {
+            throw new WebhookRegistrationAdapterError('connection_unavailable', 'the connection is gone');
+          }
+          return { api_key: keyOf[connectionId]! };
+        },
+      }),
+    ]),
+    resolveCanonicalEndpoint: () => desired.desired.endpoint_url,
+    now: () => clock.now,
+  });
+  const committed = () => store.get(ingress.ingress_id)!.remote_endpoint_id;
+  return { clock, store, ingress, accounts, unreachable, service, committed };
+};
+
+describe('D-201 Slice 10Z — no Stripe endpoint stands beside a create still running (10V findings 8, 9 and 23)', () => {
+  const CREATES = /^\/v1\/webhook_endpoints$/;
+  const UPDATES = /^\/v1\/webhook_endpoints\/we_[0-9a-f]+$/;
+
+  it('an event edit while a create is still running: the next pass makes its endpoint, and the first is removed when it lands (finding 8)', async () => {
+    const h = managedStripeAccounts();
+    const id = h.ingress.ingress_id;
+    h.accounts.a.faults.loseCreates = 1;
+    await expect(h.service.reconcile(id)).rejects.toMatchObject({ code: 'upstream_unavailable' });
+    // The owner edits the events right after, as Settings offers.
+    h.store.update(id, { selected_event_types: ['invoice.paid'] });
+    await expect(h.service.reconcile(id)).resolves.toMatchObject({ registration_state: 'registered' });
+    const [first, second] = h.accounts.a.keysOf('POST', CREATES);
+    expect(second).not.toBe(first);
+    // The first lands: 10V found both standing at the address, one holding a
+    // secret Recued never stored.
+    h.accounts.a.land();
+    expect(h.accounts.a.endpoints.size).toBe(2);
+    await expect(h.service.sweepUnsettledCreates())
+      .resolves.toEqual({ removed: 1, settled: 0, given_up: 0, failed: 0 });
+    expect([...h.accounts.a.endpoints.keys()]).toEqual([h.committed()]);
+    // Searched again after the hour it could land in: settled.
+    h.clock.now += WEBHOOK_UNSETTLED_CREATE_WINDOW_MS;
+    await expect(h.service.sweepUnsettledCreates())
+      .resolves.toEqual({ removed: 0, settled: 1, given_up: 0, failed: 0 });
+    expect(h.store.listUnsettledCreates()).toEqual([]);
+    expect([...h.accounts.a.endpoints.keys()]).toEqual([h.committed()]);
+  });
+
+  it('a rebind while a create is still running: it lands on the old account, which is searched again and cleared (finding 9)', async () => {
+    const h = managedStripeAccounts();
+    const id = h.ingress.ingress_id;
+    h.accounts.a.faults.loseCreates = 1;
+    await expect(h.service.reconcile(id)).rejects.toBeDefined();
+    // The owner moves the webhook to another account; its cleanup of the old
+    // one finds nothing yet.
+    await expect(h.service.rebind(id, 'stripe-other'))
+      .resolves.toMatchObject({ paired_connection_id: 'stripe-other' });
+    await expect(h.service.reconcile(id)).resolves.toMatchObject({ registration_state: 'registered' });
+    h.accounts.a.land();
+    expect(h.accounts.a.endpoints.size).toBe(1);
+    await expect(h.service.sweepUnsettledCreates()).resolves.toMatchObject({ removed: 1, failed: 0 });
+    expect(h.accounts.a.endpoints.size).toBe(0);
+    expect([...h.accounts.b.endpoints.keys()]).toEqual([h.committed()]);
+  });
+
+  // A switch-off needs a webhook on, which has its endpoint committed, so no
+  // create runs beside one; a retire can meet one.
+  it('a retire while a create is still running: it is removed when it lands (the 10T limit)', async () => {
+    const h = managedStripeAccounts();
+    const id = h.ingress.ingress_id;
+    h.accounts.a.faults.loseCreates = 1;
+    await expect(h.service.reconcile(id)).rejects.toBeDefined();
+    await expect(h.service.cleanup(id, 'retire')).resolves.toMatchObject({ intake_state: 'retired' });
+    h.accounts.a.land();
+    expect(h.accounts.a.endpoints.size).toBe(1);
+    await expect(h.service.sweepUnsettledCreates()).resolves.toMatchObject({ removed: 1, failed: 0 });
+    expect(h.accounts.a.endpoints.size).toBe(0);
+  });
+
+  it('a stray removed from a webhook with nothing committed moves its attempt on: the next create is made, not answered with the one removed', async () => {
+    const h = managedStripeAccounts();
+    const id = h.ingress.ingress_id;
+    h.accounts.a.faults.loseCreates = 1;
+    await expect(h.service.reconcile(id)).rejects.toBeDefined();
+    h.accounts.a.land();
+    await expect(h.service.sweepUnsettledCreates()).resolves.toMatchObject({ removed: 1 });
+    await expect(h.service.reconcile(id)).resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.accounts.a.keysOf('POST', CREATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+    expect([...h.accounts.a.endpoints.keys()]).toEqual([h.committed()]);
+  });
+
+  // D-201 Slice 10AH (10AE finding 9) — a week of searches the sweep ran and
+  // failed: one failure and a week with no sweeps gave it up.
+  it('a create whose account cannot be searched is kept, and given up after a week of failed searches', async () => {
+    const h = managedStripeAccounts();
+    const id = h.ingress.ingress_id;
+    h.accounts.a.faults.loseCreates = 1;
+    await expect(h.service.reconcile(id)).rejects.toBeDefined();
+    h.unreachable.add('stripe-test');
+    h.clock.now += WEBHOOK_UNSETTLED_CREATE_WINDOW_MS;
+    await expect(h.service.sweepUnsettledCreates())
+      .resolves.toEqual({ removed: 0, settled: 0, given_up: 0, failed: 1 });
+    expect(h.store.listUnsettledCreates()).toHaveLength(1);
+    // A week with no sweeps counts an hour.
+    h.clock.now += WEBHOOK_UNSETTLED_CREATE_GIVE_UP_MS;
+    await expect(h.service.sweepUnsettledCreates())
+      .resolves.toEqual({ removed: 0, settled: 0, given_up: 0, failed: 1 });
+    // Then a search failing every hour: a week of them gives it up.
+    const HOUR = 60 * 60 * 1000;
+    for (let hour = 2; hour < 168; hour += 1) {
+      h.clock.now += HOUR;
+      await expect(h.service.sweepUnsettledCreates()).resolves.toMatchObject({ given_up: 0, failed: 1 });
+    }
+    h.clock.now += HOUR;
+    await expect(h.service.sweepUnsettledCreates())
+      .resolves.toEqual({ removed: 0, settled: 0, given_up: 1, failed: 0 });
+    expect(h.store.listUnsettledCreates()).toEqual([]);
+  });
+
+  it('a confirmation through another connection to the same account moves the attempt on (finding 23)', async () => {
+    const h = managedStripeAccounts();
+    const id = h.ingress.ingress_id;
+    await h.service.reconcile(id);
+    const remoteId = h.committed()!;
+    h.accounts.a.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    h.accounts.a.faults.loseUpdates = 1;
+    await expect(h.service.reconcile(id)).rejects.toBeDefined();
+    h.accounts.a.land();
+    // Moved to another key on the same account: confirmed by a read, as 10Q
+    // finding 18's repair was, with nothing sent.
+    await expect(h.service.rebind(id, 'stripe-alias')).resolves.toMatchObject({
+      paired_connection_id: 'stripe-alias',
+      registration_state: 'registered',
+    });
+    // It drifts back within Stripe's day: the repair goes out under a new key,
+    // and is made, not answered with the landed one's success.
+    h.accounts.a.endpoints.get(remoteId)!.enabled_events = ['invoice.created'];
+    await expect(h.service.reconcile(id)).resolves.toMatchObject({ registration_state: 'registered' });
+    const keys = h.accounts.a.keysOf('POST', UPDATES);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+    expect(h.accounts.a.endpoints.get(remoteId)!.enabled_events).toEqual(desired.desired.event_types);
   });
 });

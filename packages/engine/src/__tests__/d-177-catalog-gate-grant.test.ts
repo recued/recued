@@ -256,6 +256,8 @@ describe('D-177 catalog-gate session-grant loop', () => {
     expect(consume).toHaveBeenCalledTimes(1);
     expect(consume).toHaveBeenCalledWith('grant-1', {
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
+      // D-177 N.15 — the op the match named, which a `'kind'` row re-verifies.
+      operation_id: OPERATION_ID,
     });
     expect(mint).not.toHaveBeenCalled();
     expect(ingredientExecutor).toHaveBeenCalledTimes(1);
@@ -297,6 +299,8 @@ describe('D-177 catalog-gate session-grant loop', () => {
     expect(consume).toHaveBeenCalledTimes(1);
     expect(consume).toHaveBeenCalledWith('grant-1', {
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
+      // D-177 N.15 — the op the match named, which a `'kind'` row re-verifies.
+      operation_id: OPERATION_ID,
     });
     expect(mint).not.toHaveBeenCalled();
     expect(ingredientExecutor).not.toHaveBeenCalled();

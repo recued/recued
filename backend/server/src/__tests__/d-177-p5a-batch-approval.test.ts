@@ -16,6 +16,8 @@ import type {
 } from '@recued/gateway';
 import {
   RELAX_OPERATION_TO_ASK_OPTION_ID,
+  PREPARED_PREFLIGHT_EDITS_KIND,
+  PREPARED_PREFLIGHT_DENIAL_KIND,
 } from '@recued/gateway';
 import type { Answer } from '@recued/notification';
 import {
@@ -32,6 +34,7 @@ import {
   type UnresolvedBatchAsk,
 } from '../batch-approval.js';
 import type { SessionGrantResolver } from '../session-grant-resolver.js';
+import { preparedInboxApprovalActivity } from '../reception-inbox-prepared-answer.js';
 import {
   createGatedActionStore,
   type GatedActionRecord,
@@ -116,6 +119,7 @@ const fakeCheckpointStore = (
   rows: Map<string, Checkpoint>;
   get: ReturnType<typeof vi.fn>;
   delete: ReturnType<typeof vi.fn>;
+  setArgOverrides: ReturnType<typeof vi.fn>;
 } => {
   const rows = new Map(checkpoints.map((cp) => [cp.checkpoint_id, cp]));
   const store = {
@@ -188,6 +192,7 @@ const fakeSessionGrantResolver = (): SessionGrantResolver & {
   claimBatchMember: vi.fn(() => false),
   mintBatch: vi.fn(() => 'batch-grant-1'),
   mintRawOp: vi.fn(() => undefined),
+  mintKind: vi.fn(() => undefined),
   mint: vi.fn<SessionGrantResolver['mint']>(),
 });
 
@@ -1026,6 +1031,7 @@ describe('createBatchApprovalCoordinator handleAnswer', () => {
       tool_slug: 'mail.send',
       risk_tier: 'write',
       approved_at: NOW + 50_000,
+      session_grant_decision_version: 1,
       session_grant: {
         ttl_ms: 3_600_000,
         max_uses: 5,
@@ -1034,6 +1040,16 @@ describe('createBatchApprovalCoordinator handleAnswer', () => {
     } satisfies Partial<PreflightAskContext>);
     expect(context).not.toHaveProperty('batch_claim');
     expect(h.checkpointStore.delete).toHaveBeenCalledWith('checkpoint-1');
+  });
+
+  it('a legacy single-member session choice approves once without a new grant', async () => {
+    const h = harness({ checkpoints: [checkpoint(1)] });
+    await h.coordinator.registerHold(hold(1));
+    const payload = { ...payloadFromAsk(h.notifier, 0) }; delete payload.session_grant_decision_version;
+    await expect(h.coordinator.hooks.handleAnswer(payload, answer('allow_session'))).resolves.toBe('handled');
+    expect(h.resumer.resumeRun).toHaveBeenCalledTimes(1);
+    expect(h.resumer.resumeRun.mock.calls[0]![1].session_grant).toBeUndefined();
+    expect(h.sessionGrantResolver.mintBatch).not.toHaveBeenCalled();
   });
 
   it('approves multiple members by minting one batch grant and resuming each member with its claim', async () => {
@@ -1079,6 +1095,61 @@ describe('createBatchApprovalCoordinator handleAnswer', () => {
     expect(await h.batchAskStore.get('batch-1')).toMatchObject({ state: 'answered' });
   });
 
+  it('replays a single-member winning edit after a failed checkpoint write', async () => {
+    const h = harness({ checkpoints: [checkpoint(1)] });
+    await h.coordinator.registerHold(hold(1));
+    const payload = payloadFromAsk(h.notifier, 0);
+    const savedAnswer = { ...answer('approve'), prepared: {
+      kind: PREPARED_PREFLIGHT_EDITS_KIND, checkpoint_id: 'checkpoint-1',
+      arg_overrides: { subject: 'Winner' }, approved_target: { connection_name: 'mail-B' },
+    } };
+    h.checkpointStore.setArgOverrides.mockRejectedValueOnce(new Error('write interrupted'));
+    await expect(h.coordinator.hooks.handleAnswer(payload, savedAnswer)).rejects.toThrow('write interrupted');
+    expect(h.resumer.resumeRun).not.toHaveBeenCalled();
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({ state: 'closing', answer_option: 'approve' });
+    await expect(h.coordinator.hooks.handleAnswer(payload, savedAnswer)).resolves.toBe('handled');
+    expect(h.resumer.resumeRun).toHaveBeenCalledTimes(1);
+    expect(h.resumer.resumeRun.mock.calls[0]![0]).toMatchObject({
+      arg_overrides: { subject: 'Winner' }, approved_target: { connection_name: 'mail-B' },
+    });
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({ state: 'answered' });
+  });
+
+  it('applies an older member edit only to that member without granting replay of the original hashes', async () => {
+    const h = harness({ checkpoints: [checkpoint(1), checkpoint(2)] });
+    await h.coordinator.registerHold(hold(1));
+    await h.coordinator.registerHold(hold(2));
+    const payload = payloadFromAsk(h.notifier, 1);
+    const prepared = { kind: PREPARED_PREFLIGHT_EDITS_KIND, checkpoint_id: 'checkpoint-1',
+      arg_overrides: { subject: 'Winner' }, inbox_audit: { detail: 'approved with edits' } };
+    const savedAnswer = { ...answer('approve'), prepared };
+    expect(preparedInboxApprovalActivity({ ask_id: 'ask-2', handler_kind: 'gateway.preflight',
+      handler_payload: payload, option: 'approve', option_label: 'Approve', answered_via: 'ui',
+      answered_at: savedAnswer.answered_at, prepared })).toMatchObject({ target: 'checkpoint-1' });
+    await h.coordinator.hooks.handleAnswer(payload, savedAnswer);
+    expect(h.checkpointStore.setArgOverrides).toHaveBeenCalledTimes(1);
+    expect(h.resumer.resumeRun.mock.calls.map(call => call[0])).toEqual([
+      expect.objectContaining({ checkpoint_id: 'checkpoint-1', arg_overrides: { subject: 'Winner' } }),
+      checkpoint(2),
+    ]);
+    expect(h.sessionGrantResolver.mintBatch).not.toHaveBeenCalled();
+    for (const [, context] of h.resumer.resumeRun.mock.calls) expect(context).not.toHaveProperty('batch_claim');
+  });
+
+  it('refuses a prepared edit bound outside the approved batch before releasing any member', async () => {
+    const h = harness({ checkpoints: [checkpoint(1), checkpoint(2)] });
+    await h.coordinator.registerHold(hold(1));
+    await h.coordinator.registerHold(hold(2));
+    await expect(h.coordinator.hooks.handleAnswer(payloadFromAsk(h.notifier, 1), {
+      ...answer('approve'), prepared: { kind: PREPARED_PREFLIGHT_EDITS_KIND,
+        checkpoint_id: 'another-checkpoint', arg_overrides: { subject: 'Wrong' } },
+    })).rejects.toThrow('do not bind an approved member');
+    expect(h.checkpointStore.setArgOverrides).not.toHaveBeenCalled();
+    expect(h.resumer.resumeRun).not.toHaveBeenCalled();
+    expect(h.resumer.denyRun).not.toHaveBeenCalled();
+    expect(h.sessionGrantResolver.mintBatch).not.toHaveBeenCalled();
+  });
+
   it('resumes multiple approved members without batch_claim when mintBatch returns undefined', async () => {
     const resolver = fakeSessionGrantResolver();
     resolver.mintBatch.mockReturnValue(undefined);
@@ -1108,16 +1179,33 @@ describe('createBatchApprovalCoordinator handleAnswer', () => {
     const markAnswered = vi.spyOn(h.batchAskStore, 'markAnswered');
 
     await expect(
-      h.coordinator.hooks.handleAnswer(stalePayload, answer('approve')),
+      h.coordinator.hooks.handleAnswer(stalePayload, { ...answer('approve'), prepared: {
+        kind: PREPARED_PREFLIGHT_EDITS_KIND, checkpoint_id: 'checkpoint-1', arg_overrides: { subject: 'Stale' },
+      } }),
     ).resolves.toBe('handled');
 
     expect(h.resumer.resumeRun).not.toHaveBeenCalled();
     expect(h.resumer.denyRun).not.toHaveBeenCalled();
     expect(markAnswered).not.toHaveBeenCalled();
+    expect(h.checkpointStore.setArgOverrides).not.toHaveBeenCalled();
     expect(await h.batchAskStore.get('batch-1')).toMatchObject({
       state: 'open',
       payload_version: 2,
     });
+  });
+
+  it('checks batch version and member binding before projecting prepared denial history', async () => {
+    const h = harness({ checkpoints: [checkpoint(1), checkpoint(2)] });
+    await h.coordinator.registerHold(hold(1)); await h.coordinator.registerHold(hold(2));
+    const deny = { ...answer('deny'), prepared: { kind: PREPARED_PREFLIGHT_DENIAL_KIND, checkpoint_id: 'checkpoint-1' } };
+    // A stale denial must be ignored even when its host projector is absent.
+    await expect(h.coordinator.hooks.handleAnswer(payloadFromAsk(h.notifier, 0), deny)).resolves.toBe('handled');
+    expect(await h.batchAskStore.get('batch-1')).toMatchObject({ state: 'open', payload_version: 2 });
+    await expect(h.coordinator.hooks.handleAnswer(payloadFromAsk(h.notifier, 1), {
+      ...deny, prepared: { ...deny.prepared, checkpoint_id: 'outside-batch' },
+    })).rejects.toThrow('does not bind an approved member');
+    expect(h.resumer.denyRun).not.toHaveBeenCalled(); expect(h.resumer.resumeRun).not.toHaveBeenCalled();
+    expect(h.checkpointStore.delete).not.toHaveBeenCalled();
   });
 
   it('version-guards a standing-ruling answer before persisting it', async () => {
@@ -1178,17 +1266,32 @@ describe('createBatchApprovalCoordinator handleAnswer', () => {
     }));
 
     await expect(h.coordinator.hooks.handleAnswer(
-      payloadFromAsk(h.notifier, 0),
+      { ...payloadFromAsk(h.notifier, 0), owner_override_policy_revision: `sha256:${'b'.repeat(64)}` },
       answer(RELAX_OPERATION_TO_ASK_OPTION_ID),
     )).resolves.toBe('handled');
 
-    expect(h.upsertOverride).toHaveBeenCalledWith(offer);
+    expect(h.upsertOverride).toHaveBeenCalledWith(offer, {
+      decision_id: JSON.stringify(['preflight_batch', 'batch-1', 1]),
+      answered_at: NOW + 50_000,
+      holds: [{ run_id: 'run-1', checkpoint_id: 'checkpoint-1' }],
+      policy_revision: `sha256:${'b'.repeat(64)}`,
+    });
     expect(h.resumer.resumeRun).toHaveBeenCalledTimes(1);
     expect(h.resumer.denyRun).not.toHaveBeenCalled();
     expect(await h.batchAskStore.get('batch-1')).toMatchObject({
       state: 'answered',
       answer_option: RELAX_OPERATION_TO_ASK_OPTION_ID,
     });
+  });
+
+  it('refuses malformed policy revisions before applying a batch standing ruling', async () => {
+    const h = harness({ checkpoints: [checkpoint(1)] });
+    await h.coordinator.registerHold(hold(1, { ask_context: { owner_override_offer: {
+      kind: 'relax_to_ask', ingredient_id: 'mail.send', operation_id: 'mail.send', op_hash: 'a'.repeat(64), approval: 'ask',
+    } } }));
+    await expect(h.coordinator.hooks.handleAnswer({ ...payloadFromAsk(h.notifier, 0), owner_override_policy_revision: 42 },
+      answer(RELAX_OPERATION_TO_ASK_OPTION_ID))).rejects.toThrow('malformed standing-policy revision');
+    expect(h.upsertOverride).not.toHaveBeenCalled(); expect(h.resumer.resumeRun).not.toHaveBeenCalled();
   });
 
   it('re-enters a closing same-version answer and skips missing checkpoints gracefully', async () => {

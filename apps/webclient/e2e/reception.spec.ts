@@ -266,7 +266,7 @@ test('Reception preserves an unsaved decision draft through refresh', async ({ p
 test('Reception advances focus after approving a selected inbox item', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?reception=pending&reception_decision_response=slow`,
+    `${HARNESS_URL}?reception=pending&hold_rpc=reception.inbox.approve`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#reception'));
@@ -311,6 +311,7 @@ test('Reception advances focus after approving a selected inbox item', async ({ 
     'A Reception action is still in progress. Leave Reception anyway?',
   );
   await expect(page).toHaveURL(/#reception$/);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('reception.inbox.approve'))).toBe(1);
   await expect(firstRow).toHaveCount(0);
   const nextRow = page.locator(
     `[${RECEPTION_INBOX_ROW}="hold-reception-2"]`,
@@ -750,20 +751,14 @@ test('Reception Responses distinguishes automation actions and restores their fo
   });
   await expect(exactForm).toHaveCount(1);
   await expect(allForms).toHaveCount(1);
-  const pickerActions = page.locator(
-    '[data-recued-reception-responses] button:visible, '
-      + '[data-recued-reception-responses] a[href]:visible',
-  );
-  const pickerActionHeights = await pickerActions.evaluateAll((nodes) =>
-    nodes.map((node) => node.getBoundingClientRect().height)
-  );
-  expect(Math.min(...pickerActionHeights)).toBeGreaterThanOrEqual(36);
+  const executions = await page.evaluate(() => window.__app.rpcCallCount('execute'));
 
   await allForms.focus();
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
   await expect(dialog).toBeFocused();
   await expect(dialog).toContainText('Review every intake');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(executions);
   await dialog.getByRole('button', { name: 'Close' }).click();
   await expect(dialog).toHaveCount(0);
   await expect(allForms).toBeFocused();
@@ -775,6 +770,7 @@ test('Reception Responses distinguishes automation actions and restores their fo
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(exactForm).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(executions);
 });
 
 test('Reception Responses keeps list Retry focused and single-flight', async ({ page }) => {

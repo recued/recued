@@ -364,6 +364,14 @@ export interface RunPreapprovedWrite {
   op: string;
   /** How many of its writes this run made. */
   writes: number;
+  /** D-402 slice F5 — a caller's pre-approval (the owner's chats, or an AI app), not a trigger's
+   *  (`trigger_kind: 'caller'`): who holds it and by what name, the recipe, and whether it was this
+   *  run's own "Yes, this time" (it ended with the run) or an "Always" (it stands until it is
+   *  ended). Absent for a trigger's, and from a server older than these. */
+  caller?: import('./trigger-preapproval.js').PreapprovalCaller;
+  caller_name?: string;
+  recipe_id?: string;
+  this_run?: boolean;
 }
 
 export interface RunDetail {

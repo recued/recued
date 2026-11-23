@@ -57,6 +57,7 @@ import {
   createDefaultEmbeddingsRegistry,
   createQuotaTracker,
   createDefaultTranscriptionRegistry,
+  answeredByAnotherModel,
   executeLLM,
   executeEmbedding,
   transcribe as transcribeAudio,
@@ -432,13 +433,18 @@ export const composeHousekeepingLlmCallables = (
       );
     }
     let model_id = '';
+    let asked = '';
+    let answered: string | undefined;
     const result = await executeLLM(manifest, input, {
       config: liveConfig,
       adapters: llmAdapterRegistry,
       quota: llmQuota,
       tabProbe: emptyTabProbe,
       webChatSupported: false,
-      onTokenUsage: reportOwnerUsage,
+      onTokenUsage: (usage) => {
+        reportOwnerUsage(usage);
+        answered = usage.answered_model;
+      },
       onMatchResolved: (evt) => {
         const winner = evt.winner;
         if (winner.source.kind === 'slot') {
@@ -446,8 +452,16 @@ export const composeHousekeepingLlmCallables = (
         } else if (winner.source.kind === 'pool') {
           model_id = `${winner.slot.provider}:${winner.slot.model}`;
         }
+        asked = winner.slot.model;
       },
     });
+    // ⚠ The model that ANSWERED, when the provider says it was another one than asked for: a row a
+    // swapped-in model wrote is not the chosen model's (the badge says so, and the cohort is its own).
+    // A dated name of the same model keeps the chosen name (`answeredByAnotherModel`). Safe for the
+    // dedup probe, which leaves `model_id` out of its match on purpose (`ai-producer-wrapper.ts`).
+    if (answered !== undefined && model_id !== '' && answeredByAnotherModel(asked, answered)) {
+      model_id = `${model_id.slice(0, model_id.indexOf(':'))}:${answered}`;
+    }
     return { result, model_id };
   };
 

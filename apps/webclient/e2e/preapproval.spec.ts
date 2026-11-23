@@ -88,12 +88,14 @@ for (const width of [280, 1280]) {
     const calendar = page.locator('[data-preapproval-resource-review="pam_calendar"]');
     await expect(records).toContainText('Intermediate edit');
     await expect(records).toContainText('Recreated final note');
-    await expect(records).toContainText('Before: Does not exist');
+    await expect(records).toContainText('New note (new)');
     await expect(records).toContainText('<script>window.reviewInjected = true</script>');
     expect(await page.evaluate(() => 'reviewInjected' in window)).toBe(false);
     await expect(calendar).toContainText('Original meeting');
     await expect(calendar).toContainText('Moved meeting');
-    await expect(calendar).toContainText('2027-01-15T');
+    // A moment in the viewer's own words and zone, never an ISO stamp.
+    await expect(calendar).toContainText(/Starts: .*2027.* → .*2027/);
+    await expect(calendar).not.toContainText('2027-01-15T');
     await records.focus(); await expect(records).toBeFocused();
     await page.keyboard.press('End');
     await expect.poll(() => records.evaluate(element => element.scrollTop)).toBeGreaterThan(0);

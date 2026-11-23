@@ -176,3 +176,41 @@ describe('D-338 a model is told which items the owner\'s notifications keep priv
     expect(service.isPrivateItem(item('calendar', 'work:dentist'))).toBe(false);
   });
 });
+
+describe('D-343 (the owner, 2026-11-14) — the chat can open a day for closing when the user brings it up', () => {
+  const closing = (extra: Record<string, unknown> = {}, more: Partial<ChatToolHandlerDeps> = {}) => buildChatTier1Handlers({ ...more, getSituationAccess: () => {
+    const query = createSituationQuery({ now: () => at, sources: [{ id: 'calendar', collection: 'calendar', verb_op: 'core.work-entity.read', read: vi.fn(() => facts) }],
+      sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
+    return createSituationAccess({ contracts, query, now: () => at, isVaultUnlocked: () => true,
+      eveningPursuits: () => [{ id: 'p1', name: 'Learn guitar', private: false }], ...extra });
+  } } as ChatToolHandlerDeps)['situation.query']!;
+
+  it('reads the day, adds the evening\'s pursuits and how to close it', async () => {
+    const turn = await closing()({ time: '2026-10-20', close: true }, { execution_source: owner, time_zone: LA } as never) as { ok: true; result: Record<string, unknown> };
+    expect(matched(turn.result)).toEqual(['Tuesday call']);
+    expect(turn.result.pursuits).toEqual([{ title: 'Learn guitar', ref: { collection: 'asset', id: 'p1' } }]);
+    expect(turn.result.how_to_close).toContain('To close 2026-10-20 with the user: 1. If they did not mention every item in this result, first ask');
+    expect(turn.result.how_to_close).toContain('one episode.record call with day 2026-10-20');
+    // Without it, the read is as it was.
+    expect(((await closing()({ time: '2026-10-20' }, { execution_source: owner, time_zone: LA } as never)) as { result: Record<string, unknown> }).result.how_to_close).toBeUndefined();
+  });
+
+  it('lists what the day already holds, from any conversation, and says not to ask about it again', async () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const recorded = (day: string, zone?: string) => { asked.push([day, zone]);
+      return [{ title: 'Did the call', outcome: 'done' as const, ref: { collection: 'calendar', id: 'c1' }, recorded_at: 1 }]; };
+    const turn = await closing({}, { getClosingRecords: () => ({ recorded }) as never })({ time: '2026-10-20', close: true },
+      { execution_source: owner, time_zone: LA } as never) as { ok: true; result: Record<string, unknown> };
+    expect(asked).toEqual([['2026-10-20', LA]]);
+    expect(turn.result.already_recorded).toEqual([{ title: 'Did the call', outcome: 'done', ref: { collection: 'calendar', id: 'c1' } }]);
+    expect(turn.result.how_to_close).toContain('listed as already_recorded');
+  });
+
+  it('takes `close` for one day only, and only in the chat\'s own schema', async () => {
+    for (const args of [{ time: { first_day: '2026-10-19', last_day: '2026-10-20' }, close: true }, { time: '2026-10-20', close: false }]) {
+      expect(await closing()(args, { execution_source: owner, time_zone: LA } as never)).toMatchObject({ ok: false });
+    }
+    expect((TIER1_TOOL_DESCRIPTORS['situation.query']!.arg_schema as { properties: object }).properties).toHaveProperty('close');
+    expect(SITUATION_QUERY_SCHEMA.properties).not.toHaveProperty('close');
+  });
+});

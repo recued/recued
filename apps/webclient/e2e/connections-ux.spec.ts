@@ -2,6 +2,7 @@ import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 import { installConnectionsUxFixture } from './fixtures/connections-ux.js';
 import { clickActionGlyph } from './helpers/action-glyph.js';
+import { installOAuthMaintenanceFixture } from './fixtures/oauth-maintenance.js';
 
 const origin = process.env.CONNECTIONS_UX_ORIGIN ?? HARNESS_ORIGIN;
 const route = (page: Page) => page.locator('[data-recued-connections-route]');
@@ -19,6 +20,96 @@ test.beforeEach(async ({ page }) => {
 test.afterEach(async ({ page }) => {
   const errors = pageErrors.get(page) ?? [];
   expect(errors, errors.map(error => error.message).join(' | ')).toHaveLength(0);
+});
+
+test('saved app usage keeps keyboard selection and returns to its app action on close', async ({ page }) => {
+  await go(page, '#chat'); await page.evaluate(installOAuthMaintenanceFixture);
+  await page.evaluate(() => window.__app.setHash('#connections/others/oauth-apps'));
+  const manager = page.locator('[data-saved-oauth-app-manager]');
+  await manager.locator('[data-oauth-app-row="google:default"] > details > summary').click();
+  const opener = manager.locator('[data-oauth-app-action="usage"][data-oauth-app-id="google:default"]');
+  await opener.focus(); await opener.press('Enter');
+  const review = manager.getByRole('region', { name: 'Saved app usage and secret rotation' });
+  await expect(review.locator('[data-app-usage-heading]')).toBeFocused();
+  const north = review.locator('[data-app-usage-copy="reporting-north"]');
+  await north.focus(); await north.press('Space');
+  await expect(north).not.toBeChecked(); await expect(north).toBeFocused();
+  await expect(review.locator('[data-app-usage-copy="reporting-south"]')).not.toBeChecked();
+  await north.press('Space'); await expect(north).toBeChecked(); await expect(north).toBeFocused();
+  await review.locator('[data-app-usage-secret]').fill('synthetic-unsaved-secret');
+  const close = review.getByRole('button', { name: 'Close review', exact: true });
+  await close.focus(); await close.press('Enter');
+  await expect(review).toHaveCount(0); await expect(opener).toBeFocused();
+  await opener.press('Enter'); await expect(review.locator('[data-app-usage-secret]')).toHaveValue('');
+  expect(await page.evaluate(() => window.__oauthMaintenance.requests)).not.toContain('rotate_secret');
+});
+
+test('a saved app usage read respects focus moved outside the pending review', async ({ page }) => {
+  await go(page, '#chat'); await page.evaluate(installOAuthMaintenanceFixture);
+  await page.evaluate(() => { window.__oauthMaintenance.holdUsage(); window.__app.setHash('#connections/others/oauth-apps'); });
+  const manager = page.locator('[data-saved-oauth-app-manager]');
+  await manager.locator('[data-oauth-app-row="google:default"] > details > summary').click();
+  await manager.locator('[data-oauth-app-action="usage"][data-oauth-app-id="google:default"]').click();
+  const review = manager.getByRole('region', { name: 'Saved app usage and secret rotation' });
+  await expect(review.getByRole('status')).toHaveText('Reading local app usage…');
+  const outside = route(page).getByRole('searchbox', { name: 'Search connections', exact: true });
+  await outside.focus(); await page.evaluate(() => window.__oauthMaintenance.releaseUsage());
+  await expect(review.locator('[data-app-usage-copy]')).toHaveCount(3);
+  await expect(outside).toBeFocused();
+  expect(await page.evaluate(() => window.__oauthMaintenance.requests)).not.toContain('rotate_secret');
+});
+
+for (const outsideFocus of [false, true]) for (const [lane, method, retryName, readySelector] of [
+  ['mail', 'collection.mail.list', 'Refresh mailboxes', '.accounts-row'],
+  ['others', 'collection.connection.list', 'Refresh connections', '.connections-row'],
+] as const) test(`${lane} inventory retry ${outsideFocus ? 'respects outside focus' : 'keeps keyboard focus and one read'}`, async ({ page }) => {
+    await go(page, '#chat');
+    await page.evaluate(method => {
+      const hook = window as Window & { __connectionsFixture: (method: string, args: unknown) => Promise<{
+        result?: unknown; error?: { code: string; message: string };
+      } | undefined> };
+      const previous = hook.__connectionsFixture; let failed = false;
+      hook.__connectionsFixture = async (name, args) => {
+        if (name === method && !failed) { failed = true; return { error: { code: 'UNAVAILABLE', message: 'The connection inventory could not be read.' } }; }
+        return previous(name, args);
+      };
+    }, method);
+    await page.evaluate(lane => window.__app.setHash('#connections/' + lane), lane);
+    await expect(route(page).getByRole('alert').filter({ hasText: 'The connection inventory could not be read.' })).toBeVisible();
+    await expect(route(page).locator(readySelector)).toHaveCount(0);
+    const before = await page.evaluate(method => { window.__app.holdRpcResponses?.(method); return window.__app.rpcCallCount(method); }, method);
+    const retry = route(page).getByRole('button', { name: retryName, exact: true });
+    await expect(retry).toBeVisible();
+    await retry.focus(); await retry.press('Enter');
+    await expect(retry).toHaveAttribute('aria-disabled', 'true'); await expect(retry).toBeFocused();
+    await retry.press('Enter');
+    expect(await page.evaluate(method => window.__app.rpcCallCount(method), method)).toBe(before + 1);
+    const outside = route(page).getByRole('link', { name: 'Calendar', exact: true });
+    if (outsideFocus) await outside.focus();
+    await expect.poll(() => page.evaluate(method => window.__app.releaseRpcResponses?.(method), method)).toBe(1);
+    await expect(route(page).locator(readySelector).first()).toBeVisible();
+    await expect(retry).toHaveCount(0);
+    if (outsideFocus) await expect(outside).toBeFocused();
+    else await expect(route(page).locator(lane === 'mail' ? '[data-action="accounts-open-detail"]' : '[data-action="connections-open-add"]').first()).toBeFocused();
+});
+
+test('refreshing migration results retains keyboard focus and the completed outcome', async ({ page }) => {
+  await go(page, '#connections/others');
+  const tool = route(page).locator('[data-recued-connections-tool="bulk-migration"]');
+  await tool.locator(':scope > summary').click();
+  await tool.locator('[data-recued-bulk-authentication]').click();
+  const panel = tool.locator('.connections-bulk-migration');
+  await panel.locator('[data-bulk-resume]').click();
+  await expect(panel).toContainText('Migration: completed. 1 switched, 0 ready.');
+  await expect(panel.locator('[data-bulk-action="apply"]')).toBeDisabled();
+  const refresh = panel.getByRole('button', { name: 'Refresh results', exact: true });
+  await refresh.focus(); await refresh.press('Enter');
+  await expect(panel).toContainText('Fixture observation 2');
+  await expect(refresh).toBeFocused();
+  await expect(panel).toContainText('Migration: completed. 1 switched, 0 ready.');
+  await expect(panel).toContainText('Kept saved authentication (HTTP 403)');
+  await expect(panel.locator('[data-bulk-action="apply"]')).toBeDisabled();
+  await expect(panel.getByRole('alert')).toHaveCount(0);
 });
 
 test('connections and Add lead the page while the repair summary and administration stay compact', async ({ page }) => {
@@ -188,4 +279,38 @@ test('webhook configuration stays secondary and New webhook fits a narrow header
   await expect(route(page).locator('[data-recued-webhooks-endpoint]')).not.toBeVisible();
   await route(page).getByRole('searchbox', { name: 'Search webhooks', exact: true }).fill('no-such-webhook');
   await expect(route(page)).toContainText('No webhooks match these filters.'); await expect(route(page).getByRole('searchbox')).toBeFocused();
+});
+
+for (const setup of ['profile', 'integration'] as const) test(`broker ${setup} Cancel restores its opener and clears credential fields`, async ({ page }) => {
+  await go(page, '#connections/others');
+  const card = route(page).locator('[data-recued-connections-tool="managed-sign-in"]');
+  await card.locator(':scope > summary').click();
+  await card.getByRole('button', { name: 'Manage OAuth brokers', exact: true }).click();
+  const panel = card.locator('.connections-managed-oauth');
+  if (setup === 'integration') await panel.locator('[data-managed-field="profile"]').selectOption('nango-work');
+  const opener = panel.locator(`[data-managed-action="${setup === 'profile' ? 'add' : 'add-integration'}"]`);
+  await opener.focus(); await opener.press('Enter');
+  const editor = panel.locator('.managed-oauth-editor');
+  if (setup === 'profile') {
+    await editor.locator('[data-managed-field="label"]').fill('Trial broker');
+    await editor.locator('[data-managed-field="key"]').fill('fixture-only-key');
+  } else {
+    await editor.locator('[data-managed-field="app"]').selectOption('custom');
+    await editor.locator('[data-managed-field="client-id"]').fill('fixture-only-client');
+    await editor.locator('[data-managed-field="client-secret"]').fill('fixture-only-secret');
+  }
+  const discard = page.waitForEvent('dialog').then(async prompt => {
+    expect(prompt.message()).toContain('Discard this'); await prompt.accept();
+  });
+  const cancel = editor.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus(); await cancel.press('Enter'); await discard;
+  await expect(editor).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await opener.press('Enter');
+  await expect(editor).toBeVisible();
+  if (setup === 'profile') await expect(editor.locator('[data-managed-field="key"]')).toHaveValue('');
+  else {
+    await expect(editor.locator('[data-managed-field="app"]')).toHaveValue('shared');
+    await expect(editor.locator('[data-managed-field="client-secret"]')).toHaveCount(0);
+  }
 });

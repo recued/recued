@@ -359,12 +359,12 @@ describe('resolveBundledPackRecipes (slice 3 / A3)', () => {
 describe('resolveOpStepRecipes — per-operand connection slots (R2 step 5)', () => {
   const connVar = () => {
     const def = { label: 'CRM', type: 'connection', connection_kind: 'api', default: '' };
-    return def as unknown as RecipeDefinition['variables'][string];
+    return def as unknown as NonNullable<RecipeDefinition['variables']>[string];
   };
 
   /** canonicalRecipe with declared connection variables + per-step slots. */
   const slottedRecipe = (
-    variables: Record<string, RecipeDefinition['variables'][string]>,
+    variables: Record<string, NonNullable<RecipeDefinition['variables']>[string]>,
     stepSlots: Record<string, string | undefined>,
   ): RecipeDefinition => {
     const base = canonicalRecipe('stage');
@@ -435,7 +435,7 @@ describe('resolveOpStepRecipes — per-operand connection slots (R2 step 5)', ()
   });
 
   it("⛔ a recipe whose only connection setting is a mail sender binds its CRM op-steps to crm, not to the sender's", () => {
-    const sender = { label: 'Send from', type: 'connection', connection_kind: 'notification', default: '' } as unknown as RecipeDefinition['variables'][string];
+    const sender = { label: 'Send from', type: 'connection', connection_kind: 'notification', default: '' } as unknown as NonNullable<RecipeDefinition['variables']>[string];
     const recipe = slottedRecipe({ sender_mail: sender }, {});
     const res = resolveOpStepRecipes(vendorForCatalog, [recipe], { ...baseInputs, connection: undefined });
     expect(res.ok).toBe(true);
@@ -494,7 +494,7 @@ describe('resolvePerSlotOpStepRecipe — §5 tool op (entity-less, pass-through)
     ttl: 300,
     metadata: { name: 'web search', description: 'tool op', author: 'test', supported_platforms: [] },
     variables: {
-      exa: { label: 'Exa', type: 'connection', connection_kind: 'api', default: '' } as unknown as RecipeDefinition['variables'][string],
+      exa: { label: 'Exa', type: 'connection', connection_kind: 'api', default: '' } as unknown as NonNullable<RecipeDefinition['variables']>[string],
     },
     prefetch_steps: [],
     steps: [

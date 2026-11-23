@@ -130,11 +130,72 @@ const usual = (p: Row) => {
   return { status: 'known', latest, median: middle, mad, count: earlier.length, difference, percent_difference, evidence };
 };
 
+/** The two-sided 95% bound of the Mann–Kendall test's z. */
+const TREND_Z = 1.96;
+/** The most samples one window may hold: the slope takes every pair of them. A recipe with more,
+ *  a reading every minute say, summarizes them per day first. */
+export const TREND_MAX_SAMPLES = 1000;
+const DAY_MS = 86_400_000;
+
+/** D-339 slice 9 — which way the window's values are going. The slope is Theil–Sen's: the median of
+ * the slopes between every two samples, so one odd day moves it little. The direction is `rising` or
+ * `falling` only when both of these hold, and `steady` otherwise:
+ * - the order of the values is more than chance: the Mann–Kendall test, two-sided at 95%, with its
+ *   correction for tied values;
+ * - the change across the samples is larger than their spread around the line (the median absolute
+ *   residual), so a steady drift smaller than an ordinary day's wobble is not called a trend.
+ * `slope` is per day of the time field, `change` the slope across the samples' span, both in the
+ * values' unit. Fewer than `min_count` samples, more than `TREND_MAX_SAMPLES`, or a latest older
+ * than `max_age_ms` give unknown, still saying how many and what the latest is. */
+const direction = (p: Row) => {
+  const none = { status: 'unknown', direction: null, slope: null, change: null, spread: null, count: null,
+    latest: null, evidence: [] as Row[] };
+  const points = samples(p, p.value_field, true);
+  if (!points || !finite(p.window_ms) || p.window_ms <= 0
+    || !finite(p.min_count) || !Number.isInteger(p.min_count) || p.min_count < 2
+    || (p.max_age_ms !== undefined && (!finite(p.max_age_ms) || p.max_age_ms < 0))) return none;
+  const window = points.filter(point => point.at >= (p.now as number) - (p.window_ms as number));
+  const last = window[window.length - 1];
+  if (!last) return none;
+  const latest = { value: last.value as number, at: last.at };
+  if (p.max_age_ms !== undefined && (p.now as number) - last.at > (p.max_age_ms as number)) {
+    return { ...none, latest, evidence: [last.row] };
+  }
+  const evidence = window.map(point => point.row);
+  const n = window.length;
+  if (n < (p.min_count as number) || n > TREND_MAX_SAMPLES) return { ...none, latest, count: n, evidence };
+  // Times from the first sample, so the line's arithmetic never works near an epoch's size.
+  const t = window.map(point => point.at - window[0]!.at);
+  const v = window.map(point => point.value as number);
+  const slopes: number[] = [];
+  let s = 0;
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      slopes.push((v[j]! - v[i]!) / (t[j]! - t[i]!));
+      s += Math.sign(v[j]! - v[i]!);
+    }
+  }
+  const slope = median(slopes);
+  const intercept = median(v.map((value, i) => value - slope * t[i]!));
+  const spread = median(v.map((value, i) => Math.abs(value - intercept - slope * t[i]!)));
+  const change = slope * t[n - 1]!;
+  const tied = new Map<number, number>();
+  for (const value of v) tied.set(value, (tied.get(value) ?? 0) + 1);
+  let variance = n * (n - 1) * (2 * n + 5);
+  for (const count of tied.values()) variance -= count * (count - 1) * (2 * count + 5);
+  const z = variance > 0 ? (s - Math.sign(s)) / Math.sqrt(variance / 18) : 0;
+  const perDay = slope * DAY_MS;
+  if (![perDay, change, spread, z].every(Number.isFinite)) return none;
+  const moving = Math.abs(z) >= TREND_Z && Math.sign(change) === Math.sign(s) && Math.abs(change) > spread;
+  return { status: 'known', direction: moving ? (change > 0 ? 'rising' : 'falling') : 'steady',
+    slope: perDay, change, spread, count: n, latest, evidence };
+};
+
 /** With `series_fields`, one result per series (a metric from one source, say),
- * sorted by its key, so each is compared only with its own history. A row
+ * sorted by its key, so each is read only against its own history. A row
  * missing a key part belongs to no series; a malformed field list gives []. */
-export const baseline: TransformFn = (p) => {
-  if (p.series_fields === undefined) return usual(p);
+const perSeries = (p: Row, compute: (p: Row) => Row): Row | Row[] => {
+  if (p.series_fields === undefined) return compute(p);
   const fields = p.series_fields;
   if (!Array.isArray(fields) || !fields.length || !fields.every(name => field(name)) || !Array.isArray(p.rows)) return [];
   const series = new Map<string, { key: Row; rows: Row[] }>();
@@ -148,8 +209,11 @@ export const baseline: TransformFn = (p) => {
     series.set(id, entry);
   }
   return [...series.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([, entry]) => ({ series: entry.key, ...usual({ ...p, rows: entry.rows }) }));
+    .map(([, entry]) => ({ series: entry.key, ...compute({ ...p, rows: entry.rows }) }));
 };
+
+export const baseline: TransformFn = (p) => perSeries(p, usual);
+export const trend: TransformFn = (p) => perSeries(p, direction);
 
 const coordinate = (lat: unknown, lon: unknown): lat is number =>
   finite(lat) && finite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;

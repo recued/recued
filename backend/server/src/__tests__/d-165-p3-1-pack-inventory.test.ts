@@ -63,6 +63,17 @@ describe('recordPackInventory', () => {
   });
   afterEach(() => db.close());
 
+  // D-404 (2026-11-18) — a Records pack's row is keyed by its generated id; the list says its own name too,
+  // so "is it installed" can match the catalogue's slug (chat offered Body signals while it was installed).
+  it('lists a Records pack under its generated id with its own slug beside it, and a plain pack without one', () => {
+    recordPackInventory(store, { pack_slug: 'records-3818e4b4', authored_pack_slug: 'body-signals', pack_version: 1, installed_at: NOW, contents: [] });
+    recordPackInventory(store, { pack_slug: 'sales-pack', authored_pack_slug: 'sales-pack', pack_version: 2, installed_at: NOW, contents: [] });
+    expect(listInstalledPacks(store).sort((a, b) => a.pack_slug.localeCompare(b.pack_slug))).toEqual([
+      { pack_slug: 'records-3818e4b4', version: 1, authored_pack_slug: 'body-signals' },
+      { pack_slug: 'sales-pack', version: 2 },
+    ]);
+  });
+
   it('writes installed_pack + one installed_ingredient per ingredient content (both addressing modes)', () => {
     const res = recordPackInventory(store, {
       pack_slug: 'sales-pack',

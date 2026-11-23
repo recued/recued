@@ -240,6 +240,22 @@ export interface Transport {
   /** Fetch one parsed media reference with the same bot token used by
    *  the outbound transport. */
   fetchMedia?(ref: MediaRef, token: string): Promise<FetchedMedia>;
+  /** D-335 slice Z follow-up (2026-11-17) — delete a message the owner sent
+   *  in the conversation: a sign-in code, once Recued took it. Only a vendor
+   *  whose bot may delete the owner's own message has it: Telegram, in a
+   *  private chat ("Bots can delete incoming messages in private chats", within
+   *  48 hours of its sending). Slack's bot token deletes only the bot's own. */
+  deleteMessage?(ref: DeleteMessage): Promise<TransportSendResult>;
+}
+
+/** A message in a conversation, for `deleteMessage`. */
+export interface DeleteMessage {
+  /** The conversation it is in: a Telegram chat id. */
+  recipient: string;
+  /** BYO bearer credential, already decrypted. */
+  token: string;
+  /** The message's own id (`ParsedInbound.vendor_message_id`). */
+  vendor_message_id: string;
 }
 
 /** A `Transport` that also sends + resolves interactive prompts and

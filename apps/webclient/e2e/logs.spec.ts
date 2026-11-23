@@ -518,9 +518,9 @@ test('Logs contains long live-run and pass labels on a narrow phone', async ({ p
   await expect(activeRow.locator('.logs-active-title'))
     .toHaveText(`${recipeId} · ${stepId}`);
   await expect(passRow.locator('.logs-active-title')).toHaveText(passName);
-  await expect(activeRow.locator('.logs-active-meta')).toContainText(
-    `lane-${'L'.repeat(240)}`,
-  );
+  // A lane the client does not know reads as plain "Work", never its code.
+  await expect(activeRow.locator('.logs-active-meta')).toContainText('Work');
+  await expect(activeRow.locator('.logs-active-meta')).not.toContainText(`lane-${'L'.repeat(240)}`);
   await expect(passRow.locator('.logs-active-meta')).toContainText(
     `operation.${'O'.repeat(240)}`,
   );

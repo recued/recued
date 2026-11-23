@@ -70,7 +70,7 @@ export interface IngredientCacheOptions {
   /** Resolve value references in input before computing the cache key.
    *  When provided, `{{context.url}}` etc. are resolved so different
    *  runtime contexts produce different cache keys. */
-  resolveRefs?: (obj: Record<string, unknown>) => Record<string, unknown>;
+  resolveRefs?: (obj: Record<string, unknown>, slug?: string) => Record<string, unknown>;
   /** Observability callback for audit/telemetry. Fired on every call with
    *  the cache decision and, on hits, the age of the served entry. */
   onStatus?: (status: CacheStatus, context: CacheStatusContext) => void;
@@ -178,14 +178,14 @@ export const withIngredientCache = (
     // manifest defaults produce the same key from identical step inputs.
     const mergedForKey = { ...(manifest.input ?? {}), ...input };
     const resolvedForKey = options.resolveRefs
-      ? options.resolveRefs(mergedForKey)
+      ? options.resolveRefs(mergedForKey, slug)
       : mergedForKey;
 
     let scope: IngredientCacheScope | null | undefined;
     let scopedInput = resolvedForKey;
     if (options.cacheScope) {
       const merged = mergeManifestStepInput(manifest.input, input, { trustedSurfaceDispatch: stepMeta?.surface_dispatch === true });
-      scopedInput = options.resolveRefs ? options.resolveRefs(merged) : merged;
+      scopedInput = options.resolveRefs ? options.resolveRefs(merged, slug) : merged;
       try { scope = await options.cacheScope({ slug, input: scopedInput, manifest, stepMeta }); }
       catch { scope = null; }
     }
@@ -225,7 +225,7 @@ export const withIngredientCache = (
       const validateRetryInput = () => {
         if (!retried) return;
         const merged = mergeManifestStepInput(manifest.input, input, { trustedSurfaceDispatch: stepMeta?.surface_dispatch === true });
-        const resolved = options.resolveRefs ? options.resolveRefs(merged) : merged;
+        const resolved = options.resolveRefs ? options.resolveRefs(merged, slug) : merged;
         if (canonicalJSONStringify(resolved) !== retryInput) throw inputChanged();
       };
       const validate = async () => {
@@ -326,7 +326,7 @@ export const withIngredientCache = (
             { reason: 'cache_operation_changed' });
         }
         const merged = mergeManifestStepInput(current.input, input, { trustedSurfaceDispatch: stepMeta?.surface_dispatch === true });
-        const resolved = options.resolveRefs ? options.resolveRefs(merged) : merged;
+        const resolved = options.resolveRefs ? options.resolveRefs(merged, slug) : merged;
         if (canonicalJSONStringify(resolved) !== retryInput) throw inputChanged();
         return { slug, input: resolved, manifest: current, stepMeta };
       };

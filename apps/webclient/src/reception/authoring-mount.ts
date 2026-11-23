@@ -114,6 +114,9 @@ import {
   type AuthoringFormView,
 } from './authoring-render.js';
 import type { ReceptionPageShell } from './page-shell.js';
+import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { buildViewAsVisitorModel, type ViewAsVisitorModel } from './view-as-visitor.js';
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 
 // ════════════════════════════════════════════════════════════════
 // Dotted-path get / set over a plain working-config object
@@ -292,6 +295,11 @@ const putConfigField = (
   control: FieldDelegateEvent['control'],
   value: unknown,
 ): void => {
+  // The page contract requires a tagline string but permits it to be empty.
+  if (kind === 'reception_page' && key === 'tagline') {
+    setConfigValue(kind, config, key, value);
+    return;
+  }
   if (
     kind === 'status_link' &&
     (key === 'source_ref.kind' || key === 'source_ref.id')
@@ -538,6 +546,7 @@ export const seedWorkingConfig = (
       config.template_version = seed.template_version;
     }
   }
+  if (kind === 'approval_link' && config.action_kind !== 'pick_time' && config.action_kind !== 'confirm_attendance') delete config.options;
   return config;
 };
 
@@ -835,6 +844,11 @@ export const applyFieldDelegateEvent = (
       }
     } else deletePath(config, 'on_action.target_kind');
   }
+  if (kind === 'approval_link' && event.fieldKey === 'action_kind') {
+    if (config.action_kind === 'pick_time' || config.action_kind === 'confirm_attendance') {
+      if (!Array.isArray(config.options)) config.options = [];
+    } else delete config.options;
+  }
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -938,6 +952,8 @@ const deriveDefaultExpiresAt = (
 export interface AuthoringFormMount {
   /** Re-render from the current working config. */
   update(): void;
+  hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   /** Detach both dispatchers + clear the host. Idempotent. */
   dispose(): void;
 }
@@ -968,6 +984,12 @@ export const mountAuthoringForm = (
   let validation: AuthoringValidationSummary<string> | null = null;
   let disposed = false;
   let lastHtml = '';
+  let savedConfig = JSON.stringify(workingConfig);
+  let busy: 'preview' | 'save' | null = null;
+  let error: string | null = null;
+  let preview: ViewAsVisitorModel | null = null;
+  let actionRevision = 0;
+  const focusOwner = host.ownerDocument ? trackCustomerWorkspaceFocus(host.ownerDocument) : null;
   // I-20 a11y — every re-render rebuilds `innerHTML` and drops focus. A
   // repeater add / remove sets a target so focus lands on the new row's
   // first control (add) or the repeater's Add button (remove) after the
@@ -995,29 +1017,53 @@ export const mountAuthoringForm = (
 
   let approvalTargets: import('@recued/contracts').ApprovalWorkflowTarget[] | undefined;
   let targetsRequested = false;
+  let targetsRevision = 0;
+  let targetsLoading = false;
+  let targetsError: string | null = null;
   const loadApprovalTargets = (): void => {
-    if (kind !== 'approval_link' || targetsRequested || !shell.approvalTargets) return;
+    if (kind !== 'approval_link' || !getPath(workingConfig, 'on_action.target_kind') || targetsRequested || !shell.approvalTargets) return;
+    const revision = ++targetsRevision;
     targetsRequested = true;
+    targetsLoading = true;
+    targetsError = null;
+    const currentFocus = focusOwner?.capture();
+    render();
     void shell.approvalTargets().then(result => {
-      if (disposed) return;
+      if (disposed || revision !== targetsRevision) return;
       approvalTargets = result.targets;
-      const active = host.ownerDocument?.activeElement as HTMLInputElement | null;
-      const key = active?.getAttribute?.('data-field-key');
-      if (key) pendingFocus = () => {
-        const next = host.querySelector?.<HTMLInputElement>(`[data-field-key="${key}"]`);
-        next?.focus();
-      };
+      targetsLoading = false;
       render();
-    }).catch(() => { targetsRequested = false; });
+      if (currentFocus?.() && host.ownerDocument.activeElement === host.ownerDocument.body) host.querySelector?.<HTMLElement>('[data-field-key="on_action.target_id"]')?.focus({ preventScroll: true });
+    }).catch(err => {
+      if (disposed || revision !== targetsRevision) return;
+      targetsRequested = false;
+      targetsLoading = false;
+      targetsError = humanizeRpcError(err);
+      render();
+    });
   };
   const render = (): void => {
     if (disposed) return;
     const html = renderAuthoringForm(
       buildAuthoringView(kind, workingConfig, validation, isNew, approvalTargets),
+      { busy, error, preview, targetsLoading, targetsError },
     );
     if (html !== lastHtml) {
+      const active = host.ownerDocument?.activeElement as HTMLInputElement | null;
+      const identity = active && host.contains(active) ? { ...active.dataset } : null;
+      const selection = identity && typeof active?.selectionStart === 'number'
+        ? { start: active.selectionStart, end: active.selectionEnd!, direction: active.selectionDirection ?? 'none' } : null;
       host.innerHTML = html;
       lastHtml = html;
+      if (busy) for (const control of host.querySelectorAll?.<HTMLInputElement | HTMLButtonElement>('input,select,textarea,button') ?? []) {
+        if (control.dataset.action !== 'reception-form-cancel') control.disabled = true;
+      }
+      if (identity && !pendingFocus) {
+        const next = Array.from(host.querySelectorAll?.<HTMLInputElement>('[data-field-key],[data-row-field],[data-action]') ?? []).find(el =>
+          ['fieldKey', 'repeaterKey', 'rowIndex', 'rowField', 'action', 'optionValue'].every(key => el.dataset[key] === identity[key]) && !el.disabled);
+        next?.focus({ preventScroll: true });
+        if (next && selection && typeof next.selectionStart === 'number') next.setSelectionRange(selection.start, selection.end, selection.direction);
+      }
     }
     if (pendingFocus) {
       const apply = pendingFocus;
@@ -1026,8 +1072,30 @@ export const mountAuthoringForm = (
     }
   };
 
-  const swallow = (promise: Promise<unknown>): void => {
-    void promise.catch(() => {});
+  const runAction = (action: 'preview' | 'save', work: (current: () => boolean) => Promise<{
+    preview?: ViewAsVisitorModel; created?: ReceptionEndpointCreateResult; saved?: boolean;
+  } | null>): void => {
+    if (busy || disposed) return;
+    const revision = ++actionRevision;
+    const current = () => !disposed && actionRevision === revision;
+    const currentFocus = focusOwner?.capture();
+    busy = action; error = null; render();
+    void work(current).then(result => {
+      if (result?.created || result?.saved) {
+        if (current()) { busy = null; savedConfig = JSON.stringify(workingConfig); }
+        // A sent write may finish after teardown. Its result still belongs
+        // to the shared owner, which captures one-shot links without navigating.
+        opts.onClose?.(result.created);
+      } else if (result?.preview && current()) preview = result.preview;
+    }).catch(err => { if (current()) error = humanizeRpcError(err); }).finally(() => {
+      if (!current()) return;
+      busy = null; render();
+      if (!currentFocus?.()) return;
+      const target = error ? host.querySelector?.<HTMLElement>('[role="alert"]')
+        : action === 'preview' && preview ? host.querySelector?.<HTMLElement>('.reception-form-preview-region')
+          : host.querySelector?.<HTMLElement>(`[data-action="reception-form-${action === 'save' ? 'submit' : 'preview'}"]`);
+      if (target) { if (!target.matches('button')) target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView?.({ block: 'nearest' }); }
+    });
   };
 
   // Field edits mutate silently — the DOM input already shows the typed
@@ -1036,13 +1104,15 @@ export const mountAuthoringForm = (
   // alter which processing controls exist. Every webclient re-render rebuilds
   // `innerHTML` + loses focus, so keep the exception list explicit.
   const onFieldEdit = (event: FieldDelegateEvent): void => {
+    if (busy || disposed) return;
     applyFieldDelegateEvent(kind, workingConfig, event);
+    const clearsFeedback = error !== null || preview !== null;
+    error = null; preview = null;
     const approvalChoice = kind === 'approval_link'
-      && (event.fieldKey === 'on_action.on_approve_action' || event.fieldKey === 'on_action.target_kind');
+      && (event.fieldKey === 'on_action.on_approve_action' || event.fieldKey === 'on_action.target_kind' || event.fieldKey === 'action_kind');
     if (approvalChoice) {
-      loadApprovalTargets();
-      const key = event.fieldKey;
-      pendingFocus = () => host.querySelector?.<HTMLElement>(`[data-field-key="${key}"]`)?.focus();
+      if (getPath(workingConfig, 'on_action.target_kind')) loadApprovalTargets();
+      else { targetsRevision++; targetsRequested = false; targetsLoading = false; targetsError = null; }
     }
     const changesVisibleControls =
       kind === 'intake_form'
@@ -1050,7 +1120,7 @@ export const mountAuthoringForm = (
         // D-210 WS3 — the destination mapping controls appear/disappear with the
         // target, and the end-spec control swaps with the mode.
         || event.fieldKey === INTAKE_FORM_CALENDAR_END_MODE_KEY);
-    if (validation !== null || changesVisibleControls || approvalChoice) {
+    if (validation !== null || changesVisibleControls || approvalChoice || clearsFeedback) {
       validation = null;
       render();
     }
@@ -1092,35 +1162,33 @@ export const mountAuthoringForm = (
     const packet = resolvePacketDeclaration();
     if (packet === null) return;
     const expiresAt = resolveExpiresAt();
-    const preview = buildEndpointPreviewDispatch({
+    const metadata = structuredClone(workingConfig);
+    const previewDispatch = buildEndpointPreviewDispatch({
       kind,
       packet_declaration: packet,
-      metadata: workingConfig,
+      metadata,
       ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
     });
-    swallow(
-      shell.runPreview(preview).then((result) =>
-        shell
-          .createEndpoint(
+    runAction('save', async current => {
+      const result = await shell.runPreview(previewDispatch);
+      // Leaving before the preview lands cancels the unsent write.
+      if (!current()) return null;
+      const created = await shell.createEndpoint(
             buildEndpointCreateDispatch({
               kind,
               packet_declaration: packet,
-              metadata: workingConfig,
+              metadata,
               preview_hash: result.preview_hash,
               ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
             }),
-          )
-          .then((createResult) => {
-            // Hand the create result back — `createResult.share_url_once`
-            // is one-shot, and the page shell does not auto-cache it.
-            opts.onClose?.(createResult);
-          }),
-      ),
-    );
+      );
+      return { created };
+    });
   };
 
   const handlers = {
     'reception-form-add-row': (dataset: DOMStringMap) => {
+      if (busy) return;
       if (dataset.repeaterKey === undefined) return;
       const key = dataset.repeaterKey;
       addRepeaterRow(workingConfig, key);
@@ -1130,6 +1198,7 @@ export const mountAuthoringForm = (
       render();
     },
     'reception-form-remove-row': (dataset: DOMStringMap) => {
+      if (busy) return;
       if (dataset.repeaterKey === undefined || dataset.rowIndex === undefined) return;
       const key = dataset.repeaterKey;
       removeRepeaterRow(workingConfig, key, Number(dataset.rowIndex));
@@ -1142,38 +1211,40 @@ export const mountAuthoringForm = (
       // The `reception_page` singleton has no preview path — its
       // `page.upsert` is a plain config write, no preview-hash gate.
       if (kind === 'reception_page') return;
+      if (busy) return;
       const packet = resolvePacketDeclaration();
       if (packet === null) return;
       const expiresAt = resolveExpiresAt();
-      swallow(
-        shell.runPreview(
+      runAction('preview', async () => {
+        const result = await shell.runPreview(
           buildEndpointPreviewDispatch({
             kind,
             packet_declaration: packet,
-            metadata: workingConfig,
+            metadata: structuredClone(workingConfig),
             ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
           }),
-        ),
-      );
+        );
+        return { preview: buildViewAsVisitorModel({ result, now: now() }) };
+      });
     },
     'reception-form-submit': () => {
+      if (busy) return;
       validation = validateConfigForKind(kind, workingConfig);
       if (!validation.valid) {
         render();
+        const alert = host.querySelector?.<HTMLElement>('[role="alert"]');
+        if (alert) { alert.tabIndex = -1; alert.focus(); alert.scrollIntoView?.({ block: 'nearest' }); }
         return;
       }
       if (kind === 'reception_page') {
-        swallow(
-          shell
-            .upsertReceptionPage(
+        runAction('save', async () => {
+          await shell.upsertReceptionPage(
               buildReceptionPageUpsertDispatch(
-                workingConfig as unknown as ReceptionPageConfig,
+                structuredClone(workingConfig) as unknown as ReceptionPageConfig,
               ),
-            )
-            .then(() => {
-              opts.onClose?.();
-            }),
-        );
+          );
+          return { saved: true };
+        });
         return;
       }
       runCreateFlow();
@@ -1181,6 +1252,8 @@ export const mountAuthoringForm = (
     'reception-form-cancel': () => {
       opts.onClose?.();
     },
+    'reception-form-close-preview': () => { preview = null; render(); host.querySelector?.<HTMLElement>('[data-action="reception-form-preview"]')?.focus({ preventScroll: true }); },
+    'reception-form-retry-targets': loadApprovalTargets,
   } satisfies Record<AuthoringFormAction, (dataset: DOMStringMap) => void>;
 
   const detachActions = createActionDispatcher<AuthoringFormAction>({
@@ -1193,9 +1266,13 @@ export const mountAuthoringForm = (
 
   return {
     update: render,
+    hasInFlightWork: () => busy !== null,
+    hasUnsavedChanges: () => JSON.stringify(workingConfig) !== savedConfig,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      actionRevision++;
+      focusOwner?.dispose();
       detachActions();
       detachFields();
       host.innerHTML = '';

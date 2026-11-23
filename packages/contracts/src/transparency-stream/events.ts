@@ -367,17 +367,30 @@ export const TRANSPARENCY_COST_HALT_REASONS: ReadonlyArray<TransparencyCostHaltR
  *  its no-source pattern); `'invalid_output'` = the model answered but
  *  the AIOutput failed validation; `'provider_failure'` = everything
  *  else (thrown provider / network / executor error); 'cooldown' = an otherwise
- *  eligible source is temporarily blocked after a provider failure. */
+ *  eligible source is temporarily blocked after a provider failure;
+ *  `'model_unavailable'` = the provider said it does not have the model the
+ *  owner chose (retired, renamed or mistyped), so the owner must choose another
+ *  (2026-11-16: before, it read as `provider_failure`, "the AI provider failed
+ *  before answering", the same as an outage); `'output_limit'` = the model
+ *  spent its whole output allowance before writing an answer, which a thinking
+ *  model can do on thinking alone (2026-11-16, read as `provider_failure` too).
+ *
+ *  ⚠ A client older than a value here fails the event's validation and shows
+ *  none of its line; the turn's saved reply still says what happened. */
 export type TransparencyDecoderUnavailableReason =
   | 'no_source'
   | 'provider_failure'
   | 'invalid_output'
-  | 'cooldown';
+  | 'cooldown'
+  | 'model_unavailable'
+  | 'output_limit';
 export const TRANSPARENCY_DECODER_UNAVAILABLE_REASONS: ReadonlyArray<TransparencyDecoderUnavailableReason> = [
   'no_source',
   'provider_failure',
   'invalid_output',
   'cooldown',
+  'model_unavailable',
+  'output_limit',
 ];
 
 /** Which main-turn call failed — mirrors the executor's recovery-site

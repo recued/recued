@@ -25,7 +25,8 @@ import {
 } from '@recued/contracts';
 
 import { ESTIMATED_BYTES_PER_TOKEN } from '@recued/llm';
-import { CHAT_MAIN_TURN_SYSTEM_PROMPT, runChatTurn, type RunChatTurnDeps } from '../chat-turn-executor.js';
+import { CHAT_MAIN_TURN_SYSTEM_PROMPT, composeChatMainTurnPromptParts, runChatTurn, type RunChatTurnDeps } from '../chat-turn-executor.js';
+import { chatToolRoundBudget } from '../chat-turn-budget.js';
 import { deriveExecutionFlowPattern } from '../execution-case-core.js';
 
 /** Big enough that any workable preview threshold elides it whole. */
@@ -39,10 +40,13 @@ const resultFor = (args: unknown): unknown =>
 
 /** These turns run at budgets just above their floor, and the core system prompt
  *  is most of that floor. The budgets were set against a 2,914-byte prompt, so
- *  `sized` moves them with the prompt's size instead of breaking whenever the
- *  prompt grows (2026-10-20: 359 more bytes left 31 of these tests red). */
+ *  `sized` moves them with the prompt's size and the host round-budget packet
+ *  instead of changing the intended working room when either grows. */
+const emptyPacket = { available_tools: [], content: { chat_tail: [], user_message: 'read them' } };
+const roundBudgetBytes = Buffer.byteLength(composeChatMainTurnPromptParts({ ...emptyPacket, tool_round_budget: chatToolRoundBudget() }).body, 'utf8')
+  - Buffer.byteLength(composeChatMainTurnPromptParts(emptyPacket).body, 'utf8');
 const sized = (budget: number) => budget
-  + Math.ceil((Buffer.byteLength(CHAT_MAIN_TURN_SYSTEM_PROMPT, 'utf8') - 2_914) / ESTIMATED_BYTES_PER_TOKEN);
+  + Math.ceil((Buffer.byteLength(CHAT_MAIN_TURN_SYSTEM_PROMPT, 'utf8') - 2_914 + roundBudgetBytes) / ESTIMATED_BYTES_PER_TOKEN);
 
 /** Drive one turn whose model re-issues `calls[i]` on round i. Returns the
  *  livelock warnings AND how many rounds the model was actually asked for, so a
@@ -212,7 +216,7 @@ describe('context-trim refetch loop detector', () => {
     expect(loops[0]).toMatch(/Ending the turn instead of looping/);
   });
 
-  it('emits one valid context-limit stop event after repeated re-read loss', async () => {
+  it('saves only the context-limit notice and emits one stop event after repeated re-read loss', async () => {
     const { transparencyEvents, rounds, result } = await runTurn(
       sized(2_000), [[READ('n1')], [READ('n1')], [READ('n1')]],
       resultFor, undefined, { planningResponse: 'I have read part of the notes.' },
@@ -230,7 +234,7 @@ describe('context-trim refetch loop detector', () => {
     });
     expect(rounds).toBe(3);
     const content = (result as { assistant_content: string }).assistant_content;
-    expect(content.startsWith('I have read part of the notes.\n\n')).toBe(true);
+    expect(content).not.toContain('I have read part of the notes.');
     expect(content).toContain('too large to keep');
   });
 
@@ -261,7 +265,7 @@ describe('context-trim refetch loop detector', () => {
     expectRoundLifecycle(transparencyEvents, [outcome], 1, reason);
   });
 
-  it('closes the open round when empty-output recovery loses the rereads', async () => {
+  it('omits unfinished prose and closes the open round when empty-output recovery loses the rereads', async () => {
     const batch = [READ('n1'), READ('n2'), READ('n3')];
     let reads = 0;
     const { transparencyEvents, loops, rounds, shipped, result } = await runTurn(
@@ -275,7 +279,9 @@ describe('context-trim refetch loop detector', () => {
       expect.objectContaining({ args, result: SMALL_READ_RESULT }))));
     expect(loops).toHaveLength(1);
     expect(rounds).toBe(3);
-    expect((result as { assistant_content: string }).assistant_content.startsWith('I recovered part of the notes.\n\n')).toBe(true);
+    const content = (result as { assistant_content: string }).assistant_content;
+    expect(content).not.toContain('I recovered part of the notes.');
+    expect(content).toContain('too large to keep');
     expectRoundLifecycle(transparencyEvents, ['continue', 'aborted'], batch.length, 'context_trim_livelock');
   });
 
@@ -305,20 +311,24 @@ describe('context-trim refetch loop detector', () => {
     expectRoundLifecycle(transparencyEvents, ['continue', 'continue'], batch.length, 'context_trim_livelock');
   });
 
-  it('does not complete a round twice when review loses the rereads after synthesis', async () => {
+  it('retains the settled draft without completing a round twice when review loses the rereads', async () => {
     vi.stubEnv('RECUED_VERIFY_PASS', 'neutral');
     try {
       const batch = [READ('n1'), READ('n2'), READ('n3')];
       let reads = 0;
-      const { transparencyEvents, loops, rounds, shipped } = await runTurn(
+      const draft = 'Draft answer. '.repeat(20);
+      const { transparencyEvents, loops, rounds, shipped, result } = await runTurn(
         sized(2_000), [batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
-        undefined, { responses: { 3: 'Draft answer. '.repeat(20) } },
+        undefined, { responses: { 3: draft } },
       );
 
       expect(shipped[2]).toEqual(expect.arrayContaining(batch.map(({ args }) =>
         expect.objectContaining({ args, result: SMALL_READ_RESULT }))));
       expect(loops).toHaveLength(1);
       expect(rounds).toBe(3);
+      const content = (result as { assistant_content: string }).assistant_content;
+      expect(content.startsWith(`${draft}\n\n`)).toBe(true);
+      expect(content).toContain('too large to keep');
       expectRoundLifecycle(transparencyEvents, ['continue', 'completed'], batch.length, 'context_trim_livelock');
     } finally {
       vi.unstubAllEnvs();

@@ -7,6 +7,19 @@ export type CalendarOverlapCaller = (request: CalendarOverlapRequest) => Promise
 const validTimestamp = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Math.abs(Number(value)) <= 8.64e15;
 
+export const calendarOverlapMatches = (value: CalendarOverlapResult, wanted: CalendarOverlapRequest): boolean =>
+  !(!value || value.start_at !== wanted.start_at || value.end_at !== wanted.end_at
+    || value.is_all_day !== wanted.is_all_day || value.timezone !== wanted.timezone
+    || !validTimestamp(value.checked_at) || typeof value.truncated !== 'boolean'
+    || !Array.isArray(value.events) || !Array.isArray(value.sources)
+    || value.events.some(event => !event || !validTimestamp(event.start_at) || !validTimestamp(event.end_at)
+      || event.end_at <= event.start_at || typeof event.is_all_day !== 'boolean'
+      || typeof event.summary !== 'string' || !Array.isArray(event.calendars)
+      || event.calendars.some(name => typeof name !== 'string'))
+    || value.sources.some(source => !source || typeof source.name !== 'string'
+      || !['local', 'synced', 'stale', 'unavailable'].includes(source.status)
+      || source.last_synced_at !== null && !validTimestamp(source.last_synced_at)));
+
 /** Read-only, generation-bound state. Updating this host never replaces a time input. */
 export const createCalendarOverlapPreview = (deps: {
   call?: CalendarOverlapCaller; id: 'create' | 'edit'; actionAttr: string; retryAction: string;
@@ -48,7 +61,7 @@ export const createCalendarOverlapPreview = (deps: {
       if (result.truncated) body += '<p class="calendar-overlap-muted">This preview is incomplete. More saved events may overlap.</p>';
       body += `<p class="calendar-overlap-muted">Times in ${e(result.timezone)}.</p>`;
     }
-    return `<h4>Other events at this time</h4>${body}${qualification}`;
+    return `<h4>Other events at this time</h4><div class="calendar-overlap-results" role="region" aria-label="Saved event check results" tabindex="0">${body}</div>${qualification}`;
   };
   const paint = () => { if (host?.isConnected) host.innerHTML = content(); };
   const retire = () => { generation++; if (timer !== undefined) clearTimeout(timer); timer = undefined; result = null; };
@@ -58,17 +71,7 @@ export const createCalendarOverlapPreview = (deps: {
     try {
       const value = await deps.call(wanted);
       if (disposed || mine !== generation) return;
-      if (!value || value.start_at !== wanted.start_at || value.end_at !== wanted.end_at
-        || value.is_all_day !== wanted.is_all_day || value.timezone !== wanted.timezone
-        || !validTimestamp(value.checked_at) || typeof value.truncated !== 'boolean'
-        || !Array.isArray(value.events) || !Array.isArray(value.sources)
-        || value.events.some(event => !event || !validTimestamp(event.start_at) || !validTimestamp(event.end_at)
-          || event.end_at <= event.start_at || typeof event.is_all_day !== 'boolean'
-          || typeof event.summary !== 'string' || !Array.isArray(event.calendars)
-          || event.calendars.some(name => typeof name !== 'string'))
-        || value.sources.some(source => !source || typeof source.name !== 'string'
-          || !['local', 'synced', 'stale', 'unavailable'].includes(source.status)
-          || source.last_synced_at !== null && !validTimestamp(source.last_synced_at))) throw new Error('Invalid preview');
+      if (!calendarOverlapMatches(value, wanted)) throw new Error('Invalid preview');
       result = value; state = 'ready';
     } catch (cause) {
       if (disposed || mine !== generation) return;
@@ -105,6 +108,8 @@ export const CALENDAR_OVERLAP_STYLES = `
 .calendar-overlap { display:grid; gap:.5rem; min-width:0; padding:.875rem 1rem; border:1px solid var(--border); border-radius:.5rem; background:var(--surface); font-size:.8125rem; line-height:1.5; overflow-wrap:anywhere; }
 .calendar-overlap h4, .calendar-overlap p { margin:0; }
 .calendar-overlap h4 { font-size:.8125rem; font-weight:600; }
+/* Late advisory results must not move Save or Create during a pointer click. */
+.calendar-overlap-results { display:grid; gap:.5rem; align-content:start; block-size:14rem; overflow-y:auto; scrollbar-gutter:stable; }
 .calendar-overlap .data-button { justify-self:start; }
 .calendar-overlap-muted, .calendar-overlap-events span, .calendar-overlap-notices { color:var(--fg-muted); }
 .calendar-overlap-events { display:grid; gap:.625rem; list-style:none; padding:0; margin:0; }

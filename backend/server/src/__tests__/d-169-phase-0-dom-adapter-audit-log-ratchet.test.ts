@@ -331,7 +331,9 @@ describe('D-169 P0 - DOM adapter audit-log ratchet', () => {
       },
     });
 
-    await adapter(resolvedFixture());
+    // This legacy ingredient's dom-* name and an ordinary business field do
+    // not opt it into kernel Browser Toolkit selection.
+    await adapter(resolvedFixture({ input: { bridge_id: 'application-record-7' } }));
 
     expect(send).toHaveBeenCalledTimes(2);
     const rows = await auditLog.listActivities();

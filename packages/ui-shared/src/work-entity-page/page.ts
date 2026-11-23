@@ -40,6 +40,42 @@ import {
 import { renderWorkEntityListView, type TaskListSelection } from './list-view.js';
 import { renderWorkEntityDialog, type WorkEntityDialogProps } from './dialog.js';
 
+export interface TaskListLayout {
+  scope_filter_html: string;
+  scope_label: string;
+  active_scope_filters: number;
+  filters_open: boolean;
+}
+
+const renderCreateControl = (kind: WorkEntityPageState['kind'], canCreate: boolean): string => {
+  const spec = workEntityNavSpec(kind);
+  return canCreate
+    ? `
+        <button
+          type="button"
+          class="work-entity-page-create"
+          data-action="open-create-work-entity-dialog"
+          data-kind="${e(kind)}"
+        >+ New ${e(spec.singular_label)}</button>
+      `
+    : `
+        <p class="work-entity-page-create-disabled" role="status">
+          No write-capable Source — add one in Settings to create ${e(kind)}s.
+        </p>
+      `;
+};
+
+/** The host may place this header beside its persistent collection navigation. */
+export const renderWorkEntityPageHeader = (
+  kind: WorkEntityPageState['kind'], canCreate: boolean, navigationHtml = '', hostClass = '',
+): string => {
+  const spec = workEntityNavSpec(kind);
+  return `<header class="work-entity-page-header${hostClass ? ` ${e(hostClass)}` : ''}">
+    <h2 class="work-entity-page-title" id="work-entity-page-${e(kind)}-heading">${e(spec.plural_label)}</h2>
+    ${navigationHtml}${renderCreateControl(kind, canCreate)}
+  </header>`;
+};
+
 export interface WorkEntityPageProps {
   state: WorkEntityPageState;
   /** Source dropdown options for the active kind, including the
@@ -71,7 +107,13 @@ export interface WorkEntityPageProps {
   counterparty_labels?: Readonly<Record<string, string>>;
   commitment_view?: WorkEntityDialogProps['commitment_view'];
   task_selection?: TaskListSelection;
+  note_selection?: TaskListSelection;
   list_toolbar_html?: string;
+  /** The host renders the heading and create action beside collection navigation.
+   * Source selection and capability notices remain in this page. */
+  header_external?: boolean;
+  /** Compact task tools; the host renders renderWorkEntityPageHeader separately. */
+  task_list_layout?: TaskListLayout;
   /** Exact row whose edit detail is loading. It remains focusable while busy. */
   opening_entity_id?: string;
   /** Forwarded to an open dialog when user dismissal needs confirmation. */
@@ -81,8 +123,10 @@ export interface WorkEntityPageProps {
   history_html?: string;
   task_completion?: WorkEntityDialogProps['task_completion'];
   task_details_open?: boolean;
+  task_view?: WorkEntityDialogProps['task_view'];
   note_details_open?: boolean;
   note_view?: WorkEntityDialogProps['note_view'];
+  duplicate?: WorkEntityDialogProps['duplicate'];
   close_label?: string;
   commitment_lifecycle?: WorkEntityDialogProps['commitment_lifecycle'];
 }
@@ -104,20 +148,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
       : props.source_options.find((opt) => opt.id === state.selected_source_id);
   const chipsHtml = renderSourceAffordanceChips(activeOption);
 
-  const createButtonHtml = props.can_create
-    ? `
-        <button
-          type="button"
-          class="work-entity-page-create"
-          data-action="open-create-work-entity-dialog"
-          data-kind="${e(state.kind)}"
-        >+ New ${e(spec.singular_label)}</button>
-      `
-    : `
-        <p class="work-entity-page-create-disabled" role="status">
-          No write-capable Source — add one in Settings to create ${e(state.kind)}s.
-        </p>
-      `;
+  const createButtonHtml = renderCreateControl(state.kind, props.can_create);
 
   const listHtml = renderWorkEntityListView({
     kind: state.kind,
@@ -129,7 +160,12 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     ...(props.commitment_filters ? { commitment_filters: props.commitment_filters } : {}),
     ...(props.counterparty_labels ? { counterparty_labels: props.counterparty_labels } : {}),
     ...(props.task_selection ? { task_selection: props.task_selection } : {}),
+    ...(props.note_selection ? { note_selection: props.note_selection } : {}),
     ...(props.list_toolbar_html ? { toolbar_html: props.list_toolbar_html } : {}),
+    ...(props.task_list_layout ? { task_tools: {
+      ...props.task_list_layout,
+      source_html: `${dropdownHtml}${chipsHtml}`,
+    } } : {}),
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: props.booking_lifecycle_filter ?? 'all' }
       : {}),
@@ -151,6 +187,8 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           task_details_open: props.task_details_open === true,
           note_details_open: props.note_details_open === true,
           ...(props.note_view ? { note_view: props.note_view } : {}),
+          ...(props.task_view ? { task_view: props.task_view } : {}),
+          ...(props.duplicate ? { duplicate: props.duplicate } : {}),
           ...(props.commitment_view ? { commitment_view: props.commitment_view } : {}),
           ...(props.close_label ? { close_label: props.close_label } : {}),
           ...(props.task_completion !== undefined
@@ -163,16 +201,19 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
         });
 
   return `
-    <section class="work-entity-page" data-kind="${e(state.kind)}"
+    <section class="work-entity-page${props.header_external ? ' work-entity-page--external-header' : ''}${props.task_list_layout ? ' work-entity-page--compact-task' : ''}" data-kind="${e(state.kind)}"
              aria-labelledby="${e(headingId)}">
-      <header class="work-entity-page-header">
+      ${props.header_external || props.task_list_layout ? '' : `<header class="work-entity-page-header">
         <h2 class="work-entity-page-title" id="${e(headingId)}">${e(spec.plural_label)}</h2>
         <div class="work-entity-page-source-row">
           ${dropdownHtml}
           ${chipsHtml}
           ${createButtonHtml}
         </div>
-      </header>
+      </header>`}
+      ${props.header_external && !props.task_list_layout ? `<div class="work-entity-page-source-row">
+        ${dropdownHtml}${chipsHtml}
+      </div>` : ''}
       <div class="work-entity-page-body">
         ${listHtml}
         ${props.footer_html ?? ''}

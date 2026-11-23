@@ -103,7 +103,8 @@ const cardFor = async (slug: string, step: string, args: Record<string, unknown>
     getCheckpoint: async () => checkpoint,
     getAnchor: async () => ({ commit_status: 'awaiting_approval', recipe_id: 'calendar-invites' } as never),
     resolveArgEditSchema: () => ({ fields: [] }),
-    getBatch: async () => ({ members: [member] }),
+    // A batch member keeps its own held call, as `BatchAskMember` does.
+    getBatch: async () => ({ members: [{ ...member, checkpoint_id: 'cp1', run_id: 'run1' }] }),
     timeZone: 'America/Los_Angeles',
   })({
     ask_id: 'a1', handler_kind: ask.handler.kind, handler_payload: ask.handler.payload,

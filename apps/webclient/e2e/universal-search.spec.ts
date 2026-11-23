@@ -193,6 +193,11 @@ test('native work results page, open the right kind, and return from edits to th
   const group = (kind: string) => page.locator(`[data-work-search-group="${kind}"]`);
   const result = (kind: string, id: string) => group(kind).locator(`[data-search-work-id="${id}"]`);
   for (const name of ['Tasks', 'Notes', 'Projects', 'Commitments']) await expect(page.getByRole('heading', { name })).toBeVisible();
+  for (const [kind, id] of [['task', 'shared-id'], ['note', 'shared-id'], ['project', 'project-one']]) {
+    await expect(result(kind, id).locator('.rq-row-title mark')).toHaveText('Kestrel');
+    await expect(result(kind, id).locator('.rq-row-excerpt mark')).toHaveText('Kestrel');
+    await expect(result(kind, id).locator('.rq-row-excerpt')).toHaveText(/^…/);
+  }
   await expect(group('note').getByText('may be out of date')).toBeVisible();
   await expect(group('note').locator('img')).toHaveCount(0);
   await release(page, 'records', 0, 'match'); await release(page, 'recipes'); await release(page, 'packs');
@@ -204,10 +209,12 @@ test('native work results page, open the right kind, and return from edits to th
   await expect(group('note').locator('[data-search-work-id]')).toHaveCount(11);
   await expect(result('note', 'note-4')).toBeFocused();
   expect(await page.evaluate(() => window.__universalSearch.workRequests.filter(request => request.kind === 'note' && request.offset === 5).length)).toBe(1);
-  await result('task', 'shared-id').click();
+  await result('task', 'shared-id').locator('.rq-row-title mark').click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const task = page.getByRole('dialog', { name: 'Edit Task', exact: true });
   await expect(task.getByLabel('Title')).toHaveValue('Kestrel task');
   await task.getByLabel('Title').fill('Kestrel task updated'); await task.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Back to search', exact: true }).click();
   await expect(input(page)).toHaveValue('kestrel');
   await expect(result('task', 'shared-id')).toContainText('Kestrel task updated');
   await expect(result('task', 'shared-id')).toBeFocused();
@@ -229,7 +236,9 @@ test('native work results page, open the right kind, and return from edits to th
   await reader.getByRole('button', { name: 'Back to search', exact: true }).click();
   await expect(group('note').locator('[data-search-work-id]')).toHaveCount(10);
   await expect(input(page)).toBeFocused(); await expect(input(page)).toBeInViewport();
-  await result('note', 'shared-id').click();
+  await result('note', 'shared-id').locator('.rq-row-excerpt mark').click();
+  await expect(reader.locator('[data-note-body]')).toContainText('Opening note background.');
+  await expect(reader.locator('[data-note-body]')).toContainText('Kestrel saved text 🧾');
   await expect(reader.locator('[data-note-body] img')).toHaveCount(0);
   await reader.getByRole('button', { name: 'Edit', exact: true }).click();
   const note = page.getByRole('dialog', { name: 'Edit Note', exact: true });
@@ -237,9 +246,11 @@ test('native work results page, open the right kind, and return from edits to th
   await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes', exact: true }).click();
   await expect(reader.getByRole('heading', { name: 'Kestrel note', exact: true })).toBeVisible();
   await reader.getByRole('button', { name: 'Back to search', exact: true }).click();
-  await result('project', 'project-one').click();
+  await result('project', 'project-one').locator('.rq-row-excerpt mark').click();
   const overview = page.locator('[data-project-overview="project-one"]');
   await expect(overview.getByRole('heading', { name: 'Kestrel project', exact: true })).toBeVisible();
+  await expect(overview).toContainText('Opening project background.');
+  await expect(overview).toContainText('The Kestrel project brief.');
   await overview.getByRole('button', { name: 'Edit project', exact: true }).click();
   await page.getByRole('dialog', { name: 'Edit Project', exact: true }).getByRole('button', { name: 'Back to project', exact: true }).click();
   await expect(overview).toBeVisible();
@@ -286,7 +297,7 @@ test('native work failures and late replies preserve other results without sendi
   await release(page, 'work', 3, 'error'); await release(page, 'records', 3, 'match');
   await release(page, 'recipes', 3); await release(page, 'packs', 3);
   await expect(page.getByRole('button', { name: /Record for no matches/ })).toBeVisible();
-  await expect(page.getByRole('alert')).toContainText('commitments could not be searched');
+  await expect(page.getByRole('alert')).toContainText('commitments and bookings could not be searched');
   await expect(page.getByRole('button', { name: /Look for/ })).toHaveCount(0);
   await input(page).fill('unfindable'); await expect.poll(() => calls(page, 'work')).toHaveLength(5);
   await release(page, 'work', 4); await release(page, 'records', 4);
@@ -314,13 +325,13 @@ test('a server that cannot search tasks and notes says what it searched and stil
   const scope = page.locator('#rq-search-scope');
   await input(page).fill('unfindable'); await expect.poll(() => calls(page, 'work')).toEqual(['unfindable']);
   await release(page, 'work', 0, 'unsupported'); await localEmpty(page);
-  await expect(scope).toHaveText('Contacts, mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects and commitments too.');
+  await expect(scope).toHaveText('Contacts, mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects, commitments and bookings too.');
   await expect(page.locator('.rq-empty')).toContainText('No matches in the searched sources');
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Try again', exact: true })).toHaveCount(0);
   await input(page).fill('kestrel'); await expect.poll(() => calls(page, 'work')).toEqual(['unfindable', 'kestrel']);
   await release(page, 'work', 1, 'match');
-  await expect(scope).toHaveText('Contacts, tasks, notes, projects, commitments, mail, calendar, files, installed recipes and packs.');
+  await expect(scope).toHaveText('Contacts, tasks, notes, projects, commitments, bookings, mail, calendar, files, installed recipes and packs.');
   expect(await calls(page, 'marketplace')).toEqual([]);
 });
 

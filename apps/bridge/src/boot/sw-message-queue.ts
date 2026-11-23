@@ -36,6 +36,9 @@
  *  `addListener` adapter that captures the shim callback for
  *  synchronous dispatch.
  *
+ *  An optional immediate handler owns local settings independently of server
+ *  boot. The following gates apply to messages passed to the boot proxy.
+ *
  *  Invariants:
  *   - HIGH #3 — messages arriving before `drainQueuedMessages()` are
  *     queued; the shim returns `true` from the chrome listener so the
@@ -96,6 +99,9 @@ export interface CreateSwMessageQueueDeps {
    *  returns a working proxy + flush, just with no shim listener
    *  registered against chrome. */
   chromeRuntimeOnMessage?: ChromeRuntimeOnMessageApi;
+  /** Local settings that do not depend on server boot keep working through
+   *  cold starts and a failed boot. Other messages retain the boot gates. */
+  immediateHandler?: SwOnMessageHandler;
 }
 
 export const createSwMessageQueue = (
@@ -151,6 +157,8 @@ export const createSwMessageQueue = (
   if (deps.chromeRuntimeOnMessage) {
     deps.chromeRuntimeOnMessage.addListener(
       (message, sender, sendResponse) => {
+        const immediate = deps.immediateHandler?.(message, sender, sendResponse);
+        if (immediate !== undefined) return immediate;
         const q = { message, sender, sendResponse };
         if (bootFailed) {
           // Post-rejection arrival. Respond immediately with the

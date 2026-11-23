@@ -17,6 +17,7 @@
  *   - the scan-gate refuses a pending attachment.
  *   - reject → subview + frees the slot + answers `'deny'`. */
 
+import { testPreparedInboxAnswer } from './prepared-inbox-test-helpers.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
@@ -234,6 +235,7 @@ const makeHarness = (
     resolveSource: makeSourceResolver(opts.attachment, opts.topTierKind, opts.sourceKind),
     isReceptionOrigin: defaultIsReceptionOriginAnchor,
     submitAnswer,
+    submitPreparedAnswer: testPreparedInboxAnswer({ checkpointStore, auditLog, subviewStore, submitAnswer: (id, option) => deps.submitAnswer!(id, option), now: () => NOW }),
     ...(opts.allowOffer !== undefined
       ? { readAskAllowOffer: async () => opts.allowOffer }
       : {}),

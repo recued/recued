@@ -222,6 +222,7 @@ const makeFakeShell = (overrides?: {
     runPreview: vi.fn(() =>
       Promise.resolve({
         preview_hash: 'ph-test',
+        html: '<p>Visitor preview</p>', visible_fields: [], expires_at: NOW + 600_000,
       } as unknown as ReceptionEndpointPreviewResult),
     ),
     createEndpoint: vi.fn(() =>

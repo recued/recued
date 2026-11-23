@@ -128,7 +128,7 @@ export const createLocalChangeSets = (deps: {
     if (admission) deps.validate(origin, member.call);
     if (member.predecessor) {
       undo.assertAvailable(member.predecessor);
-      if (db.prepare('SELECT 1 FROM local_update_undo_links WHERE predecessor_receipt_id=?').get(member.predecessor.receipt_id)) return fail('A member already has an undo receipt.');
+      if (db.prepare('SELECT 1 FROM local_update_undo_links WHERE predecessor_receipt_id=?').get(member.predecessor.receipt_id)) return fail('A change in this set was already undone.');
     }
     if (!resource) return;
     const review = execution.executorConfig.resourceReview?.capture(member.call.slug, localUpdateInput(member.call, member.inverse), member.review);

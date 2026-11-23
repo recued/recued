@@ -1,10 +1,15 @@
 import { normalizeAllDaySpan, type CanonicalEvent } from '@recued/contracts';
+import type { CalendarProviderPatch } from './provider.js';
 
 /** Review and dispatch use the same effective patch. Moves retain the event's
  * zone/all-day flag, and all-day times become calendar days before review. */
 export const normalizeCalendarMutationPatch = (
-  input: Partial<CanonicalEvent>, existing: CanonicalEvent,
-): Partial<CanonicalEvent> => {
+  given: CalendarProviderPatch & { alert_minutes?: number | null }, existing: CanonicalEvent,
+): CalendarProviderPatch => {
+  // D-407 slice 4 — an alert in minutes becomes the provider's one reminder; `null`, none.
+  const { alert_minutes: alert, ...rest } = given;
+  const input: CalendarProviderPatch = alert === undefined ? rest
+    : { ...rest, reminders: alert === null ? [] : [{ method: 'popup', minutes: alert }] };
   const moves = input.start_at !== undefined || input.end_at !== undefined;
   const patch = moves ? {
     ...input,

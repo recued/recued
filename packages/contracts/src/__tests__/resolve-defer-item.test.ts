@@ -78,4 +78,17 @@ describe('resolver deferItem option', () => {
       config: 'CONFIG',
     });
   });
+
+  it('defers a key by brackets too (D-402 slice B4: a browser sequence\'s data step over a table column)', () => {
+    expect(resolveDeep(
+      { pure: '{{item["Last Name"]}}', interpolated: '{{item["First Name"]}} {{item.age}}', spaced: '{{item ["x"]}}', config: '{{config.y}}' },
+      stores,
+      { deferItem: true },
+    )).toEqual({ pure: '{{item["Last Name"]}}', interpolated: '{{item["First Name"]}} {{item.age}}', spaced: '{{item ["x"]}}', config: 'VALUE' });
+    // Not deferring, a bracketed key is no namespace the resolver knows, as before.
+    expect(resolveDeep({ pure: '{{item["Last Name"]}}' }, stores)).toEqual({ pure: undefined });
+    // Only `item`: a namespace that merely begins with it is not one.
+    expect(resolveDeep({ other: '{{items["x"]}}' }, stores, { deferItem: true })).toEqual({ other: undefined });
+  });
 });
+

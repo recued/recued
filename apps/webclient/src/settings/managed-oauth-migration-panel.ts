@@ -66,10 +66,11 @@ export const createManagedOAuthMigrationPanel = (deps: {
     if (disposed) return;
     const active = doc.activeElement as HTMLInputElement | null;
     const name = active && deps.host.contains(active) ? active.dataset.bulkUrl : undefined;
+    const action = active && deps.host.contains(active) ? active.dataset.bulkAction : undefined;
     const start = active?.selectionStart; const end = active?.selectionEnd;
     const groups = [...new Map(candidates.map(c => [groupKey(c), c])).entries()];
     const choices = candidates.filter(c => groupKey(c) === group);
-    const rows = view?.rows.map(row => '<li><h4>' + escape(row.connection.display_name) + ' <code>' + escape(row.connection.name)
+    const rows = view?.rows.map(row => '<li class="bulk-migration-result" data-bulk-row-state="' + escape(row.state) + '"><h4>' + escape(row.connection.display_name) + ' <code>' + escape(row.connection.name)
       + '</code></h4><p role="status">' + stateLabels[row.state] + (row.http_status ? ' (HTTP ' + row.http_status + ')' : '')
       + (row.reason === 'changed' ? ' Account, permissions, or local use changed. Review again.' : '')
       + '</p><p>Read check: <code>' + escape(row.connection.verification_url) + '</code></p>'
@@ -90,8 +91,8 @@ export const createManagedOAuthMigrationPanel = (deps: {
           + escape((c.vendor ?? new URL(c.base_url).hostname) + ' · ' + c.base_url) + '</option>').join('') + '</select></label>'
         + '<p>Select up to ' + MANAGED_OAUTH_MIGRATION_LIMIT + ' connections for this service.</p>'
         + choices.map(c => '<label class="bulk-account-choice"><input type="checkbox" data-bulk-select="' + escape(c.name) + '"'
-          + (selected.has(c.name) ? ' checked' : '') + '> ' + escape(c.display_name) + ' <code>' + escape(c.name) + '</code>'
-          + ' · ' + (c.authentication === 'direct_oauth' ? 'Your OAuth app' : c.authentication === 'broker' ? 'Broker account' : 'Saved token') + '</label>').join('')
+          + (selected.has(c.name) ? ' checked' : '') + '> <span class="bulk-account-summary"><strong>' + escape(c.display_name) + '</strong> <code>' + escape(c.name) + '</code> <span>'
+          + (c.authentication === 'direct_oauth' ? 'Your OAuth app' : c.authentication === 'broker' ? 'Broker account' : 'Saved token') + '</span></span></label>').join('')
         + (!candidates.length && !busy ? '<p>No supported API connections are available.</p>' : '')
         + (recent.length ? '<h3>Recent migration reviews</h3>' + recent.map(v => '<button type="button" data-bulk-resume="' + escape(v.id) + '">'
           + escape(v.rows.map(r => r.connection.display_name).join(', ') + ' · ' + v.state) + '</button>').join('') : '') : '')
@@ -110,9 +111,9 @@ export const createManagedOAuthMigrationPanel = (deps: {
           + '<p>Combined scope needs: <code>' + escape(nativeScopeNeeds().join(' ') || 'Unknown') + '</code>. Missing permissions need authorization in the direct connection first.</p>'
           + renderManagedOAuthImpact(directReview?.impact)
           + (directReview?.warnings.map(w => '<p>' + escape(w) + '</p>').join('') ?? '') : '<div data-bulk-broker-slot></div>') : '')
-      + (phase === 'review' && view ? '<p>Migration: ' + escape(view.state) + '. '
+      + (phase === 'review' && view ? '<p class="bulk-migration-progress">Migration: ' + escape(view.state) + '. '
         + view.rows.filter(r => r.state === 'migrated').length + ' switched, ' + view.rows.filter(r => r.state === 'verified').length + ' ready.</p>'
-        + '<ul>' + rows + '</ul>' + view.warnings.map(w => '<p>' + escape(w) + '</p>').join('') : '')
+        + '<ul class="bulk-migration-results" role="list">' + rows + '</ul>' + view.warnings.map(w => '<p>' + escape(w) + '</p>').join('') : '')
       + '<div>' + buttons() + '<button type="button" data-bulk-action="close">Back to connections</button></div></section>';
     const slot = deps.host.querySelector('[data-bulk-broker-slot]');
     if (slot) { slot.appendChild(brokerHost); broker.mount(brokerHost); } else broker.mount(null);
@@ -121,6 +122,10 @@ export const createManagedOAuthMigrationPanel = (deps: {
       const replacement = [...deps.host.querySelectorAll<HTMLInputElement>('[data-bulk-url]')].find(i => i.dataset.bulkUrl === name);
       replacement?.focus({ preventScroll: true });
       if (typeof start === 'number' && typeof end === 'number') try { replacement?.setSelectionRange(start, end); } catch { /* URL fields omit text selection. */ }
+    } else if (action) {
+      // A result refresh replaces the focused button; retain its action when it still exists.
+      const replacement = [...deps.host.querySelectorAll<HTMLButtonElement>('[data-bulk-action]')].find(button => button.dataset.bulkAction === action);
+      replacement?.focus({ preventScroll: true });
     }
   };
   const accept = (next: ManagedOAuthMigrationView): void => {

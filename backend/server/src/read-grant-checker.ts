@@ -44,6 +44,7 @@
  *  `handover_grant_slice3_session1_backend_3a_3b.md`. */
 
 import {
+  executionSourceContractId,
   COLLECTION_GRANT_PREFIX,
   opGrantEntry,
   ownerOnlyAdjustedAuthorDefault,
@@ -59,6 +60,7 @@ import {
 } from '@recued/contracts';
 
 import { createGrantEntryResolver, type GrantEntryResolver } from './contract-grant-resolve.js';
+import { withContractDispatchReservation } from './contract-dispatch-reservation.js';
 import {
   gateGrantGoverningContractId,
   resolveGrantGoverningContractId,
@@ -275,6 +277,9 @@ export const AUTHOR_DEFAULT_READ_GRANT_CHECKER: ReadGrantChecker = createReadGra
  *  dispatchers + the chat `mcp_wire` reject) rather than a full `ExecutionSource`.
  *  Replaces the retired `GatedEnrichmentVisibilityResolver`. */
 export interface GatedReadGrantResolver {
+  /** Live kernel read checks, scoped to this dispatch's host-issued reservation.
+   * Inactive bound authority refuses rather than becoming author defaults. */
+  resolveForDispatch?(source: ExecutionSource, reservation?: object): ReadGrantChecker;
   /** A {@link ReadGrantChecker} bound to `contract_id` (liveness-gated here — an
    *  absent / inactive / `session`/`delegation` grant id resolves to a checker that
    *  honours no grant rows → author-default reads). Always returns a checker (no
@@ -310,6 +315,25 @@ export const createGatedReadGrantResolver = (
     gatedId !== undefined
     && usesExplicitOnlyGrantDefaults(gatedId, definitionStore);
   return {
+    resolveForDispatch(source, reservation) {
+      const id = executionSourceContractId(source);
+      // The existing unbound MCP identity is synthetic. A supplied reservation
+      // retains a real binding even if its definition has since disappeared.
+      const bound = id !== undefined && !(source.channel === 'mcp' && id === source.mcp_token_id
+        && definitionStore.get(id) === null && reservation === undefined);
+      const check = (read: (checker: ReadGrantChecker) => boolean): boolean =>
+        withContractDispatchReservation(reservation, () => {
+          if (bound && gateGrantGoverningContractId(id, definitionStore, now) !== id) return false;
+          const governing = resolveGrantGoverningContractId(source, definitionStore, now);
+          return read(createReadGrantChecker(grantResolver, governing,
+            verbOpAuthorDefaultForId(governing), explicitGrantRowsOnlyForId(governing)));
+        });
+      return {
+        isTopicReadGranted: topic => check(checker => checker.isTopicReadGranted(topic)),
+        isCollectionReadGranted: collection => check(checker => checker.isCollectionReadGranted(collection)),
+        isVerbOpGranted: operation => check(checker => checker.isVerbOpGranted(operation)),
+      };
+    },
     resolveForContract(contract_id) {
       // The recipe-channel `origin_contract_id` is a bound DOOR (the triggering door of
       // an MCP-triggered recipe) — never the owner sentinel (the owner's recipe reads

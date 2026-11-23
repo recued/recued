@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { RpcError } from '@recued/contracts';
 import type { AuditEntry } from '@recued/storage';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
-import type { WebhookRecipeRunRequest } from '../webhook-recipe-consumer.js';
+import {
+  WebhookRunNotRestartedError,
+  type WebhookRecipeRunRequest,
+} from '../webhook-recipe-consumer.js';
 
 const { handleExecute } = vi.hoisted(() => ({ handleExecute: vi.fn() }));
 vi.mock('../execute-handler.js', () => ({ handleExecute }));
 
 import { createExecuteWebhookRecipeRunner } from '../webhook-recipe-runner.js';
+import type { HeldRunOutcome } from '../preflight-resumer.js';
 
 const request = (): WebhookRecipeRunRequest => ({
   run_id: 'whr_0123456789abcdef0123456789abcdef',
@@ -298,18 +303,19 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
     expect(handleExecute).not.toHaveBeenCalled();
   });
 
-  it('treats an unstamped production-wired target as terminal without executing it', async () => {
+  it('runs nothing on an unstamped production-wired target, and says its door is missing', async () => {
     const d = {
       ...deps(async () => null),
       resolveDoorRecipe: (recipe: never) => ({ ok: true as const, recipe }),
     };
 
+    // D-201 Slice 10U — not `terminal_non_success`, which the worker cancelled unseen.
     await expect(createExecuteWebhookRecipeRunner(d as never).run(request()))
-      .resolves.toBe('terminal_non_success');
+      .resolves.toBe('door_missing');
     expect(handleExecute).not.toHaveBeenCalled();
   });
 
-  it('treats a revoked production-wired door as terminal before a pure recipe can run', async () => {
+  it('runs nothing under a revoked production-wired door, not even a pure recipe, and says its door is closed', async () => {
     handleExecute.mockResolvedValue({ success: true });
     const d = {
       ...deps(async () => null),
@@ -330,7 +336,7 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
     stamped.execution_source.contract_id = 'door-1';
 
     await expect(createExecuteWebhookRecipeRunner(d as never).run(stamped))
-      .resolves.toBe('terminal_non_success');
+      .resolves.toBe('door_closed');
     expect(handleExecute).not.toHaveBeenCalled();
   });
 
@@ -450,6 +456,111 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
     },
   );
 
+  it('D-201 Slice 10E — runs a killed anchor again on its run id when the restart stopped it, and only then', async () => {
+    handleExecute.mockResolvedValue({ success: true });
+    const restarted = createExecuteWebhookRecipeRunner(deps(async () => anchor('killed')));
+    await expect(restarted.run({ ...request(), resume_interrupted_run: true })).resolves.toBe('completed');
+    expect(handleExecute).toHaveBeenCalledTimes(1);
+    expect(handleExecute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ trigger_source: 'webhook' }),
+      { run_id: request().run_id },
+    );
+    handleExecute.mockClear();
+    // No mark: the owner's Stop, final as before.
+    await expect(restarted.run(request())).resolves.toBe('terminal_non_success');
+    // The mark re-enters a kill and nothing else.
+    for (const status of ['cancelled', 'in_doubt'] as const) {
+      const runner = createExecuteWebhookRecipeRunner(deps(async () => anchor(status)));
+      await expect(runner.run({ ...request(), resume_interrupted_run: true }))
+        .resolves.toBe('terminal_non_success');
+    }
+    for (const status of ['pending', 'running'] as const) {
+      const runner = createExecuteWebhookRecipeRunner(deps(async () => anchor(status)));
+      await expect(runner.run({ ...request(), resume_interrupted_run: true }))
+        .rejects.toThrow(`not retryable (${status})`);
+    }
+    expect(handleExecute).not.toHaveBeenCalled();
+    // D-201 Slice 10N — an in-doubt run runs again only on the owner's try
+    // again (`rerun_in_doubt`), never on the restart's mark alone.
+    const reviewed = createExecuteWebhookRecipeRunner(deps(async () => anchor('in_doubt')));
+    await expect(reviewed.run({ ...request(), rerun_in_doubt: true })).resolves.toBe('completed');
+    expect(handleExecute).toHaveBeenCalledTimes(1);
+    for (const status of ['killed', 'cancelled'] as const) {
+      const runner = createExecuteWebhookRecipeRunner(deps(async () => anchor(status)));
+      await expect(runner.run({ ...request(), rerun_in_doubt: true }))
+        .resolves.toBe('terminal_non_success');
+    }
+    expect(handleExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-201 Slice 10E — reports a run stopped while the server stops as interrupted; any other stop or failure fails', async () => {
+    let draining = true;
+    const d = deps(async () => null);
+    d.executeDeps.isDraining = () => draining;
+    const runner = createExecuteWebhookRecipeRunner(d);
+    handleExecute.mockResolvedValue({ success: false, run_terminated: 'killed' });
+    await expect(runner.run(request())).resolves.toBe('interrupted');
+    // The owner's Stop while the server runs.
+    draining = false;
+    await expect(runner.run(request())).rejects.toThrow('recipe execution failed');
+    // A run that failed on its own while the server stops.
+    draining = true;
+    handleExecute.mockResolvedValue({ success: false });
+    await expect(runner.run(request())).rejects.toThrow('recipe execution failed');
+    // A server that cannot say it is stopping.
+    delete d.executeDeps.isDraining;
+    handleExecute.mockResolvedValue({ success: false, run_terminated: 'killed' });
+    await expect(runner.run(request())).rejects.toThrow('recipe execution failed');
+  });
+
+  it("D-201 Slice 10J — under the restart's mark, a failure before a new run record says so; the run's own failure does not", async () => {
+    const marked = { ...request(), resume_interrupted_run: true };
+    const failure = (
+      runner: ReturnType<typeof createExecuteWebhookRecipeRunner>,
+      input: WebhookRecipeRunRequest = marked,
+    ) =>
+      runner.run(input).then(() => undefined, (error: unknown) => error);
+
+    // The target changed: it failed before anything ran again.
+    const changed = deps(async () => anchor('killed'));
+    vi.mocked(changed.executeDeps.recipeStore.getStored).mockReturnValue({
+      recipe_id: 'webhook-recipe',
+      publisher_id: 'publisher-2',
+    } as never);
+    const before = await failure(createExecuteWebhookRecipeRunner(changed));
+    expect(before).toBeInstanceOf(WebhookRunNotRestartedError);
+    expect(String((before as WebhookRunNotRestartedError).original)).toContain('no longer installed');
+    // With no mark it is the plain failure, as before.
+    expect(await failure(createExecuteWebhookRecipeRunner(changed), request()))
+      .not.toBeInstanceOf(WebhookRunNotRestartedError);
+
+    // The run threw before it wrote a record: the restart's `killed` is still there.
+    handleExecute.mockRejectedValueOnce(new Error('a store fault before the run'));
+    expect(await failure(createExecuteWebhookRecipeRunner(deps(async () => anchor('killed')))))
+      .toBeInstanceOf(WebhookRunNotRestartedError);
+
+    // The run started again and failed: a new record replaced `killed`.
+    let current = anchor('killed');
+    handleExecute.mockImplementationOnce(async () => {
+      current = { ...anchor('failed'), started_at: 10, finished_at: 11 };
+      return { success: false };
+    });
+    const own = await failure(createExecuteWebhookRecipeRunner(deps(async () => current)));
+    expect(own).not.toBeInstanceOf(WebhookRunNotRestartedError);
+    expect(String(own)).toContain('recipe execution failed');
+
+    // A refusal to start goes back as it is: the worker hands it back.
+    const refusal = new RpcError('draining', 'The server is restarting.', 503);
+    handleExecute.mockRejectedValueOnce(refusal);
+    expect(await failure(createExecuteWebhookRecipeRunner(deps(async () => anchor('killed'))))).toBe(refusal);
+
+    // A record that cannot be read: nothing is known to have run again.
+    expect(await failure(createExecuteWebhookRecipeRunner(deps(async () => {
+      throw new Error('the audit log is closed');
+    })))).toBeInstanceOf(WebhookRunNotRestartedError);
+  });
+
   it.each(['pending', 'running'] as const)(
     'does not re-enter an ambiguous %s anchor',
     async (status) => {
@@ -474,6 +585,81 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
     } as never);
     const runner = createExecuteWebhookRecipeRunner(d);
     await expect(runner.run(request())).rejects.toThrow('no longer installed');
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+});
+
+describe('D-201 Slice 10AB — a held try again, through the runner', () => {
+  beforeEach(() => {
+    handleExecute.mockReset();
+  });
+
+  const failure = (code: string, retryable: boolean, details: Record<string, unknown> = {}): AuditEntry => {
+    const failed = anchor('failed');
+    failed.errors = [{
+      error_id: 'failure-fixture',
+      code: code as never,
+      message: 'failed',
+      severity: 'fatal',
+      source: { recipe_id: failed.recipe_id, step_id: 'send', ingredient_slug: 'fixture.send' },
+      details,
+      timestamp: new Date(0).toISOString(),
+      retryable,
+    }];
+    return failed;
+  };
+
+  it('a paused record a try again left with no ask under it is the dead letter again; a hold stays one (10AA finding 1)', async () => {
+    const paused = anchor('awaiting_approval');
+    const settleDiedTryAgain = vi.fn(async () => true);
+    const died = createExecuteWebhookRecipeRunner({ ...deps(async () => paused), settleDiedTryAgain } as never);
+    await expect(died.run({ ...request(), rerun_in_doubt: true })).resolves.toBe('in_doubt');
+    expect(settleDiedTryAgain).toHaveBeenCalledWith(request().run_id, paused);
+    const held = createExecuteWebhookRecipeRunner({
+      ...deps(async () => paused),
+      settleDiedTryAgain: vi.fn(async () => false),
+    } as never);
+    await expect(held.run(request())).resolves.toBe('awaiting_approval');
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+
+  it("the owner's try again of one that failed goes on from where it is held; the worker's retry of a failed run does not (10AA finding 2)", async () => {
+    const continueHeldRun = vi.fn(async () => ({ kind: 'completed' as const }));
+    const runner = createExecuteWebhookRecipeRunner({
+      ...deps(async () => failure('STEP_FAILED', true)),
+      continueHeldRun,
+    } as never);
+    await expect(runner.run({ ...request(), rerun_in_doubt: true })).resolves.toBe('completed');
+    expect(continueHeldRun).toHaveBeenCalledTimes(1);
+    expect(handleExecute).not.toHaveBeenCalled();
+    handleExecute.mockResolvedValue({ success: true });
+    await expect(runner.run(request())).resolves.toBe('completed');
+    expect(continueHeldRun).toHaveBeenCalledTimes(1);
+    expect(handleExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("failed and held again: the dead letter again, unless its door refused it, which ends it as any run's refusal", async () => {
+    let after: AuditEntry = anchor('in_doubt');
+    const continueHeldRun = vi.fn(async (): Promise<HeldRunOutcome> => ({ kind: 'held_failed', step_id: 'send' }));
+    const runner = createExecuteWebhookRecipeRunner({
+      ...deps(async () => after),
+      continueHeldRun,
+    } as never);
+    continueHeldRun.mockImplementationOnce(async () => {
+      after = failure('STEP_FAILED', true);
+      return { kind: 'held_failed', step_id: 'send' };
+    });
+    await expect(runner.run({ ...request(), rerun_in_doubt: true })).resolves.toBe('in_doubt');
+    after = anchor('in_doubt');
+    continueHeldRun.mockImplementationOnce(async () => {
+      after = failure('RECIPE_POLICY_DENIED', false);
+      return { kind: 'held_failed', step_id: 'send' };
+    });
+    await expect(runner.run({ ...request(), rerun_in_doubt: true })).resolves.toBe('terminal_non_success');
+    // Ended without being held (the owner's Stop): the worker's retry reads it.
+    after = anchor('in_doubt');
+    continueHeldRun.mockImplementationOnce(async () => ({ kind: 'failed' }));
+    await expect(runner.run({ ...request(), rerun_in_doubt: true })).rejects.toThrow('recipe execution failed');
     expect(handleExecute).not.toHaveBeenCalled();
   });
 });

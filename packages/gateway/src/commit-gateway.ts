@@ -38,6 +38,7 @@ import {
   MAX_DISPATCH_DEPTH,
   browserActCallUploads,
   canonicalArgHash,
+  chainMayStandIn,
   captureResourceReview,
   extractScopedDestinationEmails,
   isBrowserActionSlug,
@@ -63,6 +64,7 @@ import type {
   SessionGrantMatchContext,
   SessionGrantMintContext,
   TriggerPreapprovalHooks,
+  ChainRuleHooks,
   StepMeta,
   StepOptions,
 } from '@recued/contracts';
@@ -128,7 +130,7 @@ export type GatewayInner = (
  *  is per-run host state that never crosses this seam. */
 export type SessionGrantGateCall = Omit<
   SessionGrantMatchContext,
-  'recipe_id' | 'recipe_hash'
+  'recipe_id' | 'recipe_hash' | 'recipe_inline'
 >;
 
 /** D-177 P3 — the mint-side sibling of `SessionGrantGateCall`: the same
@@ -139,7 +141,7 @@ export type SessionGrantGateCall = Omit<
  *  complete the `SessionGrantMintContext`, exactly as `match` does. */
 export type SessionGrantMintGateCall = Omit<
   SessionGrantMintContext,
-  'recipe_id' | 'recipe_hash'
+  'recipe_id' | 'recipe_hash' | 'recipe_inline'
 >;
 
 /** D-177 P2/P3 — the session-grant lookup + consumption + mint seam (N.4 /
@@ -179,6 +181,9 @@ export interface SessionGrantHooks {
       canonical_payload_hash: string;
       pinned_projection_hash?: string;
       destination_emails?: ReadonlyArray<string>;
+      /** D-177 N.15 — the op the lookup named (`grantOperationId`), which a
+       *  `'kind'` row re-verifies at the store; the other modes ignore it. */
+      operation_id?: string;
     },
   ) => boolean;
   /** D-177 P5a (N.10) — claim a SPECIFIC member of a `grant_mode: 'batch'`
@@ -626,6 +631,9 @@ export interface CommitGatewayDeps {
   /** D-341 slice B1 — triggers' standing pre-approvals ({@link TriggerPreapprovalHooks}).
    *  Absent ⇒ a held write a trigger started asks. */
   triggerPreapprovals?: TriggerPreapprovalHooks;
+  /** D-348 slice 5 — the rule the owner accepted for the request a chat run was made for: a held
+   *  call on it goes ahead without asking (`ChainRuleHooks`). Absent ⇒ none does. */
+  chainRules?: ChainRuleHooks;
   /** 2026-11-04 — a held browser write whose page or element has gone fails instead of
    *  being asked ({@link BrowserTargetHooks}). Absent ⇒ it asks. */
   browserTargets?: BrowserTargetHooks;
@@ -724,13 +732,15 @@ const stripPreflightMarker = (
 ): StepMeta | undefined => {
   if (stepMeta === undefined) return undefined;
   if (stepMeta.preflight_admitted !== true
-    && stepMeta.surface_dispatch_authority_input === undefined) return stepMeta;
+    && stepMeta.surface_dispatch_authority_input === undefined
+    && stepMeta.contract_dispatch_reservation === undefined) return stepMeta;
   const {
     preflight_admitted: _,
     preflight_approved_target: __,
     preflight_session_grant: ___,
     preflight_batch_claim: ____,
     surface_dispatch_authority_input: _____,
+    contract_dispatch_reservation: ______,
     ...rest
   } = stepMeta;
   return rest;
@@ -952,6 +962,17 @@ export const wrapWithCommitGateway = (
     // than over-matching. The dispatch itself proceeds unchanged: the
     // identity stamps, it does not gate.
     const surfaceDispatch = stepMeta?.surface_dispatch === true;
+    // The op a session grant names this dispatch by: the catalog op's SHORT key,
+    // trusted exactly as the P1b exclusion lookup trusts it — only off a
+    // surface_dispatch marker the engine set (a recipe-forged key never binds) —
+    // else the slug, as D-211 and D-341 name a single-op ingredient's op. D-177
+    // N.15: a `'kind'` grant needs an op to name ("Send an email"). An exact,
+    // open or batch grant minted here names an op only for a surface dispatch
+    // (its scope leaves it out otherwise, so it still matches), and a scoped or
+    // raw-op grant names a catalog op no slug equals.
+    const grantOperationId = surfaceDispatch && stepMeta?.surface_operation_key !== undefined
+      ? stepMeta.surface_operation_key
+      : slug;
     const authorityInput = surfaceDispatch
       && stepMeta?.surface_dispatch_authority_input !== undefined
       ? stepMeta.surface_dispatch_authority_input as Record<string, unknown>
@@ -1022,6 +1043,9 @@ export const wrapWithCommitGateway = (
     // host registers batch members off the caught signal's hashes/preview.
     const raiseContext = {
       slug,
+      // The account the call goes out on, as the grant lookup reads it: a held
+      // call's "Allow in this chat" names it (D-177 N.15), and the ask says it.
+      ...(resolvedConnectionName !== undefined ? { connection_name: resolvedConnectionName } : {}),
       get resource_review() {
         if (!surfaceDispatch && !resourceReview) resourceReview = captureResourceReview(
           deps.resourceReview, slug, reviewInput(), undefined, stepMeta?.preflight_admitted === true);
@@ -1125,6 +1149,8 @@ export const wrapWithCommitGateway = (
     // consumption is hash-verified at the store (defense in depth).
     // D-341 slice B1 — the trigger pre-approval that admitted this write, by id, for its commit.
     let triggerPreapprovalAdmitted: string | undefined;
+    // D-348 — the request's rule that admitted it, by id, for its commit too.
+    let chainAdmitted: string | undefined;
     let sessionGrantAdmit:
       | {
           contract_id: string;
@@ -1301,9 +1327,12 @@ export const wrapWithCommitGateway = (
                   actor: identity.source.actor,
                   channel_session_id: identity.channel_session_id,
                   ingredient_slug: slug,
-                  // Trusted op key + resolved connection — same sourcing rules
-                  // as the match branch below (surface_dispatch-gated key; the
-                  // resolved `connection` wire arg from the hash basis).
+                  // Trusted op key + resolved connection (surface_dispatch-gated
+                  // key; the resolved `connection` wire arg from the hash basis).
+                  // The match branch below also names a single-op ingredient by
+                  // its slug (`grantOperationId`); this exact or open grant pins
+                  // the payload and the ingredient axis already names the slug,
+                  // so its scope leaves the op out, as before.
                   ...(surfaceDispatch
                     && stepMeta.surface_operation_key !== undefined
                     ? { operation_id: stepMeta.surface_operation_key }
@@ -1392,13 +1421,7 @@ export const wrapWithCommitGateway = (
                   actor: identity.source.actor,
                   channel_session_id: identity.channel_session_id,
                   ingredient_slug: slug,
-                  // The catalog op's SHORT key, trusted exactly as the P1b
-                  // exclusion lookup trusts it — only off a surface_dispatch
-                  // marker the engine set (a recipe-forged key never binds).
-                  ...(surfaceDispatch
-                    && stepMeta?.surface_operation_key !== undefined
-                    ? { operation_id: stepMeta.surface_operation_key }
-                    : {}),
+                  operation_id: grantOperationId,
                   // The resolved `connection` wire arg (from the hash basis)
                   // pins the grant scope's connection axis; absent on kinds
                   // that dispatch without one.
@@ -1480,7 +1503,45 @@ export const wrapWithCommitGateway = (
                 triggerPreapprovalAdmitted = undefined; // fail closed — the ask stands
               }
             }
-            if (grantId === null && !browserPassAdmitted && triggerPreapprovalAdmitted === undefined) {
+            // D-348 slice 5 — a call on the rule the owner accepted for the request its run was made
+            // for goes ahead without asking: the host reads the request off the run and the call's
+            // signature off its resolved arguments, and spends a use. Only where a chain may stand in
+            // (`chainMayStandIn`, the check its evidence makes too): never past the owner's `always`,
+            // never in place of a review, never a browser upload. Slice 6b — a delete of Recued's own
+            // too, which the host lets through only for a record on its closed list that a read of
+            // the same run found (`returned`, Q7).
+            if (
+              grantId === null
+              && !browserPassAdmitted
+              && triggerPreapprovalAdmitted === undefined
+              && deps.chainRules !== undefined
+              && chainMayStandIn({
+                slug,
+                risk_tier: decision.risk_tier,
+                provenance: decision.authorization_provenance,
+                args: resolvedArgsForScoped ?? input,
+              })
+            ) {
+              try {
+                chainAdmitted = deps.chainRules.admit({
+                  slug,
+                  ...(resolvedConnectionName !== undefined ? { connection_name: resolvedConnectionName } : {}),
+                  risk_tier: decision.risk_tier,
+                  args: (resolvedArgsForScoped ?? input) as Record<string, unknown>,
+                }) ?? undefined;
+              } catch {
+                chainAdmitted = undefined; // fail closed — the ask stands
+              }
+            }
+            // Let through by a standing permission (a grant, a trigger's pre-approval, a request's
+            // rule), it runs under a review of its change as an approved call does, so it keeps a
+            // receipt and can be undone. Only a local change has one to capture.
+            if (!surfaceDispatch && resourceReview === undefined
+              && (grantId !== null || triggerPreapprovalAdmitted !== undefined || chainAdmitted !== undefined)) {
+              resourceReview = captureResourceReview(deps.resourceReview, slug, reviewInput(), undefined, false);
+            }
+            if (grantId === null && !browserPassAdmitted && triggerPreapprovalAdmitted === undefined
+              && chainAdmitted === undefined) {
               // D-202 task 4a — the second gate axis. No authorization session
               // grant matched, so today this holds for approval. Before raising,
               // consult a QUALITY delegation: the owner can, per `(recipe, op)`,
@@ -1696,15 +1757,16 @@ export const wrapWithCommitGateway = (
       ...(triggerPreapprovalAdmitted !== undefined
         ? { trigger_preapproval: { id: triggerPreapprovalAdmitted } }
         : {}),
+      // D-348 — and the request's rule, so an undo of its change can end that rule.
+      ...(chainAdmitted !== undefined ? { chain_rule: { id: chainAdmitted } } : {}),
     };
 
     // D-177 P2 proceed point — consume the matched session grant FIRST,
     // synchronously, before any other proceed-point effect (N.4 step 4:
     // "consume at the dispatch proceed point; for 'batch' the member claim
-    // IS the consumption"). The whole match → consume segment runs without
-    // an intervening `await`, so two concurrent dispatches cannot both
-    // match-then-consume a final use; the consume itself re-verifies
-    // liveness atomically and FAILS when the grant died in between
+    // IS the consumption"). The store's transaction owns the liveness check
+    // and spend across processes sharing SQLite, and FAILS when the grant died
+    // between matching and consumption
     // (revoked / expired / exhausted). A failed or throwing consume falls
     // back to the hold this grant absorbed: the held signal is raised
     // BEFORE `recordDispatchUse` and `writePending`, so a held dispatch
@@ -1745,6 +1807,9 @@ export const wrapWithCommitGateway = (
                           sessionGrantAdmit.destination_emails,
                       }
                     : {}),
+                  // D-177 N.15 — the op the lookup named: a `'kind'` row
+                  // re-verifies it at the store (the other modes ignore it).
+                  operation_id: grantOperationId,
                 }
               : undefined,
           );
@@ -1826,6 +1891,15 @@ export const wrapWithCommitGateway = (
       // active-check agrees (else a bounded op-scoped contract under-counts).
       surfaceDispatch ? stepMeta?.surface_operation_key : undefined,
     );
+    // Only these local kernel reads need the consumed unit for live grant
+    // checks. The proof stays off provider metadata and never enters ambient
+    // execution context; a new dispatch receives only its own reservation.
+    const readStepMeta = forwardedStepMeta !== undefined
+      && (slug === 'enrichment-list' || slug === 'timeline-read' || slug === 'situation-query'
+        || ((slug === 'work-entity-list' || slug === 'work-entity-get') && authorityInput.kind === 'asset'))
+      && dispatchReservation !== null && typeof dispatchReservation === 'object'
+      ? { ...forwardedStepMeta, contract_dispatch_reservation: dispatchReservation }
+      : forwardedStepMeta;
 
     // writePending failure propagates — without the durable pending
     // row the crash-safety marker is absent, so the Gateway must NOT
@@ -1858,7 +1932,7 @@ export const wrapWithCommitGateway = (
           stepOutput,
           // A reviewed commit never reads a cache; a step's `pages` still applies.
           reviewed || resourceReview ? { ...stepOptions, cache: 'fresh' } : stepOptions,
-          forwardedStepMeta,
+          readStepMeta,
           probe,
         );
       });
@@ -1900,6 +1974,15 @@ export const wrapWithCommitGateway = (
         completed_at: now(),
         ...(probe.cached ? { cached: true } : {}),
       });
+      // D-348 slice 6b — what the call returned, for the rule's host to keep what a read of Recued's
+      // own found. A catalog op's dispatch is told at the catalog gate, which knows its records.
+      if (!surfaceDispatch && deps.chainRules?.returned !== undefined) {
+        try {
+          deps.chainRules.returned({ slug, args: (resolvedArgsForScoped ?? input) as Record<string, unknown>, result });
+        } catch {
+          /* what a read found is kept best effort: a delete it would have let through asks */
+        }
+      }
       return result;
     } catch (err) {
       const alreadyRecorded =

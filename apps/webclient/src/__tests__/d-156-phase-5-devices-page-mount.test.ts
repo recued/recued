@@ -98,6 +98,8 @@ const makeFakeHost = () => {
         const written = /value="([^"]*)"/.exec(input)?.[1] ?? '';
         return {
           get value() { return renameValue ?? written; },
+          getAttribute: (name: string) => name === 'data-instance-id'
+            ? /data-instance-id="([^\"]*)"/.exec(input)?.[1] ?? null : null,
           focus: () => { focusedTarget = { renameInput: true }; },
           select: () => {},
           setSelectionRange: () => {},

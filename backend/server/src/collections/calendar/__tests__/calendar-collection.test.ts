@@ -41,6 +41,9 @@ import type {
   RsvpEventInput,
   UpdateEventInput,
 } from '../provider.js';
+import {
+  EXCHANGE_MADE_ID, exchangeIdWrapping, LIVE_EXCHANGE_INVITE_ID, LIVE_INVITE_UID,
+} from '../../../__tests__/helpers/exchange-meeting-id.js';
 
 const BIG_QUOTA = 1024 * 1024 * 1024;
 
@@ -460,6 +463,28 @@ describe('CalendarCollection — a CalDAV resource\'s rows (2026-10-07)', () => 
       payload: row('cal-1:i-1', { recurring_event_id: 'm-1', recurrence_rule: 'RRULE:FREQ=YEARLY;COUNT=3' }) });
     expect(h.events.map((e) => e.event_kind)).toEqual(['updated']);
   });
+
+  it('D-407 Q8: a private marking read for the first time wakes no update on the next start; one taken off, or set by the owner, does', async () => {
+    h = newHarness();
+    h.control.initialEvents = [row('cal-1:p-1')];
+    await h.collection.sync.start();
+    await h.collection.sync.stop();
+    h.events.length = 0;
+    // The first start after the providers learned to read the marking: the provider's copy is the same.
+    h.control.initialEvents = [row('cal-1:p-1', { marked_private: true })];
+    await h.collection.sync.start();
+    expect(h.collection.table.get('cal-1:p-1')?.event.marked_private).toBe(true);
+    expect(h.events).toEqual([]);
+    // Taken off at the provider.
+    await h.control.pushSyncEvent({ kind: 'updated', source_id: 'cal-1:p-1', payload: row('cal-1:p-1') });
+    expect(h.collection.table.get('cal-1:p-1')?.event).not.toHaveProperty('marked_private');
+    expect(h.events.map((e) => e.event_kind)).toEqual(['updated']);
+    h.events.length = 0;
+    // Set by the owner there: its own time of change moves with it.
+    await h.control.pushSyncEvent({ kind: 'updated', source_id: 'cal-1:p-1',
+      payload: row('cal-1:p-1', { marked_private: true, updated_at: baseEvent().updated_at + 60_000 }) });
+    expect(h.events.map((e) => e.event_kind)).toEqual(['updated']);
+  });
 });
 
 describe('CalendarCollection — all-day rows are stored as days (2026-10-07)', () => {
@@ -482,6 +507,24 @@ describe('CalendarCollection — all-day rows are stored as days (2026-10-07)', 
     expect(h.collection.table.get('timed')?.event.start_at).toBe(baseEvent().start_at);
     expect(h.events.filter((e) => e.event_kind === 'updated')).toEqual([]);
     expect(h.collection.table.listAllDayOffDays()).toEqual([]);
+  });
+});
+
+describe("CalendarCollection — an Outlook row stored with Exchange's id gets the invite's UID (2026-11-22)", () => {
+  it('reads it at sync start, quietly, and leaves a meeting made in Exchange, or an id it cannot read, as it is', async () => {
+    h = newHarness();
+    // As a sync before the Graph mapping read the invite's UID stored them.
+    h.collection.table.upsert({ event: baseEvent({ source_id: 'from-invite', ical_uid: LIVE_EXCHANGE_INVITE_ID }), size_bytes: 0 });
+    h.collection.table.upsert({ event: baseEvent({ source_id: 'made-in-exchange', ical_uid: EXCHANGE_MADE_ID }), size_bytes: 0 });
+    // Exchange's form, with no UID inside to read: it keeps Exchange's id.
+    h.collection.table.upsert({ event: baseEvent({ source_id: 'unreadable', ical_uid: exchangeIdWrapping('') }), size_bytes: 0 });
+    expect(h.collection.table.listExchangeOutsideIds().map((row) => row.event.source_id).sort()).toEqual(['from-invite', 'unreadable']);
+    await h.collection.sync.start();
+    expect(h.collection.table.get('from-invite')?.event.ical_uid).toBe(LIVE_INVITE_UID);
+    expect(h.collection.table.get('made-in-exchange')?.event.ical_uid).toBe(EXCHANGE_MADE_ID);
+    expect(h.collection.table.get('unreadable')?.event.ical_uid).toBe(exchangeIdWrapping(''));
+    expect(h.events.filter((e) => e.event_kind === 'updated')).toEqual([]);
+    expect(h.collection.table.listExchangeOutsideIds().map((row) => row.event.source_id)).toEqual(['unreadable']);
   });
 });
 

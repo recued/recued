@@ -24,7 +24,7 @@
  *  inbox), plus the two paths that do not pass through it (a plain chat plan, the
  *  reception inbox's ask-less release), which refuse on the same rule. */
 import { RpcError } from '@recued/contracts';
-import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
+import { isPreflightApprovalKind } from '@recued/gateway';
 import type { PendingAsk } from '@recued/notification';
 
 /** What the owner reads when an approval waits for Resume. */
@@ -71,11 +71,14 @@ export interface PausedApprovalDeps {
 export const PAUSED_APPROVAL_ANSWERS: ReadonlySet<string> = new Set(['deny']);
 
 /** Is this open ask an approval that waits for Resume? A `gateway.preflight` ask (one hold
- *  or a batch), whoever started its run, while paused. */
+ *  or a batch) or a round's gathered approval (D-177 §N.15.9), whoever started its run, while
+ *  paused. ⛔ The gathered kind is named here: its answer goes to each member's own handler,
+ *  under no `gateway.preflight` ask of its own, so missing it here let a yes run every member
+ *  past the pause. */
 export const askWaitsForResume = (
   deps: PausedApprovalDeps,
   ask: Pick<PendingAsk, 'handler_kind'>,
-): boolean => ask.handler_kind === PREFLIGHT_HANDLER_KIND && deps.isPaused();
+): boolean => isPreflightApprovalKind(ask.handler_kind) && deps.isPaused();
 
 /** `NotificationBlockDeps.refuseAnswer` for the server: an answer that would let a held
  *  action go ahead, refused while paused, so the ask stays open for Resume. */

@@ -123,6 +123,10 @@ export interface LaunchWizardRenderView {
   readonly stepper: LaunchWizardStepperModel;
   readonly validation: LaunchWizardValidationSummary | null;
   readonly plan: LaunchWizardPlanModel | null;
+  readonly hasProfileContent?: boolean;
+  readonly error?: string | null;
+  readonly progress?: string;
+  readonly busy?: boolean;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -175,9 +179,9 @@ const renderStepperStep = (
       <span class="reception-wizard-step-position">${
         step.position_label !== null ? e(step.position_label) : 'Skipped'
       }</span>
+      ${optionalBadge}
+      ${errorBadge}
     </span>
-    ${optionalBadge}
-    ${errorBadge}
   `;
   if (step.status === 'skipped') {
     return `<div class="reception-wizard-step reception-wizard-step--skipped" ${dataAttrs({
@@ -311,7 +315,7 @@ const renderCurrentStep = (view: LaunchWizardRenderView): string => {
     return `<div class="reception-wizard-current"></div>`;
   }
   const extraChrome =
-    current.step_id === 'profile_check' && plan !== null
+    current.step_id === 'profile_check' && plan !== null && !view.hasProfileContent
       ? renderProfileGate(plan.profile_gate)
       : current.step_id === 'drop_link'
         ? renderDropLinkToggle(stepper.includes_drop_link)
@@ -319,7 +323,7 @@ const renderCurrentStep = (view: LaunchWizardRenderView): string => {
   return `
     <div class="reception-wizard-current">
       <div class="reception-wizard-current-head">
-        <h4 class="reception-wizard-current-title">${e(current.title)}</h4>
+        <h4 class="reception-wizard-current-title" tabindex="-1">${e(current.title)}</h4>
         ${
           current.position_label !== null
             ? `<span class="reception-wizard-current-position">${e(
@@ -350,9 +354,6 @@ const renderPlanDraftRow = (draft: LaunchWizardEndpointDraftModel): string => `
       <span class="reception-wizard-draft-expiry">${e(draft.expiry_label)}</span>
     </div>
     <p class="reception-wizard-draft-desc">${e(draft.kind_description)}</p>
-    <p class="reception-wizard-draft-packet">
-      Packet kind <code class="reception-wizard-mono">${e(draft.packet_kind)}</code>
-    </p>
   </div>
 `;
 
@@ -393,6 +394,7 @@ const renderPlanPreview = (plan: LaunchWizardPlanModel | null): string => {
 const renderNavigation = (
   stepper: LaunchWizardStepperModel,
   validation: LaunchWizardValidationSummary | null,
+  view: LaunchWizardRenderView,
 ): string => {
   const back = button({
     label: 'Back',
@@ -402,7 +404,7 @@ const renderNavigation = (
   });
   const forward = stepper.is_last_step
     ? button({
-        label: 'Finish',
+        label: view.busy ? 'Saving…' : view.error ? 'Retry setup' : 'Finish',
         size: 'sm',
         variant: 'primary',
         action: 'reception-wizard-finish',
@@ -440,17 +442,19 @@ export const renderLaunchWizard = (view: LaunchWizardRenderView): string => {
         <span class="reception-wizard-progress">Step ${stepper.current_position} of ${stepper.total_active_steps}</span>
         <span class="reception-wizard-spacer"></span>
         ${button({
-          label: 'Never mind',
+          label: 'Cancel',
           size: 'xs',
-          variant: 'danger-text',
           action: 'reception-wizard-cancel',
         })}
       </header>
       ${renderStepper(stepper, failedSteps)}
+      ${!stepper.includes_drop_link ? button({ label: 'Include file uploads', size: 'sm', action: 'reception-wizard-toggle-drop-link' }) : ''}
       ${renderValidationGate(validation)}
+      ${view.error ? `<div class="reception-wizard-feedback" role="alert" tabindex="-1">${e(view.error)}</div>` : ''}
+      ${view.progress ? `<p class="reception-wizard-save-status" role="status">${e(view.progress)}</p>` : ''}
       ${renderCurrentStep(view)}
       ${renderPlanPreview(plan)}
-      ${renderNavigation(stepper, validation)}
+      ${renderNavigation(stepper, validation, view)}
     </div>
   `;
 };
@@ -741,5 +745,57 @@ export const LAUNCH_WIZARD_STYLES = `
 }
 @media (max-width: 400px) {
   .reception-wizard-stepper { grid-template-columns: 1fr; }
+}
+
+/* The routed wizard uses the same canvas and controls as endpoint authoring. */
+.reception-wizard {
+  max-width: 1100px;
+  margin: 0;
+  padding: clamp(16px, 2.5vw, 24px);
+  min-width: 0;
+  border-radius: 12px;
+  box-shadow: none;
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}
+.reception-wizard-header { flex-wrap: wrap; align-items: center; }
+.reception-wizard .rx-btn { min-height: 40px; max-width: 100%; white-space: normal; }
+.reception-wizard :is(button,input,select,textarea,a):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+.reception-wizard-stepper {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 3px 3px 8px;
+  scroll-padding-inline: 3px;
+}
+.reception-wizard-step { flex: 1 0 132px; min-width: 0; box-sizing: border-box; }
+.reception-wizard-step-text { min-width: 0; gap: 3px; }
+.reception-wizard-step-text .rx-badge { align-self: flex-start; white-space: nowrap; flex-shrink: 0; }
+.reception-wizard-step-title { line-height: 1.4; }
+.reception-wizard-current { background: transparent; border: 0; padding: 0; min-width: 0; gap: 14px; }
+.reception-wizard-current-head { flex-wrap: wrap; }
+.reception-wizard-current-title { font-size: 18px; font-weight: 650; }
+.reception-wizard-current-summary { color: var(--fg-muted); max-width: 78ch; }
+.reception-wizard-step-slot { min-width: 0; font-size: 13px; line-height: 1.6; }
+.reception-wizard-step-slot .reception-form { max-width: none; padding: 0; margin: 0; background: transparent; border: 0; box-shadow: none; }
+.reception-wizard-step-slot .reception-form-header { display: none; }
+.reception-wizard-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.reception-wizard-access { padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-sunk); }
+.reception-wizard-access p:first-child { margin-top: 0; }
+.reception-wizard-access a { color: var(--accent); }
+.reception-wizard-feedback { border: 1px solid var(--danger, var(--border)); border-radius: 10px; padding: 14px; background: var(--surface-sunk); font-size: 13px; line-height: 1.6; }
+.reception-wizard-save-status { font-size: 13px; line-height: 1.6; margin: 0; }
+.reception-wizard-plan-rows { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.reception-wizard-draft { min-width: 0; }
+@media (max-width: 640px) {
+  .reception-wizard { padding: 14px; }
+  .reception-wizard-title { font-size: 20px; }
+  .reception-wizard-plan-rows { grid-template-columns: minmax(0,1fr); }
+  .reception-wizard-step { flex-basis: 150px; }
+  .reception-wizard-header { gap: 10px; }
 }
 `;

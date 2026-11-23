@@ -284,6 +284,18 @@ describe('reception callers — finalize', () => {
     const callers = createReceptionUploadCallers(callersOpts(fn));
     await expect(callers.finalize({ upload_id: 'u' })).rejects.toThrow(code);
   });
+
+  it.each([
+    { status: 0, networkError: true },
+    { status: 200, jsonThrows: true },
+    { status: 200, body: { status: 'accepted' } },
+    { status: 409, body: { error: { code: 'incomplete' } } },
+    { status: 500, body: { error: { code: 'rejected_mime' } } },
+  ])('treats an unconfirmed finalize as uncertain: %j', async reply => {
+    const { fn } = makeFetch(() => reply);
+    const callers = createReceptionUploadCallers(callersOpts(fn));
+    await expect(callers.finalize({ upload_id: 'u' })).rejects.toThrow('confirmation_unknown');
+  });
 });
 
 describe('reception callers — delete', () => {
@@ -322,6 +334,7 @@ interface FakeEl {
   ownerDocument: FakeDoc;
   getAttribute(n: string): string | null;
   setAttribute(n: string, v: string): void;
+  removeAttribute(n: string): void;
   appendChild(c: FakeEl): FakeEl;
   insertAdjacentElement(pos: string, el: FakeEl): FakeEl;
   addEventListener(t: string, fn: (e: unknown) => void): void;
@@ -405,6 +418,7 @@ const makeEl = (tag: string, doc: FakeDoc, attrs: Record<string, string> = {}): 
     setAttribute: (n, v) => {
       el.attrs.set(n, v);
     },
+    removeAttribute: (n) => { el.attrs.delete(n); },
     appendChild: (c) => {
       c.parent = el;
       el.children.push(c);
@@ -546,5 +560,194 @@ describe('mountReceptionDropUploader — DOM bootstrap', () => {
     await waitFor(() => (progress!.querySelector('.rcp-upload-status')?.textContent ?? '').includes('received'), 'done');
 
     handle!.destroy();
+  });
+});
+
+const submitForm = (form: FakeEl): boolean => {
+  let prevented = false;
+  form.dispatch('submit', { preventDefault: () => { prevented = true; } });
+  return prevented;
+};
+const uploadState = (doc: FakeDoc): string | null =>
+  queryIn(doc, '.rcp-upload-progress')?.getAttribute('data-state') ?? null;
+const uploadMessage = (doc: FakeDoc): string =>
+  queryIn(doc, '.rcp-upload-status')?.textContent ?? '';
+const successReply = (call: FetchCall): FakeReply => {
+  if (call.url.includes('/finalize')) return { status: 200, body: { status: 'accepted', blob_id: 'blob-9' } };
+  if (call.method === 'DELETE') return { status: 200, body: { deleted: true } };
+  if (call.method === 'GET') return { status: 200, body: { form_nonce: 'nonce-fresh' } };
+  if (call.url.split('?')[0]!.endsWith('/uploads')) return { status: 201, body: { upload_id: 'up-1' } };
+  return { status: 200, body: { offset: 6, complete: true } };
+};
+
+describe('reception upload recovery', () => {
+  it.each([[401, 'unauthorized'], [410, 'gone']] as const)('stops recovery when a chunk sees an unavailable link (%i %s)', async (status, code) => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    const { fn, calls } = makeFetch(call => call.url.split('?')[0]!.endsWith('/up-1') && call.method === 'POST'
+      ? { status, body: { error: { code } } } : successReply(call));
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('Ask the sender for a new link');
+      expect(form.querySelector('[type="submit"]')!.disabled).toBe(true);
+      expect(form.querySelector('[name="visitor_name"]')!.disabled).toBe(false);
+      expect(submitForm(form)).toBe(true);
+      expect(calls.map(c => c.method)).toEqual(['POST', 'POST']);
+    } finally { handle.destroy(); }
+  });
+
+  it('retries a quota rejection with a fresh nonce and preserves editable visitor details', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    let creates = 0;
+    const { fn, calls } = makeFetch(call => {
+      if (call.method === 'POST' && call.url.split('?')[0]!.endsWith('/uploads') && ++creates === 1) {
+        return { status: 429, body: { error: { code: 'daily_cap' } } };
+      }
+      return successReply(call);
+    });
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      expect(submitForm(form)).toBe(true);
+      await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('daily upload limit');
+      expect(form.querySelector('[name="visitor_name"]')!.value).toBe('Ada');
+      expect(form.elements.every(el => el.disabled === false)).toBe(true);
+      expect(form.getAttribute('data-uploading')).toBeNull();
+      expect(fileInput.files).toHaveLength(1);
+      form.querySelector('[name="visitor_name"]')!.value = 'Ada Lovelace';
+      submitForm(form);
+      await waitFor(() => uploadState(doc) === 'done');
+      const createsSent = calls.filter(c => c.method === 'POST' && c.url.split('?')[0]!.endsWith('/uploads'));
+      expect(createsSent.map(c => parseBody(c).form_nonce)).toEqual(['nonce-XYZ', 'nonce-fresh']);
+      expect(parseBody(calls.find(c => c.url.includes('/finalize'))!)).toEqual({ visitor_name: 'Ada Lovelace' });
+      expect(calls.filter(c => c.method === 'GET')).toHaveLength(1);
+      expect(calls.every(c => !c.url.includes('Ada'))).toBe(true);
+    } finally { handle.destroy(); }
+  });
+
+  it('lets a visitor replace a rejected file without reloading or reusing the consumed nonce', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6), 'wrong.bin')];
+    let finalizes = 0;
+    const { fn, calls } = makeFetch(call => {
+      if (call.url.includes('/finalize') && ++finalizes === 1) return { status: 415, body: { error: { code: 'rejected_mime' } } };
+      return successReply(call);
+    });
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('file type');
+      fileInput.files = [fakeFile(bytesOf(6), 'correct.pdf')];
+      submitForm(form); await waitFor(() => uploadState(doc) === 'done');
+      const created = calls.filter(c => c.method === 'POST' && c.url.split('?')[0]!.endsWith('/uploads'));
+      expect(created.map(c => [parseBody(c).filename, parseBody(c).form_nonce])).toEqual([
+        ['wrong.bin', 'nonce-XYZ'], ['correct.pdf', 'nonce-fresh'],
+      ]);
+    } finally { handle.destroy(); }
+  });
+
+  it('resumes a rejected finalize at the daily cap without creating or sending the file again', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    let finalizes = 0;
+    const { fn, calls } = makeFetch(call => {
+      if (call.url.includes('/finalize') && ++finalizes === 1) return { status: 429, body: { error: { code: 'day_cap' } } };
+      if (call.method === 'GET') return { status: 200, body: { offset: 6, complete: true } };
+      return successReply(call);
+    });
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('daily upload limit');
+      submitForm(form); await waitFor(() => uploadState(doc) === 'done');
+      expect(calls.filter(c => c.method === 'GET')).toHaveLength(1);
+      expect(calls.find(c => c.method === 'GET')!.url).toContain('/up-1?');
+      expect(calls.filter(c => c.method === 'POST' && !c.url.includes('/finalize'))).toHaveLength(2); // one create + one chunk
+      expect(finalizes).toBe(2);
+    } finally { handle.destroy(); }
+  });
+
+  it('recreates an expired session with a refreshed nonce', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    let chunks = 0;
+    const { fn, calls } = makeFetch(call => {
+      const path = call.url.split('?')[0]!;
+      if (path.endsWith('/up-1') && (call.method === 'GET' || ++chunks === 1)) return { status: 410, body: { error: { code: 'expired' } } };
+      return successReply(call);
+    });
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('session has expired');
+      submitForm(form); await waitFor(() => uploadState(doc) === 'done');
+      expect(calls.filter(c => c.method === 'GET').map(c => c.url.split('?')[0])).toEqual([
+        '/reception/drop/ep1/uploads/up-1', '/reception/drop/ep1/uploads',
+      ]);
+      expect(parseBody(calls.filter(c => c.method === 'POST' && c.url.split('?')[0]!.endsWith('/uploads'))[1]!).form_nonce).toBe('nonce-fresh');
+    } finally { handle.destroy(); }
+  });
+
+  it('blocks duplicate submissions after a lost finalize response while keeping visitor details accessible', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    const { fn, calls } = makeFetch(call => call.url.includes('/finalize')
+      ? { status: 0, networkError: true } : successReply(call));
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('could not confirm');
+      expect(uploadMessage(doc)).toContain('Contact the sender');
+      expect(form.querySelector('[name="visitor_name"]')!.disabled).toBe(false);
+      expect(form.querySelector('[name="visitor_name"]')!.value).toBe('Ada');
+      expect(form.querySelector('[type="submit"]')!.disabled).toBe(true);
+      const count = calls.length;
+      expect(submitForm(form)).toBe(true);
+      fileInput.files = []; // A blocked form must never fall through to the native POST either.
+      expect(submitForm(form)).toBe(true);
+      await new Promise(r => setTimeout(r, 0));
+      expect(calls).toHaveLength(count);
+    } finally { handle.destroy(); }
+  });
+
+  it('asks for a new link if nonce refresh finds that the link was revoked', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    const { fn, calls } = makeFetch(call => call.method === 'GET'
+      ? { status: 410, jsonThrows: true }
+      : { status: 400, body: { error: { code: 'invalid_nonce' } } });
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: fn })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      expect(uploadMessage(doc)).toContain('form has expired');
+      submitForm(form); await waitFor(() => calls.length === 2 && uploadMessage(doc).includes('new link'));
+      expect(form.querySelector('[type="submit"]')!.disabled).toBe(true);
+      expect(submitForm(form)).toBe(true);
+      expect(calls.map(c => c.method)).toEqual(['POST', 'GET']);
+    } finally { handle.destroy(); }
+  });
+
+  it('suppresses overlapping submits and teardown during a pending nonce refresh', async () => {
+    const { doc, form, fileInput } = buildDropDom();
+    fileInput.files = [fakeFile(bytesOf(6))];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const { fn, calls } = makeFetch(call => call.method === 'GET' ? successReply(call)
+      : { status: 400, body: { error: { code: 'invalid_nonce' } } });
+    let refreshing = false;
+    const handle = mountReceptionDropUploader({ root: doc as unknown as ParentNode, fetchImpl: async (url, init) => {
+      if (init?.method === 'GET') { refreshing = true; await held; }
+      return fn(url, init);
+    } })!;
+    try {
+      submitForm(form); await waitFor(() => uploadState(doc) === 'error');
+      submitForm(form); await waitFor(() => refreshing);
+      expect(submitForm(form)).toBe(true);
+      handle.destroy(); release();
+      await new Promise(r => setTimeout(r, 0));
+      expect(calls.map(c => c.method)).toEqual(['POST', 'GET']);
+    } finally { release(); handle.destroy(); }
   });
 });

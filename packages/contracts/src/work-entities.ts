@@ -840,6 +840,12 @@ export interface TaskUpdateInput {
   /** Remove the due date. A task's `null` means "not given", so this is the
    *  one way to say it; refused alongside a `due_at`. */
   clear_due_at?: boolean;
+  /** Explicitly remove the task's local project link. Omitted/null project
+   * ids preserve it; cannot be combined with a new parent_project_id. */
+  clear_parent_project?: boolean;
+  /** Remove the local assigned contact. Omitted/null contact ids preserve it;
+   * cannot be combined with a new assigned_contact_id. */
+  clear_assigned_contact?: boolean;
 }
 
 export interface TaskDeleteInput {
@@ -874,6 +880,9 @@ export interface NoteCreateInput extends SourceSelectInput {
 
 export interface NoteUpdateInput {
   id: string;
+  /** Opaque revision returned with work_entity.get. Checked atomically with
+   * the local write; a mismatch preserves the current note and rejects Save. */
+  expected_revision?: string;
   body?: string;
   title?: string;
   related_contact_ids?: readonly string[];

@@ -74,6 +74,30 @@ describe('D-221 durable Records watcher delivery', () => {
 
   afterEach(() => db.close());
 
+  /** Change real persisted state while the drain is waiting for authorization. */
+  const drainDuringAdmission = async (change: () => void) => {
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    let answer!: (allowed: boolean) => void;
+    const admission = new Promise<boolean>(resolve => { answer = resolve; });
+    const dispatched: Array<{ event_id: string; binding_digest: string }> = [];
+    const pass = drainRecordsOutboxOnce(store, {
+      admit: () => { entered(); return admission; },
+      deliver: async ({ event, subscriber }) => {
+        dispatched.push({ event_id: event.event_id, binding_digest: subscriber.binding_digest });
+      },
+    });
+    let result: Awaited<typeof pass>;
+    try {
+      await waiting;
+      change();
+    } finally {
+      answer(true);
+      result = await pass;
+    }
+    return { result, dispatched };
+  };
+
   it('retries with one stable event id and acknowledges only after the awaited sink succeeds', async () => {
     store.execute({ binding: create, args: { id: 'a', values: { title: 'A' } }, principal: 'owner' });
     const seen: string[] = [];
@@ -141,6 +165,84 @@ describe('D-221 durable Records watcher delivery', () => {
       deliver: async () => { crossed = true; },
     })).toMatchObject({ attempted: 0, dead_lettered: 0 });
     expect(crossed).toBe(false);
+  });
+
+  it('does not dispatch an event whose namespace is orphaned while admission waits', async () => {
+    store.execute({ binding: create, args: { id: 'a', values: { title: 'A' } }, principal: 'owner' });
+    const { result, dispatched } = await drainDuringAdmission(() => { store.orphanNamespace(OWNER); });
+    expect(dispatched).toEqual([]);
+    expect(result).toEqual({ attempted: 1, delivered: 0, retried: 0, dead_lettered: 1 });
+    expect(store.listOutbox(OWNER, 'delivered')).toEqual([]);
+    expect(store.listOutbox(OWNER, 'dead_letter')).toHaveLength(1);
+    expect(store.getNamespace(OWNER)?.quota.outbox_count).toBe(0);
+  });
+
+  it('does not dispatch a retired old event when an identical reinstall completes during admission', async () => {
+    store.execute({ binding: create, args: { id: 'a', values: { title: 'A' } }, principal: 'owner' });
+    const { result, dispatched } = await drainDuringAdmission(() => {
+      store.installNamespace({
+        owner: OWNER, version: 1, storage_schema_hash: STORAGE, declaration_hash: DECLARATION,
+        artifact_digest: 'artifact', schema, bindings: { create },
+        subscriber_digest: subscribers.digest, subscribers: subscribers.bindings,
+        expected_state_generation: store.getNamespace(OWNER)!.state_generation,
+      });
+    });
+    expect(dispatched).toEqual([]);
+    // The reinstall already retired it; the drain must not count a second retirement.
+    expect(result).toEqual({ attempted: 1, delivered: 0, retried: 0, dead_lettered: 0 });
+    expect(store.listOutbox(OWNER, 'dead_letter')).toHaveLength(1);
+    expect(store.getNamespace(OWNER)?.quota.outbox_count).toBe(0);
+  });
+
+  it('preserves an owner retirement made while admission waits, without spending a retry', async () => {
+    store.execute({ binding: create, args: { id: 'a', values: { title: 'A' } }, principal: 'owner' });
+    const event = store.listOutbox(OWNER, 'pending')[0]!;
+    const { result, dispatched } = await drainDuringAdmission(() => {
+      store.retireOutboxEvent(OWNER, event.event_id, event.event_id);
+    });
+    expect(dispatched).toEqual([]);
+    expect(result).toEqual({ attempted: 1, delivered: 0, retried: 0, dead_lettered: 0 });
+    expect(store.getOutboxOverview(OWNER)).toMatchObject({
+      pending: 0, delivered: 0, dead_letter: 1, total_retries: 0,
+      events: [{ error: 'owner explicitly retired pending Records event',
+        deliveries: [{ status: 'dead_letter', retry_count: 0 }] }],
+    });
+    expect(store.getNamespace(OWNER)?.quota.outbox_count).toBe(0);
+  });
+
+  it('skips a settled subscriber receipt while still delivering the event to its other subscriber', async () => {
+    const both = deriveRecordsSubscriberBindings(OWNER, [
+      { recipe: watcher, publisher_id: OWNER.publisher },
+      { recipe: { ...watcher, recipe_id: 'second-watcher' }, publisher_id: OWNER.publisher },
+    ]);
+    store.installNamespace({
+      owner: OWNER, version: 1, storage_schema_hash: STORAGE, declaration_hash: DECLARATION,
+      artifact_digest: 'artifact', schema, bindings: { create },
+      subscriber_digest: both.digest, subscribers: both.bindings,
+      expected_state_generation: store.getNamespace(OWNER)!.state_generation,
+    });
+    store.execute({ binding: create, args: { id: 'a', values: { title: 'A' } }, principal: 'owner' });
+    const [first, second] = store.listPendingDeliveries();
+    const { result, dispatched } = await drainDuringAdmission(() => {
+      store.acknowledgeDelivery(first!.event.event_id, first!.subscriber.binding_digest);
+      expect(store.listOutbox(OWNER, 'pending')).toHaveLength(1);
+    });
+    expect(dispatched).toEqual([{ event_id: second!.event.event_id, binding_digest: second!.subscriber.binding_digest }]);
+    expect(result).toEqual({ attempted: 2, delivered: 1, retried: 0, dead_lettered: 0 });
+    expect(store.listOutbox(OWNER, 'delivered')).toHaveLength(1);
+    expect(store.getNamespace(OWNER)?.quota.outbox_count).toBe(0);
+  });
+
+  it('delivers admitted work when an unrelated record changes during the wait', async () => {
+    store.execute({ binding: create, args: { id: 'a', values: { title: 'A' } }, principal: 'owner' });
+    const original = store.listOutbox(OWNER, 'pending')[0]!;
+    const { result, dispatched } = await drainDuringAdmission(() => {
+      store.execute({ binding: create, args: { id: 'b', values: { title: 'B' } }, principal: 'owner' });
+    });
+    expect(dispatched).toEqual([{ event_id: original.event_id, binding_digest: subscribers.bindings[0]!.binding_digest }]);
+    expect(result).toEqual({ attempted: 1, delivered: 1, retried: 0, dead_lettered: 0 });
+    expect(store.listOutbox(OWNER, 'pending')).toMatchObject([{ id: 'b' }]);
+    expect(store.getNamespace(OWNER)?.quota.outbox_count).toBe(1);
   });
 
   it('binds pending delivery to an exact grant set and refuses mutable watcher config', () => {

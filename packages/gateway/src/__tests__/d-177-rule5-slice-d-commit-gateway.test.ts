@@ -191,6 +191,8 @@ describe('wrapWithCommitGateway D-177 rule-5 slice-D scoped destinations', () =>
     expect(hooks.consume).toHaveBeenCalledWith('grant-1', {
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       destination_emails: ['ada@example.com', 'grace@example.com'],
+      // D-177 N.15 — the op the lookup named (a single-op ingredient: its slug).
+      operation_id: 'send',
     });
     expect(inner).toHaveBeenCalledTimes(1);
   });

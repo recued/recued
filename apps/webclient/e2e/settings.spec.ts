@@ -1,9 +1,10 @@
 import { openBackupDisclosure } from './helpers/backup-disclosure.js';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
-import { applyPreset, type QuietHoursGetResponse, type QuietHoursSetRequest, type ServerTimeZoneGetResponse, type ServerTimeZoneSetRequest } from '@recued/contracts';
+import { applyPreset, buildIdentityProbePayload, type QuietHoursGetResponse, type QuietHoursSetRequest, type ServerTimeZoneGetResponse, type ServerTimeZoneSetRequest } from '@recued/contracts';
 import type { NotificationKindPolicy, NotificationKindPolicySetRequest } from '@recued/contracts';
 import {
-  HARNESS_URL, LIST_PREVIEW, SETTINGS_NAV_ITEM, SHARED_REFERENCE, SHARED_REFERENCE_ID,
+  DRAWER_TOGGLE, HARNESS_URL, LIST_PREVIEW, SETTINGS_NAV_ITEM, SHARED_REFERENCE, SHARED_REFERENCE_ID,
   installFullAppHooks,
 } from './helpers/full-app.js';
 
@@ -466,7 +467,7 @@ declare global { interface Window {
   __timezoneNavigation: { reads: number; writes: ServerTimeZoneSetRequest[]; failNextSave: boolean; loseNextSaveReply: boolean; failNextRead: boolean };
 } }
 const tzNavPanel = (page: Page) => page.locator('[data-recued-server-timezone-panel]');
-const tzNavZone = (page: Page) => tzNavPanel(page).getByRole('textbox', { name: 'Server timezone', exact: true });
+const tzNavZone = (page: Page) => tzNavPanel(page).getByRole('combobox', { name: 'Server timezone', exact: true });
 const tzNavSave = (page: Page) => tzNavPanel(page).getByRole('button', { name: 'Save', exact: true });
 const tzNavMode = (page: Page, mode: 'fixed' | 'follows_host') => tzNavPanel(page).locator(`[data-recued-server-timezone-mode="${mode}"]`);
 const tzNavDraftPrompt = 'Discard the unsaved server timezone?';
@@ -3227,7 +3228,7 @@ test('Settings Server tabs form one full-size arrow-key keyboard stop', async ({
   // is about did not change; only the tabs it walks did.
   const connect = page.locator(`[${SETTINGS_SUBTAB}="connect-device"]`);
   const exposure = page.locator(`[${SETTINGS_SUBTAB}="exposure"]`);
-  const maintenance = page.locator(`[${SETTINGS_SUBTAB}="maintenance"]`);
+  const last = page.getByRole('tablist', { name: 'Server sections' }).getByRole('tab').last();
   await expect(page.getByRole('tablist', {
     name: 'Server sections',
   })).toBeVisible();
@@ -3248,8 +3249,8 @@ test('Settings Server tabs form one full-size arrow-key keyboard stop', async ({
   await expect(exposure).toBeFocused();
 
   await page.keyboard.press('End');
-  await expect(maintenance).toHaveAttribute('aria-selected', 'true');
-  await expect(maintenance).toBeFocused();
+  await expect(last).toHaveAttribute('aria-selected', 'true');
+  await expect(last).toBeFocused();
   await page.keyboard.press('Home');
   await expect(connect).toHaveAttribute('aria-selected', 'true');
   await expect(connect).toBeFocused();
@@ -3420,6 +3421,109 @@ for (const direction of ['forward', 'backward'] as const) {
     })).toEqual([2, 8, direction]);
   });
 }
+
+test('Settings Servers roster read failure stays visible and retries only on request', async ({ page }) => {
+  await page.evaluate(() => window.__app.queueServerProfileRead!('error'));
+  await page.evaluate(() => window.__app.setHash('#settings/servers'));
+  const panel = page.locator('[data-server-address-panel]');
+  const status = panel.locator('[data-server-address-roster-status]');
+  const retry = panel.locator('[data-server-address-roster-retry]');
+  await expect(status).toContainText('could not read');
+  await expect(panel).not.toContainText('private fixture');
+  await expect(panel.locator('[data-server-address-row]')).toHaveCount(0);
+  const reads = await page.evaluate(() => window.__app.serverProfileReadCount!());
+  await page.evaluate(() => window.__app.queueServerProfileRead!('hold'));
+  await retry.focus(); await page.keyboard.press('Enter');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).not.toHaveAttribute('disabled'); await expect(retry).toBeFocused();
+  await retry.evaluate((button: HTMLElement) => { button.click(); button.click(); });
+  expect(await page.evaluate(() => window.__app.serverProfileReadCount!())).toBe(reads + 1);
+  await page.evaluate(() => window.__app.releaseServerProfileRead!('success'));
+  await expect(retry).toBeHidden();
+  await expect(panel.locator('[data-server-address-edit]').first()).toBeFocused();
+  await expect(panel.locator('[data-server-address-row]')).toHaveCount(1);
+  await expect(page).toHaveURL(/#settings\/servers$/);
+});
+
+test('Settings Servers roster keeps loading separate from empty and respects moved retry focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.queueServerProfileRead!('hold'));
+  await page.evaluate(() => window.__app.setHash('#settings/servers'));
+  const panel = page.locator('[data-server-address-panel]'), status = panel.locator('[data-server-address-roster-status]');
+  const retry = panel.locator('[data-server-address-roster-retry]');
+  await expect(panel).toHaveAttribute('data-server-address-roster-state', 'loading');
+  await expect(status).toHaveText('Reading saved servers…'); await expect(retry).toBeHidden();
+  await expect(panel).not.toContainText('No saved servers');
+  await page.evaluate(() => window.__app.releaseServerProfileRead!('empty'));
+  await expect(status).toHaveText('No saved servers in this browser.');
+  await expect(retry).toContainText('Check again');
+  await page.evaluate(() => window.__app.queueServerProfileRead!('hold'));
+  await retry.focus(); await page.keyboard.press('Enter');
+  await expect(retry).toHaveAttribute('aria-busy', 'true'); await expect(retry).toBeFocused();
+  const outside = page.locator(`[${SETTINGS_NAV_ITEM}="account"]`); await outside.focus();
+  await page.evaluate(() => window.__app.releaseServerProfileRead!('success'));
+  await expect(panel).toHaveAttribute('data-server-address-roster-state', 'ready');
+  await expect(outside).toBeFocused(); await expect(panel.locator('[data-server-address-row]')).toHaveCount(1);
+});
+
+test('Settings Servers roster retains a failed retry and ignores its late read after route leave', async ({ page }) => {
+  await page.evaluate(() => window.__app.queueServerProfileRead!('error'));
+  await page.evaluate(() => window.__app.setHash('#settings/servers'));
+  const panel = page.locator('[data-server-address-panel]'), retry = panel.locator('[data-server-address-roster-retry]');
+  await expect(panel).toHaveAttribute('data-server-address-roster-state', 'error');
+  await page.evaluate(() => window.__app.queueServerProfileRead!('hold'));
+  await retry.focus(); await page.keyboard.press('Enter'); await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => window.__app.releaseServerProfileRead!('error'));
+  await expect(retry).toHaveAttribute('aria-busy', 'false'); await expect(retry).toBeFocused();
+  await expect(panel.locator('[data-server-address-roster-status]')).toContainText('could not read');
+  await page.evaluate(() => window.__app.queueServerProfileRead!('hold'));
+  await page.keyboard.press('Enter'); await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(panel).toHaveCount(0);
+  const outside = page.locator(`[${DRAWER_TOGGLE}]`); await outside.focus();
+  await page.evaluate(() => window.__app.releaseServerProfileRead!('success'));
+  await expect(outside).toBeFocused(); await expect(panel).toHaveCount(0); await expect(page).toHaveURL(/#chat$/);
+});
+
+test('Settings Server address checks before saving an inactive profile and keeps the current server', async ({ page }) => {
+  const keys = generateKeyPairSync('ed25519');
+  const publicDer = keys.publicKey.export({ type: 'spki', format: 'der' });
+  const publicKey = publicDer.toString('base64');
+  const fingerprint = 'sha256:' + createHash('sha256').update(publicDer).digest('hex');
+  const probeUrl = new URL('/address-verified/auth/identity-probe', HARNESS_URL);
+  const candidate = `${probeUrl.origin.replace(/^http/, 'ws')}/address-verified/ws`;
+  const nonces: string[] = [];
+  await page.route(probeUrl.href, async route => {
+    const request = route.request(), input = request.postDataJSON() as { nonce: string; expect_fingerprint: string };
+    expect(request.method()).toBe('POST');
+    expect(request.headers().authorization).toBeUndefined();
+    expect(request.headers().cookie).toBeUndefined();
+    expect(Object.keys(input).sort()).toEqual(['expect_fingerprint', 'nonce']);
+    expect(input.expect_fingerprint).toBe(fingerprint); nonces.push(input.nonce);
+    const signature = sign(null, Buffer.from(buildIdentityProbePayload({ nonce: input.nonce, server_public_key: publicKey })), keys.privateKey).toString('base64');
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ signature }) });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple&server_address_test_pin=${encodeURIComponent(publicKey)}#settings/servers`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const rows = page.locator('[data-server-address-row]'); await expect(rows).toHaveCount(2);
+  const current = rows.first(), office = rows.filter({ has: page.getByRole('heading', { name: 'Office server', exact: true }) });
+  const currentAddress = await current.locator('.server-address-url').textContent();
+  const oldOfficeAddress = await office.locator('.server-address-url').textContent();
+  await office.locator('[data-server-address-edit]').focus(); await page.keyboard.press('Enter');
+  await office.locator('[data-server-address-input]').fill(candidate);
+  await office.locator('[data-server-address-check]').focus(); await page.keyboard.press('Enter');
+  await expect(office).toHaveAttribute('data-server-address-row-state', 'verified');
+  expect(nonces).toHaveLength(1); await expect(office.locator('.server-address-url')).toHaveText(oldOfficeAddress!);
+  await office.locator('[data-server-address-save]').focus(); await page.keyboard.press('Enter');
+  await expect(office).toHaveAttribute('data-server-address-row-state', 'saved');
+  await expect(office.locator('.server-address-url')).toHaveText(candidate);
+  await expect(office.locator('[data-server-address-status]')).toHaveText('Saved. The new address will be used next time you connect to this server.');
+  await expect(current.locator('.server-address-url')).toHaveText(currentAddress!);
+  expect(nonces).toHaveLength(2); expect(nonces[0]).not.toBe(nonces[1]);
+  await expect(page).toHaveURL(/#settings\/servers$/);
+});
 
 test('Settings Server address scripted actions respect outside focus', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });

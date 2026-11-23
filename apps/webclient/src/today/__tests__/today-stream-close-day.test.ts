@@ -14,7 +14,7 @@ import type {
   SituationStreamSettings,
   SituationStreamStatus,
 } from '@recued/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { CLOSE_DAY_PANEL_ATTR, mountCloseDayPanel } from '../../settings/close-day-panel.js';
 import { bootstrapTodayRoute } from '../bootstrap-today-route.js';
@@ -24,7 +24,7 @@ import type { TodayCallers } from '../today-controller.js';
 /** What the route, the stream's dialog and the card use of a document, and nothing else. */
 class FakeEl {
   hidden = false; disabled = false; checked = false; required = false; open = false;
-  value = ''; type = ''; name = ''; id = ''; className = ''; tabIndex = 0;
+  value = ''; type = ''; name = ''; id = ''; href = ''; className = ''; tabIndex = 0;
   readonly validity = { badInput: false };
   readonly attrs = new Map<string, string>();
   children: FakeEl[] = [];
@@ -72,6 +72,14 @@ class FakeEl {
   removeEventListener(type: string, listener: (event: unknown) => void): void {
     this.listeners.set(type, (this.listeners.get(type) ?? []).filter((one) => one !== listener));
   }
+  dispatch(type: string): void {
+    const event = { target: this, isTrusted: false, button: 0, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+      preventDefault() {}, stopPropagation() {} };
+    for (let current: FakeEl | null = this; current; current = current.parent) {
+      for (const listener of current.listeners.get(type) ?? []) listener(event);
+    }
+  }
+  click(): void { if (!this.disabled) this.dispatch('click'); }
   focus(): void { this.ownerDocument.activeElement = this; }
   showModal(): void { this.open = true; }
   close(): void { this.open = false; }
@@ -132,7 +140,7 @@ const proactive: ProactiveToday = { situations: { clusters: [], omitted: 0, ambi
   newest_proposal: null, unmatched_replies: [], phone_ready: true, stream: true, close_day: true };
 
 /** Today, mounted as the shell mounts it, with its "Daily stream" opened as its button opens it. */
-const openDailyStream = async (status: SituationAgendaStatus, wired: { closeDay: boolean } = { closeDay: true }) => {
+const openDailyStream = async (status: SituationAgendaStatus, wired: { closeDay: boolean; retryReply?: (id: string) => Promise<unknown> } = { closeDay: true }) => {
   const doc = fakeDocument();
   const container = doc.createElement('div');
   doc.body.appendChild(container);
@@ -150,7 +158,7 @@ const openDailyStream = async (status: SituationAgendaStatus, wired: { closeDay:
         sendNow: async () => ({}),
         preview: async () => preview,
         channels: async () => [{ channel: 'in_app', label: 'The app' }],
-        ...(wired.closeDay ? { closeDay: { save: async () => ({}), sendNow: async () => ({}) } } : {}),
+        ...(wired.closeDay ? { closeDay: { save: async () => ({}), sendNow: async () => ({}), retryReply: wired.retryReply } } : {}),
       },
     } as unknown as TodayCallers,
   });
@@ -165,6 +173,32 @@ const checkbox = (card: FakeEl): FakeEl | undefined =>
   card.all().find((el) => el.tagName === 'INPUT' && el.attrs.get('aria-label') === 'Ask me each evening what I did');
 
 describe('Close the day lives in Today\'s "Daily stream" once the streams took over (D-340 slice 2)', () => {
+  it('shows an unresolved email, opens its existing conversation, and retries once without losing an evening-time draft', async () => {
+    const status = agendaStatus({ streams: true, closeDay: true });
+    status.close_day!.email_replies = [
+      { id: 'reply-1', received_at: Date.parse('2026-11-14T20:00:00Z'), reason: 'retry', session_id: 'chat/1', retry_available: true },
+      { id: 'legacy', received_at: Date.parse('2026-11-13T20:00:00Z'), reason: 'unknown', retry_available: false },
+    ];
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const retryReply = vi.fn(async () => { await pending; status.close_day!.email_replies = status.close_day!.email_replies!.slice(1); });
+    const { doc, route, card } = await openDailyStream(status, { closeDay: true, retryReply });
+    expect(card!.textContent).toContain('Your reply is saved; Recued will try again.');
+    expect(card!.all().find(el => el.textContent === 'Open conversation')?.href).toBe('#chat/session/chat%2F1');
+    const time = card!.all().find(el => el.tagName === 'INPUT' && el.type === 'time')!;
+    time.value = '22:30'; time.dispatch('input');
+    const retry = card!.querySelector('button[data-close-day-email-retry]')!;
+    retry.focus(); retry.click(); retry.click();
+    expect(retryReply).toHaveBeenCalledOnce(); expect(retryReply).toHaveBeenCalledWith('reply-1');
+    expect(doc.activeElement?.attrs.has('data-close-day-message')).toBe(true);
+    finish(); await settle();
+    expect(time.value).toBe('22:30');
+    expect(card!.querySelector('button[data-close-day-email-retry]')).toBeNull();
+    expect(card!.textContent).toContain('An earlier reply could not be confirmed.');
+    expect(card!.textContent).toContain('Email reply checked.');
+    route.dispose();
+  });
+
   it('shows its card in the dialog, under the tabs, with its switch, going where the daily stream goes', async () => {
     const { route, dialog, card } = await openDailyStream(agendaStatus({ streams: true, closeDay: true }));
     expect(dialog?.open).toBe(true);
@@ -172,6 +206,18 @@ describe('Close the day lives in Today\'s "Daily stream" once the streams took o
     expect(card!.hidden).toBe(false);
     expect(checkbox(card!)).toBeDefined();
     expect(card!.textContent).toContain('sent where your daily stream goes');
+    route.dispose();
+  });
+
+  it('D-340 ruling 13 — says when the daily message went after it started preparing, and how its suggestions did', async () => {
+    const status = agendaStatus({ streams: true, closeDay: true });
+    const prepared = Date.parse('2026-11-09T07:00:00Z');
+    status.streams!.daily = { ...status.streams!.daily, last_run: { at: prepared + 2 * 60_000, mode: 'stream', state: 'sent', text: 'Your day',
+      delivered_to: ['telegram'], prepared_at: prepared, suggestions: 'stuck' } };
+    const { route, dialog } = await openDailyStream(status);
+    // The run's receipt is written as HTML; the line sits under "Last sent".
+    expect((dialog as unknown as FakeEl).all().some(el => el.innerHTML
+      .includes('<p class="sd-timing">Went 2 min after it started preparing · AI suggestions missing: the AI stopped responding</p>'))).toBe(true);
     route.dispose();
   });
 

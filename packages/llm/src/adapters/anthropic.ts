@@ -5,8 +5,9 @@ import type {
   LLMMessage,
   LLMSlot,
 } from '../types.js';
-import { LLMError } from '../types.js';
+import { answeredModelField, LLMError, markOutputLimit } from '../types.js';
 import { joinApiBase } from '../base-url.js';
+import { anthropicThinkingFields } from '../thinking-switch.js';
 import {
   LLMProviderResponseTooLargeError,
   readBoundedProviderJson,
@@ -46,9 +47,12 @@ export const createAnthropicAdapter = (): LLMAdapter => ({
       })),
     };
     if (system) body.system = system;
-    if (options.thinking) {
-      // Anthropic extended reasoning — budget is half of max_tokens as a reasonable default
-      body.thinking = { type: 'enabled', budget_tokens: Math.floor(options.max_tokens / 2) };
+    // D-344 — the owner's thinking setting, the first way of sending it this endpoint has not refused
+    // (`anthropicThinkingFields`): off is `disabled`, else `between_tools`, else the lowest effort; on
+    // is `adaptive`, else a budget of half of `max_tokens` (the only form before). Absent: nothing is
+    // sent, and the model thinks as it does by default.
+    if (options.thinking !== undefined) {
+      Object.assign(body, anthropicThinkingFields(options.thinking, options.thinking_step ?? 0, options.max_tokens));
     }
 
     const response = await callProvider(
@@ -60,15 +64,23 @@ export const createAnthropicAdapter = (): LLMAdapter => ({
       },
       body,
       options.timeout_ms,
+      options.signal,
     );
 
     const finishReason = extractAnthropicFinishReason(response);
-    return {
+    const usage = extractUsage(response, options.model);
+    let text: string;
+    try {
       // Anthropic may return stop_reason=refusal without a text block. Keep
       // that typed stop intact for the executor instead of raising a parse
       // failure while trying to extract content that is intentionally absent.
-      text: finishReason === 'content_filter' ? '' : extractAnthropicText(response),
-      usage: extractUsage(response, options.model),
+      text = finishReason === 'content_filter' ? '' : extractAnthropicText(response);
+    } catch (e) {
+      throw markOutputLimit(e, finishReason, usage);
+    }
+    return {
+      text,
+      usage,
       ...(finishReason !== undefined
         ? { finish_reason: finishReason }
         : {}),
@@ -176,6 +188,7 @@ const extractUsage = (
     ...(cacheRead !== undefined ? { cache_read_input_tokens: cacheRead } : {}),
     ...(cacheWrite !== undefined ? { cache_write_input_tokens: cacheWrite } : {}),
     model_id: modelId,
+    ...answeredModelField((response as { model?: unknown }).model),
   };
 };
 
@@ -203,11 +216,15 @@ export const callProvider = async (
   headers: Record<string, string>,
   body: unknown,
   timeoutMs: number | null,
+  /** D-343 — the caller's cancel, which ends the request as the timer does. */
+  signal?: AbortSignal,
 ): Promise<unknown> => {
   const controller = new AbortController();
   const timer = timeoutMs !== null
     ? setTimeout(() => controller.abort(), timeoutMs)
     : null;
+  const cancel = (): void => controller.abort();
+  if (signal?.aborted) controller.abort(); else signal?.addEventListener('abort', cancel, { once: true });
 
   try {
     const response = await fetch(url, {
@@ -245,6 +262,7 @@ export const callProvider = async (
     if ((e as Error).name === 'AbortError') {
       // Could be timer-triggered OR user/engine-triggered (explicit cancel).
       // Report the timer case distinctly; otherwise surface as cancellation.
+      if (signal?.aborted === true) throw new LLMError('AI_TIMEOUT', 'LLM call was cancelled');
       if (timeoutMs !== null) {
         throw new LLMError('AI_TIMEOUT', `LLM call timed out after ${timeoutMs}ms`);
       }
@@ -253,6 +271,7 @@ export const callProvider = async (
     throw new LLMError('AI_LLM_UNAVAILABLE', `LLM call failed: ${(e as Error).message}${fetchFailureCause(e)}`);
   } finally {
     if (timer !== null) clearTimeout(timer);
+    signal?.removeEventListener('abort', cancel);
   }
 };
 

@@ -4,9 +4,10 @@ import { inverseLocalUpdateCall, localUpdateInput } from './local-update-operati
  * store validators and CAS still apply to the newly approved operation. */
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { isResourceReview, RpcError,
+import { isCommit, isResourceReview, RpcError,
   type LocalUpdateUndoReview, type LocalUpdateUndoDecision, type LocalUpdateUndoResult,
   type ResourceReview } from '@recued/contracts';
+import { recordChainUndo, tellChainRuleEndedByUndo, type ChainRuleEndedByUndo } from './chain-evidence.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import type { PreapprovalOrigin } from './preapproval-model.js';
 import type { LocalUpdateInverse } from './local-update-undo-context.js';
@@ -96,14 +97,14 @@ export const createLocalUpdateUndo = (deps: {
   const validate = (saved: SealedReview, checkResource = true): ResourceReview => {
     store.assertAvailable(saved.receipt);
     if (saved.epoch !== store.clock.snapshot().epoch || saved.public.expires_at <= now()) return conflict('This undo review expired. Request a new review.');
-    if (linked(saved.receipt.receipt_id)) return conflict('This change already has an undo receipt.');
+    if (linked(saved.receipt.receipt_id)) return conflict('This change was already undone.');
     const call = callFor(saved.inverse);
     if (localMutationHash(call) !== localMutationHash(saved.call)) return conflict('The reverse operation changed. Request a new review.');
     deps.validate(saved.origin, call);
     if (!checkResource) return saved.public.resource_review;
     const hooks = execution.executorConfig.resourceReview;
     const fresh = hooks?.capture(call.slug, dispatchInput(saved));
-    if (!isResourceReview(fresh)) return conflict('Version-bound undo is unavailable.');
+    if (!isResourceReview(fresh)) return conflict('This change can no longer be undone safely. Nothing was changed.');
     const inverse = saved.inverse;
     if (inverse.kind === 'records') {
       if (resourceReviewHash(fresh.resources) !== resourceReviewHash(inverse.resources)) {
@@ -121,6 +122,43 @@ export const createLocalUpdateUndo = (deps: {
       return conflict('The reverse changes differ from your preview. Request a new review.');
     }
     return fresh;
+  };
+  /** D-348 Q4 — the run a confirmed change was made in, and what let it run: the hold it was
+   * approved on, or the request's rule that let it through without asking. An ordinary write's
+   * Commit names its run and that rule, and its approved action's checkpoint the hold. A chat
+   * write's proposal names the hold it was approved on, its run's one call; one approved on its
+   * card held nothing, and a hold or a rule is all a chain learns from. A chat write a permission
+   * let through is its call, which the chain rule store knows when a request's rule let it. */
+  const madeBy = (receipt: LocalMutationReceipt):
+    { run_id?: string; checkpoint_id?: string; chain_rule_id?: string; chat_call_id?: string } | undefined => {
+    if (receipt.owner === 'chat_call') return { chat_call_id: receipt.owner_ref };
+    if (receipt.owner === 'chat_plan') {
+      const plan = db.prepare('SELECT hold_run_id FROM chat_plans WHERE plan_id=?').get(receipt.owner_ref) as
+        { hold_run_id: string | null } | undefined;
+      return plan?.hold_run_id ? { run_id: plan.hold_run_id } : undefined;
+    }
+    if (receipt.owner !== 'ordinary_commit') return undefined;
+    const row = db.prepare('SELECT data FROM commits WHERE key=?').get(receipt.owner_ref) as { data: string } | undefined;
+    const commit: unknown = row ? JSON.parse(row.data) : null;
+    if (!isCommit(commit) || commit.preapproval) return undefined;
+    const attempt = db.prepare('SELECT action_ref FROM ordinary_local_mutation_attempts WHERE attempt_id=?')
+      .get(receipt.attempt_id) as { action_ref: string | null } | undefined;
+    const saved = attempt?.action_ref ? db.prepare('SELECT data FROM gated_action_receipts WHERE key=?')
+      .get(attempt.action_ref) as { data: string } | undefined : undefined;
+    const action = saved ? JSON.parse(saved.data) as { run_id?: unknown; current_checkpoint_id?: unknown } : undefined;
+    return { run_id: commit.request_id,
+      ...(action?.run_id === commit.request_id && typeof action.current_checkpoint_id === 'string'
+        ? { checkpoint_id: action.current_checkpoint_id } : {}),
+      // Let through by a request's rule without asking: that rule.
+      ...(commit.chain_rule !== undefined ? { chain_rule_id: commit.chain_rule.id } : {}) };
+  };
+  /** An undo spoils what its change's request taught, and ends a live rule holding the call that
+   * made it (D-348 Q4). Learning never costs the work: whatever fails here leaves the undo as it is. */
+  const noteChainUndo = (receipt: LocalMutationReceipt): ChainRuleEndedByUndo | undefined => {
+    try {
+      const made = madeBy(receipt);
+      return made === undefined ? undefined : recordChainUndo(execution, { ...made, receipt_id: receipt.receipt_id });
+    } catch { return undefined; /* a chain not reset by this undo is still undone */ }
   };
   const requireOwner = (origin: PreapprovalOrigin): Extract<PreapprovalOrigin, { mode: 'owner' }> => {
     if (origin.mode !== 'owner' || origin.entry !== 'owner_ui') throw new RpcError('local_undo_owner_required', 'Open undo in your paired webclient.', 403);
@@ -186,7 +224,7 @@ export const createLocalUpdateUndo = (deps: {
         return result(initial);
       }
       store.codec.assertUnlocked();
-      if (!initial.encrypted) return conflict('The prior values for this undo expired. Its decision metadata and receipt links remain in the local audit.');
+      if (!initial.encrypted) return conflict('This undo expired: the earlier values are no longer kept. The change itself stays recorded in Logs.');
       const saved = await store.codec.open(initial.encrypted) as SealedReview;
       if (saved.public.undo_id !== args.undo_id || saved.public.review_hash !== args.review_hash
         || initial.review_hash !== args.review_hash || initial.predecessor_receipt_id !== saved.receipt.receipt_id
@@ -200,7 +238,7 @@ export const createLocalUpdateUndo = (deps: {
         const row = rowFor(args.undo_id);
         if (!row || row.encrypted !== initial.encrypted || row.review_hash !== args.review_hash || row.epoch !== store.clock.snapshot().epoch
           || row.operation !== initial.operation || row.kind !== initial.kind || row.resource_review_hash !== initial.resource_review_hash) {
-          return conflict('This undo claim is no longer current.');
+          return conflict('This undo was already started from another screen. Check its result.');
         }
         return row;
       };
@@ -222,6 +260,9 @@ export const createLocalUpdateUndo = (deps: {
       }).immediate();
       if (!claim) return result(verifyClaim());
       const call = callFor(saved.inverse); // reconstruct Calendar undefined removals after decrypt
+      // D-348 — a rule this undo ended, told only once the undo is kept.
+      let endedRule: ChainRuleEndedByUndo | undefined;
+      const tellEndedRule = (): void => { if (endedRule) tellChainRuleEndedByUndo(execution, endedRule); };
       try {
         const review = saved.public.resource_review;
         await withLocalMutationScope({ record(connection, kind, actual) {
@@ -229,7 +270,7 @@ export const createLocalUpdateUndo = (deps: {
           if (connection !== db || !db.inTransaction || row.status !== 'dispatching' || row.decision !== 'approve'
             || row.worker_id !== deps.workers.worker_id
             || kind !== saved.receipt.kind || resourceReviewHash(actual) !== resourceReviewHash(review)) {
-            return conflict('The reverse write no longer owns this approval.');
+            return conflict('This undo was already handled from another screen. Nothing more was changed.');
           }
           deps.workers.assertCurrent(deps.workers.worker_id);
           validate(saved, false);
@@ -238,7 +279,7 @@ export const createLocalUpdateUndo = (deps: {
           if (saved.inverse.kind === 'local_calendar') {
             const current = execution.executorConfig.resourceReview?.capture(call.slug, dispatchInput(saved))?.resources[0];
             if (current?.binding !== saved.inverse.binding || current.precondition.kind !== 'local_version') {
-              return conflict('The local calendar binding changed before undo.');
+              return conflict('The calendar changed before the undo. No undo was applied.');
             }
           }
           const receipt = store.journal.record({ owner: 'local_undo', owner_ref: args.undo_id,
@@ -246,6 +287,7 @@ export const createLocalUpdateUndo = (deps: {
             review_hash: localMutationHash(review) });
           db.prepare('INSERT INTO local_update_undo_links VALUES(?,?,?)').run(saved.receipt.receipt_id, receipt.receipt_id, args.undo_id);
           db.prepare("UPDATE local_update_undo_reviews SET status='completed' WHERE undo_id=?").run(args.undo_id);
+          endedRule = noteChainUndo(saved.receipt);
         } }, () => withResourceReview(review, () => {
           if (saved.inverse.kind === 'records') {
             if (!execution.recordsStore) throw new RpcError('local_undo_unavailable', 'Records is unavailable.', 503);
@@ -257,13 +299,14 @@ export const createLocalUpdateUndo = (deps: {
           return dispatch({ slug: saved.inverse.slug, source_id: saved.inverse.source_id,
             patch: dispatchInput(saved).patch as Record<string, unknown> });
         }));
-        if (verifyClaim().status !== 'completed') throw new Error('The reverse write produced no local receipt.');
+        if (verifyClaim().status !== 'completed') throw new Error('The undo could not be confirmed. Check its result.');
       } catch (error) {
         const row = verifyClaim();
-        if (row.status === 'completed') return result(row);
+        if (row.status === 'completed') { tellEndedRule(); return result(row); }
         db.prepare("UPDATE local_update_undo_reviews SET status='failed' WHERE undo_id=? AND status='dispatching'").run(args.undo_id);
         throw error;
       }
+      tellEndedRule();
       return result(verifyClaim());
     },
   };

@@ -1,3 +1,4 @@
+import { testPreparedInboxAnswer } from './prepared-inbox-test-helpers.js';
 /** D-192 email flagship E3 — the FULL propose → gateway hold → inbox
  *  approve → mint path, end to end, with NO shortcuts.
  *
@@ -181,6 +182,12 @@ const buildEnv = (): Env => {
       if (pendingAsk === undefined || ask_id !== 'ask-d192-e3') return;
       await onAnswer(pendingAsk.payload, { ask_id, option: option_id } as never);
     },
+    submitPreparedAnswer: testPreparedInboxAnswer({ checkpointStore, auditLog, now: () => NOW,
+      deliver: async (ask_id, preparedAnswer) => {
+        if (pendingAsk === undefined || ask_id !== 'ask-d192-e3') throw new Error('Fixture ask missing');
+        await onAnswer(pendingAsk.payload, preparedAnswer);
+      },
+    }),
     workEntityStore: workStore,
     now: () => NOW,
   });

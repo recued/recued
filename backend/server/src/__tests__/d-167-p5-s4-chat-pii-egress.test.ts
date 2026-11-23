@@ -332,6 +332,23 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
     expect(readPiiRedactionSummary(plan)?.counts.email).toBe(1);
   });
 
+  it('aliases carried browser requirements and restores model progress at the same wire boundary', async () => {
+    const plan = makePlan({ resolver: userMessageEmailResolver });
+    let seen = '';
+    const real: ExecuteChatAiCall = async (_m, input) => {
+      seen = String(input['llm.prompt']);
+      const packet = JSON.parse(seen);
+      return { body: { response: '', events: [], tool_calls: [],
+        browser_task_progress: packet.browser_task_context.requirements } satisfies AIOutput };
+    };
+    const result = await wrapExecuteAiCallForPii(real, plan)(MANIFEST, { 'llm.prompt': JSON.stringify({
+      user_message: 'alice@acme.com', chat_tail: [],
+      browser_task_context: { requirements: [{ requirement: 'alice@acme.com', status: 'pending' }] },
+    }) });
+    expect(seen).not.toContain('alice@acme.com');
+    expect((result.body as AIOutput).browser_task_progress).toEqual([{ requirement: 'alice@acme.com', status: 'pending' }]);
+  });
+
   it('Slice 3 — a user-typed pii.Person1 literal is reserved while the real name aliases past it (no collision)', async () => {
     const plan = makePlan({ resolver: ownerNameResolver });
     let seenPacket: Record<string, unknown> = {};
@@ -1585,6 +1602,7 @@ describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
       // D-347 — the closing brief itself, so a store without the carry: the turn closes with a fold.
       const { readSessionCarry: _read, writeSessionCarry: _write, deleteSessionCarry: _delete, ...chatStore } = createChatStore(db);
       chatStore.createSession({ id: 'sess-1', now: NOW - 1_000 });
+      // The delayed writer below returns the Standard brief format.
       chatStore.setRollingBriefEnabled(true);
       const sender = 'new.sender@outside.example';
       const broadcasts: Array<Record<string, unknown>> = [];

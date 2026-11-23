@@ -118,7 +118,7 @@ export interface ApprovalIntentConsumeInput {
 
 export type ApprovalIntentConsumeResult =
   | { readonly ok: true; readonly row: ApprovalIntentSummary }
-  | { readonly ok: false; readonly reason: 'already_consumed' | 'not_found' };
+  | { readonly ok: false; readonly reason: 'already_consumed' | 'not_found' | 'not_authorized' };
 
 export interface ApprovalIntentStore {
   /** Insert a pre-consumption row. Substrate calls this at endpoint
@@ -135,9 +135,11 @@ export interface ApprovalIntentStore {
    *  this endpoint id represents" pattern. */
   findByEndpoint(endpoint_id: string): ApprovalIntentSummary | null;
 
-  /** Atomic single-use flip per Must Hold I-11. Wraps the read+update
-   *  in `BEGIN EXCLUSIVE` so concurrent presentations race-resolve. */
-  tryConsume(input: ApprovalIntentConsumeInput): ApprovalIntentConsumeResult;
+  /** Atomic single-use flip per Must Hold I-11. Public callers supply a synchronous
+   *  live-authority read against this database. It runs under `BEGIN EXCLUSIVE`,
+   *  before consumption or replay, so authority cannot change between the check
+   *  and the write. Trusted internal writers may omit it. */
+  tryConsume(input: ApprovalIntentConsumeInput, authorize?: () => boolean): ApprovalIntentConsumeResult;
 
   /** Engine-side mutator — flip terminal `processing_outcome`. */
   markProcessed(input: {
@@ -282,7 +284,7 @@ export const createReceptionApprovalIntentStore = (
       return row ? rowToSummary(row) : null;
     },
 
-    tryConsume(input) {
+    tryConsume(input, authorize) {
       // EXCLUSIVE transaction — serializes concurrent consume attempts
       // at the SQLite layer. Better-sqlite3's `transaction` wrapper
       // uses `BEGIN EXCLUSIVE` when called with `.exclusive(...)`. The
@@ -291,8 +293,11 @@ export const createReceptionApprovalIntentStore = (
         const existing = selectInsideTxStmt.get({ intent_id: input.intent_id }) as
           | ApprovalIntentRow
           | undefined;
-        if (!existing) {
+        if (!existing || existing.endpoint_id !== input.endpoint_id) {
           return { ok: false, reason: 'not_found' };
+        }
+        if (authorize && authorize() !== true) {
+          return { ok: false, reason: 'not_authorized' };
         }
         if (existing.consumed_at !== null) {
           return { ok: false, reason: 'already_consumed' };
@@ -343,11 +348,7 @@ export const createReceptionApprovalIntentStore = (
       // it, the default mode is `BEGIN DEFERRED` which doesn't take
       // the writer lock until first write — leaving a window during
       // the select where a concurrent process could squeeze in.
-      const exclusive = (run as unknown as { exclusive: () => ApprovalIntentConsumeResult }).exclusive;
-      if (typeof exclusive === 'function') {
-        return exclusive();
-      }
-      return run();
+      return run.exclusive();
     },
 
     markProcessed(input) {

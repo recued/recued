@@ -201,6 +201,11 @@ export {
   PREFLIGHT_ASK_OPTIONS_WITH_SESSION,
   buildPreflightAsk,
   createPreflightAnswerHandler,
+  PREPARED_PREFLIGHT_EDITS_KIND,
+  PREPARED_PREFLIGHT_DENIAL_KIND,
+  applyPreparedPreflightDenial,
+  readPreparedPreflightEdits,
+  type PreparedPreflightEdits,
   // D-177 P5a — exported for the batch answer flow's degenerate
   // single-member `allow_session` arm (one payload reader, two consumers).
   readSessionGrantPayload,
@@ -212,10 +217,21 @@ export {
   raisePreflightAsk,
   // D-210 Phase C — the passive twin, for `inbox_fanout_mode: 'notify'`.
   raisePreflightNotify,
+  // D-177 §N.15.9 — a round's gathered approval (Q7): one ask for the held calls of one op.
+  PREFLIGHT_GATHERED_HANDLER_KIND,
+  buildGatheredPreflightAsk,
+  createGatheredPreflightAnswerHandler,
+  isPreflightApprovalKind,
+  preflightAskHolds,
+  preflightAskHoldsCheckpoint,
+  raiseGatheredPreflightAsk,
 } from './preflight-reconciliation.js';
 export type {
+  GatheredHoldAsk,
   PreflightAsk,
   PreflightAskContext,
+  PreflightOverrideDecision,
+  PreflightOverrideWriter,
   // D-177 P5a — the batch answer flow's leaf-facing seam (N.10).
   PreflightBatchAnswerHooks,
   PreflightNotifier,

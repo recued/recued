@@ -184,3 +184,16 @@ describe('D-335 slice F — what approvals teach', () => {
     expect(() => store.dismiss('nope', NOW)).toThrow(expect.objectContaining({ code: 'not_found' }));
   });
 });
+
+describe('D-402 slice H4c — a pass for a recipe that names its browsers records the browser', () => {
+  const HOME: BrowserPassKey = { principal: { kind: 'owner_chat' }, recipe: 'read-then-type', site: 'https://b.example', browser: 'inst-home' };
+  it('kept with the pass, and letting through only a write in that browser', () => {
+    const store = fresh();
+    const pass = store.mint({ key: HOME, host: 'b.example', kind: 'always', now: NOW });
+    expect(store.listPasses(NOW).find((row) => row.pass_id === pass.pass_id)?.key).toEqual(HOME);
+    expect(store.use(HOME, undefined, NOW + 1)?.pass_id).toBe(pass.pass_id);
+    expect(store.use({ ...HOME, browser: 'inst-work' }, undefined, NOW + 1)).toBeUndefined();
+    const { browser: _browser, ...anyBrowser } = HOME;
+    expect(store.use(anyBrowser, undefined, NOW + 1)).toBeUndefined();
+  });
+});

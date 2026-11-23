@@ -3,6 +3,9 @@ import { createManifestRegistry } from '../manifest-loader.js';
 import { buildChatToolRegistryInputs, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { withTurnZone } from '../chat-clock.js';
 import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OWNER_CONTRACT_ID, opGrantEntry, isExecutionSource, CHAT_RPC_METHODS, SERVER_RPC_METHODS, isReservedLocalRpc,
@@ -40,8 +43,9 @@ const once = { title: 'Mail summary', prompt: 'Summarize the unread mail in my w
   mode: 'one_shot' as const, time_zone: 'UTC', run_at: new Date(NOW + 60000).toISOString() };
 const recurring = { title: once.title, prompt: once.prompt, mode: 'recurring' as const, time_zone: 'UTC', cron_expression: '*/5 * * * *' };
 const fixture = (options: { beforeRun?: (input: ChatTurnInput) => Promise<void>; key?: () => Uint8Array | null;
-  loseAck?: boolean; beforeSubmit?: (command: QueuedChatCommand) => Promise<void> } = {}) => {
-  const db = new Database(':memory:'); db.pragma('foreign_keys = ON'); ensureChatSchema(db);
+  loseAck?: boolean; beforeSubmit?: (command: QueuedChatCommand) => Promise<void>; beforeReadPlans?: () => Promise<void>;
+  isPaused?: () => boolean; file?: string } = {}) => {
+  const db = new Database(options.file ?? ':memory:'); db.pragma('foreign_keys = ON'); ensureChatSchema(db);
   const store = createChatStore(db, options.key);
   const plans = createSqliteChatPlanStore(db, options.key);
   const registry: InternalToolRegistry = { list: () => [], listByTier: () => [], getByName: () => null,
@@ -52,7 +56,7 @@ const fixture = (options: { beforeRun?: (input: ChatTurnInput) => Promise<void>;
   const run = async (input: ChatTurnInput) => {
     inputs.push(input); await options.beforeRun?.(input); return raw.runTurn(input);
   };
-  const orchestrator = withQueuedChatTurns({ ...raw, runTurn: run }, { db, store, getKey: options.key, pollMs: 10 });
+  const orchestrator = withQueuedChatTurns({ ...raw, runTurn: run }, { db, store, getKey: options.key, pollMs: 10, isPaused: options.isPaused });
   const queue = orchestrator.turnQueue!;
   const service = createPromptSchedules({ db, store, instanceId: signature.instance_id, queue: { ...queue,
     async submit(...args) {
@@ -62,9 +66,9 @@ const fixture = (options: { beforeRun?: (input: ChatTurnInput) => Promise<void>;
       return result;
     },
   }, runTurn: run, getKey: options.key, now: () => now,
-  readPlans: (session, turn) => plans.listForTurn(session, turn) });
+  readPlans: async (session, turn) => { await options.beforeReadPlans?.(); return plans.listForTurn(session, turn); } });
   orchestrator.promptSchedules = service;
-  cleanup.push(() => db.close(), () => queue.close());
+  cleanup.push(() => { if (db.open) db.close(); }, () => queue.close());
   const settled = (session: string) => vi.waitFor(async () => {
     const turns = (await queue.snapshot(session)).turns;
     expect(turns.length).toBeGreaterThan(0);
@@ -976,5 +980,175 @@ describe('D-341 slice B3 — each run names the version of the prompt it runs', 
     expect((await f.service.promptVersion(id))!.prompt_sha256).not.toBe(first.prompt_sha256);
     await f.service.control('remove', { schedule_id: id });
     expect(await f.service.promptVersion(id)).toBeNull();
+  });
+});
+
+describe('skipping one recurring occurrence', () => {
+  const request = (saved: PromptSchedule) => ({ schedule_id: saved.schedule_id, expected_revision: saved.revision,
+    expected_skip_revision: saved.skip_state?.revision ?? 0, run_at: saved.next_run_at! });
+  const undo = (saved: PromptSchedule) => ({ schedule_id: saved.schedule_id, expected_revision: saved.revision,
+    expected_skip_revision: saved.skip_state!.revision, skip_id: saved.skip_state!.skipped!.skip_id });
+
+  it('previews without writes, skips exactly one occurrence and runs the following one on its original cadence', async () => {
+    const f = fixture(), saved = (await f.service.create(recurring, 'skip-one'))!, original = request(saved);
+    const preview = await f.service.previewSkip(original);
+    expect(preview).toEqual({ ...original, time_zone: 'UTC', following_run_at: NOW + 600000 });
+    expect(await f.service.get(saved.schedule_id)).toMatchObject({ revision: 1, next_run_at: NOW + 300000, skip_state: { revision: 0 } });
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedule_skips').get()).toEqual({ n: 0 });
+    const skipped = await f.service.changeSkip('skip_next', original);
+    expect(skipped).toMatchObject({ action: 'skip_next', disposition: 'applied', expected_skip_revision: 0, skip_revision: 1,
+      schedule: { enabled: true, revision: 1, next_run_at: preview.following_run_at,
+        skip_state: { revision: 1, skipped: { run_at: original.run_at, following_run_at: preview.following_run_at, undo_available: true } } } });
+    expect(skipped.schedule.skip_state?.next).toBeUndefined(); expect(f.inputs).toEqual([]);
+    f.clock(original.run_at); await f.service.tick(); expect(f.inputs).toEqual([]);
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_occurrences').get()).toEqual({ n: 0 });
+    f.clock(preview.following_run_at); await f.service.tick(); await f.settled(saved.session_id);
+    expect(f.inputs).toHaveLength(1); expect(f.inputs[0]?.scheduled_prompt?.due_at).toBe(preview.following_run_at);
+    expect(await f.service.get(saved.schedule_id)).toMatchObject({ enabled: true, revision: 1, next_run_at: NOW + 900000 });
+  });
+
+  it('replays exact changes and refuses old requests after skip, Undo and a later cycle returning to the same clock', async () => {
+    const f = fixture(), saved = (await f.service.create(recurring, 'skip-replay'))!, first = request(saved);
+    const skipped = await f.service.changeSkip('skip_next', first), restore = undo(skipped.schedule);
+    expect(await f.service.changeSkip('skip_next', first)).toMatchObject({ disposition: 'replayed', skip_revision: 1 });
+    await f.service.changeSkip('undo_skip', restore);
+    expect(await f.service.changeSkip('undo_skip', restore)).toMatchObject({ disposition: 'replayed', skip_revision: 2 });
+    await expect(f.service.changeSkip('skip_next', first)).rejects.toMatchObject({ code: 'conflict' });
+    const second = await f.service.changeSkip('skip_next', request(await f.service.get(saved.schedule_id)));
+    await expect(f.service.changeSkip('undo_skip', restore)).rejects.toMatchObject({ code: 'conflict' });
+    await f.service.changeSkip('undo_skip', undo(second.schedule));
+    await expect(f.service.changeSkip('skip_next', first)).rejects.toMatchObject({ code: 'conflict' });
+    expect(await f.service.get(saved.schedule_id)).toMatchObject({ enabled: true, revision: 1, next_run_at: first.run_at, skip_state: { revision: 4 } });
+    expect(f.db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedule_skips').get()).toEqual({ n: 1 });
+    expect(f.inputs).toEqual([]);
+  });
+
+  it('expires Undo at the original instant without rearming the skipped run, including after downtime', async () => {
+    const f = fixture(), saved = (await f.service.create(recurring, 'skip-expire'))!;
+    const changed = await f.service.changeSkip('skip_next', request(saved)), restore = undo(changed.schedule);
+    f.clock(saved.next_run_at!);
+    expect((await f.service.get(saved.schedule_id)).skip_state?.skipped?.undo_available).toBe(false);
+    await expect(f.service.changeSkip('undo_skip', restore)).rejects.toMatchObject({ code: 'conflict' });
+    expect((await f.service.get(saved.schedule_id)).next_run_at).toBe(changed.schedule.next_run_at);
+    f.clock(NOW + 1800000); await f.service.tick(); await f.settled(saved.session_id);
+    expect(f.inputs).toHaveLength(1); expect(f.inputs[0]?.scheduled_prompt?.due_at).toBe(NOW + 600000);
+  });
+
+  it.each(['queued', 'running'] as const)('leaves an existing %s run and its configuration revision intact through skip and Undo', async status => {
+    let paused = status === 'queued'; const held = latch();
+    const f = fixture({ isPaused: () => paused, beforeRun: () => held.promise });
+    try {
+      const saved = (await f.service.create(recurring, 'skip-with-' + status))!;
+      const manual = await f.service.runNow({ schedule_id: saved.schedule_id, expected_revision: 1, submission_id: 'existing-run' });
+      await vi.waitFor(async () => expect((await f.queue.snapshot(saved.session_id)).turns.find(t => t.turn_id === manual.turn_id)?.status).toBe(status));
+      const changed = await f.service.changeSkip('skip_next', request(saved));
+      await f.service.changeSkip('undo_skip', undo(changed.schedule));
+      expect((await f.queue.snapshot(saved.session_id)).turns.find(t => t.turn_id === manual.turn_id)?.status).toBe(status);
+      expect(await f.service.get(saved.schedule_id)).toMatchObject({ revision: 1, enabled: true, next_run_at: saved.next_run_at });
+      paused = false; held.release(); await f.settled(saved.session_id); expect(f.inputs).toHaveLength(1);
+    } finally { paused = false; held.release(); }
+  });
+
+  it('preserves a skip across request edits, but timing changes and pause invalidate its Undo', async () => {
+    const f = fixture(), saved = (await f.service.create(recurring, 'skip-edit'))!;
+    const changed = await f.service.changeSkip('skip_next', request(saved)), oldUndo = undo(changed.schedule);
+    const edited = (await f.service.update({ schedule_id: saved.schedule_id, expected_revision: 1, title: 'Renamed', prompt: 'A new request' }))!;
+    expect(edited).toMatchObject({ revision: 2, next_run_at: changed.schedule.next_run_at, skip_state: changed.schedule.skip_state });
+    expect(await f.service.changeSkip('skip_next', request(saved))).toMatchObject({ disposition: 'replayed', schedule: { revision: 2, next_run_at: changed.schedule.next_run_at } });
+    await expect(f.service.changeSkip('undo_skip', oldUndo)).rejects.toMatchObject({ code: 'conflict' });
+    await f.service.changeSkip('undo_skip', undo(edited));
+    const again = await f.service.changeSkip('skip_next', request(await f.service.get(saved.schedule_id)));
+    const retimed = (await f.service.update({ schedule_id: saved.schedule_id, expected_revision: 2, cron_expression: '*/10 * * * *' }))!;
+    expect(retimed.skip_state?.skipped).toBeUndefined(); expect(retimed.next_run_at).toBe(NOW + 600000);
+    await expect(f.service.changeSkip('undo_skip', undo(again.schedule))).rejects.toMatchObject({ code: 'conflict' });
+    const onceMore = await f.service.changeSkip('skip_next', request(retimed));
+    const paused = (await f.service.control('pause', { schedule_id: saved.schedule_id, expected_revision: retimed.revision }))!;
+    expect(paused.skip_state?.skipped).toBeUndefined(); expect(paused.next_run_at).toBeNull();
+    await expect(f.service.changeSkip('undo_skip', undo(onceMore.schedule))).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('keeps a concurrent skip when a request edit finishes an earlier asynchronous read', async () => {
+    const held = latch(); let block = false, waiting = false;
+    const f = fixture({ beforeReadPlans: async () => { if (block && !waiting) { waiting = true; await held.promise; } } });
+    const saved = (await f.service.create(recurring, 'skip-race'))!;
+    await f.service.runNow({ schedule_id: saved.schedule_id, expected_revision: 1, submission_id: 'history' }); await f.settled(saved.session_id);
+    block = true; const updating = f.service.update({ schedule_id: saved.schedule_id, expected_revision: 1, title: 'Edited while skipping' });
+    try {
+      await vi.waitFor(() => expect(waiting).toBe(true));
+      const skipped = await f.service.changeSkip('skip_next', request(saved)); held.release();
+      expect(await updating).toMatchObject({ revision: 2, next_run_at: skipped.schedule.next_run_at, skip_state: skipped.schedule.skip_state });
+    } finally { held.release(); await updating; }
+  });
+
+  it('rechecks the deadline after an asynchronous state read', async () => {
+    const held = latch(); let block = false, waiting = false;
+    const f = fixture({ beforeReadPlans: async () => { if (block && !waiting) { waiting = true; await held.promise; } } });
+    const saved = (await f.service.create(recurring, 'skip-deadline-race'))!;
+    await f.service.runNow({ schedule_id: saved.schedule_id, expected_revision: 1, submission_id: 'history' }); await f.settled(saved.session_id);
+    block = true; const changing = f.service.changeSkip('skip_next', request(saved));
+    try {
+      await vi.waitFor(() => expect(waiting).toBe(true)); f.clock(saved.next_run_at!); held.release();
+      await expect(changing).rejects.toMatchObject({ code: 'conflict' });
+      expect((await f.service.get(saved.schedule_id)).next_run_at).toBe(saved.next_run_at);
+      expect(f.db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedule_skips').get()).toEqual({ n: 0 });
+    } finally { held.release(); await changing.catch(() => {}); }
+  });
+
+  it('refuses an already-admitted occurrence even if its planned instant is still in the future', async () => {
+    const f = fixture(), saved = (await f.service.create(recurring, 'skip-admitted'))!;
+    const stored = f.db.prepare('SELECT payload FROM chat_prompt_schedules WHERE schedule_id=?').get(saved.schedule_id) as { payload: string };
+    f.db.prepare('INSERT INTO chat_prompt_occurrences VALUES (?,?,?,?,?,NULL,?)').run(saved.schedule_id + ':1:' + saved.next_run_at,
+      saved.schedule_id, saved.session_id, 1, saved.next_run_at, stored.payload);
+    await expect(f.service.previewSkip(request(saved))).rejects.toMatchObject({ code: 'conflict' });
+    await expect(f.service.changeSkip('skip_next', request(saved))).rejects.toMatchObject({ code: 'conflict' });
+    expect((await f.service.get(saved.schedule_id)).next_run_at).toBe(saved.next_run_at);
+  });
+
+  it('retains skip and replay receipts through a SQLite close and reopen', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'prompt-skip-')); cleanup.push(() => rmSync(folder, { recursive: true, force: true }));
+    const file = join(folder, 'chat.sqlite'), f = fixture({ file }), saved = (await f.service.create(recurring, 'skip-restart'))!;
+    const original = request(saved), skipped = await f.service.changeSkip('skip_next', original);
+    f.queue.close(); f.db.close();
+    const db = new Database(file); db.pragma('foreign_keys = ON'); const store = createChatStore(db), plans = createSqliteChatPlanStore(db);
+    const restored = createPromptSchedules({ db, store, queue: { register() {} } as never, instanceId: signature.instance_id,
+      runTurn: f.runTurn, now: () => NOW, readPlans: (session, turn) => plans.listForTurn(session, turn) });
+    cleanup.push(() => db.close());
+    expect(await restored.get(saved.schedule_id)).toMatchObject({ revision: 1, next_run_at: skipped.schedule.next_run_at, skip_state: skipped.schedule.skip_state });
+    expect(await restored.changeSkip('skip_next', original)).toMatchObject({ disposition: 'replayed', skip_revision: 1 });
+    const result = await restored.changeSkip('undo_skip', undo(skipped.schedule));
+    expect(result.schedule).toMatchObject({ enabled: true, revision: 1, next_run_at: saved.next_run_at });
+    await restored.control('remove', { schedule_id: saved.schedule_id });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedule_skips').get()).toEqual({ n: 0 });
+  });
+
+  it('keeps daily fixed-time skips on the existing timezone and repeated-hour policy', async () => {
+    const f = fixture(); f.clock(Date.parse('2026-10-31T12:00Z'));
+    const saved = (await f.service.create({ ...recurring, cron_expression: '30 1 * * *', time_zone: 'America/New_York' }, 'skip-dst'))!;
+    const preview = await f.service.previewSkip(request(saved));
+    expect(preview.run_at).toBe(Date.parse('2026-11-01T05:30Z')); expect(preview.following_run_at).toBe(Date.parse('2026-11-02T06:30Z'));
+    const changed = await f.service.changeSkip('skip_next', request(saved));
+    expect(changed.schedule.next_run_at).toBe(preview.following_run_at); expect(changed.schedule.time_zone).toBe('America/New_York');
+    await f.service.changeSkip('undo_skip', undo(changed.schedule));
+    expect((await f.service.get(saved.schedule_id)).next_run_at).toBe(preview.run_at);
+  });
+
+  it('requires paired RPC callers, an unlocked vault, valid targets and a user-owned recurring schedule', async () => {
+    let key: Uint8Array | null = new Uint8Array(32).fill(42); const f = fixture({ key: () => key });
+    const saved = (await f.service.create(recurring, 'skip-authority'))!, input = request(saved);
+    const slice = makeChatHandlers({ store: f.store, orchestrator: f.orchestrator, selfSignature: signature })!;
+    const handlers = slice.handlers as unknown as Record<string, (args: unknown, client: { instance_id: string | null }) => Promise<unknown>>;
+    for (const action of ['skip_preview', 'skip_next', 'undo_skip'] as const) {
+      const method = 'chat.schedule.' + action;
+      expect(slice.methods).toContain(method); expect(CHAT_RPC_METHODS).toContain(method); expect(SERVER_RPC_METHODS).toContain(method); expect(isReservedLocalRpc(method)).toBe(true);
+      await expect(handlers[method]!(input, { instance_id: null })).rejects.toMatchObject({ code: 'unauthorized' });
+    }
+    key = null; await expect(handlers['chat.schedule.skip_next']!(input, { instance_id: 'paired' })).rejects.toThrow(/locked/i); key = new Uint8Array(32).fill(42);
+    for (const invalid of [{ ...input, expected_skip_revision: -1 }, { ...input, expected_revision: undefined }, { ...input, run_at: NaN }, { ...input, enabled: false }])
+      await expect(f.service.changeSkip('skip_next', invalid)).rejects.toMatchObject({ code: 'bad_request' });
+    const managed = (await f.service.create(recurring, 'skip-managed', false, { managed_by: 'agenda' }))!;
+    expect(managed.skip_state).toBeUndefined(); await expect(f.service.changeSkip('skip_next', request(managed))).rejects.toMatchObject({ code: 'forbidden' });
+    const oneOff = (await f.service.create(once, 'skip-once'))!; expect(oneOff.skip_state).toBeUndefined();
+    await expect(f.service.changeSkip('skip_next', request(oneOff))).rejects.toMatchObject({ code: 'conflict' });
+    expect(f.inputs).toEqual([]); expect(f.db.prepare('SELECT COUNT(*) AS n FROM chat_prompt_schedule_skips').get()).toEqual({ n: 0 });
   });
 });

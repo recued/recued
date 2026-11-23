@@ -25,11 +25,11 @@ export const mountCustomerCreditCorrections = (opts: {
   const editor = doc.createElement('form');editor.hidden = true;editor.tabIndex = -1;
   editor.setAttribute('aria-label','Correct invoice credit');editor.setAttribute('data-credit-correction-editor','');root.appendChild(editor);
   const heading = add('h3','Correct invoice credit',editor);
-  const modeLabel = add('label','Correction action',editor);const mode = doc.createElement('select');mode.name = 'correction_action';mode.id = 'recued-credit-correction-action-'+crypto.randomUUID();modeLabel.setAttribute('for',mode.id);editor.appendChild(mode);
+  const modeField = add('div','',editor);modeField.className = 'financial-field';const modeLabel = add('label','Correction action',modeField);const mode = doc.createElement('select');mode.name = 'correction_action';mode.id = 'recued-credit-correction-action-'+crypto.randomUUID();modeLabel.setAttribute('for',mode.id);modeField.appendChild(mode);
   for (const [value,text] of [['reverse','Reverse this credit'],['replace','Reverse and replace this credit']]) {
     const option = doc.createElement('option');option.value = value!;option.textContent = text!;mode.appendChild(option);
   }
-  const fields = add('div','',editor);
+  const fields = add('div','',editor);fields.className = 'financial-fields';
   const input = (label: string,type: string,name: string,required = false,max = 512) => {
     const host = add('label',label,fields);const node = doc.createElement('input');node.type = type;node.name = name;
     node.required = required;node.maxLength = max;host.appendChild(node);return node;
@@ -40,14 +40,14 @@ export const mountCustomerCreditCorrections = (opts: {
   const reverseLabel = add('label','Reverse date',editor);const reversed = doc.createElement('input');reversed.type = 'date';reversed.name = 'credit_reversed_on';reversed.required = true;reverseLabel.appendChild(reversed);
   const reasonLabel = add('label','Reason for correction (shown on customer copies)',editor);const reason = doc.createElement('textarea');reason.name = 'correction_reason';reason.required = true;reason.maxLength = 1000;reasonLabel.appendChild(reason);
   const previewButton = doc.createElement('button');previewButton.type = 'submit';previewButton.textContent = 'Preview credit correction';editor.appendChild(previewButton);
-  const close = button('Close credit correction',editor,() => reset());
+  const close = button('Close credit correction',editor,() => reset());const editorActions = add('div','',editor);editorActions.className = 'financial-actions';editorActions.appendChild(previewButton);editorActions.appendChild(close);
   const status = add('p','',editor);status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   const previewHost = add('div','',editor);previewHost.setAttribute('data-credit-correction-preview','');
   const review = button('Review credit correction',editor,() => { void submitReview(); });review.hidden = true;
   const runs = add('a','Review in Runs',editor);runs.hidden = true;
   add('h3','Credit correction history');const historyStatus = add('p','');historyStatus.setAttribute('role','status');
   const historyHost = add('div','');historyHost.setAttribute('data-credit-correction-history','');
-  const historyActions = add('div','');
+  const historyActions = add('div','');historyActions.className = 'financial-actions';
   const historyRefresh = button('Refresh credit correction history',historyActions,() => { void loadHistory(cursor,[...previous]); });
   const newer = button('Newer credit corrections',historyActions,() => { if (previous.length) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
   const older = button('Older credit corrections',historyActions,() => { if (nextCursor) void loadHistory(nextCursor,[...previous,cursor]); });

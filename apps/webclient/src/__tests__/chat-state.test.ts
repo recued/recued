@@ -256,6 +256,20 @@ describe('reduceChatThreadEvent', () => {
     ).toBeUndefined();
   });
 
+  it('keeps the recipe a started call runs, by its name, for its line', () => {
+    let s = initialChatThreadState();
+    s = hydrateThreadFromSnapshot(s, { ...mkSession('sess-1'), messages: [] });
+    s = beginInFlightTurn(s, 'turn-1');
+    const started = (tool_name: string, recipe_name?: string) => ({
+      kind: 'chat.tool_call_started', session_id: 'sess-1', turn_id: 'turn-1', tool_name, tier: 2, args: {}, cursor: 1,
+      ...(recipe_name !== undefined ? { recipe_name } : {}),
+    }) as unknown as ServerEvent;
+    s = reduceChatThreadEvent(s, started('recued-core/weekly-digest', 'Weekly digest'));
+    s = reduceChatThreadEvent(s, started('recued_op_hubspot_deal_search'));
+    expect(s.inflight?.tool_calls[0]?.recipe_name).toBe('Weekly digest');
+    expect(s.inflight?.tool_calls[1]).not.toHaveProperty('recipe_name');
+  });
+
   it('keeps the error detail on a tool_call_completed error (D-182)', () => {
     let s = initialChatThreadState();
     s = hydrateThreadFromSnapshot(s, { ...mkSession('sess-1'), messages: [] });
@@ -532,7 +546,7 @@ describe('PB7 webclient failure paint reducer', () => {
 
   const decoderFailure = (
     overrides: Partial<{
-      reason: 'no_source' | 'provider_failure' | 'invalid_output';
+      reason: 'no_source' | 'provider_failure' | 'invalid_output' | 'model_unavailable' | 'output_limit';
       site: 'initial' | 'tool_loop';
     }> = {},
   ) => ({
@@ -619,6 +633,30 @@ describe('PB7 webclient failure paint reducer', () => {
         settings_link: true,
       },
     ]);
+  });
+
+  it('marks a model its provider does not have with the Settings affordance too', () => {
+    // Choosing another model there is the only fix.
+    const s = reduceChatThreadEvent(
+      hydrated(),
+      decoderFailure({ reason: 'model_unavailable' }),
+    );
+
+    expect(s.turn_failures).toEqual([
+      {
+        turn_id: 'turn-1',
+        kind: 'engine.decoder_unavailable',
+        text: 'the provider does not have this AI model — choose another in Settings → AI / Models',
+        settings_link: true,
+      },
+    ]);
+  });
+
+  it('marks a model that spent its whole allowance before answering with the Settings affordance', () => {
+    // Its Thinking setting is there.
+    const s = reduceChatThreadEvent(hydrated(), decoderFailure({ reason: 'output_limit' }));
+    expect(s.turn_failures[0]).toMatchObject({ settings_link: true });
+    expect(s.turn_failures[0]?.text).toContain('turn its thinking off in Settings → AI / Models');
   });
 
   it('does not project non-failure, non-transparency, or unknown transparency payloads', () => {

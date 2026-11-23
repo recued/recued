@@ -336,9 +336,15 @@ export interface PlanApprovalStore {
   unlinkHold?(plan_id: string, run_id: string): MaybePromise<ChatPlanProposal | undefined>;
   /** D-329 — the proposal a hold's run belongs to, once it settles. */
   findByHoldRun?(run_id: string): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-177 §N.15.9 — the hold was kept for its round's one approval: a still-proposed plan held by
+   * `run_id` gets `hold.group`. `undefined` for a plan gone; any other is returned as it is. */
+  setHoldGroup?(plan_id: string, run_id: string, group: string): MaybePromise<ChatPlanProposal | undefined>;
   /** D-329 — the hold expired unanswered: cancel the still-proposed plan and stamp
    * `hold.lapsed_at`. A plan already resolved, or held by another run, is returned as it is. */
   lapseHold?(plan_id: string, run_id: string, lapsed_at: number): MaybePromise<ChatPlanProposal | undefined>;
+  /** D-343 — a newer version was proposed before the hold was answered: cancel the still-proposed
+   * plan and stamp `hold.replaced_at`. A plan already resolved, or held by another run, is returned as it is. */
+  replaceHold?(plan_id: string, run_id: string, replaced_at: number): MaybePromise<ChatPlanProposal | undefined>;
   /** D-336 slice E — the owner changed a held proposal's arguments while approving it: `args`
    * (and `args_hash`) become what runs. Only a still-proposed plan held by `run_id` changes;
    * `undefined` for any other, which is left as it is. Its `memory_conflicts` were found for
@@ -408,7 +414,9 @@ export interface SynchronousPlanApprovalStore extends PlanApprovalStore {
   ): ChatPlanExecutionReceipt | undefined;
   unlinkHold(plan_id: string, run_id: string): ChatPlanProposal | undefined;
   findByHoldRun(run_id: string): ChatPlanProposal | undefined;
+  setHoldGroup(plan_id: string, run_id: string, group: string): ChatPlanProposal | undefined;
   lapseHold(plan_id: string, run_id: string, lapsed_at: number): ChatPlanProposal | undefined;
+  replaceHold(plan_id: string, run_id: string, replaced_at: number): ChatPlanProposal | undefined;
   editHeld(plan_id: string, run_id: string, args: Record<string, unknown>): ChatPlanProposal | undefined;
   findPendingHeld(
     session_id: string,
@@ -576,6 +584,19 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
     return undefined;
   };
 
+  const setHoldGroup = (
+    plan_id: string,
+    run_id: string,
+    group: string,
+  ): ChatPlanProposal | undefined => {
+    const existing = byPlanId.get(plan_id);
+    if (!existing) return undefined;
+    if (existing.status !== 'proposed' || existing.hold?.run_id !== run_id) return existing;
+    const next: ChatPlanProposal = { ...existing, hold: { ...existing.hold, group } };
+    byPlanId.set(plan_id, next);
+    return next;
+  };
+
   const lapseHold = (
     plan_id: string,
     run_id: string,
@@ -588,8 +609,23 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
       ...existing,
       status: 'cancelled',
       resolved_at: lapsed_at,
-      hold: { run_id, lapsed_at },
+      // A lapsed member of a round's group stays in its group's card.
+      hold: { run_id, lapsed_at, ...(existing.hold.group !== undefined ? { group: existing.hold.group } : {}) },
     };
+    byPlanId.set(plan_id, next);
+    return next;
+  };
+
+  const replaceHold = (
+    plan_id: string,
+    run_id: string,
+    replaced_at: number,
+  ): ChatPlanProposal | undefined => {
+    const existing = byPlanId.get(plan_id);
+    if (!existing) return undefined;
+    if (existing.status !== 'proposed' || existing.hold?.run_id !== run_id) return existing;
+    const next: ChatPlanProposal = { ...existing, status: 'cancelled', resolved_at: replaced_at,
+      hold: { run_id, replaced_at, ...(existing.hold.group !== undefined ? { group: existing.hold.group } : {}) } };
     byPlanId.set(plan_id, next);
     return next;
   };
@@ -725,7 +761,9 @@ export const createPlanApprovalStore = (): SynchronousPlanApprovalStore => {
     recordExecution,
     unlinkHold,
     findByHoldRun,
+    setHoldGroup,
     lapseHold,
+    replaceHold,
     editHeld,
     findPendingHeld,
     answerMessageId: (plan_id: string): string | undefined => messageIdByPlanId.get(plan_id),

@@ -19,6 +19,7 @@
 
 import type {
   HandlerSlice,
+  LocalRecipeWebhookDoorPreview,
   LocalRecipeWebhookDoorStatus,
   LocalRecipeWebhookStatus,
   RecipeDefinition,
@@ -31,7 +32,9 @@ import {
   formResponseTriggerFormScope,
   type FormFieldContractFormView,
 } from '@recued/contracts';
-import { parseRecipe } from '@recued/recipes';
+import { createHash } from 'node:crypto';
+import { canonicalJsonString, parseRecipe } from '@recued/recipes';
+import { closedByOwner, doorCapabilityChanged } from './mint-door-contract.js';
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
 import { checkFormContract } from './form-contract-gate.js';
 import { checkInlineOpSteps } from './op-step-save-check.js';
@@ -43,17 +46,25 @@ import {
 import type { RecipeStore } from './recipe-store.js';
 import { RecipePackOwnershipError } from './recipe-store.js';
 import {
+  currentRecipeDoorId,
+  deriveWebhookDoorCapability,
   describeWebhookDoorRefusal,
+  followMainDishWebhookDoors,
+  ownerDoorClosing,
+  ownerLeftDoorClosed,
   reconcileWebhookDoors,
   type WebhookDoorEnrollDeps,
   type WebhookDoorOutcome,
 } from './webhook-door-enroll.js';
 import {
+  recipeRowStamp,
   WebhookConsumerStoreError,
   type WebhookConsumerSnapshot,
   type WebhookConsumerStore,
 } from './storage/webhook-consumer-store.js';
 import type { WsClient } from './ws-server.js';
+import { recipeRemainsStored } from './webhook-replacement-finish.js';
+import { RecordsNonOwnerExposureError } from './records/non-owner-exposure.js';
 
 export interface RecipeSaveHandlerDeps {
   store: RecipeStore;
@@ -99,14 +110,22 @@ const webhookStoreError = (method: string, error: unknown): RpcError => {
   return new RpcError('internal_error', `${method}: webhook binding storage is unavailable`, 500);
 };
 
+/** D-201 Slice 10S (10Q finding 10) — the draft as the keep-on consent covers
+ *  it: SHA-256 over its canonical form. 10M took the recipe's 32-bit cache
+ *  hash (`hashRecipe`, FNV-1a), whose own comment says to use SHA-256 for
+ *  integrity: two drafts differing only in description shared a consent. */
+const draftDigest = (recipe: RecipeDefinition): string =>
+  createHash('sha256').update(canonicalJsonString(recipe)).digest('hex');
+
 /** The publisher the recipe's trigger rows were written under. `recipe.save`
  *  stamps `publisher_id ?? 'kitchen'` on both the stored row and the trigger
  *  rows, so the stored row is the authoritative read-back. */
 const storedPublisher = (deps: RecipeSaveHandlerDeps, recipeId: string): string =>
   deps.store.getStored(recipeId)?.publisher_id || 'kitchen';
 
-/** D-209 #1 W2b — map a save-time enrollment outcome onto the wire shape. */
-const doorStatusFromOutcome = (
+/** D-209 #1 W2b — map a save-time enrollment outcome onto the wire shape.
+ *  Exported for its test (D-201 Slice 10AX): a door kept closed is its owner's. */
+export const doorStatusFromOutcome = (
   outcome: WebhookDoorOutcome,
 ): LocalRecipeWebhookDoorStatus => {
   if (outcome.kind === 'minted') {
@@ -128,10 +147,20 @@ const doorStatusFromOutcome = (
       },
     };
   }
+  // D-201 Slice 10AF (10AE finding 16) — a door its owner closed, kept closed:
+  // as the status call reads it. It read as missing.
+  // D-201 Slice 10AX (10AS finding 13) — its owner's, as the card says.
+  if (outcome.kind === 'kept_revoked') return { ...CLOSED_DOOR, closed_by_owner: true };
   // A store fault after the save committed — same fail-closed posture as a
   // crash in the mint window; the remedy is the same re-save.
   return { state: 'missing' };
 };
+
+/** D-201 Slice 10AF (10AE finding 16) — a closed door, as `missing` with
+ *  `closed`: a Kitchen before 10AC reads an unknown `state` as an open door
+ *  ("Anything let through from now on can start this Recipe"), and `missing`
+ *  as one that lets nothing through, which a closed door is. */
+const CLOSED_DOOR: LocalRecipeWebhookDoorStatus = Object.freeze({ state: 'missing', closed: true }) as LocalRecipeWebhookDoorStatus;
 
 /** D-209 #1 W2b — the door's CURRENT state, recomputed from stores (the
  *  status / arm / disarm read path; the save path prefers the enrollment
@@ -141,6 +170,37 @@ const localWebhookDoorStatus = (
   recipe: RecipeDefinition,
 ): LocalRecipeWebhookDoorStatus => {
   const door = deps.webhookDoor!;
+  const publisher = storedPublisher(deps, recipe.recipe_id);
+  const contractId = door.consumerStore.doorContractIdForRecipe(
+    'local_recipe',
+    recipe.recipe_id,
+    recipe.recipe_id,
+    publisher,
+  );
+  // D-201 Slice 10AX (10AS finding 13) — its owner's closing, read as the card
+  // reads it, said beside a refusal too: a version that cannot have a door,
+  // under its owner's closing, read "refused" here and "you closed it" there.
+  const closing = ownerDoorClosing(door, 'local_recipe', recipe.recipe_id, recipe.recipe_id, publisher);
+  const ownerFacts = closing === null ? {} : {
+    closed_by_owner: true as const,
+    ...(contractId === null ? { no_door: true as const } : {}),
+    ...(closing === 'answer' ? { no_door_yet: true as const } : {}),
+  };
+  // D-201 Slice 10AF (10AE finding 15) — a recipe its exposure check refuses
+  // cannot have a door as it stands, as the card says (`refused`). It read as
+  // missing, and Kitchen's switch was offered and failed `webhook_not_ready`.
+  try {
+    door.preflightNonOwnerRecipeExposure?.(recipe, 'webhook');
+  } catch (error) {
+    if (error instanceof RecordsNonOwnerExposureError) {
+      return {
+        state: 'refused',
+        refusal: { reason: 'exposure_refused', step_id: '<recipe>', detail: error.message },
+        ...ownerFacts,
+      };
+    }
+    throw error;
+  }
   const config = door.resolveConfig(recipe.recipe_id);
   const dispatchRecipe = door.resolveDoorRecipe?.(recipe, config ?? {})
     ?? { ok: true as const, recipe };
@@ -152,6 +212,7 @@ const localWebhookDoorStatus = (
         step_id: '<recipe>',
         detail: dispatchRecipe.reason,
       },
+      ...ownerFacts,
     };
   }
   const resolveOp = dispatchRecipe.resolveOp ?? door.resolveOp;
@@ -172,24 +233,63 @@ const localWebhookDoorStatus = (
         step_id: derived.refusal.step_id,
         detail: describeWebhookDoorRefusal(derived.refusal),
       },
+      ...ownerFacts,
     };
   }
-  const contractId = door.consumerStore.doorContractIdForRecipe(
-    'local_recipe',
-    recipe.recipe_id,
-    recipe.recipe_id,
-    storedPublisher(deps, recipe.recipe_id),
-  );
-  const def = contractId === null ? null : door.definitionStore.get(contractId);
-  if (contractId === null || def === null
-    || (def.revoked_at !== undefined && def.revoked_at !== null)) {
-    return { state: 'missing' };
+  // D-201 Slice 10AO (10AM finding 13) — rows that carry no door read as the
+  // card and Kitchen's question read them (`ownerLeftDoorClosed`): closed when
+  // the owner closed the door the recipe had last, or kept their closing for a
+  // door not made yet. It read the rows only, and said "missing" where the
+  // card said closed and the question refused `door_revoked`.
+  // D-201 Slice 10AX (10AS finding 13) — and which: no door now (`no_door`),
+  // closed before one was made (`no_door_yet`), as the card says. "The door
+  // behind this webhook is closed" read here where the card said there was none.
+  if (contractId === null) {
+    return closing !== null ? { ...CLOSED_DOOR, ...ownerFacts } : { state: 'missing' };
+  }
+  const def = door.definitionStore.get(contractId);
+  if (def === null) return { state: 'missing' };
+  // D-201 Slice 10AC (10AA finding 9) — closed, which Kitchen's switch opens
+  // again, as the card's "Open its door" does. It read as missing, and Kitchen
+  // offered no switch, telling the owner to save again.
+  // D-201 Slice 10AX (10AS finding 13) — whose closing, as the card says.
+  if (def.revoked_at !== undefined && def.revoked_at !== null) {
+    return closedByOwner(def) ? { ...CLOSED_DOOR, closed_by_owner: true } : CLOSED_DOOR;
   }
   return {
     state: 'minted',
     contract_id: contractId,
     operation_ids: [...(def.scope?.operation_ids ?? [])],
   };
+};
+
+/** D-201 Slice 10AJ (10AI finding 2) — whether a save switched off keeps the
+ *  door its triggers carry, as its door step decides it: that door is open, the
+ *  exposure check passes, and this version derives the same door, so the step
+ *  reuses it with the owner's switch-offs (D-201 Slice 10S). Any doubt reads as
+ *  a new door, which starts clean. */
+const webhookSaveKeepsItsDoor = (
+  deps: RecipeSaveHandlerDeps,
+  recipe: RecipeDefinition,
+  publisher: string,
+): boolean => {
+  const door = deps.webhookDoor;
+  if (door === undefined) return false;
+  try {
+    const currentId = door.consumerStore.doorContractIdForRecipe(
+      'local_recipe',
+      recipe.recipe_id,
+      recipe.recipe_id,
+      publisher,
+    );
+    const current = currentId === null ? null : door.definitionStore.get(currentId);
+    if (current === null || (current.revoked_at !== undefined && current.revoked_at !== null)) return false;
+    door.preflightNonOwnerRecipeExposure?.(recipe, 'webhook');
+    const derived = deriveWebhookDoorCapability({ recipe_id: recipe.recipe_id, recipe }, door);
+    return derived.ok && !doorCapabilityChanged(current, derived.capability).changed;
+  } catch {
+    return false;
+  }
 };
 
 const localWebhookStatus = (
@@ -210,11 +310,33 @@ const localWebhookStatus = (
     && requirements.length > 0
     && rows.length === expected.size
     && rows.every((row) => expected.has(row.logical_binding));
-  const door = declared && deps.webhookDoor !== undefined
+  const status = declared && deps.webhookDoor !== undefined
     ? doorOutcome !== undefined
       ? doorStatusFromOutcome(doorOutcome)
       : localWebhookDoorStatus(deps, recipe)
     : undefined;
+  // D-201 Slice 10S (10Q finding 12) — what the owner switched off on it, which
+  // the switch-on list must not show as let through.
+  // D-201 Slice 10Y (10V finding 20) — only an operation the door has: a
+  // switch-off carried onto a door without it (it stays, should a later
+  // version take it back) is not one of this door's. And one it took back is
+  // not listed as added: it stays off, so the save did not change that.
+  const doorOperations = new Set(status?.operation_ids ?? []);
+  const switchedOff = status?.state === 'minted' && status.contract_id !== undefined
+    ? deps.webhookDoor!.grantEntryStore.listForContract(status.contract_id)
+      .filter((row) => row.granted === false && doorOperations.has(row.entry_key))
+      .map((row) => row.entry_key)
+      .sort()
+    : [];
+  const door = status !== undefined && switchedOff.length > 0
+    ? {
+        ...status,
+        switched_off: switchedOff,
+        ...(status.added !== undefined
+          ? { added: status.added.filter((entry) => !switchedOff.includes(entry)) }
+          : {}),
+      }
+    : status;
   return {
     declared,
     configured,
@@ -350,6 +472,10 @@ export const saveRecipeInline = (
   recipe: RecipeDefinition,
   publisher_id?: string,
   webhookBindings?: readonly WebhookIngressBindingSelection[],
+  /** D-201 Slice 10I — the owner's answer to the save's question. */
+  webhookOn?: boolean,
+  /** D-201 Slice 10M — the `consent` of the question answered. */
+  webhookConsent?: string,
 ): {
   saved: true;
   recipe_id: string;
@@ -366,6 +492,9 @@ export const saveRecipeInline = (
   };
   webhook?: LocalRecipeWebhookStatus;
 } => {
+  // D-201 Slice 10M — the draft as the client sent it: the gates below
+  // normalize it in place, and the keep-on question hashed it as sent.
+  const receivedHash = webhookOn === true ? draftDigest(recipe) : undefined;
   const opWarnings = assertRecipeAuthoringGates(deps,recipe);
 
   const publisher = publisher_id ?? 'kitchen';
@@ -391,7 +520,67 @@ export const saveRecipeInline = (
   if (hasWebhook && (!deps.webhookConsumerStore || webhookBindings === undefined)) {
     throw new RpcError('bad_request', D201_WEBHOOK_RUNTIME_UNAVAILABLE, 400);
   }
+  // D-201 Slice 10I — "save and keep its webhook on": the owner answered the
+  // save's question, which is the consent switching it on gives, for exactly
+  // the version being saved. Every check switching it on makes, made before
+  // anything changes: a recipe that cannot be on refuses here, not halfway.
+  const keepOn = webhookOn === true;
+  if (keepOn) {
+    if (!hasWebhook || (recipe.webhook_triggers?.length ?? 0) === 0) {
+      throw new RpcError(
+        'webhook_not_ready',
+        'recipe.save: only a recipe with a webhook trigger can keep its webhook on',
+        409,
+      );
+    }
+    // D-201 Slice 10S (10Q finding 5) — the question was asked of the door and
+    // history under the publisher the recipe was saved with, and a save acts
+    // under the one it names: keeping it on keeps that publisher. No client
+    // names another; a caller that does saves with the webhook switched off.
+    if (existingStored !== null && (existingStored.publisher_id || 'kitchen') !== publisher) {
+      throw new RpcError(
+        'webhook_not_ready',
+        `recipe.save: keeping its webhook on keeps the publisher it was saved under ('${existingStored.publisher_id || 'kitchen'}'); `
+          + 'save under it, or save and switch the webhook off',
+        409,
+      );
+    }
+    // D-201 Slice 10M — only an answer to the question as it stands now. A
+    // webhook switched off since, in another tab, is not switched back on.
+    if (deps.webhookConsumerStore?.isConsumerEnabled('local_recipe', recipe.recipe_id) !== true) {
+      throw new RpcError(
+        'webhook_consent_stale',
+        'recipe.save: its webhook was switched off since you were asked; save again',
+        409,
+      );
+    }
+    const preview = previewLocalWebhookDoor(deps, recipe, webhookBindings, receivedHash, publisher);
+    if (preview?.state === 'refused') {
+      // D-201 Slice 10S (10Q finding 11) — the owner answered a question that
+      // offered keeping it on (a refused one offers no such answer), so this
+      // changed since: a door revoked under Contracts, say. Stale, so Kitchen
+      // asks again and shows why. Without an answer it was never askable.
+      throw new RpcError(
+        webhookConsent !== undefined ? 'webhook_consent_stale' : 'webhook_not_ready',
+        `recipe.save: this version cannot keep its webhook on: ${preview.refusal?.detail ?? 'it cannot have a webhook door'}`,
+        409,
+      );
+    }
+    // What the save would allow, against what the owner was shown: any change
+    // (the draft, a connection or setting, a door revoked or an operation
+    // switched off under Contracts, the history) asks again.
+    if (preview !== null && preview.consent !== webhookConsent) {
+      throw new RpcError(
+        'webhook_consent_stale',
+        'recipe.save: what keeping its webhook on would allow changed since you were asked; save again to see it',
+        409,
+      );
+    }
+  }
 
+  // D-201 Slice 10AJ (10AI finding 2) — read before the replacement moves the
+  // triggers: whether this save, switched off, keeps the door they carry.
+  const saveKeepsItsDoor = hasWebhook && !keepOn && webhookSaveKeepsItsDoor(deps, recipe, publisher);
   let priorWebhook: WebhookConsumerSnapshot | null = null;
   if (deps.webhookConsumerStore) {
     try {
@@ -408,6 +597,8 @@ export const saveRecipeInline = (
         priorWebhook = deps.webhookConsumerStore.replaceConsumer({
           consumer_kind: 'local_recipe',
           consumer_id: recipe.recipe_id,
+          // D-201 Slice 10AD (10AA finding 21) — as the start would finish it.
+          recipeRemains: (recipeId, publisherId) => recipeRemainsStored(deps.store, recipeId, publisherId),
           requirements: hasWebhook ? recipe.webhook_requirements ?? [] : [],
           selections: hasWebhook ? webhookBindings ?? [] : [],
           recipes: hasWebhook
@@ -417,7 +608,26 @@ export const saveRecipeInline = (
                 webhook_triggers: recipe.webhook_triggers ?? [],
               }]
             : [],
-          enabled: false,
+          // Saved on when the owner kept it on, so a save that keeps the
+          // webhook setup continues its bindings and keeps their waiting
+          // deliveries and dead letters (Slice 10F's rule); else off. A
+          // replacement saved on makes every check switching it on makes (a
+          // way in that is on, its profile, registration mode, environment,
+          // events and paired connection) and refuses before writing a row.
+          enabled: keepOn,
+          // D-201 Slice 10AF (10AE finding 5) — switched off, a save starts its
+          // door clean (D-201 Slice 10M): what the owner did to the door it had
+          // is forgotten with the replacement itself, so a door step that fails
+          // after it does not bring that back at the next switch-on. A save that
+          // drops the webhook keeps it as the door the recipe had last.
+          // D-201 Slice 10AJ (10AI finding 2) — unless it keeps its door: an
+          // unchanged door that is open, which the door step reuses with the
+          // owner's switch-offs (10S). Forgotten, a fault in that step left the
+          // next switch-on nothing to carry them from, so it granted them again.
+          ...(hasWebhook && !keepOn && !saveKeepsItsDoor ? { forget_last_doors: true } : {}),
+          // D-201 Slice 10X — the row as it stands, so a start finishing this
+          // replacement can tell whether the save committed.
+          prior_recipe_stamp: recipeRowStamp(existingStored),
         });
       }
     } catch (error) {
@@ -449,18 +659,6 @@ export const saveRecipeInline = (
     }
     throw error;
   }
-  if (priorWebhook && deps.webhookConsumerStore) {
-    try {
-      // The binding store deliberately leaves prior claims detached until the
-      // recipe row commits, so a failed save can restore them exactly. Once the
-      // cross-store save succeeds, cancel that superseded work and release its
-      // decoded-payload retention pins.
-      deps.webhookConsumerStore.finalizeConsumerReplacement(priorWebhook);
-    } catch (error) {
-      throw webhookStoreError('recipe.save', error);
-    }
-  }
-
   // D-209 #1 W2b — the DOOR. Strictly after the cross-store save committed:
   // a mint placed inside/before `replaceConsumer` would leak an orphan live
   // door when the save fails and rolls back. Never blocks the save (drafts
@@ -483,6 +681,11 @@ export const saveRecipeInline = (
           // prefix keeps it off MCP), so the minting authority is the owner.
           mintedBy: 'user_self',
           retireReason: hasWebhook ? 'resaved' : 'webhook_declarations_removed',
+          // D-201 Slice 10M (the owner's call) — kept on, what the owner
+          // switched off under Contracts stays off, as a pack update keeps it;
+          // the question listed them. Switched off, a save starts the door
+          // clean, and switching it on shows it whole.
+          ...(keepOn ? { keepOwnerRevoked: true } : {}),
         },
         deps.webhookDoor,
       ).get(recipe.recipe_id);
@@ -493,6 +696,36 @@ export const saveRecipeInline = (
       };
     }
   }
+  if (priorWebhook && deps.webhookConsumerStore) {
+    try {
+      // The binding store deliberately leaves prior claims detached until the
+      // recipe row commits, so a failed save can restore them exactly. Once the
+      // cross-store save succeeds, cancel that superseded work and release its
+      // decoded-payload retention pins.
+      // D-201 Slice 10S (10Q finding 4) — a save keeps the recipe: what it no
+      // longer takes closes as saved with a different setup, not as removed.
+      // D-201 Slice 10U (10Q finding 9) — after the door, not before it: the
+      // record this clears then stands until the door does, so a process that
+      // dies before the door leaves the next start a record to make it from.
+      // Before, a death between the two re-homed the rows onto triggers with
+      // no door, and the first poll cancelled them unseen.
+      // D-201 Slice 10AH (10AE finding 26) — asked as the replace above, the
+      // start and the next save ask it (`recipeRemainsStored`): the recipe as
+      // stored, under the publisher the trigger names. A save under another
+      // publisher closed as saved differently here and as removed by the start.
+      deps.webhookConsumerStore.finalizeConsumerReplacement(priorWebhook, {
+        recipeRemains: (recipeId, publisherId) => recipeRemainsStored(deps.store, recipeId, publisherId),
+      });
+    } catch (error) {
+      throw webhookStoreError('recipe.save', error);
+    }
+  }
+
+  // D-201 Slice 10X — kept on, a mint the checks before the save did not
+  // foresee (a store fault) leaves the webhook on: the switch is the owner's
+  // (the owner's ruling of 2026-11-19), and its deliveries are kept for the
+  // owner (`door_missing`) while the status, Kitchen and the webhook's card say
+  // the door is missing. 10I switched it off, closing what it carried.
 
   // § 7 surfacing — disclose the saved recipe's run-time PII posture so the
   // editor learns it at the save boundary (which AI steps Recued
@@ -521,6 +754,185 @@ export const saveRecipeInline = (
       : {}),
     ...(hasWebhook ? { webhook: localWebhookStatus(deps, recipe, doorOutcome) } : {}),
   };
+};
+
+/** D-201 Slice 10I — the door `recipe` would get if saved now: the same two
+ *  steps the mint takes (the non-owner exposure check, then the derivation),
+ *  compared with the door its saved version has. A draft never touches a
+ *  store here. */
+/** D-201 Slices 10I + 10M — the keep-on question, computed as the save acts:
+ *  the door's diff by the mint's own function over every axis it names
+ *  (operations, ingredients, connections), what the owner switched off (kept
+ *  off), each slot's message access that widens, what happens to the history,
+ *  whether the webhook is on, and `consent`, a digest of all of it with the
+ *  draft, which the save checks before it acts. Before 10M it compared
+ *  operation ids only, so a door could gain a connection, an ingredient or an
+ *  operation the owner had switched off unshown (10L finding 1). */
+const previewLocalWebhookDoor = (
+  deps: RecipeSaveHandlerDeps,
+  recipe: RecipeDefinition,
+  webhookBindings?: readonly WebhookIngressBindingSelection[],
+  /** The draft's hash as received, when the caller has changed it since. */
+  receivedHash?: string,
+  /** D-201 Slice 10Y (10V finding 22) — the publisher the save names, if it
+   *  names one; a save naming none saves as `kitchen`. */
+  publisherId?: string,
+): LocalRecipeWebhookDoorPreview | null => {
+  const door = deps.webhookDoor;
+  if (door === undefined) return null;
+  // D-201 Slice 10Y (10V finding 21) — on a refusal too: a webhook switched off
+  // since, in another tab, is not "on" above a draft that cannot keep it on.
+  const armed = deps.webhookConsumerStore?.isConsumerEnabled('local_recipe', recipe.recipe_id) === true;
+  const refused = (reason: string, detail: string, stepId = '<recipe>'): LocalRecipeWebhookDoorPreview => ({
+    state: 'refused',
+    refusal: { reason, step_id: stepId, detail },
+    armed,
+  });
+  // D-201 Slice 10S (10Q finding 13) — as the save refuses it: with no
+  // trigger nothing could start it, so it cannot stay on. 10M offered it.
+  if ((recipe.webhook_triggers?.length ?? 0) === 0) {
+    return refused('not_ready', 'this version has no webhook trigger');
+  }
+  // D-201 Slice 10Y (10V finding 22) — the question is asked as the save acts:
+  // under the publisher it names, which keeping it on must keep (10S). It asked
+  // under the stored one, whatever the save would name.
+  const publisher = publisherId ?? 'kitchen';
+  const savedUnder = deps.store.getStored(recipe.recipe_id);
+  if (savedUnder !== null && (savedUnder.publisher_id || 'kitchen') !== publisher) {
+    return refused(
+      'not_ready',
+      `it was saved under the publisher '${savedUnder.publisher_id || 'kitchen'}', and this save is under '${publisher}'`,
+    );
+  }
+  try {
+    door.preflightNonOwnerRecipeExposure?.(recipe, 'webhook');
+  } catch (error) {
+    return refused('exposure_refused', error instanceof Error ? error.message : String(error));
+  }
+  let derived: ReturnType<typeof deriveWebhookDoorCapability>;
+  try {
+    derived = deriveWebhookDoorCapability({ recipe_id: recipe.recipe_id, recipe }, door);
+  } catch (error) {
+    return refused('dispatch_unresolvable', error instanceof Error ? error.message : String(error));
+  }
+  if (!derived.ok) {
+    return refused(derived.refusal.reason, describeWebhookDoorRefusal(derived.refusal), derived.refusal.step_id);
+  }
+  // The door the save's door step starts from: the one on its triggers now,
+  // else the newest it had. D-201 Slice 10AJ (10AI finding 4) — it read the
+  // triggers only, so with rows a fault left door-less the question showed a
+  // fresh door while the save kept the owner's closing or switch-offs.
+  const currentId = savedUnder === null
+    ? null
+    : currentRecipeDoorId(door, 'local_recipe', recipe.recipe_id, recipe.recipe_id, publisher);
+  const current = currentId === null ? null : door.definitionStore.get(currentId);
+  // Closed by its owner, as the save keeps it (`closedByOwner`): a door Recued
+  // retired is made again, so the question diffs against it instead.
+  // D-201 Slice 10AO (10AM findings 1 and 13) — read as the card, Kitchen's
+  // status and the save's door step read it (`ownerLeftDoorClosed`): rows
+  // that carry no door are in the state the owner's kept switch left them.
+  if (savedUnder !== null
+    && ownerLeftDoorClosed(door, 'local_recipe', recipe.recipe_id, recipe.recipe_id, publisher)) {
+    // Kept on, the owner's revoke stands (the save keeps it): nothing could run.
+    return refused(
+      'door_revoked',
+      // D-201 Slice 10X (10V finding 12) — a remedy the owner can take: the
+      // Contracts route has no switch for a derived door, and a revoke is final.
+      // D-201 Slice 10AF (10AE finding 14) — the remedy Kitchen gives since
+      // 10AC: switching it off and on again lost what was waiting for it.
+      'its door is closed, so a save cannot keep it on. Open its door first, on its webhook in Settings → Connections → Webhooks or with its switch here, then save again: what is waiting for it is kept',
+    );
+  }
+  const diff = doorCapabilityChanged(current, derived.capability);
+  // D-201 Slice 10Y (10V finding 20) — only an operation this version's door
+  // has: one it no longer takes is carried off, and is nothing it could do.
+  const derivedOperations = new Set(derived.capability.operation_ids);
+  const keptOff = currentId === null
+    ? []
+    : door.grantEntryStore.listForContract(currentId)
+      .filter((row) => row.granted === false && derivedOperations.has(row.entry_key))
+      .map((row) => row.entry_key)
+      .sort();
+  let history: 'kept' | 'closed' | 'none' | undefined;
+  let historyTriggers: NonNullable<LocalRecipeWebhookDoorPreview['history_triggers']> | undefined;
+  let widened: string[] = [];
+  const consumerStore = deps.webhookConsumerStore;
+  if (consumerStore !== undefined && webhookBindings !== undefined) {
+    try {
+      const planned = consumerStore.previewReplacement({
+        consumer_kind: 'local_recipe',
+        consumer_id: recipe.recipe_id,
+        requirements: recipe.webhook_requirements ?? [],
+        selections: webhookBindings,
+        recipes: [{
+          recipe_id: recipe.recipe_id,
+          publisher_id: publisher,
+          webhook_triggers: recipe.webhook_triggers ?? [],
+        }],
+      });
+      history = planned.history;
+      historyTriggers = planned.triggers;
+      widened = planned.widened;
+    } catch (error) {
+      return refused('not_ready', error instanceof Error ? error.message : String(error));
+    }
+  }
+  const operationIds = [...derived.capability.operation_ids].sort();
+  const shown = {
+    recipe: receivedHash ?? draftDigest(recipe),
+    door: currentId,
+    operation_ids: operationIds,
+    ingredient_ids: [...derived.capability.ingredient_ids].sort(),
+    connection_names: [...derived.capability.connection_names].sort(),
+    added: diff.added,
+    removed: diff.removed,
+    widened,
+    kept_off: keptOff,
+    history: history ?? null,
+    history_triggers: historyTriggers ?? null,
+    armed,
+  };
+  return {
+    state: 'derivable',
+    operation_ids: operationIds,
+    added: diff.added,
+    removed: diff.removed,
+    widened,
+    kept_off: keptOff,
+    ...(history !== undefined ? { history } : {}),
+    ...(historyTriggers !== undefined ? { history_triggers: historyTriggers } : {}),
+    armed,
+    consent: createHash('sha256').update(JSON.stringify(shown)).digest('hex'),
+  };
+};
+
+export const handleLocalRecipeWebhookPreview = (
+  deps: RecipeSaveHandlerDeps,
+  args: {
+    recipe: RecipeDefinition;
+    webhook_bindings?: ReadonlyArray<WebhookIngressBindingSelection>;
+    publisher_id?: string;
+  },
+): { door: LocalRecipeWebhookDoorPreview | null } => {
+  const method = 'recipe.webhook.preview';
+  const recipe = args?.recipe;
+  if (recipe === null || typeof recipe !== 'object' || Array.isArray(recipe)
+    || typeof (recipe as { recipe_id?: unknown }).recipe_id !== 'string'
+    || (recipe as { recipe_id: string }).recipe_id.length === 0
+    || (recipe as { recipe_id: string }).recipe_id.length > 256) {
+    throw new RpcError('bad_request', `${method}: recipe must be a recipe with a recipe_id`, 400);
+  }
+  if (!hasNonEmptyWebhookDeclarations(recipe)) return { door: null };
+  const bindings = args.webhook_bindings;
+  if (bindings !== undefined && !Array.isArray(bindings)) {
+    throw new RpcError('bad_request', `${method}: webhook_bindings must be a list`, 400);
+  }
+  // D-201 Slice 10Y (10V finding 22) — the publisher the save would name.
+  const publisherId = args.publisher_id;
+  if (publisherId !== undefined && (typeof publisherId !== 'string' || publisherId.length === 0)) {
+    throw new RpcError('bad_request', `${method}: publisher_id must be a non-empty string`, 400);
+  }
+  return { door: previewLocalWebhookDoor(deps, recipe, bindings, undefined, publisherId) };
 };
 
 export const handleLocalRecipeWebhookStatus = (
@@ -559,24 +971,37 @@ const setLocalRecipeWebhookArmed = (
   }
   // D-209 #1 W2b — arming is the consent gesture, so it must not produce a
   // webhook that LOOKS live but denies every dispatch at the contract floor.
-  // A missing/revoked door (a crash in the save's mint window, or a recipe
-  // saved before the door substrate existed) refuses with the remedy.
   if (armed && deps.webhookDoor !== undefined) {
-    const contractId = deps.webhookDoor.consumerStore.doorContractIdForRecipe(
-      'local_recipe',
-      recipe.recipe_id,
-      recipe.recipe_id,
-      storedPublisher(deps, recipe.recipe_id),
-    );
-    const def = contractId === null
-      ? null
-      : deps.webhookDoor.definitionStore.get(contractId);
-    if (def === null || (def.revoked_at !== undefined && def.revoked_at !== null)) {
-      throw new RpcError(
-        'webhook_not_ready',
-        `${method}: webhook door contract missing — re-save the recipe to mint it`,
-        409,
+    const door = deps.webhookDoor;
+    const doorLive = (): boolean => {
+      const contractId = door.consumerStore.doorContractIdForRecipe(
+        'local_recipe',
+        recipe.recipe_id,
+        recipe.recipe_id,
+        storedPublisher(deps, recipe.recipe_id),
       );
+      const def = contractId === null ? null : door.definitionStore.get(contractId);
+      return def !== null && (def.revoked_at === undefined || def.revoked_at === null);
+    };
+    if (!doorLive()) {
+      // D-201 Slice 10X — switching it on is the owner's control (the owner's
+      // ruling of 2026-11-19): a door that is missing (a crash in the save's
+      // mint window, a recipe saved before the door substrate) or was closed is
+      // made again, as the webhook's switch in Connections → Webhooks makes it.
+      // What the owner switched off under Contracts stays off. Before 10X it
+      // refused, telling the owner to save again.
+      const made = followMainDishWebhookDoors(
+        { recipe_id: recipe.recipe_id, recipe },
+        { ...door, consumerStore: deps.webhookConsumerStore },
+        { mintedBy: 'user_self', retireReason: 'owner_reopened', reopen: true },
+      ).find((change) => change.recipe_id === recipe.recipe_id);
+      if (!doorLive()) {
+        throw new RpcError(
+          'webhook_not_ready',
+          `${method}: its webhook door could not be made: ${made?.reason ?? 'save the recipe again, then switch it on'}`,
+          409,
+        );
+      }
     }
   }
   try {
@@ -608,7 +1033,8 @@ export type RecipeSaveMethods =
   | 'recipe.validate'
   | 'recipe.webhook.status'
   | 'recipe.webhook.arm'
-  | 'recipe.webhook.disarm';
+  | 'recipe.webhook.disarm'
+  | 'recipe.webhook.preview';
 
 export const makeRecipeSaveHandlers = (
   deps: RecipeSaveHandlerDeps | undefined,
@@ -621,6 +1047,7 @@ export const makeRecipeSaveHandlers = (
       'recipe.webhook.status',
       'recipe.webhook.arm',
       'recipe.webhook.disarm',
+      'recipe.webhook.preview',
     ],
     handlers: {
       'recipe.save': async (req) => saveRecipeInline(
@@ -628,6 +1055,8 @@ export const makeRecipeSaveHandlers = (
         req.recipe,
         req.publisher_id,
         req.webhook_bindings,
+        req.webhook_on === true,
+        typeof req.webhook_consent === 'string' ? req.webhook_consent : undefined,
       ),
       'recipe.validate': async (req) => validateRecipeInline(req.recipe),
       'recipe.webhook.status': async (req) =>
@@ -635,6 +1064,8 @@ export const makeRecipeSaveHandlers = (
       'recipe.webhook.arm': async (req) => handleLocalRecipeWebhookArm(deps, req),
       'recipe.webhook.disarm': async (req) =>
         handleLocalRecipeWebhookDisarm(deps, req),
+      'recipe.webhook.preview': async (req) =>
+        handleLocalRecipeWebhookPreview(deps, req),
     },
   };
 };

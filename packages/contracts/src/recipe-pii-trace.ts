@@ -287,6 +287,8 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   // decode_base64 REVEALS the plaintext an encode hid — taint must pass or a
   // decoded name would read as clean to the trace.
   decode_base64: { rule: 'string_preserve', arg: 'input' },
+  // D-402 slice D3 — an encoding for a web address, reversed by any browser: the value survives whole.
+  url_encode: { rule: 'string_preserve', arg: 'input' },
   split: { rule: 'string_preserve', arg: 'input' },
   contains_any: { rule: 'destroy' },
   concat: { rule: 'collapse_render', args: ['values'] },
@@ -380,6 +382,7 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   transitions: { rule: 'collapse_render', args: ['rows'] },
   window_change: { rule: 'collapse_render', args: ['rows'] },
   baseline: { rule: 'collapse_render', args: ['rows'] },
+  trend: { rule: 'collapse_render', args: ['rows'] },
   within_distance: { rule: 'collapse_render', args: ['rows', 'place'] },
   http_changed: { rule: 'destroy' },
   calendar_changed_since: { rule: 'pass_array', arg: 'events' },

@@ -1,3 +1,4 @@
+import { createWorkEntityStore } from '../../storage/work-entity-store.js';
 /** M5 S3.1 — the not-enrolled restore guard's `isLiveWarehouseEmpty` backstop.
  *
  *  The guard authorizes a DESTRUCTIVE pre-enrollment restore only on an empty
@@ -90,6 +91,20 @@ describe('M5 S3.1 — isLiveWarehouseEmpty (not-enrolled restore guard)', () => 
     // (the guard's own logic — denylist + FTS exclusion — so no false reports).
     expect(restoreGuardUserDataTables(db)).toEqual([]);
     expect(isLiveWarehouseEmpty(db)).toBe(true);
+  });
+
+  it('incoming-link metadata keeps a fresh warehouse empty, while saved text and links block restore', async () => {
+    const db = await composeFreshDb();
+    try {
+      const store = createWorkEntityStore(db);
+      store.registerSource({ id: 'link-guard-note', top_tier_kind: 'note', source_kind: 'builtin', source_label: 'Notes', write_capable: true, registered_at: 1000 });
+      expect(isLiveWarehouseEmpty(db)).toBe(true);
+      store.writeNote({ id: 'saved-link', source_id: 'link-guard-note', body: '#data/task/target' }, 1000);
+      expect(restoreGuardUserDataTables(db)).toEqual(expect.arrayContaining(['data_note', 'work_entity_body_link']));
+      expect(isLiveWarehouseEmpty(db)).toBe(false);
+      store.deleteNote('saved-link', { tombstone: false });
+      expect(isLiveWarehouseEmpty(db)).toBe(true);
+    } finally { db.close(); }
   });
 
   it('the denylist contains ZERO user-content / activity surfaces (would mask data loss)', async () => {

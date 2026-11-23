@@ -16,11 +16,11 @@ import {
   browserPassHostOf,
   browserPassKeyHash,
   browserPassOccasionOf,
-  browserPassOffersRequest,
   browserPassSiteOf,
   describeBrowserPass,
   readBrowserPassOffer,
   writeRulePrincipalOf,
+  type BrowserPassBrowser,
   type BrowserPassKey,
   type BrowserPassAnswerKind,
   type BrowserPassKind,
@@ -61,22 +61,28 @@ export const browserPassOfferFor = (input: {
   readonly recipe_id: string;
   readonly site: string | undefined;
   readonly channel_session_id: string | undefined;
+  /** D-402 slice H4c — the browser the write runs in, for a recipe that names its browsers. */
+  readonly browser?: string;
+  /** D-402 slice H4d — its name, as its owner gave it: the ask says its answers are for it alone. */
+  readonly browser_name?: string;
 }): BrowserPassOffer | undefined => {
   if (input.source === undefined || input.site === undefined || input.channel_session_id === undefined) return undefined;
   const principal = writeRulePrincipalOf(input.source);
   if (principal === undefined || input.recipe_id.length === 0) return undefined;
   return {
-    key: { principal, recipe: input.recipe_id, site: input.site },
+    key: { principal, recipe: input.recipe_id, site: input.site, ...(input.browser !== undefined ? { browser: input.browser } : {}) },
     host: browserPassHostOf(input.site),
     channel_session_id: input.channel_session_id,
+    ...(input.browser !== undefined && input.browser_name !== undefined ? { browser_name: input.browser_name } : {}),
   };
 };
 
 /** The owner, told once, when a key's suggestion opens. */
-export const browserPassSuggestedNotice = (key: BrowserPassKey): { title: string; text: string } => {
+export const browserPassSuggestedNotice = (key: BrowserPassKey, browser?: BrowserPassBrowser): { title: string; text: string } => {
   const who = key.principal.kind === 'owner_chat' ? 'your chats' : 'an AI app';
   return {
-    title: `Always allow? ${describeBrowserPass(key)}`,
+    // D-402 slice H4d — for a key that names its browser, the title says which: it is for that one alone.
+    title: `Always allow? ${describeBrowserPass(key, browser)}`,
     text: `You have said yes to ${browserPassActsOf(key)}, asked by ${who}, again and again this month. `
       + `You can let them happen without asking: see Passes Recued suggests, under Contracts. `
       + 'Until you do, each one asks.',
@@ -92,27 +98,21 @@ export const recordBrowserPassAnswer = (
   } | undefined,
   checkpoint: Checkpoint,
   outcome: 'approved' | 'refused',
-  options: { readonly pass?: BrowserPassAnswerKind; readonly now?: number } = {},
+  options: { readonly pass?: BrowserPassAnswerKind; readonly decision_version?: 1; readonly now?: number } = {},
 ): void => {
   const store = deps?.browserPasses;
   const offer = readBrowserPassOffer(checkpoint.preflight_context?.browser_pass);
   if (store === undefined || offer === undefined) return;
   const now = options.now ?? Date.now();
   try {
-    if (outcome === 'approved' && options.pass !== undefined) {
-      if (options.pass === 'request') {
-        // D-341 slice A — "Don't ask about browser actions in this chat": the switch beside Send, on.
-        if (browserPassOffersRequest(offer)) store.startRequestPass(offer.channel_session_id, now);
-      } else {
-        // First the pass, so an "Always allow" answer is never also suggested to the owner.
-        store.mint({
-          key: offer.key,
-          host: offer.host,
-          kind: options.pass,
-          channel_session_id: offer.channel_session_id,
-          now,
-        });
-      }
+    if (outcome === 'approved' && options.pass !== undefined && options.decision_version === 1) {
+      if (!checkpoint.run_id || !checkpoint.checkpoint_id) throw new Error('a browser pass needs its durable approval identity');
+      // First the pass, so an "Always allow" answer is never also suggested to the owner.
+      // Legacy saved answers keep their one-time approval; they cannot safely create standing trust.
+      store.grantForDecision({
+        approval_ref: JSON.stringify(['preflight', checkpoint.run_id, checkpoint.checkpoint_id]),
+        offer, kind: options.pass, now,
+      });
     }
   } catch (error) {
     console.warn(`[browser-passes] the pass on ${offer.host} was not kept: `
@@ -147,7 +147,8 @@ export const recordBrowserPassAnswer = (
     return;
   }
   if (suggested && deps?.preflightNotifier !== undefined) {
-    void deps.preflightNotifier.notify(browserPassSuggestedNotice(offer.key)).catch(() => undefined);
+    void deps.preflightNotifier.notify(browserPassSuggestedNotice(offer.key,
+      offer.browser_name !== undefined ? { name: offer.browser_name } : undefined)).catch(() => undefined);
   }
 };
 

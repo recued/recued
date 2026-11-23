@@ -40,6 +40,7 @@ import {
   programNeedsFromError,
   runNeedsNextStep,
   runNeedsStep,
+  type BrowserMove,
   type ProgramSwitchSet,
 } from './run-needs-offer.js';
 
@@ -128,6 +129,15 @@ export const recipeStepActions = (
  *  `setRunModalToolStatus`; null leaves the dialog linking to the pack instead. */
 export const setRunModalProgramSwitch = (set: ProgramSwitchSet | null): void => {
   programSwitchSet = set;
+};
+
+let browserMove: BrowserMove | null = null;
+
+/** D-402 slice H3c (ruling 14) — how every run dialog moves a dish's settings off a browser no longer
+ *  paired, or not connected, to the only other one connected ("Use “Work” instead", `dishes.use_browser`).
+ *  Set once by the webclient's composition; null turns it off. */
+export const setRunModalBrowserMove = (move: BrowserMove | null): void => {
+  browserMove = move;
 };
 
 const PROGRAM_PROBLEM: Readonly<Record<string, RunProgramNeed['problem']>> = {
@@ -245,9 +255,10 @@ export const wireRunModal = (opts: RunModal.WireRunModalOptions): RunModal.RunMo
   const read = toolStatusRead;
   const turnOn = programSwitchSet;
   const switchReads = programSwitchReads;
+  const move = browserMove;
   return RunModal.wireRunModal({
     nextStepFor: runModalNextStep,
-    nextStepForResult: (result) => runNeedsNextStep(result, turnOn ?? undefined),
+    nextStepForResult: (result) => runNeedsNextStep(result, turnOn ?? undefined, move ?? undefined),
     ...(read !== null
       ? {
           beforeRun: () => programsBeforeRun(opts.recipe, read, switchReads === null ? undefined : {

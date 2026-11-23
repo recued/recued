@@ -26,6 +26,7 @@ describe('instance-lock', () => {
       lockPath,
       currentPid: () => 1234,
       isAlive: () => false,
+      identify: () => null, // A synthetic PID must not identify a real host process.
     });
     const info = lock.claim({ boot_at: 1_700_000_000_000, bind_port: 7717 });
     expect(info).toEqual({
@@ -40,7 +41,7 @@ describe('instance-lock', () => {
   // `recued status` names the version actually RUNNING from here, because an
   // update swaps the binary on disk before the server restarts onto it.
   it('records the holder\'s version when given one, and reads it back', () => {
-    const lock = createInstanceLock({ lockPath, currentPid: () => 1234, isAlive: () => false });
+    const lock = createInstanceLock({ lockPath, currentPid: () => 1234, isAlive: () => false, identify: () => null });
     const info = lock.claim({ boot_at: 1, bind_port: 7717, version: '26.10.17' });
     expect(info).toEqual({ pid: 1234, boot_at: 1, bind_port: 7717, version: '26.10.17' });
     expect(JSON.parse(readFileSync(lockPath, 'utf8'))).toEqual(info);

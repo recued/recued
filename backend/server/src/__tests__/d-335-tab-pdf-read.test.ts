@@ -56,10 +56,12 @@ const turn = async (options: {
   readAnswer?: () => ChatDispatchResult | Promise<ChatDispatchResult>;
   documentReadNative?: boolean;
   settleHeld?: 'answered' | 'not_answered';
+  actAnswer?: () => ChatDispatchResult;
 }) => {
   const db = new Database(':memory:');
   ensureChatSchema(db);
   const store = createChatStore(db);
+  store.setRollingBriefEnabled(true);
   store.createSession({ id: 's1', now: NOW - 10_000 });
   const packets: string[] = [];
   const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_manifest, aiInput) => {
@@ -69,7 +71,7 @@ const turn = async (options: {
   const entries = [entry(ACT, 2, 'unknown'), entry(READ, options.documentReadNative === false ? 2 : 1, 'read')];
   const waiters = createHeldRunWaiters({ now: () => NOW });
   const dispatch = vi.fn<InternalToolRegistry['dispatch']>(async (name) => {
-    if (name === ACT) return clicked();
+    if (name === ACT) return options.actAnswer?.() ?? clicked();
     if (name === READ) {
       if (options.settleHeld === 'answered') {
         setTimeout(() => waiters.settled({ execution_source: { channel: 'chat', actor: 'user_self', chat_session_id: 's1',
@@ -104,14 +106,40 @@ const readsOf = (dispatch: ReturnType<typeof vi.fn<InternalToolRegistry['dispatc
   dispatch.mock.calls.filter(([name]) => name === READ).map(([, args]) => args);
 
 describe('D-335 slice AT — the PDF a tab showed, read in the round that reached it', () => {
+  it('reads a completed PDF capture from a failed recipe while retaining the failed check in the next native packet', async () => {
+    const { packets, dispatch } = await turn({ rounds: [clickRound, answerRound], actAnswer: () => ({ ok: true,
+      run_failed: { detail: 'A later predicate failed.' }, result: { success: false, errors: [{ code: 'DOM_CHECK_FAILED',
+        source: { ingredient_slug: 'dom-act' }, message: 'Later #main check failed.', details: {
+          batch_progress: { total_steps: 2, failed_step: 2, completed_steps: [1], effects: [{ step: 1, attempted: 1, acknowledged: 1 }] },
+          completed_files: [{ step: 1, file_ref: FILE_REF, filename: 'example.pdf', mime_type: 'application/pdf', size_bytes: 82_487,
+            note: pdfKeptNote('example.pdf', FILE_REF) }],
+        } }] } }) });
+    expect(readsOf(dispatch)).toEqual([{ file_ref: FILE_REF }]);
+    expect(packets[1]).toContain(PDF_TEXT);
+    expect(packets[1]).toContain('DOM_CHECK_FAILED');
+    expect(packets[1]).toContain('Later #main check failed.');
+    expect(packets[1]).toContain(pdfReadForYouNote('example.pdf', FILE_REF));
+    expect(dispatch.mock.calls.filter(([name]) => name === ACT)).toHaveLength(1);
+  });
   // The packets after the second are the turn's own (its closing brief, the chat's title), not rounds.
   it('the click\'s round carries the PDF\'s text into the model\'s next packet', async () => {
     const { packets, dispatch } = await turn({ rounds: [clickRound, answerRound] });
     expect(dispatch.mock.calls.map(([name]) => name)).toEqual([ACT, READ]);
     expect(readsOf(dispatch)).toEqual([{ file_ref: FILE_REF }]);
     expect(packets[1]).toContain(PDF_TEXT);
-    expect(packets[1]).toContain(pdfReadForYouNote('example.pdf', FILE_REF));
-    expect(packets[1]).not.toContain(pdfKeptNote('example.pdf', FILE_REF));
+    const current = JSON.parse(packets[1]!);
+    // The live tool projection says it was read. The request records also keep the
+    // original capture receipt, whose historical note must not be rewritten.
+    const projectedCalls = JSON.stringify(current.prior_tool_calls);
+    expect(projectedCalls).toContain(pdfReadForYouNote('example.pdf', FILE_REF));
+    expect(projectedCalls).not.toContain(pdfKeptNote('example.pdf', FILE_REF));
+    const receipts = current.request_execution_context.successful_calls_for_current_request as Array<Record<string, unknown>>;
+    expect(JSON.stringify(receipts.find((r) => r.tool_name === ACT)))
+      .toContain(JSON.stringify(pdfKeptNote('example.pdf', FILE_REF)).slice(1, -1));
+    // 2026-11-18: the read's receipt names the call; its text rides once, in prior_tool_calls.
+    expect(receipts.find((r) => r.tool_name === READ)).toEqual(expect.objectContaining({ args: { file_ref: FILE_REF } }));
+    expect(receipts.find((r) => r.tool_name === READ)).not.toHaveProperty('result');
+    expect(packets[1]!.split(PDF_TEXT).length - 1).toBe(1);
   });
 
   it('the read is the turn\'s own call: its row is kept, and the PDF is among the answer\'s sources', async () => {

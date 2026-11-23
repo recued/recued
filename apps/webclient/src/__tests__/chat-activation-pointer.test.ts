@@ -19,7 +19,6 @@ import type { BroadcastEventKind, ChatSession, ChatSessionSummary, ServerEvent }
 
 import {
   bootstrapChatRoute,
-  ACTIVATION_GUIDE_URL,
   CHAT_ROUTE_ACTIVATION_CARD_ATTR,
   CHAT_ROUTE_ACTIVATION_POINTER_ATTR,
   CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR,
@@ -120,6 +119,9 @@ const mount = (opts: {
   sessions: ChatSessionSummary[];
   connections: number;
   recipes: number;
+  /** D-405 slice 4b — the Set up page's mail, calendar and files; absent, the server is one from before
+   *  it and refuses the method. */
+  features?: Array<{ feature: string; connected: boolean | null }>;
 }) => {
   const doc = makeDoc();
   const root = doc.createElement('div');
@@ -129,6 +131,7 @@ const mount = (opts: {
     if (method === 'collection.connection.list') {
       return { connections: Array.from({ length: opts.connections }, () => ({})) };
     }
+    if (method === 'chat.setup.features' && opts.features !== undefined) return { features: opts.features };
     if (method === 'recipe.list') {
       return { recipes: Array.from({ length: opts.recipes }, () => ({})) };
     }
@@ -183,9 +186,9 @@ describe('after first run — the pointer', () => {
     const pointer = collect(h.root, CHAT_ROUTE_ACTIVATION_POINTER_ATTR);
     expect(pointer).toHaveLength(1);
     const link = collect(pointer[0]!, CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR)[0]!;
-    expect(link.getAttribute('href')).toBe(ACTIVATION_GUIDE_URL);
-    // ⚠ It leaves the app for the public site, so it says so.
-    expect(link.getAttribute('rel')).toBe('noreferrer noopener');
+    // D-405 slice 4b — the owner's own Set up page, in the app, not the public guide.
+    expect(link.getAttribute('href')).toBe('#setup');
+    expect(link.getAttribute('target')).toBeNull();
     h.route.dispose();
   });
 
@@ -194,6 +197,7 @@ describe('after first run — the pointer', () => {
     await tick(12);
     const link = collect(h.root, CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR)[0]!;
     expect(link.textContent).toBe('Look through ready-made Recipes');
+    expect(link.getAttribute('href')).toBe('#recipes');
     h.route.dispose();
   });
 
@@ -206,5 +210,43 @@ describe('after first run — the pointer', () => {
     expect(collect(h.root, CHAT_ROUTE_ACTIVATION_POINTER_ATTR)).toHaveLength(0);
     expect(collect(h.root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(1);
     h.route.dispose();
+  });
+});
+
+// D-405 slice 4b — "connected" is the Set up page's own fact too: a mailbox, a calendar of the owner's or a
+// file source counts beside an API connection. ⛔ It read the API connections alone.
+describe('what counts as connected (D-405 slice 4b)', () => {
+  const MAIL = [{ feature: 'mail', connected: true }, { feature: 'calendar', connected: false }, { feature: 'file', connected: false }];
+  const NONE = [{ feature: 'mail', connected: false }, { feature: 'calendar', connected: false }, { feature: 'file', connected: null }];
+
+  it('a connected mailbox counts: no "Connect my work" for an owner with mail and no API connection', async () => {
+    const h = mount({ sessions: [], connections: 0, recipes: 0, features: MAIL });
+    await tick(12);
+    expect(cards(h.root)).toEqual(['ask', 'automate']);
+    h.route.dispose();
+  });
+
+  it('nothing of theirs connected and no API connection: the card, and the line opens Set up', async () => {
+    const first = mount({ sessions: [], connections: 0, recipes: 0, features: NONE });
+    await tick(12);
+    expect(cards(first.root)).toEqual(['ask', 'connect', 'automate']);
+    first.route.dispose();
+    const back = mount({ sessions: [summary('chat_1', 4)], connections: 0, recipes: 3, features: NONE });
+    await tick(12);
+    const link = collect(back.root, CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR)[0]!;
+    expect(link.textContent).toBe('Connect your mail, calendar and files');
+    expect(link.getAttribute('href')).toBe('#setup');
+    back.route.dispose();
+  });
+
+  it('a returning owner with mail connected is offered only recipes, and nothing once there are some', async () => {
+    const h = mount({ sessions: [summary('chat_1', 4)], connections: 0, recipes: 0, features: MAIL });
+    await tick(12);
+    expect(collect(h.root, CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR)[0]!.textContent).toBe('Look through ready-made Recipes');
+    h.route.dispose();
+    const done = mount({ sessions: [summary('chat_1', 4)], connections: 0, recipes: 2, features: MAIL });
+    await tick(12);
+    expect(collect(done.root, CHAT_ROUTE_ACTIVATION_POINTER_ATTR)).toHaveLength(0);
+    done.route.dispose();
   });
 });

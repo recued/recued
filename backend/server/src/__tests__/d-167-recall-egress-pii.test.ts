@@ -90,6 +90,47 @@ const withRecall = (
   recall: { getIndex },
 });
 
+describe('request evidence egress', () => {
+  it.each([false, true])('protects evidence-only packets with a fresh ledger; degraded=%s', async degraded => {
+    const resolver = recallResolver({ names: ['Diego Okafor'], emails: ['diego@example.com'] });
+    const plan = withRecall(makePlan(piiEgress.noopFieldPrivacyResolver), () => ({ ...resolver, isDegraded: () => degraded }));
+    const context = {
+      current_request: { request_id: 'current', message_id: 'q-current', text: 'Continue.', received_at: 4 },
+      earlier_requests: [{ request_id: 'old', message_id: 'q-old', text: 'Check the result.', received_at: 1 }],
+      successful_calls_for_current_request: [{ invocation_id: 'current-call', completed_for_request_id: 'current',
+        tool_name: 'fixture.send', args: { to: 'diego@example.com' }, result: { recipient: 'Diego Okafor' }, started_at: 4, completed_at: 5 }],
+      successful_actions_for_earlier_requests: [{ invocation_id: 'old-call', completed_for_request_id: 'old',
+        tool_name: 'fixture.send', args: { to: 'diego@example.com' }, result: { recipient: 'Diego Okafor' }, started_at: 1, completed_at: 2 }],
+      recorded_assistant_replies: [{ request_id: 'old', message_id: 'a-old', text: 'Diego Okafor: diego@example.com', recorded_at: 3 }],
+      resolved_action_outcomes: [{ invocation_id: 'failed-call', outcome: 'unknown',
+        args: { to: 'diego@example.com' }, owner_request: { text: 'Check the result.' } }],
+      pending_approvals: { observation: 'available', plans: [{ plan_id: 'pending-plan',
+        args: { to: 'diego@example.com', body: 'Hello Diego Okafor.' },
+        owner_request: { text: 'Check the result.' } }] },
+      approved_actions: { observation: 'available', actions: [{ plan_id: 'approved-plan',
+        approval_status: 'approved', execution_status: 'not_dispatched',
+        args: { to: 'diego@example.com', body: 'Hello Diego Okafor.' },
+        owner_request: { text: 'Check the result.' } }] },
+      prepared_assistant_reply: { request_id: 'current', text: 'Diego Okafor: diego@example.com' },
+    };
+    const { rawPrompt, packet } = await egress(plan, JSON.stringify({ request_execution_context: context }));
+    expect(rawPrompt).not.toContain('Diego Okafor');
+    expect(rawPrompt).not.toContain('diego@example.com');
+    expect(packet.request_execution_context).toMatchObject({
+      current_request: { request_id: 'current', message_id: 'q-current', received_at: 4 },
+      successful_calls_for_current_request: [{ invocation_id: 'current-call', completed_for_request_id: 'current', tool_name: 'fixture.send' }],
+      recorded_assistant_replies: [{ request_id: 'old', message_id: 'a-old', recorded_at: 3 }],
+      prepared_assistant_reply: { request_id: 'current' },
+      resolved_action_outcomes: [{ invocation_id: 'failed-call', outcome: 'unknown' }],
+      pending_approvals: { observation: 'available', plans: [{ plan_id: 'pending-plan' }] },
+      approved_actions: { observation: 'available', actions: [{ plan_id: 'approved-plan',
+        approval_status: 'approved', execution_status: 'not_dispatched' }] },
+    });
+    expect(rawPrompt.includes('withheld')).toBe(degraded);
+    expect(context.prepared_assistant_reply.text).toContain('Diego Okafor');
+  });
+});
+
 /** Run a prompt through the model-bound wire seam; capture the egress prompt. */
 const egress = async (
   plan: PiiEgressPlan,

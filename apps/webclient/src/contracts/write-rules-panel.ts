@@ -30,6 +30,7 @@
  *  own suggestion. Spec: D-329 §3.4, D-335 §3.4. */
 
 import {
+  browserPassBrowserOfRow,
   describeBrowserPass,
   describeWriteRule,
   triggerPreapprovalAiNote,
@@ -47,6 +48,7 @@ import {
   type WriteRuleSuggestionRow,
 } from '@recued/contracts';
 
+import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 export type WriteRuleSuggestionsListCaller = () => Promise<{ suggestions: ReadonlyArray<WriteRuleSuggestionRow> }>;
@@ -93,13 +95,23 @@ export interface TriggerPreapprovalsPanelCallers {
 /** D-335 slice Z — the logins remembered for browser steps (`collection.contract.*BrowserLogin*`). */
 export interface BrowserLoginsPanelCallers {
   readonly list: () => Promise<{ logins: ReadonlyArray<BrowserLoginRow> }>;
-  readonly forget: (args: { origin: string; field: string }) => Promise<{ forgotten: true }>;
+  /** D-402 slice H5 — the browser it was saved in, too: that browser's login, not another's. */
+  readonly forget: (args: { browser: string; origin: string; field: string }) => Promise<{ forgotten: true }>;
 }
 
 export interface MountWriteRulesPanelOptions extends WriteRulesPanelCallers {
   readonly host: HTMLElement;
   readonly document?: Document;
+  /** D-402 — live updates: a trigger's pre-approval granted, used or ended anywhere, or a caller's
+   *  ended ("Stop allowing" ends that caller's passes and rules for the recipe with it), reads the
+   *  lists again. */
+  readonly subscribe?: BroadcastSubscriber['on'];
 }
+
+/** D-402 — what the panel reads again on. Pinned in `WEBCLIENT_DEFAULT_SUBSCRIPTIONS` by its test. */
+export const WRITE_RULES_PANEL_BROADCAST_KINDS = ['contract.preapproval_changed'] as const;
+/** A burst of changes (a run's writes each spend a use) is read once. */
+export const WRITE_RULES_LIVE_REFRESH_MS = 250;
 
 export interface WriteRulesPanelMount {
   refresh(): Promise<void>;
@@ -210,6 +222,21 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
   let disposed = false;
   let generation = 0;
   let loading: Promise<void> = Promise.resolve();
+  // D-402 — read again once for a burst. Not while an action runs (it reads again when it settles), nor
+  // while the owner fills in a rule's bounds, which a repaint would reset: that read waits for Cancel.
+  let liveTimer: ReturnType<typeof setTimeout> | undefined;
+  let liveWaiting = false;
+  const stopListening = opts.subscribe === undefined ? [] : WRITE_RULES_PANEL_BROADCAST_KINDS.map((kind) =>
+    opts.subscribe!(kind, (event) => {
+      if (event.holder === 'caller' && event.change !== 'ended') return;
+      if (disposed || liveTimer !== undefined) return;
+      liveTimer = setTimeout(() => {
+        liveTimer = undefined;
+        if (disposed) return;
+        if (busy !== null || mode.kind === 'accepting') { liveWaiting = true; return; }
+        void refresh();
+      }, WRITE_RULES_LIVE_REFRESH_MS);
+    }));
 
   const el = (tag: string, className?: string, text?: string): HTMLElement => {
     const node = doc.createElement(tag);
@@ -292,7 +319,12 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
         }
         void act(row.key_hash, () => opts.accept({ key_hash: row.key_hash, ttl_ms: d * DAY_MS, max_uses: u }));
       }));
-      actions.appendChild(button(WRITE_RULES_CANCEL_ATTR, 'wr-secondary', 'Cancel', () => { mode = { kind: 'idle' }; render(); }));
+      actions.appendChild(button(WRITE_RULES_CANCEL_ATTR, 'wr-secondary', 'Cancel', () => {
+        mode = { kind: 'idle' };
+        render();
+        // A change that came while the bounds were being filled in is read now.
+        if (liveWaiting) void refresh();
+      }));
     } else if (mode.kind === 'dismissing' && mode.key_hash === row.key_hash) {
       actions.appendChild(el('span', 'wr-confirm-prompt', 'Recued will not suggest this again.'));
       actions.appendChild(button(WRITE_RULES_CONFIRM_ATTR, 'wr-danger', 'Dismiss for good', () => {
@@ -353,7 +385,8 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
     const card = el('div', 'wr-card');
     card.setAttribute(BROWSER_PASS_SUGGESTION_ATTR, row.key_hash);
     const info = el('div', 'wr-card-info');
-    info.appendChild(el('div', 'wr-card-heading', describeBrowserPass(row.key)));
+    // D-402 slice H4d — and, for a key that names its browser, which one.
+    info.appendChild(el('div', 'wr-card-heading', describeBrowserPass(row.key, browserPassBrowserOfRow(row))));
     info.appendChild(el('div', 'wr-evidence', whoAsks(row.key, names)));
     info.appendChild(el('div', 'wr-evidence',
       `You said yes ${row.approvals} time${row.approvals === 1 ? '' : 's'}, on ${row.occasions} different occasions`));
@@ -395,7 +428,7 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
     const card = el('div', 'wr-card');
     card.setAttribute(BROWSER_PASS_ATTR, pass.pass_id);
     const info = el('div', 'wr-card-info');
-    info.appendChild(el('div', 'wr-card-heading', describeBrowserPass(pass.key)));
+    info.appendChild(el('div', 'wr-card-heading', describeBrowserPass(pass.key, browserPassBrowserOfRow(pass))));
     info.appendChild(el('div', 'wr-evidence', whoAsks(pass.key, names)));
     info.appendChild(el('div', 'wr-evidence', passTerms(pass)));
     card.appendChild(info);
@@ -455,11 +488,13 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
 
   /** D-335 slice Z — a login remembered for a browser step: what it is for, never the secret. */
   const renderLogin = (login: BrowserLoginRow): HTMLElement => {
-    const id = `${login.origin}|${login.field}`;
+    // D-402 slice H5 (ruling 3) — kept per browser: two accounts on one site in two browsers are two rows.
+    const id = `${login.browser}|${login.origin}|${login.field}`;
     const card = el('div', 'wr-card');
     card.setAttribute(BROWSER_LOGIN_ATTR, id);
     const info = el('div', 'wr-card-info');
-    info.appendChild(el('div', 'wr-card-heading', `Your ${login.kind} for ${login.site}`));
+    info.appendChild(el('div', 'wr-card-heading', `Your ${login.kind} for ${login.site}`
+      + `, in ${login.browser_name !== undefined ? `“${login.browser_name}”` : 'a browser'}`));
     info.appendChild(el('div', 'wr-evidence', `For the field “${login.label}”; saved ${formatDate(login.saved_at)}`
       + (login.used_at !== undefined ? `, last typed ${formatDate(login.used_at)}` : ', not typed since')));
     card.appendChild(info);
@@ -467,7 +502,7 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
     if (mode.kind === 'forgetting' && mode.login === id) {
       actions.appendChild(el('span', 'wr-confirm-prompt', 'The next step that needs it asks you for it again.'));
       actions.appendChild(button(WRITE_RULES_CONFIRM_ATTR, 'wr-danger', 'Forget it', () => {
-        void act(id, () => opts.logins!.forget({ origin: login.origin, field: login.field }));
+        void act(id, () => opts.logins!.forget({ browser: login.browser, origin: login.origin, field: login.field }));
       }));
       actions.appendChild(cancel());
     } else {
@@ -534,6 +569,7 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
 
   const refresh = (): Promise<void> => {
     const mine = (generation += 1);
+    liveWaiting = false;
     loading = (async () => {
       try {
         const none = Promise.resolve(undefined);
@@ -583,38 +619,45 @@ export const mountWriteRulesPanel = (opts: MountWriteRulesPanelOptions): WriteRu
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      for (const stop of stopListening.splice(0)) stop();
+      if (liveTimer !== undefined) clearTimeout(liveTimer);
+      liveTimer = undefined;
       try { opts.host.removeChild(root); } catch { /* a detached host */ }
     },
   };
 };
 
-/** Self-scoped CSS, joined into the contracts route's one `<style>` bundle. */
-export const WRITE_RULES_PANEL_STYLES = `
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-heading { margin: 0; font-size: 15px; font-weight: 650; }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-copy { margin: 6px 0 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-error { font-size: 13px; color: var(--fail); padding: 6px 2px; flex-basis: 100%; }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-card {
+/** The rule cards' CSS, scoped to a panel's host attribute. Shared with D-348's chains panel
+ *  (`chain-rules-panel.ts`), so a request's rule reads as a write rule does. */
+export const ruleCardStyles = (host: string): string => `
+[${host}] .wr-heading { margin: 0; font-size: 15px; font-weight: 650; }
+[${host}] .wr-copy { margin: 6px 0 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
+[${host}] .wr-error { font-size: 13px; color: var(--fail); padding: 6px 2px; flex-basis: 100%; }
+[${host}] .wr-card {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 8px 0;
 }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-card-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-card-heading { font-size: 14px; font-weight: 600; }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-evidence { font-size: 12px; color: var(--muted); }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-actions { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-input {
+[${host}] .wr-card-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+[${host}] .wr-card-heading { font-size: 14px; font-weight: 600; }
+[${host}] .wr-evidence { font-size: 12px; color: var(--muted); }
+[${host}] .wr-actions { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+[${host}] .wr-label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+[${host}] .wr-input {
   width: 90px; font-size: 13px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface); color: var(--fg);
 }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-confirm-prompt { font-size: 12px; color: var(--fail); }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-primary,
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-secondary,
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-danger {
+[${host}] .wr-confirm-prompt { font-size: 12px; color: var(--fail); }
+[${host}] .wr-primary,
+[${host}] .wr-secondary,
+[${host}] .wr-danger {
   font-size: 13px; padding: 4px 12px; border-radius: 6px; background: var(--surface); cursor: pointer; white-space: nowrap;
   min-height: 32px;
 }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-primary { border: 1px solid var(--accent); color: var(--accent); }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-secondary { border: 1px solid var(--border); color: var(--fg); }
-[${WRITE_RULES_PANEL_HOST_ATTR}] .wr-danger { border: 1px solid var(--fail); color: var(--fail); }
-[${WRITE_RULES_PANEL_HOST_ATTR}] button[disabled] { opacity: 0.6; cursor: default; }
+[${host}] .wr-primary { border: 1px solid var(--accent); color: var(--accent); }
+[${host}] .wr-secondary { border: 1px solid var(--border); color: var(--fg); }
+[${host}] .wr-danger { border: 1px solid var(--fail); color: var(--fail); }
+[${host}] button[disabled] { opacity: 0.6; cursor: default; }
 `;
+
+/** Self-scoped CSS, joined into the contracts route's one `<style>` bundle. */
+export const WRITE_RULES_PANEL_STYLES = ruleCardStyles(WRITE_RULES_PANEL_HOST_ATTR);

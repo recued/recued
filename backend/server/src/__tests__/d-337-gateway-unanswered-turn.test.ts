@@ -71,6 +71,13 @@ describe('D-337 follow-up 33 — the gateway turn says why it produced no answer
       .toMatchObject({ reason: 'provider_failure', retry_at: RETRY_AT });
   });
 
+  it('a model its provider does not have is model_unavailable, not a provider failure', async () => {
+    // As the executor names it (`model-unavailable.test.ts` in @recued/llm).
+    const failure = await gatewayTurnFailure(throwing(new LLMError('AI_LLM_UNAVAILABLE', 'LLM error (404): no such model',
+      { status: 404, model_unavailable: { model: 'gemini-2.5-flash', provider: 'google', source: { kind: 'slot', slot_key: 'slot_1' } } })));
+    expect(failure).toMatchObject({ reason: 'model_unavailable', retry_at: undefined });
+  });
+
   it('an answer that cannot be read, after the turn\'s one guided retry, is invalid_output', async () => {
     const unreadable = { response: 7, events: 'none', tool_calls: 'none' } as unknown as AIOutput;
     const executeAiCall: ExecuteChatAiCall = vi.fn(async () => ({ body: unreadable }));

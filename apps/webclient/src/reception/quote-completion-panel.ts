@@ -5,7 +5,7 @@ import type { QuoteSignoffConn } from './quote-signoff-panel.js';
 import type { CustomerCompletionBoardState } from './customer-request-board-state.js';
 import { customerRequestExpiry, refreshCustomerRequestExpiries, customerPreviewExpired } from './customer-request-expiry.js';
 import { mountCustomerLinkShare } from './customer-link-share.js';
-import { focusCustomerWorkspace, restoreCustomerWorkspaceControl } from './customer-workspace-focus.js';
+import { focusCustomerWorkspace, restoreCustomerWorkspaceControl, trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { appendCustomerCorrections } from './customer-completion-corrections.js';
 import { guardCustomerHistoryInteraction } from './customer-history-interaction.js';
 import { keepCustomerReplySelection } from './customer-history-selection.js';
@@ -24,6 +24,7 @@ export const mountQuoteCompletionPanel = (opts: {
   onBoardChange?: (interaction?: boolean) => void;
 }) => {
   const { document: doc,conn } = opts;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const root = doc.createElement('section'); root.hidden = true; root.setAttribute('data-signoff-completions',''); opts.host.appendChild(root);
   const add = (tag: string,text: string,host: HTMLElement = root) => {
     const node = doc.createElement(tag); node.textContent = text; host.appendChild(node); return node;
@@ -45,20 +46,20 @@ export const mountQuoteCompletionPanel = (opts: {
   notice.setAttribute('data-completion-replacement-notice',''); notice.className = 'signoff-replacement-notice';
   const preview = button('Prepare completion preview',editor); preview.type = 'submit';
   const close = button('Close completion editor',editor); const discard = button('Discard completion draft',editor);
-  const previewHost = doc.createElement('div'); editor.appendChild(previewHost);
+  const previewHost = doc.createElement('div');previewHost.setAttribute('data-completion-preview',''); editor.appendChild(previewHost);
   const shareHost = doc.createElement('div'); root.appendChild(shareHost);
-  const filterLabel = add('label','Completion requests');
+  const filterControls = add('div','');filterControls.className = 'completion-filters';const filterField = add('div','',filterControls);filterField.className = 'completion-filter-field';const filterLabel = add('label','Completion requests',filterField);
   const filter = doc.createElement('select'); filter.id = 'recued-completion-filter';
-  filterLabel.setAttribute('for',filter.id); root.appendChild(filter);
+  filterLabel.setAttribute('for',filter.id); filterField.appendChild(filter);
   for (const [value,text] of [['all','All requests'],['review','Needs owner review']]) { const option = doc.createElement('option'); option.value = value!; option.textContent = text!; filter.appendChild(option); }
   filter.value = opts.boardState?.filter ?? 'all';
-  const refresh = button('Refresh completions');
+  const refresh = button('Refresh completions',filterControls);
   const loadMessage = add('p',''); loadMessage.setAttribute('role','status'); loadMessage.setAttribute('aria-live','polite');
   loadMessage.setAttribute('data-completion-load-status','');
   const history = doc.createElement('div'); history.setAttribute('data-completion-history',''); root.appendChild(history);
   history.setAttribute('role','region'); history.setAttribute('aria-label','Completion request results'); history.setAttribute('aria-busy','false');
-  const newer = button('Newer completions'); const older = button('Older completions');
-  if (opts.editorOnly) [filterLabel,filter,refresh,loadMessage,history,newer,older].forEach(node => { node.hidden = true; });
+  const pages = add('div','');pages.className = 'signoff-actions';const newer = button('Newer completions',pages); const older = button('Older completions',pages);
+  if (opts.editorOnly) [filterControls,loadMessage,history,pages].forEach(node => { node.hidden = true; });
   type Agreement = Pick<QuoteSignoffSummary,'signoff_id' | 'quote_label' | 'customer'>;
   let selected: Agreement | null = null; let prepared: QuoteCompletionPrepareResult | null = null;
   let savedDraft: { id: string; terms: string } | undefined;
@@ -208,6 +209,7 @@ export const mountQuoteCompletionPanel = (opts: {
     if (keepPreview && reviewFreshness?.customerExpired()) { focusCustomerWorkspace(reviewFreshness.element); return; }
     const rememberLink = keepPreview && previewHost.querySelector<HTMLInputElement>('[data-completion-link-setting]')?.checked === true;
     let refreshFailed = false;
+    const ownsFocus = focusOwner.capture();
     started = true; root.hidden = false; busy = true; controls(); if (keepPreview) reviewFreshness?.invalidateReview(); else invalidate();
     try {
       const saved = await conn('reception.signoff.completion.resume',{ completion_id: completionId });
@@ -216,7 +218,7 @@ export const mountQuoteCompletionPanel = (opts: {
       selected = saved.completion; delivery.value = saved.completion.delivery_summary; expiry.value = String(saved.expiry_days);
       returnFocus = onReturn; editor.hidden = false; describeSelection(); showPrepared(saved,rememberLink);
     } catch (error) { if (!disposed) { message.textContent = errorText(error); if (keepPreview) { refreshFailed = true; reviewFreshness?.failed(); } } }
-    finally { if (!disposed) { busy = false; controls(); focusCustomerWorkspace(refreshFailed && reviewFreshness ? reviewFreshness.element : prepared ? previewHost : message); } }
+    finally { if (!disposed) { busy = false; controls(); if (ownsFocus()) focusCustomerWorkspace(refreshFailed && reviewFreshness ? reviewFreshness.element : prepared ? previewHost : message); } }
   };
   const open = (offer: QuoteSignoffSummary, onReturn?: () => void) => {
     if (disposed || busy) return;
@@ -255,7 +257,7 @@ export const mountQuoteCompletionPanel = (opts: {
       refreshLabel: 'Refresh completion preview',onExpire: controls,onRefresh: () => { void resumeSaved(result.completion.completion_id,result.completion.signoff_id,returnFocus); } });
     const publish = button('Publish completion link',previewHost); publish.setAttribute('data-completion-action','publish'); controls();
     publish.addEventListener('click',async () => {
-      if (busy || disposed || !prepared || reviewFreshness?.isExpired()) return; const snapshot = prepared; busy = true; controls();
+      if (busy || disposed || !prepared || reviewFreshness?.isExpired()) return; const snapshot = prepared; const ownsFocus = focusOwner.capture(); busy = true; controls();
       let published = false;
       try {
         const result = await conn('reception.signoff.completion.publish',{ completion_id: snapshot.completion.completion_id,preview_hash: snapshot.preview_hash,
@@ -273,19 +275,20 @@ export const mountQuoteCompletionPanel = (opts: {
           : `${errorText(error)} If the request is still a draft, choose Resume saved completion preview to try again.`;
         invalidate(); await load();
       } }
-      finally { if (!disposed) { busy = false; controls(); focusCustomerWorkspace(published ? shareHost : message); } }
+      finally { if (!disposed) { busy = false; controls(); if (ownsFocus()) focusCustomerWorkspace(published ? shareHost : message); } }
     });
     message.textContent = 'Saved completion preview ready. Review the exact delivery, then publish its link. Its expiry is unchanged.';
   };
   editor.addEventListener('submit',async event => {
     event.preventDefault(); if (busy || disposed || !selected || !editor.reportValidity()) return;
+    const ownsFocus = focusOwner.capture();
     busy = true; publishRecovery = undefined; controls(); invalidate(); share?.checking(); let saved = false;
     try {
       const result = await conn('reception.signoff.completion.prepare',{ signoff_id: selected.signoff_id,delivery_summary: delivery.value,expiry_days: Number(expiry.value) });
       if (disposed) return; saved = true; showPrepared(result);
       message.textContent = 'Completion preview prepared. Earlier pending completion requests have been replaced. Review the saved delivery, then publish its link.'; await load();
     } catch (error) { if (!disposed) { message.textContent = errorText(error); await load(); } }
-    finally { await share?.check(); if (!disposed) { busy = false; controls(); if (saved) opts.onChanged(); if (prepared && previewHost.isConnected) focusCustomerWorkspace(previewHost); } }
+    finally { await share?.check(); if (!disposed) { busy = false; controls(); if (saved) opts.onChanged(); if (prepared && previewHost.isConnected && ownsFocus()) focusCustomerWorkspace(previewHost); } }
   });
   filter.addEventListener('change',() => { pendingPage = undefined; opts.onBoardChange?.(true); void load({ previous: [] }); });
   refresh.addEventListener('click',() => { if (!busy) void load(undefined,refresh); });
@@ -300,5 +303,5 @@ export const mountQuoteCompletionPanel = (opts: {
     getBoardState: (): CustomerCompletionBoardState => ({ filter: displayedFilter,cursor,previous: [...previous],returnId,returnAction,
       expanded: restoring ? [...opts.boardState!.expanded] : [...history.querySelectorAll<HTMLDetailsElement>('details[open]')].map(disclosureKey) }),
     hasUnsavedChanges: hasDraft, hasInFlightWork: () => busy,
-    dispose: () => { disposed = true; generation++; historyInteraction.dispose(); reviewFreshness?.dispose(); share?.dispose(); root.remove(); } };
+    dispose: () => { focusOwner.dispose(); disposed = true; generation++; historyInteraction.dispose(); reviewFreshness?.dispose(); share?.dispose(); root.remove(); } };
 };

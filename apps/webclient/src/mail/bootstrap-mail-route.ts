@@ -48,6 +48,8 @@ import {
 import { serializeShellRoute } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { MailDraftSummary } from '@recued/contracts';
+import { readMailDraftPage, mailDraftRecipients } from './mail-draft-search.js';
+import { mailRecoveryStatusText } from './compose-recovery.js';
 
 export const MAIL_ROUTE_HOST_ATTR = 'data-recued-mail-route';
 export const MAIL_ROUTE_COMPOSE_ATTR = 'data-recued-mail-compose';
@@ -71,9 +73,17 @@ ${FILE_PICK_STYLES}
   [${MAIL_ROUTE_HOST_ATTR}] .mail-route-header > a { display: inline-flex; align-items: center; min-height: 44px; }
 }
 [${MAIL_ROUTE_HOST_ATTR}] a { color: var(--accent); }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-compose-recoveries] { display: grid; gap: 12px; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-compose-recoveries][hidden] { display: none; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-compose-recoveries] h2 { margin: 0; font-size: 18px; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-compose-recoveries] button { min-height: 44px; }
 [${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] { display: grid; gap: 12px; }
 [${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] h2 { margin: 0; font-size: 18px; }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 12px 0; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-filters label { display: grid; gap: 6px; flex: 1 1 220px; min-width: 0; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-filters input,
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft-filters select { min-width: 0; width: 100%; box-sizing: border-box; padding: 8px; color: var(--fg); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-drafts-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-drafts-list { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; min-width: 0; }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft { min-width: 0; }
@@ -156,6 +166,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
         <button type="button" ${MAIL_ROUTE_COMPOSE_ATTR} class="wc-button mail-route-compose">New mail</button>
       </header>
       <div class="mail-route-roster"></div>
+      <section data-mail-compose-recoveries></section>
       <div data-mail-saved-drafts></div>
       <div ${MAIL_ROUTE_DIALOG_ATTR}></div>
     </section>
@@ -165,8 +176,21 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const dialogHost = root.querySelector<HTMLElement>(`[${MAIL_ROUTE_DIALOG_ATTR}]`)!;
   const composeButton = root.querySelector<HTMLButtonElement>(`[${MAIL_ROUTE_COMPOSE_ATTR}]`)!;
   const draftsHost = root.querySelector<HTMLElement>('[data-mail-saved-drafts]')!;
+  const recoveryHost = root.querySelector<HTMLElement>('[data-mail-compose-recoveries]')!;
+  let restoringRecovery = false, recoveryError = '', discardRecovery: string | null = null;
   let disposed = false;
   let draftGeneration = 0;
+  let draftQuery = '', draftSender = '';
+  let draftSearchTimer: ReturnType<typeof setTimeout> | null = null;
+  if (options.drafts) draftsHost.innerHTML = `<h2>Saved drafts</h2>
+    <form class="mail-route-draft-filters" data-mail-draft-filters>
+      <label>Search saved drafts<input type="search" maxlength="200" autocomplete="off" placeholder="Subject or recipient" data-mail-draft-query></label>
+      <label>Sender mailbox<select data-mail-draft-sender><option value="">All mailboxes</option></select></label>
+      <button type="button" class="wc-button" data-mail-draft-clear>Clear filters</button>
+    </form><div data-mail-draft-results></div>`;
+  const draftResults = draftsHost.querySelector<HTMLElement>('[data-mail-draft-results]');
+  const draftQueryInput = draftsHost.querySelector<HTMLInputElement>('[data-mail-draft-query]');
+  const draftSenderSelect = draftsHost.querySelector<HTMLSelectElement>('[data-mail-draft-sender]');
   let draftRows: MailDraftSummary[] = [];
   let draftCursor: string | null = null;
   let draftLoading = false;
@@ -198,8 +222,61 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const compose = mountMailCompose(dialogHost, {
     ...options,
     ...fileDeps,
+    onStateChanged: () => { options.onStateChanged?.(); paintRecoveries(); },
     ...(options.drafts ? { drafts: { ...options.drafts, changed: () => { options.drafts?.changed?.(); void refreshDrafts(); } } } : {}),
   });
+  function paintRecoveries(returnTo?: { id: string; action: string }): void {
+    if (disposed || !options.recovery) return;
+    recoveryHost.hidden = compose.state().dialog !== null;
+    if (recoveryHost.hidden) return;
+    const active = doc.activeElement as HTMLElement | null;
+    const held = active && recoveryHost.contains(active) ? active : null;
+    const focus = returnTo ?? (held?.getAttribute('data-mail-recovery-action') ? {
+      id: held.closest('[data-mail-recovery-id]')!.getAttribute('data-mail-recovery-id')!,
+      action: held.getAttribute('data-mail-recovery-action')!,
+    } : null);
+    recoveryHost.replaceChildren();
+    const entries = options.recovery.list();
+    if (!entries.length) { if (focus) composeButton.focus(); return; }
+    const heading = doc.createElement('h2'); heading.textContent = 'Unfinished messages in this tab'; recoveryHost.append(heading);
+    const note = doc.createElement('p'); note.textContent = 'Recovery copies stay in this tab for up to 7 days. Sending, scheduling, and saving to a mailbox still require your action.'; recoveryHost.append(note);
+    if (recoveryError) { const error = doc.createElement('p'); error.setAttribute('role', 'alert'); error.textContent = recoveryError; recoveryHost.append(error); }
+    for (const entry of entries) {
+      const row = doc.createElement('article'); row.className = 'mail-route-draft'; row.setAttribute('data-mail-recovery-id', entry.id);
+      const description = doc.createElement('div'); description.className = 'mail-route-draft-summary';
+      const title = doc.createElement('strong'); title.textContent = entry.dialog.values.subject || 'Untitled message';
+      const context = doc.createElement('p'); context.className = 'mail-route-draft-context';
+      context.textContent = `From ${entry.mailbox.email} · ${mailRecoveryStatusText(entry.status)}`; description.append(title, context); row.append(description);
+      const button = (label: string, action: string, run: () => void) => {
+        const value = doc.createElement('button'); value.type = 'button'; value.className = 'wc-button'; value.textContent = label;
+        value.setAttribute('data-mail-recovery-action', action);
+        value.disabled = restoringRecovery; value.addEventListener('click', run); row.append(value); return value;
+      };
+      button(entry.status === 'editing' ? 'Restore message' : 'View submitted message', 'restore', () => { void (async () => {
+        if (restoringRecovery) return;
+        restoringRecovery = true; recoveryError = ''; paintRecoveries();
+        try { await compose.restoreRecovery(entry.id); } catch (error) { recoveryError = humanizeRpcError(error); }
+        finally { restoringRecovery = false; if (!disposed) paintRecoveries({ id: entry.id, action: 'restore' }); }
+      })(); });
+      button('Discard recovery', 'discard', () => { discardRecovery = entry.id; paintRecoveries({ id: entry.id, action: 'keep' }); });
+      if (discardRecovery === entry.id) {
+        const confirmation = doc.createElement('p'); confirmation.textContent = 'Remove this recovery copy? This does not cancel any submitted mail run.'; row.append(confirmation);
+        button('Keep recovery', 'keep', () => { discardRecovery = null; paintRecoveries({ id: entry.id, action: 'discard' }); });
+        button('Remove recovery copy', 'remove', () => {
+          if (!options.recovery!.remove(entry.id)) recoveryError = 'The recovery copy could not be removed. Try again.';
+          discardRecovery = null; paintRecoveries({ id: entry.id, action: 'discard' });
+        });
+      }
+      recoveryHost.append(row);
+    }
+    if (focus && !restoringRecovery) {
+      const row = [...recoveryHost.querySelectorAll<HTMLElement>('[data-mail-recovery-id]')]
+        .find(row => row.getAttribute('data-mail-recovery-id') === focus.id);
+      const control = row && [...row.querySelectorAll<HTMLButtonElement>('[data-mail-recovery-action]')]
+        .find(button => button.getAttribute('data-mail-recovery-action') === focus.action);
+      (control ?? recoveryHost.querySelector<HTMLButtonElement>('[data-mail-recovery-action="restore"]'))?.focus();
+    }
+  }
   const paintDrafts = (returnTo?: DraftFocus): void => {
     if (disposed || !options.drafts) return;
     const active = doc.activeElement as HTMLElement | null;
@@ -212,7 +289,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       .map(row => row.getAttribute('data-mail-draft-id')!);
     const busy = draftLoading || deletingDraftId !== null;
     draftsHost.setAttribute('aria-busy', String(busy));
-    draftsHost.replaceChildren();
+    draftResults!.replaceChildren();
     const button = (label: string, key: string, run: () => void | Promise<unknown>, blocked = busy): HTMLButtonElement => {
       const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.className = 'wc-button';
       el.setAttribute('data-mail-draft-action', key);
@@ -227,26 +304,43 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       return el;
     };
     const header = doc.createElement('div'); header.className = 'mail-route-drafts-header';
-    const title = doc.createElement('h2'); title.textContent = 'Saved drafts';
     const refresh = button(draftLoading ? 'Refreshing…' : 'Refresh drafts', 'refresh', () => refreshDrafts());
     refresh.setAttribute('aria-label', 'Refresh drafts');
-    header.append(title, refresh); draftsHost.append(header);
+    header.append(refresh); draftResults!.append(header);
     for (const [text, alert] of [[draftNotice, false], [draftActionError, true], [draftListError, true]] as const) {
       if (!text) continue;
       const message = doc.createElement('p'); message.setAttribute('data-mail-draft-feedback', ''); message.textContent = text;
       if (alert) message.setAttribute('role', 'alert');
-      draftsHost.append(message);
+      draftResults!.append(message);
     }
-    if (draftListError || deletionNeedsCheck) draftsHost.append(button('Retry', 'retry', () => refreshDrafts(deletionNeedsCheck ? false : retryDraftsMore)));
-    const list = doc.createElement('ul'); list.className = 'mail-route-drafts-list'; draftsHost.append(list);
+    if (draftListError || deletionNeedsCheck) draftResults!.append(button('Retry', 'retry', () => refreshDrafts(deletionNeedsCheck ? false : retryDraftsMore)));
+    const list = doc.createElement('ul'); list.className = 'mail-route-drafts-list'; draftResults!.append(list);
     const readiness = compose.readiness();
     const mailboxes = 'mailboxes' in readiness ? readiness.mailboxes : [];
+    if (draftSenderSelect) {
+      const senders = new Map(mailboxes.map(mailbox => [mailbox.mail_instance_slug, mailbox.account_email || mailbox.mail_instance_slug]));
+      for (const row of draftRows) if (!senders.has(row.sender_mail_instance)) senders.set(row.sender_mail_instance, row.sender_mail_instance);
+      if (draftSender && !senders.has(draftSender)) senders.set(draftSender, draftSender);
+      const choices = [['', 'All mailboxes'], ...senders];
+      if (JSON.stringify(Array.from(draftSenderSelect.options, option => [option.value, option.textContent])) !== JSON.stringify(choices)) {
+        draftSenderSelect.replaceChildren(...choices.map(([value, text]) => {
+          const option = doc.createElement('option'); option.value = value!; option.textContent = text!; return option;
+        }));
+        draftSenderSelect.value = draftSender;
+      }
+    }
+    for (const control of draftsHost.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('[data-mail-draft-filters] input, [data-mail-draft-filters] select, [data-mail-draft-clear]')) control.disabled = deletingDraftId !== null;
     for (const row of draftRows) {
       const subject = row.subject || 'Untitled draft';
       const item = doc.createElement('li'); item.dataset.mailDraftId = row.draft_id; item.className = 'mail-route-draft';
       const summary = doc.createElement('div'); summary.className = 'mail-route-draft-summary';
       const open = button(subject, 'open', async () => {
-        if (!await compose.openSaved(row.draft_id)) throw new Error('Close the message you have open before you open another draft.');
+        const generation = draftGeneration;
+        const current = (): boolean => !disposed && generation === draftGeneration;
+        try {
+          const opened = await compose.openSaved(row.draft_id, current);
+          if (!opened && current()) throw new Error('Close the message you have open before you open another draft.');
+        } catch (error) { if (current()) throw error; }
       });
       open.className = 'mail-route-draft-open'; open.id = `mail-draft-title-${row.draft_id}`;
       const context = doc.createElement('p'); context.className = 'mail-route-draft-context'; context.id = `mail-draft-context-${row.draft_id}`;
@@ -255,6 +349,8 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       const edited = doc.createElement('time'); const date = new Date(row.updated_at);
       if (!Number.isNaN(date.getTime())) edited.dateTime = date.toISOString();
       edited.textContent = formatClientDateTime(row.updated_at, { includeSeconds: false }); context.append(edited);
+      const recipients = mailDraftRecipients(row);
+      if (recipients) context.append(` · ${recipients}`);
       open.setAttribute('aria-describedby', context.id);
       const describeAction = (control: HTMLButtonElement): HTMLButtonElement => {
         control.setAttribute('aria-describedby', `${open.id} ${context.id}`); return control;
@@ -277,9 +373,9 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       list.append(item);
     }
     if (!draftRows.length && !draftListError && !draftActionError) {
-      const empty = doc.createElement('p'); empty.textContent = draftLoading ? 'Loading drafts…' : 'No saved drafts.'; draftsHost.append(empty);
+      const empty = doc.createElement('p'); empty.textContent = draftLoading ? 'Searching drafts…' : draftQuery || draftSender ? 'No saved drafts match these filters.' : 'No saved drafts.'; draftResults!.append(empty);
     }
-    if (draftCursor) draftsHost.append(button('More drafts', 'more', () => refreshDrafts(true)));
+    if (draftCursor) draftResults!.append(button('More drafts', 'more', () => refreshDrafts(true)));
     if (origin) {
       const controls = Array.from(draftsHost.querySelectorAll<HTMLElement>('[data-mail-draft-action]'));
       const rowId = (control: HTMLElement): string | null => control.closest('[data-mail-draft-id]')?.getAttribute('data-mail-draft-id') ?? null;
@@ -299,8 +395,12 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     if (!options.drafts || disposed) return;
     const generation = ++draftGeneration; draftLoading = true; draftListError = null; paintDrafts();
     try {
-      const result = await options.drafts.list({ ...(more && draftCursor ? { cursor: draftCursor } : {}), limit: 25 });
-      if (disposed || generation !== draftGeneration) return;
+      const result = await readMailDraftPage(options.drafts.list, {
+        ...(more && draftCursor ? { cursor: draftCursor } : {}), limit: 25,
+        ...(draftQuery.trim() ? { query: draftQuery.trim() } : {}),
+        ...(draftSender ? { sender_mail_instance: draftSender } : {}),
+      }, () => !disposed && generation === draftGeneration);
+      if (!result || disposed || generation !== draftGeneration) return;
       const rows = more ? [...draftRows, ...result.drafts] : result.drafts;
       draftRows = [...new Map(rows.map(row => [row.draft_id, row])).values()]; draftCursor = result.next_cursor;
       if (deleteCandidate && deletingDraftId === null && !draftRows.some(row => sameDraft(row, deleteCandidate!))) {
@@ -313,6 +413,26 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
       if (!disposed && generation === draftGeneration) { draftLoading = false; paintDrafts(); }
     }
   };
+  const filterDrafts = (immediate = false): void => {
+    if (disposed || deletingDraftId !== null) return;
+    if (draftSearchTimer !== null) clearTimeout(draftSearchTimer);
+    draftSearchTimer = null;
+    draftQuery = draftQueryInput?.value ?? ''; draftSender = draftSenderSelect?.value ?? '';
+    draftGeneration++; draftRows = []; draftCursor = null; draftLoading = true;
+    deleteCandidate = null; draftListError = null; draftNotice = null;
+    if (!deletionNeedsCheck) draftActionError = null;
+    paintDrafts();
+    if (immediate) void refreshDrafts();
+    else draftSearchTimer = setTimeout(() => { draftSearchTimer = null; void refreshDrafts(); }, 250);
+  };
+  draftQueryInput?.addEventListener('input', () => filterDrafts());
+  draftSenderSelect?.addEventListener('change', () => filterDrafts(true));
+  draftsHost.querySelector('form')?.addEventListener('submit', event => { event.preventDefault(); filterDrafts(true); });
+  draftsHost.querySelector('[data-mail-draft-clear]')?.addEventListener('click', () => {
+    if (draftQueryInput) draftQueryInput.value = '';
+    if (draftSenderSelect) draftSenderSelect.value = '';
+    filterDrafts(true); draftQueryInput?.focus();
+  });
   const deleteDraft = async (candidate: MailDraftSummary): Promise<void> => {
     if (!options.drafts || disposed || draftLoading || deletingDraftId !== null || deletionNeedsCheck || deleteCandidate !== candidate) return;
     if (!draftRows.some(row => sameDraft(row, candidate))) {
@@ -427,6 +547,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     await drafts;
     renderRoster();
     paintDrafts();
+    paintRecoveries();
   };
 
   // Render an explicit loading state immediately. An empty roster is a server
@@ -448,7 +569,8 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     hasUnsavedChanges,
     unsavedChangesPrompt: () =>
       hasUnsavedChanges()
-        ? 'This message has changes you have not saved. Leaving Mail throws them away.'
+        ? options.recovery ? 'This message has unsaved changes. Any copy kept in this tab can be restored from Mail.'
+          : 'This message has changes you have not saved. Leaving Mail throws them away.'
         : null,
     hasInFlightWork: () => compose.hasInFlightWork(),
     inFlightWorkPrompt: () =>
@@ -458,6 +580,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     whenLoaded: () => loaded,
     dispose() {
       disposed = true; draftGeneration++;
+      if (draftSearchTimer !== null) clearTimeout(draftSearchTimer);
       root.removeEventListener('click', onClick);
       draftsHost.removeEventListener('keydown', cancelDraftDelete);
       compose.destroy();

@@ -235,9 +235,9 @@ it('keeps the structured Records review visible on a projected generated ask', (
   expect(card.children).toContain(evidence);
   expect(evidence.getAttribute('role')).toBe('region');
   expect(evidence.getAttribute('tabindex')).toBe('0');
-  expect(evidence.textContent).toContain('Before: Does not exist');
+  expect(evidence.textContent).toContain('New record (new)');
   expect(evidence.textContent).toContain('Intermediate');
-  expect(evidence.textContent).toContain('2. upsert');
+  expect(evidence.textContent).toContain('2. Add or change: Title: Intermediate → <script>inert()</script>');
   expect(evidence.textContent).toContain('<script>inert()</script>');
   expect(evidence.children).toEqual([]);
 });
@@ -892,10 +892,8 @@ describe('R20 — renderChatPlanCard', () => {
     };
     const { card } = renderChatPlanWithDocument(chatPlanModel({ resource_review: review }), vi.fn());
     const evidence = collectByAttr(card, 'data-resource-review')[0]!;
-    expect(evidence.textContent).toContain('Before:');
-    expect(evidence.textContent).toContain('<script>no()</script>');
-    expect(evidence.textContent).toContain('After:');
-    expect(evidence.textContent).toContain('Moved');
+    expect(evidence.textContent).toContain('Title: <script>no()</script> → Moved');
+    expect(evidence.textContent).toMatch(/Starts: .+ → .+/);
     expect(evidence.children).toEqual([]);
     const unavailable = renderChatPlanWithDocument(chatPlanModel({
       resource_review: review, payload_available: false,
@@ -1414,6 +1412,13 @@ describe('D-335 slice Z — an ask for a browser step\'s secret takes it in a fi
     return { card, form, onAnswer, submit, words, input: byClass(card, 'rx-ask-card-secret-input'),
       status: byClass(card, 'rx-ask-card-secret-status'), remember: byClass(card, 'rx-ask-card-secret-remember') };
   };
+
+  it('D-402 slice H5 — in a browser the ask names: the field\'s label and the box both name it, as it is kept for that browser alone', () => {
+    const m = secretModel();
+    const t = renderSecret({ ...m, secret_prompt: { ...m.secret_prompt!, browser: 'Work' } }, vi.fn(async () => true));
+    expect(t.words(t.form)).toContain('Your password for login.live.com, in “Work”, for the field “Password”');
+    expect(t.words(t.remember!)).toBe(' Remember it for this field on login.live.com, in “Work”');
+  });
 
   it('a password: a masked field, a box to remember it for that field, and its own button, above the one option', async () => {
     const onSecret = vi.fn(async () => true);

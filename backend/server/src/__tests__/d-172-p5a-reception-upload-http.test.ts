@@ -178,6 +178,7 @@ const buildHandler = (env: ReturnType<typeof buildEnv>) => {
     getRateLimiter: () => env.limiter,
     getPepper: () => PEPPER,
     now: () => clock,
+    getDropLinkNonceStore: () => env.nonce,
     ...(env.uploadService ? { getReceptionUploadService: () => env.uploadService! } : {}),
   };
   return createReceptionPortHandler(deps);
@@ -267,6 +268,69 @@ const chunk = async (
 };
 
 describe('D-172 P5a — dispatch happy path + resume', () => {
+  it('refreshes a bound, single-use nonce without allocating a session or caching the response', async () => {
+    const env = buildEnv();
+    insertEndpoint(env, EP, BEARER);
+    insertEndpoint(env, 'ep-other', BEARER);
+    const handler = buildHandler(env);
+    const res = fakeRes();
+    const req = fakeReq('GET', u());
+    delete req.headers.origin;
+    delete req.headers.referer; // real same-origin GET from the no-referrer form
+    await handler(req, res);
+    expect(res.status).toBe(200);
+    expect(res.getHeader('cache-control')).toBe('no-store');
+    const form_nonce = res.json.form_nonce;
+    expect(typeof form_nonce).toBe('string');
+    expect(env.nonce.consume('ep-other', form_nonce, clock)).toBe(false);
+    expect(env.db.prepare('SELECT COUNT(*) AS n FROM upload_session').get()).toEqual({ n: 0 });
+    const request = { filename: 'note.pdf', declared_size: 9, mime_reported: 'application/pdf', form_nonce };
+    expect((await create(handler, request)).status).toBe(201);
+    expect((await create(handler, request)).json.error.code).toBe('invalid_nonce');
+    const refreshed = fakeRes();
+    await handler(fakeReq('GET', u()), refreshed);
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.json.form_nonce).not.toBe(form_nonce);
+    expect((await create(handler, { ...request, form_nonce: refreshed.json.form_nonce })).status).toBe(201);
+  });
+
+  it.each(['revoke', 'disable', 'rotate', 'expire'] as const)('never mints a nonce from a stale cached link after %s', async change => {
+    const env = buildEnv();
+    insertEndpoint(env, EP, BEARER);
+    const handler = buildHandler(env);
+    const first = fakeRes();
+    await handler(fakeReq('GET', u()), first); // populate dispatcher cache
+    expect(first.status).toBe(200);
+    if (change === 'revoke') env.store.revoke({ endpoint_id: EP, now: clock, reason: 'Owner revoked' });
+    if (change === 'disable') env.store.disable(EP, clock);
+    if (change === 'rotate') env.store.rotateToken({ endpoint_id: EP, now: clock, new_bearer_secret_hmac: computeBearerHmac('new', PEPPER) });
+    if (change === 'expire') env.db.prepare('UPDATE public_endpoint_registry SET expires_at = ? WHERE endpoint_id = ?').run(clock, EP);
+    const res = fakeRes();
+    await handler(fakeReq('GET', u()), res);
+    expect(res.status).toBe(410);
+    expect(res.json).toEqual({ error: { code: 'not_authorized' } });
+  });
+
+  it('rate limits nonce refresh and refuses a foreign origin or invalid bearer', async () => {
+    const env = buildEnv();
+    insertEndpoint(env, EP, BEARER);
+    const handler = buildHandler(env);
+    const foreign = fakeRes();
+    await handler(fakeReq('GET', u(), undefined, { origin: 'https://elsewhere.example' }), foreign);
+    expect(foreign.status).toBe(403);
+    const wrong = fakeRes();
+    await handler(fakeReq('GET', u('', EP, 'wrong')), wrong);
+    expect(wrong.status).toBe(401);
+    for (let i = 0; i < 3; i++) {
+      const res = fakeRes(); await handler(fakeReq('GET', u()), res);
+      expect(res.status).toBe(200);
+    }
+    const limited = fakeRes(); await handler(fakeReq('GET', u()), limited);
+    expect(limited.status).toBe(429);
+    expect(limited.json.error.code).toBe('rate_limited');
+    expect(Number(limited.getHeader('retry-after'))).toBeGreaterThan(0);
+  });
+
   it('create → chunk → finalize lands a pending drop row + the bytes in the CAS', async () => {
     const env = buildEnv();
     insertEndpoint(env, EP, BEARER);

@@ -35,11 +35,13 @@ import {
   sameTrigger,
   triggerPreapprovalHasDoor,
   TRIGGER_PREAPPROVAL_TRIGGER_NOUNS,
+  TRIGGER_PREAPPROVAL_ALL_WRITES,
   TRIGGER_PREAPPROVAL_ASK_GRANT,
   TRIGGER_PREAPPROVAL_BROWSER_OP,
+  TRIGGER_PREAPPROVAL_WHOLE_RECIPE,
+  coversWholeRecipe,
   TRIGGER_PREAPPROVAL_BROWSER_PER_RUN,
   isScheduledPromptWrite,
-  triggerPreapprovalCovers,
   triggerPreapprovalState,
   type IngredientManifest,
   type NormalizedTriggerPreapprovalGrant,
@@ -54,7 +56,8 @@ import {
 import { canonicalJsonString, canonicalRecipeDefinition, type PackOpResolution } from '@recued/recipes';
 import type { ActivityAction, AuditLogStore } from '@recued/storage';
 
-import { TriggerPreapprovalError, type TriggerPreapprovalStore } from './storage/trigger-preapproval-store.js';
+import { TriggerPreapprovalError, type TriggerPreapprovalStore, type TriggerPreapprovalGrantInput,
+  type TriggerPreapprovalGrantDecision } from './storage/trigger-preapproval-store.js';
 import {
   recipeAiSteps,
   recipeStepOpLabels,
@@ -168,9 +171,10 @@ export interface TriggerPreapprovalGranter {
   grant(args: unknown, method: string): Promise<TriggerPreapprovalView>;
   /** Grant what a held write's "Always allow for this …" offered, with the ask's bounds, when the
    *  recipe (or a scheduled prompt's text) and, for a webhook or a form, its door are still what
-   *  the hold read. A live pre-approval already covering the offer is returned as it is: an answer
-   *  told twice grants once. */
-  grantOffer(offer: TriggerPreapprovalOffer): Promise<TriggerPreapprovalView>;
+   *  the hold read. One durable approval selects one grant, including after revocation. */
+  grantOffer(offer: TriggerPreapprovalOffer, approval: {
+    readonly run_id: string; readonly checkpoint_id: string;
+  }): Promise<TriggerPreapprovalView>;
   list(method: string): Promise<TriggerPreapprovalView[]>;
   revoke(args: unknown, method: string): Promise<TriggerPreapprovalView>;
   /** D-341 slice B2b — what a trigger's page may grant: each recipe the trigger starts, its writes
@@ -192,6 +196,10 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
     if (deps.store === undefined) throw new RpcError('not_configured', `${method}: trigger pre-approvals are not wired`, 501);
     return deps.store;
   };
+  const persist = (kept: TriggerPreapprovalStore, input: TriggerPreapprovalGrantInput,
+    decision?: TriggerPreapprovalGrantDecision) => decision === undefined
+    ? { row: kept.grant(input), created: true }
+    : kept.grantForDecision(input, decision);
   const audit = (action: ActivityAction, target: string, detail: Record<string, unknown>, at: number): void => {
     if (deps.auditLog === undefined) return;
     void deps.auditLog.logActivity({
@@ -273,7 +281,11 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
     const opDeps = opDepsNow();
     const labels = recipe !== null ? recipeStepOpLabels(recipe, opDeps) : new Map<string, string>();
     const recipe_name = recipe?.metadata.name ?? row.recipe_id;
-    const write_labels = row.writes.map((op) => labels.get(op) ?? op);
+    // D-402 ruling 5 — a row covering the whole recipe names its version's writes, those a pre-approval
+    // can stand in for.
+    const write_labels = coversWholeRecipe(row)
+      ? (recipe !== null ? recipeStepWrites(recipe, opDeps).filter((write) => write.offerable).map((write) => write.label) : [])
+      : row.writes.map((op) => labels.get(op) ?? op);
     const ai_steps = recipe !== null ? recipeAiSteps(recipe, opDeps) : [];
     return {
       ...row,
@@ -291,6 +303,7 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
     method: string,
     via: 'owner' | 'ask',
     expect?: { readonly recipe_sha256: string },
+    decision?: TriggerPreapprovalGrantDecision,
   ): Promise<TriggerPreapprovalView> => {
     const kept = store(method);
     const schedule_id = grant.trigger.schedule_id;
@@ -311,11 +324,11 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
       throw new RpcError('bad_request', `${method}: the prompt of ${prompt.title} changed since it asked`, 400, method);
     }
     const at = now();
-    const row = kept.grant({
+    const { row, created } = persist(kept, {
       trigger: grant.trigger, recipe_id: schedule_id, recipe_sha256: prompt.prompt_sha256,
       writes: grant.writes, max_per_run: grant.max_per_run, now: at,
-    });
-    audit('trigger_preapproval_granted', row.id, {
+    }, decision);
+    if (created) audit('trigger_preapproval_granted', row.id, {
       via, trigger: row.trigger, recipe_id: row.recipe_id, recipe_sha256: row.recipe_sha256, writes: row.writes,
       max_per_run: row.max_per_run,
     }, at);
@@ -329,6 +342,7 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
       readonly prompt_sha256: string;
     },
     method: string,
+    decision: TriggerPreapprovalGrantDecision,
   ): Promise<TriggerPreapprovalView> => {
     const kept = store(method);
     const prompt = await promptOf(offer.trigger.schedule_id);
@@ -346,11 +360,11 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
       throw new RpcError('bad_request', `${method}: ${recipe.metadata.name} does not call ${offer.op}`, 400, method);
     }
     const at = now();
-    const row = kept.grant({
+    const { row, created } = persist(kept, {
       trigger: offer.trigger, recipe_id: offer.recipe_id, recipe_sha256: offer.recipe_sha256, prompt_sha256: offer.prompt_sha256,
       writes: [offer.op], ...TRIGGER_PREAPPROVAL_ASK_GRANT, now: at,
-    });
-    audit('trigger_preapproval_granted', row.id, {
+    }, decision);
+    if (created) audit('trigger_preapproval_granted', row.id, {
       via: 'ask', trigger: row.trigger, recipe_id: row.recipe_id, recipe_sha256: row.recipe_sha256,
       prompt_sha256: row.prompt_sha256, writes: row.writes, max_per_run: row.max_per_run,
     }, at);
@@ -361,10 +375,11 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
     grant: NormalizedTriggerPreapprovalGrant,
     method: string,
     via: 'owner' | 'ask',
-    expect?: { readonly recipe_sha256: string; readonly door_contract_id?: string },
+    expect?: { readonly recipe_sha256: string; readonly door_contract_id?: string; readonly op?: string },
+    decision?: TriggerPreapprovalGrantDecision,
   ): Promise<TriggerPreapprovalView> => {
     if (grant.trigger.kind === 'prompt_schedule') {
-      return grantPrompt({ ...grant, trigger: grant.trigger }, method, via, expect);
+      return grantPrompt({ ...grant, trigger: grant.trigger }, method, via, expect, decision);
     }
     const kept = store(method);
     const recipe = deps.recipeStore?.get(grant.recipe_id) ?? null;
@@ -375,7 +390,13 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
     }
     const opDeps = opDepsNow();
     const ops = new Set(recipeStepOps(recipe, opDeps).values());
-    const strange = grant.writes.filter((op) => !ops.has(op));
+    // D-402 ruling 5 — every write of the version: named by the version, so none is strange. An ask's
+    // answer still names the write it asked about, which the recipe must call.
+    const whole = grant.writes.length === 1 && grant.writes[0] === TRIGGER_PREAPPROVAL_ALL_WRITES;
+    if (whole && (ops.size === 0 || (expect?.op !== undefined && !ops.has(expect.op)))) {
+      throw new RpcError('bad_request', `${method}: ${recipe.metadata.name} makes no write a pre-approval can name`, 400, method);
+    }
+    const strange = whole ? [] : grant.writes.filter((op) => !ops.has(op));
     if (strange.length > 0) {
       throw new RpcError('bad_request',
         `${method}: ${recipe.metadata.name} does not call ${strange.join(', ')}; a pre-approval names only the ops its steps call`,
@@ -396,13 +417,13 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
       throw new RpcError('bad_request', `${method}: that ${TRIGGER_NAME[grant.trigger.kind]}'s door changed since it asked`, 400, method);
     }
     const at = now();
-    const row = kept.grant({
+    const { row, created } = persist(kept, {
       trigger: grant.trigger,
       ...(route.door_contract_id !== undefined ? { door_contract_id: route.door_contract_id } : {}),
       recipe_id: grant.recipe_id, recipe_sha256,
       writes: grant.writes, max_per_run: grant.max_per_run, now: at,
-    });
-    audit('trigger_preapproval_granted', row.id, {
+    }, decision);
+    if (created) audit('trigger_preapproval_granted', row.id, {
       via,
       trigger: row.trigger,
       ...(row.door_contract_id !== undefined ? { door_contract_id: row.door_contract_id } : {}),
@@ -423,22 +444,35 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
       return grantChecked(grant, method, 'owner');
     },
 
-    async grantOffer(offer) {
+    async grantOffer(sourceOffer, approval) {
       const method = 'trigger pre-approval from an ask';
-      const covering = store(method).list().find((row) => triggerPreapprovalCovers(row, { ...offer }));
-      if (covering !== undefined) return view(covering);
+      if (!approval || typeof approval.run_id !== 'string' || !approval.run_id
+        || typeof approval.checkpoint_id !== 'string' || !approval.checkpoint_id) {
+        throw new RpcError('bad_request', `${method}: a durable approval identity is required`, 400);
+      }
+      const offer = structuredClone(sourceOffer);
+      const decision = { approval_ref: JSON.stringify(['preflight', approval.run_id, approval.checkpoint_id]),
+        offer_sha256: createHash('sha256').update(canonicalJsonString(offer)).digest('hex') };
+      const prior = store(method).getDecision(decision);
+      if (prior !== undefined) return view(prior);
       if (offer.trigger.kind === 'prompt_schedule' && offer.prompt_sha256 !== undefined) {
-        return grantPromptRecipe({ ...offer, trigger: offer.trigger, prompt_sha256: offer.prompt_sha256 }, method);
+        return grantPromptRecipe({ ...offer, trigger: offer.trigger, prompt_sha256: offer.prompt_sha256 }, method, decision);
       }
       return grantChecked({
-        trigger: offer.trigger, recipe_id: offer.recipe_id, writes: [offer.op],
-        // B5 — a scheduled prompt's browser actions are a job's many, not one write a run.
-        max_per_run: offer.op === TRIGGER_PREAPPROVAL_BROWSER_OP
-          ? TRIGGER_PREAPPROVAL_BROWSER_PER_RUN : TRIGGER_PREAPPROVAL_ASK_GRANT.max_per_run,
+        trigger: offer.trigger, recipe_id: offer.recipe_id,
+        // B5 — a scheduled prompt's browser actions are a job's many, not one write a run; its AI's own
+        // writes keep their grant of one (§7.7). D-402 ruling 10 — a trigger's "Always allow" covers
+        // every write of the recipe's version, with no count.
+        ...(offer.op === TRIGGER_PREAPPROVAL_BROWSER_OP
+          ? { writes: [offer.op], max_per_run: TRIGGER_PREAPPROVAL_BROWSER_PER_RUN }
+          : offer.trigger.kind === 'prompt_schedule'
+            ? { writes: [offer.op], max_per_run: TRIGGER_PREAPPROVAL_ASK_GRANT.max_per_run }
+            : { writes: [TRIGGER_PREAPPROVAL_ALL_WRITES], max_per_run: TRIGGER_PREAPPROVAL_WHOLE_RECIPE }),
       }, method, 'ask', {
+        op: offer.op,
         recipe_sha256: offer.recipe_sha256,
         ...(offer.door_contract_id !== undefined ? { door_contract_id: offer.door_contract_id } : {}),
-      });
+      }, decision);
     },
 
     async list(method) {
@@ -489,6 +523,8 @@ export const createTriggerPreapprovalGranter = (deps: TriggerPreapprovalRpcDeps)
           ai_steps: recipeAiSteps(recipe, opDeps),
           writes: recipeStepWrites(recipe, opDeps),
           preapprovals: await Promise.all(rows.filter((row) => row.recipe_id === recipe_id).map((row) => view(row))),
+          // D-402 ruling 5 — what this page grants: every write of the version.
+          grants_whole_recipe: true,
         });
       }
       return { recipes };

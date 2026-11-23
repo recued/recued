@@ -337,6 +337,21 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     ['#recipes/x/../settings', false],
     ['#reception/records', true],
     ['#reception/records/../settings', false],
+    // D-402 slice E4b — a hand-off's notice: its run carried on in Chat. One run, never a prefix.
+    ['#chat/carry-on/run-1', true],
+    ['#chat/carry-on/run%201%2Fa', true],
+    ['#chat/carry-on/', false],
+    ['#chat/carry-on/run-1/../../settings', false],
+    ['#chat/session/chat-1', false],
+    // D-268 — a failure notice's links, as the server writes them: the automation's rules
+    // (`automationRuleLink`, the recipe id encoded) and the pack where a need is fixed (`automationFixFor`).
+    ['#automation/pub%2Frenewal-notice', true],
+    ['#automation/buy-lamp', true],
+    ['#automation/', false],
+    ['#automation/x/../settings', false],
+    ['#packs/hubspot', true],
+    ['#packs/', false],
+    ['#packs/hubspot/../../settings', false],
     // ⛔ Neither spelling may be loosened into a general hash allowance.
     ['#views/../settings', false],
     ['#views/not-a-view-id', false],

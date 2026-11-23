@@ -271,17 +271,17 @@ describe('evaluatePreflightAdmission', () => {
     });
   });
 
-  it('returns admit for an admin-tier tool on chat and user_self (D-187: contract-less owner ceiling is admin)', () => {
-    // D-187 slice 4 — the matrix's tighter (chat, user_self) `write` ceiling collapsed
-    // into the ONE global contract-less owner ceiling (`admin`), so an admin-risk op
-    // now runs silent in chat (was `ask` under the matrix). Destructive still
-    // always-asks (next test) — the op-risk floor trust can never cross.
+  it('returns ask for an admin-tier tool on chat and user_self (D-177 §N.15.6: the chat follows each op\'s approval)', () => {
+    // D-187 slice 4 collapsed the owner's cells into one `admin` ceiling, so an admin-risk
+    // op ran silent in chat. D-177 §N.15.6 (2026-11-10) put the owner's chat on the `read`
+    // ceiling, where the AI decides what runs: its `ask` holds, with nothing lifted.
+    // Destructive still always-asks (next test) — the op-risk floor trust can never cross.
     expect(evaluatePreflightAdmission({
       source: chatSource(),
       tool: tool('admin'),
-    })).toEqual({
-      verdict: 'admit',
-      authorization_provenance: { pre_lift_approval: 'never' },
+    })).toMatchObject({
+      verdict: 'ask',
+      authorization_provenance: { pre_lift_approval: 'ask' },
     });
   });
 
@@ -887,6 +887,31 @@ describe('buildPreflightAsk', () => {
     );
   });
 
+  it('names no connection where the step has none, as a local program has', () => {
+    // A local program's step (a `cli` op) arrives with an empty connection
+    // name: the ask read "…is waiting for your approval on ." and "action
+    // … on .", naming nothing.
+    const plain = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'drive.drive-handoff.job.start',
+        connection_name: '',
+      }),
+    });
+    expect(plain.message.text).toContain('wants to run drive.drive-handoff.job.start (step gated_step).');
+    // The recipe's own title, as a webhook's run carries it.
+    const titled = buildPreflightAsk({
+      checkpoint: checkpoint({ preflight_context: { recipe_title: 'Drive hand-off' } }),
+      context: askContext({
+        tool_slug: 'drive.drive-handoff.job.start',
+        connection_name: '',
+      }),
+    });
+    expect(titled.message.text).toContain('"Drive hand-off" is waiting for your approval.');
+    expect(titled.message.text).toContain('action drive.drive-handoff.job.start.');
+    expect(titled.message.text).not.toMatch(/ on [.(]/);
+  });
+
   it('keeps the connection when it DIFFERS — the sandbox-vs-production case', () => {
     // The dedup compares whole segments, so the one difference that
     // decides the blast radius survives it.
@@ -1257,13 +1282,28 @@ describe('createPreflightAnswerHandler', () => {
     });
 
     await handler(
-      payload({ owner_override_offer: offer }),
+      payload({ owner_override_offer: offer, owner_override_policy_revision: `sha256:${'b'.repeat(64)}` }),
       answer(NEVER_ASK_OPERATION_OPTION_ID),
     );
 
-    expect(upsertOverride).toHaveBeenCalledWith(offer);
+    expect(upsertOverride).toHaveBeenCalledWith(offer, {
+      decision_id: JSON.stringify(['preflight', 'run-1', 'checkpoint-1']),
+      answered_at: ANSWERED_AT,
+      holds: [{ run_id: 'run-1', checkpoint_id: 'checkpoint-1' }],
+      policy_revision: `sha256:${'b'.repeat(64)}`,
+    });
     expect(order).toEqual(['override', 'resume']);
     expect(store.delete).toHaveBeenCalledWith('checkpoint-1');
+  });
+
+  it('does not downgrade a malformed policy revision into a legacy standing answer', async () => {
+    const upsertOverride = vi.fn(), r = resumer();
+    const handler = createPreflightAnswerHandler({ checkpointStore: checkpointStore(checkpoint()), resumer: r, upsertOverride });
+    await expect(handler(payload({ owner_override_policy_revision: 42, owner_override_offer: {
+      kind: 'never_ask', ingredient_id: 'recued-core/github', operation_id: 'recued-core/github.issue.read',
+      op_hash: 'a'.repeat(64), approval: 'never',
+    } }), answer(NEVER_ASK_OPERATION_OPTION_ID))).rejects.toThrow('malformed standing-policy revision');
+    expect(upsertOverride).not.toHaveBeenCalled(); expect(r.resumeRun).not.toHaveBeenCalled();
   });
 
   it('does not persist a standing ruling after its checkpoint was consumed', async () => {

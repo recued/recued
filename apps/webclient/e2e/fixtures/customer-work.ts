@@ -25,6 +25,8 @@ export const installCustomerWorkFixture = () => {
     fixture.__customerUxCalls = calls;
     const NOW = Date.parse('2026-10-16T12:00:00Z');
     const hash = 'a'.repeat(64);
+    const closeoutMode = new URLSearchParams(location.search).get('closeout');
+    let archive = { job_id: 'job-1', revision: 0, archived_at: closeoutMode === 'archived' ? NOW : null, updated_at: closeoutMode === 'archived' ? NOW : null };
     const count = Number(new URLSearchParams(location.search).get('jobs') ?? 6);
     const offer = (n: number): QuoteSignoffSummary => ({
         signoff_id: 'offer-' + n, quote_id: 'Q' + n, quote_label: 'Drawings ' + n, quote_reference: 'Q-' + n, quote_version: 2, quote_revision: 1,
@@ -74,7 +76,13 @@ export const installCustomerWorkFixture = () => {
             }
             else if (method === 'reception.jobs.closeout.get') {
                 const job = jobs.find(j => j.job_id === args.job_id) ?? null;
-                result = { job_id: args.job_id, captured_at: NOW, job, archive: { job_id: args.job_id, revision: 0, archived_at: null, updated_at: null }, can_archive: false, blockers: ['Finish the open task.', 'Review the unpaid invoice.'], snapshot_hash: hash, reminders: { saved_schedules: 0, uncertain_sends: 1 }, events: [], has_older_events: false };
+                result = { job_id: args.job_id, captured_at: NOW, job, archive: { ...archive, job_id: args.job_id }, can_archive: closeoutMode === 'ready', blockers: closeoutMode ? [] : ['Finish the open task.', 'Review the unpaid invoice.'], snapshot_hash: hash, reminders: { saved_schedules: 0, uncertain_sends: 1 }, events: [], has_older_events: false };
+            }
+            else if (method === 'reception.jobs.archive' || method === 'reception.jobs.restore') {
+                if (args.job_id !== archive.job_id || args.expected_revision !== archive.revision || method.endsWith('.archive') && (args.expected_snapshot_hash !== hash || args.confirmed !== true))
+                    return { error: { code: 'CONFLICT', message: 'Closeout changed. Recheck it before trying again.' } };
+                archive = { job_id: args.job_id, revision: archive.revision + 1, archived_at: method.endsWith('.archive') ? NOW : null, updated_at: NOW };
+                result = archive;
             }
             else if (method === 'reception.jobs.timeline') {
                 result = { job_id: args.job_id, captured_at: NOW, snapshot_hash: hash, job: jobs.find(j => j.job_id === args.job_id), events: Array.from({ length: 50 }, (_, i) => ({ event_id: 'event-' + i, category: 'agreements', kind: 'offer_prepared', title: 'Quote prepared', recorded_at: NOW - i, business_date: null, signoff_id: 'offer-1', details: [] })), total_events: 50, matching_events: 50, billing_available: true, issues: [], notes: [], schedules: [] };

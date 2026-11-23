@@ -93,14 +93,11 @@ describe('no owner is ever asked for permission to notify that same owner', () =
     expect(verdictFor(source)).toBe('admit');
   });
 
-  it('⛔ BOTH HALVES ARE LOAD-BEARING — either alone leaves the defect', () => {
-    // This is the assertion that stops someone "simplifying" the change back to
-    // one edit. The lift is `user_self`-scoped and the ceiling is actor-scoped,
-    // so the two halves fix DISJOINT cells and neither is redundant.
-    //
-    // Half A only (retier to `read`, still in the send set): the lift re-raises
-    // it, so the ATTENDED owner is still asked — the double-notification the
-    // ruling was about survives on webclient and chat.
+  it('⛔ the TIER is what carries it now — a send-set name no longer asks anything', () => {
+    // This pinned two halves (re-tier AND de-list) because the send set's lift re-raised a
+    // listed op to `ask` for an attended owner whatever its tier. D-177 §N.15.6 removed the
+    // lift, so membership decides no approval: a `read` op admits wherever the owner is, even
+    // one named in the send set.
     expect(
       admitByOpRisk({
         slug: 'mail-send', // a stand-in that IS still in the set
@@ -108,11 +105,11 @@ describe('no owner is ever asked for permission to notify that same owner', () =
         ceiling: resolveTrustCeiling(ownerWebclient),
         source: ownerWebclient,
       }).verdict,
-    ).toBe('ask');
+    ).toBe('admit');
 
-    // Half B only (de-list, still `write`): the attended owner is freed, but a
-    // contract-free `system` dispatch sits on the LOW `read` ceiling, so every
-    // scheduled digest still holds — the case that hurts most.
+    // And the tier is still load-bearing on its own: as a `write`, a contract-free `system`
+    // dispatch sits on the LOW `read` ceiling, so every scheduled digest would hold — the
+    // case that hurts most.
     expect(verdictFor(cron, 'annotation-upsert', 'write' as never)).toBe('ask');
   });
 });

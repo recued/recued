@@ -153,6 +153,79 @@ describe('composeAppContext', () => {
         intake_state: 'disabled',
         last_error_code: 'paired_connection_deleted',
       });
+      // D-201 Slice 10AW (10AS finding 8) — a webhook pairs by name, with a
+      // connection of the kind its profile names: a Telegram bot is a
+      // notification connection. Deleting it closed nothing (the hook passed
+      // only API deletions), and deleting an API connection of the same name
+      // closed the Telegram webhook, though it reads no API connection.
+      const botName = 'd201-telegram-proof';
+      app.connectionStoreRef!.upsert({ ...pairedApi, name: botName });
+      app.connectionStoreRef!.upsert({ ...pairedApi, kind: 'notification', name: botName });
+      const telegramIngress = app.webhookIngressStoreRef!.create({
+        display_name: 'Managed Telegram webhook',
+        profile_id: 'telegram.bot-webhook.v1',
+        environment: 'test',
+        paired_connection_id: botName,
+        registration_mode: 'managed_endpoint',
+        selected_event_types: ['message'],
+      });
+      const stripeOfTheName = app.webhookIngressStoreRef!.create({
+        display_name: 'Stripe paired by the same name',
+        profile_id: 'stripe.event.v1',
+        environment: 'test',
+        paired_connection_id: botName,
+        registration_mode: 'managed_endpoint',
+        selected_event_types: ['invoice.paid'],
+      });
+      expect(app.connectionStoreRef!.delete('notification', botName)).toBe(true);
+      expect(app.webhookIngressStoreRef!.get(telegramIngress.ingress_id)).toMatchObject({
+        intake_state: 'disabled',
+        registration_state: 'drifted',
+        last_error_code: 'paired_connection_deleted',
+      });
+      expect(app.webhookIngressStoreRef!.get(stripeOfTheName.ingress_id)).toMatchObject({
+        intake_state: 'draft',
+        last_error_code: null,
+      });
+      app.connectionStoreRef!.upsert({ ...pairedApi, kind: 'notification', name: botName, updated_at: 3 });
+      const telegramAgain = app.webhookIngressStoreRef!.create({
+        display_name: 'Managed Telegram webhook, again',
+        profile_id: 'telegram.bot-webhook.v1',
+        environment: 'test',
+        paired_connection_id: botName,
+        registration_mode: 'managed_endpoint',
+        selected_event_types: ['message'],
+      });
+      expect(app.connectionStoreRef!.delete('api', botName)).toBe(true);
+      expect(app.webhookIngressStoreRef!.get(stripeOfTheName.ingress_id)).toMatchObject({
+        intake_state: 'disabled',
+        last_error_code: 'paired_connection_deleted',
+      });
+      expect(app.webhookIngressStoreRef!.get(telegramAgain.ingress_id)).toMatchObject({
+        intake_state: 'draft',
+        last_error_code: null,
+      });
+      // D-201 Slice 10BB (10AY finding 14) — a webhook under that name whose
+      // profile cannot be read refuses the deletion of a notification
+      // connection too: which kind it pairs with is unknown, so the connection
+      // is kept rather than the webhook left open. A connection of a kind no
+      // profile pairs with is deleted as any, whatever stands under its name.
+      const corruptName = 'd201-unreadable-proof';
+      app.connectionStoreRef!.upsert({ ...pairedApi, kind: 'notification', name: corruptName });
+      const unreadable = app.webhookIngressStoreRef!.create({
+        display_name: 'Unreadable webhook',
+        profile_id: 'telegram.bot-webhook.v1',
+        environment: 'test',
+        paired_connection_id: corruptName,
+        registration_mode: 'managed_endpoint',
+        selected_event_types: ['message'],
+      });
+      storageContext.db.prepare('UPDATE webhook_ingresses SET profile_id = ? WHERE ingress_id = ?')
+        .run('retired.profile.v1', unreadable.ingress_id);
+      expect(() => app.connectionStoreRef!.delete('notification', corruptName)).toThrow(/unknown profile/);
+      expect(app.connectionStoreRef!.get('notification', corruptName)).not.toBeNull();
+      app.connectionStoreRef!.upsert({ ...pairedApi, kind: 'mcp', name: corruptName });
+      expect(app.connectionStoreRef!.delete('mcp', corruptName)).toBe(true);
       expect(app.clientTokensRef).toBeDefined();
       expect(app.engagementStoreRef).toBeDefined();
       expect(app.engagementRateControlStoreRef).toBeDefined();

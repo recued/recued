@@ -487,6 +487,7 @@ const registry = (config: IntakeFormConfig) => ({
   findById: (endpointId: string) => endpointId === ENDPOINT_ID
     ? { metadata: config }
     : null,
+  verifyBearer: () => ({ kind: 'ok', endpoint: { kind: 'intake_form', metadata: config } }),
 });
 
 describe('D-200 Slice 6g.2 public intake pair identity', () => {
@@ -516,13 +517,15 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     expect(nonce).toBeTruthy();
 
     const submitHandler = createIntakeFormSubmitHandler({
+      getPepper: () => Buffer.alloc(32),
       getStore: () => registry(config) as never,
       getSubmissionStore: () => ({
         ...submissionStore,
         insertIfSourceAvailable: (
           input: Parameters<typeof submissionStore.insertIfSourceAvailable>[0],
+          authorize: Parameters<typeof submissionStore.insertIfSourceAvailable>[1],
         ) => {
-          const result = submissionStore.insertIfSourceAvailable(input);
+          const result = submissionStore.insertIfSourceAvailable(input, authorize);
           if ('row' in result) order.push('insert');
           return result;
         },
@@ -601,6 +604,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
     const auditDetails: string[] = [];
     const submitHandler = createIntakeFormSubmitHandler({
+      getPepper: () => Buffer.alloc(32),
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -665,6 +669,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     await getHandler(fakeReq('GET'), getRes, endpoint);
     const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
     const submitHandler = createIntakeFormSubmitHandler({
+      getPepper: () => Buffer.alloc(32),
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -707,6 +712,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     await getHandler(fakeReq('GET'), getRes, endpoint);
     const nonce = /name="form_nonce" value="([^"]+)"/.exec(getRes.body)?.[1];
     const submitHandler = createIntakeFormSubmitHandler({
+      getPepper: () => Buffer.alloc(32),
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -794,13 +800,15 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       let insertedOutcome: string | null = null;
       let claimCalls = 0;
       const submitHandler = createIntakeFormSubmitHandler({
+        getPepper: () => Buffer.alloc(32),
         getStore: () => registry(config) as never,
         getSubmissionStore: () => ({
           ...submissionStore,
           insertIfSourceAvailable: (
             input: Parameters<typeof submissionStore.insertIfSourceAvailable>[0],
+            authorize: Parameters<typeof submissionStore.insertIfSourceAvailable>[1],
           ) => {
-            const result = submissionStore.insertIfSourceAvailable(input);
+            const result = submissionStore.insertIfSourceAvailable(input, authorize);
             if ('row' in result) insertedOutcome = result.row.processing_outcome;
             return result;
           },
@@ -861,6 +869,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
 
     resolution = { kind: 'stale' };
     const submitHandler = createIntakeFormSubmitHandler({
+      getPepper: () => Buffer.alloc(32),
       getStore: () => registry(config) as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,
@@ -906,11 +915,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       }
       return result;
     };
-    const mutableRegistry = () => ({
-      findById: (endpointId: string) => endpointId === ENDPOINT_ID
-        ? { metadata: currentConfig }
-        : null,
-    });
+    const mutableRegistry = () => registry(currentConfig);
     const getHandler = createIntakeFormPacketHandler({
       getStore: () => mutableRegistry() as never,
       getFormNonceStore: () => nonceStore,
@@ -923,6 +928,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     expect(nonce).toBeTruthy();
 
     const submitHandler = createIntakeFormSubmitHandler({
+      getPepper: () => Buffer.alloc(32),
       getStore: () => mutableRegistry() as never,
       getSubmissionStore: () => submissionStore,
       getFormNonceStore: () => nonceStore,

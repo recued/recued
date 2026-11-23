@@ -213,7 +213,7 @@
     "section": "Risk tiers and approvals",
     "eyebrow": "Concepts",
     "url": "https://recued.com/docs/concepts/grants-and-approvals#risk-tiers-and-approvals",
-    "body": "Reads run when you granted them. Writes can be set to ask you first. Sending\nmail or a Slack message asks first, even when you are the one asking. It keeps\nasking until you decide otherwise. An action that cannot be undone, such as\nmost deletes, asks every time. Other writes follow their own setting. In your\nown chat, many run at once. An update to a HubSpot or Salesforce record is\none. To make an action ask every time, open its pack's **Permissions** tab\nand set its approval to **Owner · Always**.\n\nAn approval is a pause. The request reaches your paired devices. It is saved\nand waits until you answer. Nothing moves until you say yes or no. The\nrequest may carry details, like an email draft or a record change. It names\neach record by the name you know it by, such as Family car or Mia Whitfield\n(HubSpot Contact), not by an id. It\nnames each of your contacts the action is aimed at, such as Mia Whitfield. That\ncovers an email's recipients, an invite's guests, a task's assignee and the\nnumber a text goes to. An\nemail sent in its encoded form shows whom it goes to and its subject. An\napproval sent to Telegram, Slack or your email lists these details too. You can\nedit the details before you approve. Sometimes one source sends a burst of the same\naction many times. Then Recued asks once for the whole batch. It does not ask\nonce per item."
+    "body": "Reads run when you granted them. Every change has its own setting: it runs, it\nasks you first, or it asks every time. In your chat, the setting decides,\nwhatever the change is. Sending an email, posting to Slack, acting in your\nbrowser and updating a HubSpot record all ask first. So do the changes Recued\nmakes to your own things, like marking mail read. They keep asking until you\nallow them for the chat, or a rule covers them. A change its pack sets to run\nwithout asking, like converting a document so it can be read, runs at once.\nYour schedules and triggers follow the same settings. What you run yourself\nfrom the app runs at once. An\naction that cannot be undone, such as most deletes, asks every time. To make an\naction ask every time, open its pack's **Permissions** tab and set its approval\nto **Owner · Always**.\n\nAn approval is a pause. The request reaches your paired devices. It is saved\nand waits until you answer. Nothing moves until you say yes or no. The\nrequest may carry details, like an email draft or a record change. It names\neach record by the name you know it by, such as Family car or Mia Whitfield\n(HubSpot Contact), not by an id. It\nnames each of your contacts the action is aimed at, such as Mia Whitfield. That\ncovers an email's recipients, an invite's guests, a task's assignee and the\nnumber a text goes to. An\nemail sent in its encoded form shows whom it goes to and its subject. An\napproval sent to Telegram, Slack or your email lists these details too. You can\nedit the details before you approve. Sometimes one source sends a burst of the same\naction many times. Then Recued asks once for the whole batch. It does not ask\nonce per item. The approval's card shows what they share once, then each one's\nown, numbered."
   },
   {
     "id": "concepts/grants-and-approvals#session-grants",
@@ -221,7 +221,47 @@
     "section": "Session grants",
     "eyebrow": "Concepts",
     "url": "https://recued.com/docs/concepts/grants-and-approvals#session-grants",
-    "body": "When you work in chat, you can choose to relax the asking for the rest of\nthat session:\n\n- **Exact** means approve this one exact action, once.\n- **Batch** means approve this shape of action for the burst it belongs to.\n- **Open** means allow this kind of action, within one area you set, for the session.\n\nAn approval that offers **Allow this session** says what it lets happen. It\nnames the recipe that may go ahead without asking, how many more times, and\nfor how long. It lists what must stay the same on each later run. For an email, that is who it\ngoes to and the mailbox it is sent from. For a notice to a booking's visitor, it is the booking.\nIt also names what may change, such\nas the subject and the text. A change to anything on the list asks you\nagain. Some actions allow only the same thing again, with every detail the\nsame, and the approval says that instead. The approval email and the Approvals page show\nthis. The approvals pop-up in the top bar leaves it out to stay short.\n\nSome changes always need your own look, so they never offer **Allow this\nsession**. These are a proposed commitment, a quote, a job a customer accepted,\nand a customer payment.\n\nIf you approve the same thing many times, Recued may suggest a standing rule.\nOnly you can make one. A suggestion never switches itself on."
+    "body": "You can choose to relax the asking for the rest of a session:\n\n- **Exact** means approve this one exact action, once.\n- **Batch** means approve this shape of action for the burst it belongs to.\n- **Open** means allow this kind of action, within one area you set, for the session.\n- **One kind** means allow one kind of change, such as sending email, in your chat for an hour.\n\nIn your own chat, an approval offers **Allow in this chat** when it can name\nthe change. Elsewhere, such as an approval for an AI app, it offers **Allow\nthis session**.\n\nAn approval that offers **Allow this session** says what it lets happen. It\nnames the recipe that may go ahead without asking, how many more times, and\nfor how long. It lists what must stay the same on each later run. For an email, that is who it\ngoes to and the mailbox it is sent from. For a notice to a booking's visitor, it is the booking.\nIt also names what may change, such\nas the subject and the text. A change to anything on the list asks you\nagain. Some actions allow only the same thing again, with every detail the\nsame, and the approval says that instead. The approval email and the Approvals page show\nthis. The approvals pop-up in the top bar leaves it out to stay short.\n\nSome changes always need your own look, so they never offer **Allow this\nsession**. These are a proposed commitment, a quote, a job a customer accepted,\nand a customer payment.\n\nIf you approve the same thing many times, Recued may suggest a standing rule.\nOnly you can make one. A suggestion never switches itself on."
+  },
+  {
+    "id": "concepts/grants-and-approvals#allow-one-kind-of-change-in-a-chat",
+    "doc": "Grants and approvals",
+    "section": "Allow one kind of change in a chat",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#allow-one-kind-of-change-in-a-chat",
+    "body": "When your chat asks before a change, it offers **Allow in this chat**. The\napproval names the change as Recued does elsewhere. Examples are Add a task,\nSend an email and Update a deal. Choose it, and your chat makes that change\nwithout asking again. That lasts for this conversation, for one hour, and up to\n100 times. It is enough to add a task for each guest of a 20-person event.\n\nYour AI decides each one: what it says, and who or what it is for. For an\nemail, that is whom it goes to. A change to an account, such as HubSpot, is allowed on that account only.\nA change a recipe makes is allowed for that recipe as it is now. A chat with\nRecued in Telegram or Slack offers it too.\n\nYou can end it sooner. Open **Live control**, the button with a count at the\nbottom of the page, and find it under **Active passes**. In Telegram or Slack, send `/recued passes`.\n\nA scheduled prompt's change offers **Always allow for this scheduled prompt**\ninstead. A browser action offers to allow its site. In a recipe that picks a\nbrowser for each step, that is for the browser the step runs in. The approval\nand Contracts name it. None of these is offered\nfor a delete or a change set to ask every time. Nor for a review you give each\ntime."
+  },
+  {
+    "id": "concepts/grants-and-approvals#many-changes-of-one-kind-at-once",
+    "doc": "Grants and approvals",
+    "section": "Many changes of one kind at once",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#many-changes-of-one-kind-at-once",
+    "body": "Your AI may make several changes of the same kind together. An example is an\nemail to each guest of an event. Your chat then asks once for all of them.\n\nThe approval lists each one, by whom it goes to or what it changes. Its card\nin Approvals shows what they share once, then each one's own, numbered. Approve,\nand every one goes ahead. Deny, and none of them does. **Allow in this chat**\napproves them all, and stops asking about that change for the hour.\n\nThe approval waits until you answer it, wherever it reached you. In the app, if\nyou answer within a minute, your AI sees how each one went in the same reply. If\nyou answer later, your chat carries on then. If your AI goes on to make more,\nthat is a second approval. A change of another kind waits until you answer the\nfirst.\n\nWhen the changes are tasks, events or contacts, your chat shows them as one\ncard. **Say yes to all** on the card answers for every one, and the card then\nshows how each one went. To change one before you approve it, ask for it on its\nown."
+  },
+  {
+    "id": "concepts/grants-and-approvals#requests-you-repeat",
+    "doc": "Grants and approvals",
+    "section": "Requests you repeat",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#requests-you-repeat",
+    "body": "Some requests you make again and again, in the same words. Say you ask the\nsame thing in your chats on three different days in a month. Each time, you\napprove what it does, just as it was proposed. Then Recued suggests letting it\nhappen without asking. It tells you once.\n\nThe suggestion is under **Contracts**, in your own words. It lists each thing\nthe request does, and whom it reaches or what it changes. Accept it, and choose\nhow many days and how many times. That is up to 30 days and 100 times. The next\ntime you ask it, in the same words, those things happen without asking.\n\nOpen **Live control** to see these rules and their uses left. **End** stops one\nfor good. Recued asks again, and does not suggest it again. You can also end it\nunder **Contracts**."
+  },
+  {
+    "id": "concepts/grants-and-approvals#what-a-rule-for-a-request-covers",
+    "doc": "Grants and approvals",
+    "section": "What a rule for a request covers",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#what-a-rule-for-a-request-covers",
+    "body": "- Only the same words count. Case, spaces and punctuation do not matter. Other\n  words are another request.\n- It covers only what the suggestion lists, for the same people and records.\n  Anything else still asks.\n- Approve something more for that request, and Recued suggests a longer rule.\n  It never adds to a rule by itself.\n- A refusal starts the count again. So does a change that failed, or one that\n  may not have finished. So does undoing a change the request made: only the\n  days after the undo count. If a rule you made covers that change, the rule\n  ends too. Recued may suggest it again later.\n- Only your own chats teach it, in the app or in Telegram or Slack. A scheduled\n  prompt and an AI app do not.\n\nA delete is offered on its own, and only after five such days. If you let it\nrun, it deletes only a record the same request found itself. An example is a\ndeal that a search in that request returned. Another is a task that a recipe's\nlist of tasks returned. A record that you or your AI only named still asks.\nMoving a file, and deleting a whole series of events, still ask.\n\nSome things are never offered. These are a change you set to ask every time,\nand a review you give each time. Putting one of your files into a web page is\nnot offered either."
+  },
+  {
+    "id": "concepts/grants-and-approvals#undo-a-change-that-ran-without-asking",
+    "doc": "Grants and approvals",
+    "section": "Undo a change that ran without asking",
+    "eyebrow": "Concepts",
+    "url": "https://recued.com/docs/concepts/grants-and-approvals#undo-a-change-that-ran-without-asking",
+    "body": "A change can run without asking. A rule for a request can let it through. So\ncan a kind of change you allowed in a chat, or an approval ahead. You can still\nundo it, if it updated a record or an event on Recued's own calendar. When your\nchat made it, its line under the answer has **Review undo**. When a recipe or a\npack made it, find it in **Logs**."
   },
   {
     "id": "concepts/grants-and-approvals#don-t-ask-about-browser-actions",
@@ -696,6 +736,22 @@
     "body": "Chat looks in your saved records first. Some lookups need no AI at all.\nAsk \"What is Maya's email?\" and the answer comes straight from your contacts.\nThe app marks such an answer \"without AI\", and says where it came from.\n\nOther questions need AI. Then Recued swaps the personal details it knows\nfor stand-ins. It does this before the question leaves your server. It also\nbrings along the facts that matter, so the model has them before it starts.\nDoes the model need more? It asks Recued's tools, then goes on. See\n[What an AI source sees](../concepts/security-and-privacy.md#what-an-ai-source-sees)\nfor what gets swapped.\n\n[![How chat answers a question. A quick lookup, like Maya's email, comes straight from saved records with no AI. Another question needs AI: will Maya's car insurance end before her trip? Maya's name becomes Person 1. Her insurance ends on 18 November, and her trip starts on 20 November. Both facts go along with the question. AI answers yes, two days before she leaves. Her name goes back in on your server.](/docs/assets/recued-chat-flow.svg)](/docs/assets/recued-chat-flow.svg)\n\nOpen the picture to see it full size.\n[Replay Maya's questions](https://demo.recued.com/app/?example=maya-answers)\nin the demo. The people and data there are made up."
   },
   {
+    "id": "guides/ai-chat-and-mcp#add-records-to-a-chat-message",
+    "doc": "AI chat and MCP",
+    "section": "Add records to a chat message",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/ai-chat-and-mcp#add-records-to-a-chat-message",
+    "body": "Two contacts can share a name. So can two meetings. To make chat answer\nabout the right one, add the record to your message. Here a record is a\ncontact, a task, a note, an email, or a calendar event.\n\n1. In Chat, press **Add records**.\n2. Pick **Contacts**, **Tasks**, **Notes**, **Mail**, or **Calendar**. Or keep\n   **All records** to search all five. Search by name or title.\n3. Choose a record. To add several, choose **Select multiple** first.\n   Then press the **Use** button. You can add up to 20.\n\nRows a pack keeps in **Data → Records** cannot be added yet.\n\nEach record shows under the message box. Press **Preview** to look at it.\nPress **Remove** to take it off.\n\nChat reads the records you added, not others with the same name. Recued\nreads the first three emails and the first three events before the AI\nstarts. The AI opens the rest itself. Each record stays with its message.\nYou can ask more about it later in the chat.\n\nAdding an email does not let chat read your mail. If chat may not read\nyour mail, it says so. Then **Turn it on** shows under its answer."
+  },
+  {
+    "id": "guides/ai-chat-and-mcp#ask-chat-about-an-email-event-or-contact",
+    "doc": "AI chat and MCP",
+    "section": "Ask chat about an email, event or contact",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/ai-chat-and-mcp#ask-chat-about-an-email-event-or-contact",
+    "body": "You can also start from the record. Open an email in **Data → Mail**, a\nmeeting or other event in **Data → Calendar**, or a contact in **Contacts**.\nThen press **Chat about this**. A new chat opens with the record added and\na question ready. Change the question if you want, then send it. For an\nemail, the question is \"What should I know about this email?\""
+  },
+  {
     "id": "guides/ai-chat-and-mcp#search-inside-saved-documents",
     "doc": "AI chat and MCP",
     "section": "Search inside saved documents",
@@ -1149,7 +1205,39 @@
     "section": "Inbound webhooks",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-triggers#inbound-webhooks",
-    "body": "A webhook is a message another system sends to your server when something\nhappens. For systems that push like this, add a `webhook_triggers` entry.\nIt names a **verification profile**: Stripe, GitHub, Telegram, Slack,\nPaddle, Lemon Squeezy, or a generic token / HMAC / basic-auth mechanism. The\nendpoint checks the signature before your recipe ever fires. Then the\nrecipe reads the accepted event body.\n\nDo not check the signature again inside the recipe. That already happened\nat the door. Do treat the body as untrusted data. Gate on the fields you\nneed. Skip when they are missing. Webhooks POST straight to your server.\nNothing is passed through anyone's cloud."
+    "body": "A webhook is a message another system sends to your server when something\nhappens. For systems that push like this, add a `webhook_triggers` entry.\nIt names a **verification profile**: Stripe, GitHub, Telegram, Slack,\nPaddle, Lemon Squeezy, or a generic token / HMAC / basic-auth mechanism. The\nendpoint checks the signature before your recipe ever fires. Then the\nrecipe reads the accepted event body.\n\nDo not check the signature again inside the recipe. That already happened\nat the door. Do treat the body as untrusted data. Gate on the fields you\nneed. Skip when they are missing. Webhooks POST straight to your server.\nNothing is passed through anyone's cloud.\n\nA recipe handles one delivery at a time, in the order they arrived. When a\nrun fails, Recued tries it again for about an hour, and the recipe's later\ndeliveries run in the meantime. So a recipe can see an older event after a\nnewer one. Decide from the current state at the other service, or from the\ntime the event carries, not from the order deliveries arrive in. A run that a\nserver restart stopped runs again when the server is back. A delivery held for\nyour approval goes on as soon as you approve it, even while a later one runs."
+  },
+  {
+    "id": "guides/authoring-triggers#when-a-delivery-keeps-failing",
+    "doc": "Triggers and watchers",
+    "section": "When a delivery keeps failing",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#when-a-delivery-keeps-failing",
+    "body": "When its tries run out, a delivery waits in Settings. The owner can try it\nagain there, or close it. A new version of your pack keeps those for the owner.\nIt keeps the deliveries still waiting too. That holds while its webhook trigger\nasks for no more than before. That means the same events, settings and\nconnection, and no more of each message. Any other change closes them, with a\nnote that says the recipe changed. A new version that takes no webhook closes\nthem too, and no delivery starts it.\n\nA recipe you made in Kitchen works the same way. When its webhook is on, Save\nasks first whether to keep it on. It lists what the new version adds: what it\ncan run, the connections it uses, and more of each message. What you switched\noff under Contracts stays off. Keep it on, and the rule above decides what it keeps.\nThe question says it for each event: which keep what is waiting, and which\nclose whichever you choose.\nSwitch it off, and the deliveries in Settings close, each with a note. The ones\nstill waiting do not run. Deleting the recipe closes them too."
+  },
+  {
+    "id": "guides/authoring-triggers#a-webhook-s-switch-and-each-recipe-s-door",
+    "doc": "Triggers and watchers",
+    "section": "A webhook's switch and each recipe's door",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#a-webhook-s-switch-and-each-recipe-s-door",
+    "body": "A webhook's switch, in Settings → Connections → Webhooks, belongs to the owner,\nnever to a pack. Its card lists the recipes it starts, each with its door and a\nlink to the recipe. The switch is the master for the outside world: off, the\nwebhook turns messages away. When it starts one recipe, it is that recipe's\nonly switch. Switching it on opens its door, even one the owner closed. When it\nstarts several, each recipe also has its own door switch. Then the master\nleaves a door its owner closed as it is. What arrives for a closed door\nwaits in Settings, to be tried again once the door is open. What they switched\noff under Contracts stays off.\n\nA new version of your pack never opens a door the owner closed, and never\ncloses an open one. That holds when a version drops the webhook and a later\none takes it back. An owner who edits your pack publishes it under their own\nname. When such a version arrives, the install dialog shows each recipe's door\nswitch. Each is set as the owner left it, and the owner chooses. Recued never switches\na webhook off. A delivery that finds no open door waits in Settings, and runs\nwhen it is tried again with its door open."
+  },
+  {
+    "id": "guides/authoring-triggers#when-a-restart-stops-a-run-you-approved",
+    "doc": "Triggers and watchers",
+    "section": "When a restart stops a run you approved",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#when-a-restart-stops-a-run-you-approved",
+    "body": "If a restart stops a run you approved, the next start finishes it without asking\nyou again. It goes on from the first step that had not started, so nothing that\nalready ran runs twice. If a step that sends something was running when it\nstopped, Recued cannot tell whether it went through. That run waits in Settings,\nwhere you can check it and try it again. Settings names the step. Trying it again\ngoes on from that step, with what ran before it kept, so only that step can run\ntwice. If it is the step you approved, Recued asks you again first. If your\nsettings no longer ask you about that step, it runs without asking.\n\nTrying it again can fail at a later step. Then the run waits in Settings again,\nnamed by the step that failed. Trying it again goes on from there, so the step\nyou approved does not run again. That holds when it stops to ask you for a step\non the way. It also holds when the server restarts or Recued changes its\nwebhook's door meanwhile. A step a restart cannot keep is different (see below).\nThere the run waits at the step you approved, and trying it again runs it again.\nOne that hands its work on is the exception: the run waits at the step that\nfailed, as for any other step.\nThe server can also stop without warning while you try it again. Then Recued cannot tell how far it got, so that step and the\nsteps after it can run twice. If you changed the recipe since, what the run kept\nno longer fits it. Settings says so, and trying it again runs the recipe from\nits first step."
+  },
+  {
+    "id": "guides/authoring-triggers#steps-a-restart-cannot-keep",
+    "doc": "Triggers and watchers",
+    "section": "Steps a restart cannot keep",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#steps-a-restart-cannot-keep",
+    "body": "A step you approved that runs over a list counts as one step once it has\nfinished. Some steps you approve cannot be kept that way:\n\n- one that runs over a list where an item ran or failed before it asked you,\n- one that runs over a list and asked you again partway through it,\n- one that uploads a file in parts,\n- one whose approval limits what it may send or what it may touch,\n- one that hands its work on and returns no hand-off Recued can check.\n\nThe run may have gone past such a step when the server restarted. Then trying it\nagain asks you for that step again. The steps after it that ran run again too.\nIf your settings no longer ask you about that step, it runs without asking.\nSettings says when the step handed its work on. If the step came back but the\nserver stopped before Recued could check its hand-off, trying it again goes on\npast the step.\n\nRecued keeps its record of each step you approved for 30 days. Try a held run\nagain within that time: after it, Recued can no longer check what that step\ndid.\n\nOnly a run a webhook started waits in Settings this way. Any other run a restart\nleaves in doubt says to check before you run it again. Running it again runs\neach of its steps."
   },
   {
     "id": "guides/authoring-triggers#self-ticking-watchers",
@@ -1200,6 +1288,150 @@
     "body": "- Events over polling when the source is synced. Read the payload's record\n  again before use. Use the `prev is_null` gate on update subscriptions, but\n  never on a mail fact trigger.\n- Mail facts: one kind in `on`, unless any kind will do. `where` values\n  written as the fact stores them. No template id in a recipe you publish.\n  Bring a `starter` and use `template_variable` instead.\n- Webhooks: the profile checks the signature at the door. Steps gate on\n  body fields.\n- Watchers: the slowest interval you can live with. Repeats stopped with a\n  stamp.\n- Works on defaults, or stops and asks for setup.\n- Gates ordered cheap → costly → AI. AI never gates an action.\n- Nothing that reaches outside in the unattended path. Detect, propose,\n  notify. Act in a recipe the owner runs.\n- The description says what arms it, what fires it, and what it will never\n  do."
   },
   {
+    "id": "guides/body-signals",
+    "doc": "Body signals",
+    "section": "Body signals",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals",
+    "body": "Body signals keeps your sleep, heart rate and steps on your own server. It\nkeeps a few more readings too, such as heart rate variability (HRV). Your\niPhone sends them each day from the Health app.\n\nRecued compares each night with your own usual. Today shows a state when one\nholds:\n\n- a short night;\n- HRV below your usual;\n- resting heart rate above your usual;\n- recovery low.\n\n> **Recued is not a medical device.** It does not find illness or give\n> medical advice. It only compares your readings with your own usual. If\n> something worries you, ask a doctor.\n\nApple Health and an Oura ring can send readings today."
+  },
+  {
+    "id": "guides/body-signals#what-you-need",
+    "doc": "Body signals",
+    "section": "What you need",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#what-you-need",
+    "body": "- The **Body signals** pack. It adds the Body and Wearable types to Yours.\n  Install it from **Packs** (see [Recipes and packs](recipes-and-packs.md)).\n- **Body signals from Apple Health**, for the phone. It comes in step 3.\n- An iPhone with the Health app and the Shortcuts app.\n- A server your phone can reach at a public HTTPS address. See\n  [Reaching your server](../setup/reachability.md)."
+  },
+  {
+    "id": "guides/body-signals#1-add-a-body-in-yours",
+    "doc": "Body signals",
+    "section": "1. Add a Body in Yours",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#1-add-a-body-in-yours",
+    "body": "Open **Yours**, choose **Add asset**, and pick the type **Body**. Keep one\nBody for each person.\n\nYou can add a Body for someone else. Their health data then stays on your\nserver, and only you can read it. Ask them first."
+  },
+  {
+    "id": "guides/body-signals#2-the-summary-sets-itself-up",
+    "doc": "Body signals",
+    "section": "2. The summary sets itself up",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#2-the-summary-sets-itself-up",
+    "body": "The summary reads the Body's days in Records. It picks one source for each\nreading. Then it writes the Body's latest readings and its states.\n\nRecued sets it up when you add a Body. There is nothing to do. The summary\nruns after each post from your phone, and after a weight or height you type.\nYou can give it a schedule too.\n\nA Body added before November 2026 may not have it yet. Its page then says\n\"Its summary isn't set up\". Choose **Set up the summary** there. The page also\nsays so after an update, if the summary can't write a reading. Choose the same\nbutton."
+  },
+  {
+    "id": "guides/body-signals#3-connect-your-phone",
+    "doc": "Body signals",
+    "section": "3. Connect your phone",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#3-connect-your-phone",
+    "body": "On the Body's page, choose **Connect Apple Health**. It has three steps. Chat\noffers the same form when you ask about a Body that has no readings yet. So\ndoes the pack's install, if you have no webhook for it.\n\n1. Choose **Make the webhook**. Recued makes \"Apple Health on my iPhone\" and\n   its token. Copy the token into the Shortcut now, and keep it safe, as you\n   would a password. Recued shows it only while the form is open.\n2. Choose **Install Body signals from Apple Health**, and install it. If it\n   asks which webhook to use, choose \"Apple Health on my iPhone\".\n3. Build the Shortcut, as section 4 says. The form shows its address, header\n   name and the Body's id, each with **Copy**.\n\nYour phone posts to your server's public https address. If the server has\nnone yet, the form says so, and what to set. Then choose **Let messages in**.\n\nYou can also make the webhook yourself, under **Connections → Webhooks**.\nChoose **Static header token**, with the header name `X-Recued-Token`."
+  },
+  {
+    "id": "guides/body-signals#4-build-the-shortcut-on-your-iphone",
+    "doc": "Body signals",
+    "section": "4. Build the Shortcut on your iPhone",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#4-build-the-shortcut-on-your-iphone",
+    "body": "Each morning, the shortcut sends two posts:\n\n- **Last night**, dated today: sleep, heart rate variability, resting heart\n  rate, breathing rate, blood oxygen and skin temperature change. A night\n  belongs to the day it ends.\n- **Yesterday**, dated yesterday: steps and active energy. It can also carry\n  any other reading in section 6 that Health has from yesterday.\n\nSome readings are taken once in a while, such as weight or body fat. Send one\nonly in the post for the day it was taken. Sent every day, it would look new,\nso Recued could not tell when it has gone stale.\n\nIn Health, set each reading's unit to the one in section 6. For example, set\nBlood Glucose to mg/dL.\n\nToday shows a state only on the day its readings belong to. A night sent\nwith yesterday's date has already ended, so it shows no state.\n\nIn the Shortcuts app, make a shortcut that does this for each post:\n\n1. It reads the readings from Health. Use one **Find Health Samples** action\n   for each reading you want.\n2. It puts them in a **Dictionary** with four keys:\n   - `body_id`: the Body's id, from **Connect Apple Health**.\n   - `day`: the post's date, written like `2026-11-05`.\n   - `metrics`: the readings, each a name and a number.\n   - `sent_at`: the date and time now.\n3. It sends the dictionary with **Get Contents of URL**:\n   - to the address from **Connect Apple Health**;\n   - with the method POST;\n   - with the dictionary as a JSON request body;\n   - with the header `X-Recued-Token`, set to your token."
+  },
+  {
+    "id": "guides/body-signals#5-what-a-post-holds",
+    "doc": "Body signals",
+    "section": "5. What a post holds",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#5-what-a-post-holds",
+    "body": "Here are the two posts sent on the morning of November 5:\n\n```json\n{ \"body_id\": \"…\", \"day\": \"2026-11-05\",\n  \"metrics\": { \"sleep_minutes\": 425, \"hrv_sdnn\": 41, \"resting_heart_rate\": 54 },\n  \"sent_at\": \"2026-11-05T07:30:00-08:00\" }\n```\n\n```json\n{ \"body_id\": \"…\", \"day\": \"2026-11-04\",\n  \"metrics\": { \"steps\": 9120, \"active_energy\": 512 },\n  \"sent_at\": \"2026-11-05T07:30:00-08:00\" }\n```\n\nSection 6 lists each reading's name and unit.\n\n- Send each value as a number. A value sent as text, such as `\"9120\"`, is\n  refused.\n- A reading the phone did not have can be left out. It can also be sent as\n  `null`.\n- The day must be today or earlier.\n- A post with a mistake in it saves nothing. Recued says what was wrong."
+  },
+  {
+    "id": "guides/body-signals#6-what-apple-health-can-send",
+    "doc": "Body signals",
+    "section": "6. What Apple Health can send",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#6-what-apple-health-can-send",
+    "body": "A reading the phone does not have can be left out of the post.\n\n**Last night's post.** Each reading is for the night.\n\n| Reading | Name | Unit |\n| --- | --- | --- |\n| Sleep | `sleep_minutes` | minutes |\n| Heart rate variability | `hrv_sdnn` | ms |\n| Resting heart rate | `resting_heart_rate` | beats a minute |\n| Breathing rate | `respiratory_rate` | breaths a minute |\n| Blood oxygen | `spo2` | % |\n| Skin temperature change | `skin_temp_deviation` | °C |\n\n**Yesterday's post.**\n\n| Reading | Name | Unit | A day is |\n| --- | --- | --- | --- |\n| Steps | `steps` | steps | the total |\n| Active energy | `active_energy` | kcal | the total |\n| Resting energy | `resting_energy` | kcal | the total |\n| Distance | `distance` | km | the total |\n| Flights climbed | `flights_climbed` | flights | the total |\n| Exercise | `exercise_minutes` | minutes | the total |\n| Stand hours | `stand_hours` | hours | the total |\n| Mindful minutes | `mindful_minutes` | minutes | the total |\n| Walking speed | `walking_speed` | km/h | the average |\n| Heart rate | `heart_rate` | beats a minute | the average |\n| Walking heart rate | `walking_heart_rate` | beats a minute | the average |\n| Blood sugar | `blood_glucose` | mg/dL | the average |\n| Blood pressure | `blood_pressure_systolic`, `blood_pressure_diastolic` | mmHg | the latest |\n| Body temperature | `body_temperature` | °C | the latest |\n| Weight | `weight` | kg | the latest |\n| Height | `height` | cm | the latest |\n| Body fat | `body_fat` | % | the latest |\n| Lean body mass | `lean_body_mass` | kg | the latest |\n| Waist | `waist` | cm | the latest |\n| VO₂ max | `vo2_max` | mL/kg/min | the latest |\n\nReproductive health, food and workouts are not taken."
+  },
+  {
+    "id": "guides/body-signals#7-run-it-each-day",
+    "doc": "Body signals",
+    "section": "7. Run it each day",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#7-run-it-each-day",
+    "body": "Run the shortcut each morning, after you wake. Two things have not been\nchecked yet:\n\n- whether iPhone runs it at a set time with no tap;\n- whether it can read Health while the phone is locked.\n\nUntil they are, run the shortcut yourself.\n\nThe first post asks you before it saves anything. Choose **Always allow for\nthis webhook**. Later posts then save without asking.\n\nYou can also send days you missed, or weeks of past days at once. Each\nreading on the Body takes its newest day, even when that day is a few days\nold. Weight, height, body fat, lean body mass, waist and VO₂ max can come\nfrom any earlier day, since they change slowly."
+  },
+  {
+    "id": "guides/body-signals#8-use-an-oura-ring",
+    "doc": "Body signals",
+    "section": "8. Use an Oura ring",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#8-use-an-oura-ring",
+    "body": "Recued reads your ring's readings from Oura each morning. You need an Oura\nmembership, and an app of your own on Oura's developer site for the sign-in.\nOura no longer gives out personal tokens.\n\n1. In Recued, install **Body signals from Oura**.\n2. On Oura's developer site, create an app. Give it the redirect address that\n   Recued's **Connections** page shows when you connect Oura.\n3. In **Connections**, connect Oura with your app's client id and secret.\n   Allow the `daily` and `spo2` scopes.\n4. Switch on **Pull Oura readings**. For **Body**, choose your Body. Give it a\n   morning schedule, such as 7:30 every day.\n5. Its first run asks before it saves. Choose **Always allow for this\n   schedule**. Later mornings then save without asking.\n\nEach run reads the last four days, so a late sync still lands. A night belongs\nto the morning it ends. Oura's sleep and readiness scores stay in Records,\nnever on the Body. With Apple Health too, the Body takes nights from Oura and\na day's totals from Apple Health first."
+  },
+  {
+    "id": "guides/body-signals#9-know-when-your-watch-stops-syncing",
+    "doc": "Body signals",
+    "section": "9. Know when your watch stops syncing",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#9-know-when-your-watch-stops-syncing",
+    "body": "1. In Yours, add an asset of the type **Wearable** for your watch or ring.\n2. Under **Belongs to, parts and contracts**, choose **Choose parent**. Pick\n   its Body.\n3. For an Oura ring, find **Source** under **Facts and settings**. Choose\n   **More**, then **Edit fact**, and write `Oura`. An Apple Watch keeps\n   `Apple Health`.\n\nRecued then sets up the check. It runs each day at noon, and after each post\nor pull. A watch that stops syncing sends nothing, so only the daily run can\nnotice that. If its page says its check isn't set up, choose **Set up the sync\ncheck** there. Move a watch out of its Body, and its check stops until it\nbelongs to one again.\n\nSay the newest reading is more than two days old. Today then shows **Check\nit is charged and synced**. It goes away when readings come again. You can\nchange the two days in the recipe's settings."
+  },
+  {
+    "id": "guides/body-signals#10-read-the-body-s-page",
+    "doc": "Body signals",
+    "section": "10. Read the Body's page",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#10-read-the-body-s-page",
+    "body": "Each reading on the Body's page gives its latest value. It also says where\nthe value came from and the day, such as \"7 h 05 · Oura · last night\".\nBeside it, a line draws its last 30 days. Each day sits on the day it is\nfor, even when your phone sends it late or sends many days at once. Next to\nthe line, Recued writes up to three things:\n\n- **Usual** is the range your days usually fall in, from the 14 days before\n  the latest. The states compare each night with the middle of this range.\n- **Trend** says whether the line is rising, falling or steady, and by about\n  how much a week. Recued says rising or falling only when the days keep\n  going one way by more than their usual ups and downs. It needs two weeks\n  of days.\n- **Average** is the mean of the last 7 days and of the last 30 days, each\n  next to the days before them. It helps with habits, such as sleep, steps\n  or weight.\n\nEach one needs enough days, so a new Body shows them as its days come in.\n\nWith a height and a weight, the page also shows your **BMI**. Recued works\nit out from the latest of each. Beside it is WHO's healthy range for adults, 18.5\nto 24.9; for someone under 18 it shows none. Readings with no value yet are\nfolded under **No value yet**. Open it to type one in.\n\nSome readings can go stale. A body fat goes with the weight on the day it\nwas measured. When your weight has moved by 2 kg since, the page says it has\nprobably changed. A weight goes stale after 30 days. A body fat, lean body\nmass, muscle mass or waist goes stale after 90. A height goes stale only for\nsomeone under 18.\n\nUnder the readings, **Body numbers in your chats** says whether your chats\nmay read the values. It is one switch for every Body. See Privacy, below."
+  },
+  {
+    "id": "guides/body-signals#11-type-a-weight-or-height",
+    "doc": "Body signals",
+    "section": "11. Type a weight or height",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#11-type-a-weight-or-height",
+    "body": "You can type your weight or height yourself, such as before your phone sends\nany. On the Body's page, choose **Update** beside it.\n\n**Ask with the numbers** asks too, under **About the person**. It asks for\nyour weight when the Body has none, or when it was weighed long ago. It asks\nfor your birth date, height and gender only when the Body has none. A model\nneeds them: they change its answer a lot.\n\nYou can use it on a new Body, before your phone or scale sends anything.\nWith just these four, a model can already suggest what to eat.\n\nRecued keeps it in Records as typed by you, for the day you measured it. The\npage says so: \"61.2 kg · typed by you · today\". A reading from a newer day\ntakes its place, from any source, such as your scale. A reading from an older\nday doesn't.\n\nAny other reading you type stays as you typed it. To let the summary change\nit again, choose **Allow automatic updates** beside it."
+  },
+  {
+    "id": "guides/body-signals#12-set-a-goal",
+    "doc": "Body signals",
+    "section": "12. Set a goal",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#12-set-a-goal",
+    "body": "A goal is a number you want one reading to reach, such as 57 kg by June. You\ncan set one on a Body's weight, body fat, lean body mass, muscle mass or\nwaist. Heart rate, blood oxygen and blood sugar have no goal. They are read by\ntheir pattern.\n\n1. On the Body's page, find the reading and choose **Set a goal**.\n2. Enter the number, in the reading's unit. A date is optional.\n3. Choose **Set goal**.\n\nRecued keeps the goal as a pursuit, under **Pursuits**. It starts from the\nreading as it is now. Its progress is the Body's reading, so there is nothing\nto type. Under the reading, the page shows the goal and what is left. With two\nweeks of readings, it also says how long that takes at this pace.\n\nWhen the last 7 days average at or past the goal, Yours suggests it looks\nreached. Choose **Mark reached**, or **Not yet** to keep going. Recued does\nnot ask again for that number.\n\nA goal is private, as the Body is. An AI sees its numbers only when you send\nthem, such as with **Ask with the numbers**. To change the number or the\ndate, choose **Change goal**."
+  },
+  {
+    "id": "guides/body-signals#13-set-your-own-range",
+    "doc": "Body signals",
+    "section": "13. Set your own range",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#13-set-your-own-range",
+    "body": "A range is your own normal for a reading, such as 50–52 kg. It suits someone\nwhose right numbers differ from the usual ones. You can set one on the same\nreadings as a goal.\n\n1. On the Body's page, find the reading and choose **Set your range**.\n2. Enter a low end, a high end, or both, in the reading's unit.\n3. Choose **Set range**.\n\nUnder the reading, the page says whether it is in your range, or how far over\nor under it. It also counts the days in it over the last two weeks. WHO's BMI\nrange still shows, beside yours.\n\nWhen a reading is outside your range, Today shows it at the top, as it shows a\nshort night. It goes once the reading is back in your range.\n\nA number you set can go out of date. After six months, the page asks whether\nthe range is still right. Choose **Still right** to keep it, or **Change\nrange**.\n\nA range is private, as the Body is. An AI sees it only when you send it, such\nas with **Ask with the numbers**."
+  },
+  {
+    "id": "guides/body-signals#14-change-the-body-s-settings",
+    "doc": "Body signals",
+    "section": "14. Change the Body's settings",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#14-change-the-body-s-settings",
+    "body": "The Body's **Settings** hold the days Recued looks at, and the limits for\nits states. Change them on the Body's page.\n\n| Setting | What it is | Unless you change it | Limits |\n| --- | --- | --- | --- |\n| `baseline_days` | the days your usual comes from | 14 | 7 to 30 |\n| `min_days` | the fewest of those days that make a usual | 7 | 1 to `baseline_days` |\n| `trend_days` | the days the line and its trend cover | 30 | 14 to 90 |\n| `hrv_drop_percent` | how far under your usual HRV must be, in % | 20 | |\n| `resting_hr_rise_bpm` | how far over your usual resting heart rate must be | 5 | |\n| `short_sleep_minutes` | a night shorter than this is short | 360 | |\n| `stale_weight_change_kg` | how far your weight moves before a body fat has probably changed | 2 | 0.5 to 20 |\n| `stale_after_days` | the days a body fat, lean body mass, muscle mass or waist stays fresh | 90 | 14 to 365 |\n| `stale_weight_days` | the days a weight stays fresh | 30 | 7 to 365 |\n| `stale_height_days` | the days a height stays fresh, under 18 | 180 | 30 to 730 |\n\nA number outside its limits counts as the nearest limit, so 50\n`baseline_days` count as 30. Days are whole numbers, so 14.6 counts as 15."
+  },
+  {
+    "id": "guides/body-signals#15-when-recued-adds-readings",
+    "doc": "Body signals",
+    "section": "15. When Recued adds readings",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#15-when-recued-adds-readings",
+    "body": "A Recued update can add readings. The November 2026 one added height, body\nfat and the rest of section 6. Do these in this order:\n\n1. In Yours, open **Proposals** and accept the Body's preset update. It adds\n   the new readings to your Body. Recued then sets the summary up again, so\n   it writes them too.\n2. Then add the new readings to your Shortcut.\n\nIf you add them to the Shortcut first, the summary leaves them off the Body.\nIt adds them once the first step is done. If the Body's page says the summary\ncan't write them, choose **Set up the summary** there.\n\nBefore November 2026, this guide had the Shortcut send your latest weight\nevery day. If yours does, change it. Send a weight only in the post for the\nday it was taken, as section 4 says. Sent every day, a weight always looks\nnew. Recued then cannot tell when a weight or a body fat has gone stale."
+  },
+  {
+    "id": "guides/body-signals#privacy",
+    "doc": "Body signals",
+    "section": "Privacy",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/body-signals#privacy",
+    "body": "- **Your readings stay on your server.** They are kept in Records and on the\n  Body. Your server keeps its database locked with a key. The phone sends\n  straight to your server. Recued's cloud never sees a reading.\n- **Values only when you agree.** Recued's chat sees the names of the Body's\n  readings and states, never their values. So do the AI apps you connect.\n  To get the values, they run \"How someone has slept and recovered, day by\n  day\". **Body numbers in your chats**, on any Body's page, says what your\n  chats may do. On **Off** they can't run it. On **Ask** they ask you every\n  time, as at the start. On **Allow** they read without asking. An AI app can\n  run it only if you turn it on for that app in Contracts. It then asks you\n  every time.\n  A goal's numbers and your own ranges are held the same way.\n- **Messages keep it private.** A message names a Body's items only as \"a\n  reminder in Yours\". The daily stream can name them: turn on its **Include\n  private items**. It then names them in every channel the stream goes to.\n- **Someone else's body** stays on your server, and only you read it. Ask\n  them first."
+  },
+  {
     "id": "guides/connect-to-recued",
     "doc": "Connect to Recued",
     "section": "Connect to Recued",
@@ -1238,6 +1470,22 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connect-to-recued#the-codex-plugin",
     "body": "The Recued plugin for Codex and other apps that load plugins is at\n[github.com/recued/agent-plugin](https://github.com/recued/agent-plugin).\nIn Codex, run `codex plugin marketplace add recued/agent-plugin`, then\n`codex plugin add recued@recued`. Start Codex once, so Recued notes it.\nThen save the key for it with `recued mcp-key set`, and restart Codex.\nIt needs Recued 26.10.30 or later.\n\nWith `codex exec`, Codex runs with no one to answer it. It asks before any\ntool that changes something, so there it refuses those tools. To use them,\nset `default_tools_approval_mode = \"approve\"` for the Recued server in\nCodex's settings. Your approvals in Recued still apply to each write. This\nwas checked in November 2026, with Codex 0.166.0."
+  },
+  {
+    "id": "guides/connect-to-recued#ready-made-installs",
+    "doc": "Connect to Recued",
+    "section": "Ready-made installs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connect-to-recued#ready-made-installs",
+    "body": "Some AI apps have a ready-made Recued install. Most add Recued as a server\nthe app can call, plus a skill. A skill is a short guide that tells the AI\nhow Recued's approvals work. Each install still needs a contract for the\napp. Make one under Contracts in the web app, and copy its key. On the\ncomputer Recued runs on, its address is `http://127.0.0.1:7717/mcp`.\n\n- **Claude Code.** Run `claude plugin marketplace add recued/claude-plugins`,\n  then `claude plugin install recued@recued`. Claude Code asks for the\n  address the contract's Connect tab shows, and for the contract's key. It\n  keeps the key in its secure storage. See\n  [github.com/recued/claude-plugins](https://github.com/recued/claude-plugins).\n- **Gemini CLI.** Run\n  `gemini extensions install https://github.com/recued/gemini-recued`. It\n  asks for the same two things. It keeps the key in your system keychain. A\n  change can ask you twice. Gemini CLI asks first, unless you allowed the\n  tool there. Then Recued holds the change. See\n  [github.com/recued/gemini-recued](https://github.com/recued/gemini-recued).\n- **Codex.** See the Codex plugin, above.\n- **Hermes.** Run `hermes plugins install recued`. It starts\n  `recued --mcp`, so Recued must run on the same computer. Save the key with\n  `recued mcp-key set`, then restart Hermes. It needs Hermes 0.21.5 and\n  Recued 26.10.30, or later."
+  },
+  {
+    "id": "guides/connect-to-recued#more-ready-made-installs",
+    "doc": "Connect to Recued",
+    "section": "More ready-made installs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connect-to-recued#more-ready-made-installs",
+    "body": "- **OpenClaw.** Run `openclaw skills install @recued/recued` to add the\n  skill. Its page on [ClawHub](https://clawhub.ai/recued/skills/recued)\n  shows how to add the server. The key goes in `~/.openclaw/.env`, and\n  `openclaw mcp set recued` adds the address.\n- **DeepSeek Harness.** Run\n  `dsh plugin --profile web add github:recued/dsh-recued`. It needs `pnpm`\n  on your `PATH`. Put the key in `~/.dsh/.env`, as `RECUED_MCP_TOKEN`.\n  DeepSeek Harness does not ask before it calls a tool. Your contract and\n  your approvals in Recued are the check. See\n  [github.com/recued/dsh-recued](https://github.com/recued/dsh-recued).\n- **Raycast.** Open the Model Context Protocol Registry in Raycast. Find\n  Recued and install it. It starts `recued --mcp`, so Recued must run on\n  the same computer. Set `RECUED_MCP_TOKEN` to the contract's key.\n- **Any app that reads skills.** Run `npx skills add recued/skills` to add\n  the skill alone. It does not connect the app. The contract's Connect tab\n  shows how to do that.\n\nIn every app, the AI sees only the tools the contract grants. A read runs\nat once. By default, a change waits for your yes."
   },
   {
     "id": "guides/connect-to-recued#openai-compatible-chat-apps",
@@ -3421,7 +3669,7 @@
     "section": "Today: what needs you now",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/today-and-yours#today-what-needs-you-now",
-    "body": "**Today** puts your day in one list. It shows tasks, promises and calendar\nevents. It also shows reminders from your assets.\n\n- **Overdue** holds what is late.\n- **Today** holds what is due today.\n- **Next seven days** holds what comes after."
+    "body": "**Today** puts your day in one list. It shows tasks, promises and calendar\nevents. It also shows reminders from your assets.\n\n- **Overdue** holds what is late.\n- **Today** holds what is due today.\n- **Next seven days** holds what comes after.\n\nA reminder about something you own offers **Later**: tomorrow, a week or a\nmonth. For another day and time, open the item in Yours and use **Remind me\nagain on**. It is also under **Due**. The deadline stays the same."
   },
   {
     "id": "guides/today-and-yours#messages-about-your-days",
@@ -3437,15 +3685,47 @@
     "section": "Reminder in Yours",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/today-and-yours#reminder-in-yours",
-    "body": "Some reminders are private, such as a passport's, or a date you keep in\nYours with someone in it. The\n[messages about your days](#messages-about-your-days) show them only as\n**Reminder in Yours**. The AI writes them the same way. Open Yours to see\nthem."
+    "body": "Some reminders are private, such as a passport's, or an occasion you keep\nprivate. So is an event your own calendar marks private, in Google\nCalendar, Outlook or another calendar app. The\n[messages about your days](#messages-about-your-days) show them only as\n**Reminder in Yours**. The AI writes them the same way. Open Yours, or\nToday for an event, to see them."
   },
   {
-    "id": "guides/today-and-yours#occasions-what-comes-back-each-year",
+    "id": "guides/today-and-yours#occasions-something-personal-with-a-date",
     "doc": "Today and Yours",
-    "section": "Occasions: what comes back each year",
+    "section": "Occasions: something personal with a date",
     "eyebrow": "Guides",
-    "url": "https://recued.com/docs/guides/today-and-yours#occasions-what-comes-back-each-year",
-    "body": "An **occasion** is something that comes back each year. It can be a\nbirthday or a yearly trip. Recued reminds you a week before each one.\n\nYou can create an occasion in Yours. Recued can also suggest one. It asks\n**Does this recur?** when the same thing happens about a year apart. Two\ntrips to one country can make a suggestion like **Trip to Japan**.\n\nSuggestions need **last time** switched on. Find it in **Settings**, then\n**Privacy**, then **Learning**. A suggestion never turns itself on. Nothing\nchanges until you accept it."
+    "url": "https://recued.com/docs/guides/today-and-yours#occasions-something-personal-with-a-date",
+    "body": "An **occasion** is something personal of yours with a date. It can come\nonce, such as a biopsy or a big birthday party. It can come every year,\nsuch as an anniversary. Or it can come back when the last one says, such\nas a dentist. Recued reminds you a week before each one, and on the day.\n\nAn occasion can hold its people, its place, steps to take before it, and\nits own event in your calendar. A blood test the week before a check-up is\na step. A lab visit booked on its own day is an occasion of its own.\n\nYou can create an occasion in Yours. Recued can also suggest one. It asks\n**Does this recur?** when the same thing happens about a year apart. Two\ntrips to one country can make a suggestion like **Trip to Japan**.\n\nSuggestions need **last time** switched on. Find it in **Settings**, then\n**Privacy**, then **Learning**. A suggestion never turns itself on. Nothing\nchanges until you accept it.\n\nEach occasion is **Private** or **Shown by name**. Your messages show a\nprivate one, and the events of its yearly series in your calendar, only as\n**Reminder in Yours**. A new occasion starts private when a person is in\nit, such as a birthday. Change it in the occasion's form.\n\nRecued's chat can add an occasion for you too, such as a doctor's\nappointment with a blood test a week before it. It asks you first, and a\nhealth one is private. A birthday or an anniversary goes on the person's\ncontact instead."
+  },
+  {
+    "id": "guides/today-and-yours#what-goes-where",
+    "doc": "Today and Yours",
+    "section": "What goes where",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#what-goes-where",
+    "body": "Ask one question: does it matter beyond its time slot? It does when it has\na person in it, a reason to prepare, a need to stay private, or it comes\nback. Then it is an occasion. If not, it is an event in your calendar.\n\n| What you have | Where it goes |\n| --- | --- |\n| A doctor's visit, an anniversary, a reunion | An occasion |\n| A team meeting, a haircut | An event in your calendar |\n| Something to do | A task |\n| A promise to or from someone | A commitment |\n| A stay, a trip, a table or tickets | A booking |\n| Something you own, such as a passport | A thing in Yours |\n| Someone's birthday | Their contact |\n\nA **booking** means two things. Someone can book a time with you, through\nReception. Or you booked something yourself, and Recued read it from your\nemail, or from an invite someone emailed you. The booking from a clinic's\ninvite can join that visit's occasion.\n\nA person's birthday or anniversary goes on their contact. Its occasion\ncomes from the contact, so it is never there twice."
+  },
+  {
+    "id": "guides/today-and-yours#next-visits-times-and-alerts",
+    "doc": "Today and Yours",
+    "section": "Next visits, times and alerts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#next-visits-times-and-alerts",
+    "body": "Some visits come back when the last one says. A dentist may book the next\none at the end of this one. Under **Repeat**, choose **When the last one\nsays**. After each visit, Recued asks **When is the next one?** It asks in\nToday and on the occasion in Yours. Your messages remind you too. Give its\ndate there, and a time if you have one. **No next one** stops it asking.\nYou can tell the chat instead: \"my next dentist visit is 18 May at 10:30\".\n\nAn occasion can have a time of day. On its day, your messages list it at\nthat time. With no time, it is the whole day.\n\nWith a time, an occasion can also alert you before it, such as two hours\nbefore. Choose **Alert** in its form, or ask the chat. The occasion sends\nit itself. It is not one of your **Reminders**, and a private one says only\n**Reminder in Yours**."
+  },
+  {
+    "id": "guides/today-and-yours#occasions-in-your-calendar",
+    "doc": "Today and Yours",
+    "section": "Occasions in your calendar",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#occasions-in-your-calendar",
+    "body": "An occasion can have its own event in your phone's calendar. Choose that\ncalendar once, on the **Occasions** page in Yours, under **Your occasions'\ncalendar**. Pick a personal one, not one other people can see. Until you\nchoose one, every occasion stays in Recued only.\n\nA new occasion then starts with **In my calendar** ticked. Recued writes its\nevent: its date and time, its place, and its alert. A private occasion's\nevent is marked private. When you change the occasion, Recued changes the\nevent. When you untick it or delete the occasion, Recued removes the event.\nAn event that has already happened stays. Today shows the occasion and its\nevent as one line.\n\nYou can also move the event in your phone's calendar. The occasion then\nmoves with it, to the new day and time. A yearly occasion moves to that\ndate for the years after too. If you delete the event there, the occasion\nstays in Recued only.\n\nUntick **In my calendar** to keep an occasion in Recued only. Recued still\nreminds you, but nothing goes in your phone's calendar. You can tell the\nchat too: \"keep my physio out of my calendar\".\n\nWhile its event carries the alert, your calendar sends it, not Recued. If\nyour calendar does not keep an event private, Recued says so on that page.\nYour private occasions then stay in Recued only."
+  },
+  {
+    "id": "guides/today-and-yours#an-occasion-from-an-event-in-your-calendar",
+    "doc": "Today and Yours",
+    "section": "An occasion from an event in your calendar",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/today-and-yours#an-occasion-from-an-event-in-your-calendar",
+    "body": "An event already in your calendar can become an occasion, such as a\nclinic's invite. Open it in **Data**, then **Calendar**, and tick\n**Occasion**. You enter nothing again. **Private** starts ticked: untick it\nto show the occasion by name.\n\nIf an occasion waits for its next date, Recued asks which one this is. The\none whose organizer or place matches comes first. Choose it, and the event\nbecomes its next visit. Recued never does this by itself.\n\nThe occasion then follows the event. If the clinic moves it, the occasion\nmoves too. Recued never changes or removes that event. Untick **Occasion**\nto let it go. An occasion the tick made is then removed, and one that\nwaited goes back to waiting.\n\nThe booking that the same invite made joins the occasion, and is private\nwhen the occasion is. The occasion's page shows them as one appointment."
   },
   {
     "id": "guides/today-and-yours#trips-and-travel-documents",
@@ -3461,7 +3741,7 @@
     "section": "What an AI can see",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/today-and-yours#what-an-ai-can-see",
-    "body": "AI apps you connect can read your assets and what is coming up. They see\nthe fields you typed, as you typed them. They can find a thing by where you\nkeep it or by a detail, such as its brand. They can also find two things\nthat share an identifier, such as a car's VIN on its insurance.\n\nDocument numbers, serial numbers and exact addresses are optional. Recued's\nown chat hides them from its AI model. An app you connect over MCP gets\nwhat you typed.\n\nAn AI can also ask about the past. It can find the trips and bookings that\nended in a month you name."
+    "body": "AI apps you connect can read your assets and what is coming up. They see\nthe fields you typed, as you typed them. They can find a thing by where you\nkeep it or by a detail, such as its brand. They can also find two things\nthat share an identifier, such as a car's VIN on its insurance.\n\nDocument numbers, serial numbers and exact addresses are optional. Recued's\nown chat hides them from its AI model. An app you connect over MCP gets\nwhat you typed.\n\nWhat you keep private, such as a private occasion, comes marked private to\nevery AI: Recued's chat and the apps you connect alike. An AI still reads\nits name, so it can help with it. It is told to leave the name out of your\nmessages.\n\nAn AI can also ask about the past. It can find the trips and bookings that\nended in a month you name."
   },
   {
     "id": "guides/today-and-yours#what-an-ai-can-change",
@@ -3973,7 +4253,7 @@
     "section": "AI tools, part 2",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-2",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `document.read` | **Read a document.** Reads the text of a file, like an email attachment or a stored PDF. Needs `data.file`. Also needs `core.storage.data-file-read` for a plain text file and `core.storage.file.read-temp` for a document it converts. To convert a document, the MarkItDown or Docling pack must be installed, with its convert switch on. |\n| `document.search` | **Search document contents.** Finds words inside saved files and attachments, with excerpts and file links. Needs `data.file`. Also needs `core.storage.data-file-read` to read text and verify saved matches and `core.storage.file.read-temp` to read converted documents. Uses installed MarkItDown or Docling when conversion is needed. Shows files it could not search. |\n| `enrichment.search` | **Search worked-out facts.** Finds facts Recued worked out about records, like a score or a summary. Each kind of fact also needs its own switch on the Entities tab. |\n| `episode.record` | **Record your day.** Records what you did or skipped on a day, in your words, as your history. Needs `core.situation.record`. Naming an item from your agenda also needs the read switch for that kind of item. |\n| `file.search` | **Search your files.** Finds files in your connected folders. Needs `data.file`. |\n| `mail.read` | **Read an email.** Reads one email in full and lists its attachments. Needs `data.mail`. Also needs `data.file` to list attachments. |\n| `mail.search` | **Search your mail.** Searches your mail by subject, sender, words or date. Needs `data.mail`. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `document.read` | **Read a document.** Reads the text of a file, like an email attachment or a stored PDF. Needs `data.file`. Also needs `core.storage.data-file-read` for a plain text file and `core.storage.file.read-temp` for a document it converts. To convert a document, the MarkItDown or Docling pack must be installed, with its convert switch on. |\n| `document.search` | **Search document contents.** Finds words inside saved files and attachments, with excerpts and file links. Needs `data.file`. Also needs `core.storage.data-file-read` to read text and verify saved matches and `core.storage.file.read-temp` to read converted documents. Uses installed MarkItDown or Docling when conversion is needed. Shows files it could not search. |\n| `enrichment.search` | **Search worked-out facts.** Finds facts Recued worked out about records, like a score or a summary. Each kind of fact also needs its own switch on the Entities tab. |\n| `episode.record` | **Record your day.** Records what you did or skipped on a day, in your words, and ticks off tasks you did. Needs `core.situation.record`. Also needs `core.work-entity.task.mark-done` to tick off a task you did. Naming an item from your agenda also needs the read switch for that kind of item. |\n| `file.search` | **Search your files.** Finds files in your connected folders. Needs `data.file`. |\n| `mail.read` | **Read an email.** Reads one email in full and lists its attachments. Needs `data.mail`. Also needs `data.file` to list attachments. |\n| `mail.search` | **Search your mail.** Searches your mail by subject, sender, words or date. Needs `data.mail`. |"
   },
   {
     "id": "reference/grant-switches#ai-tools-part-3",
@@ -3981,7 +4261,7 @@
     "section": "AI tools, part 3",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-3",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `memory.forget` | **Forget a saved fact.** Forgets a fact the AI saved earlier. You can bring it back. Needs `core.memory.write`. |\n| `memory.relations` | **Look up how to save a fact about someone.** Tells an AI how to save a fact about a person or a thing, like \"Mia is Dana's daughter\". Then one fact is saved the same way each time. Needs `core.memory.write`. |\n| `memory.search` | **Search your memory.** Finds facts and notes saved in your memory. Needs `core.memory.read`. |\n| `memory.write` | **Save to your memory.** Saves a fact to your memory. You can see it and undo it. Needs `core.memory.write`. |\n| `recipe.run` | **Run a recipe.** Runs one of your recipes. Each step of the recipe needs its own switch here, unless the recipe is on under Recipes. |\n| `recipe.schedule` | **Schedule a recipe.** Sets a recipe to run later or on a timer. Needs `core.schedule.recipe`. Only you can schedule, from your own chat. An AI app that connects with a key cannot. |\n| `recipe.stop` | **Stop a recipe.** Stops a recipe run that the same conversation started. |\n| `schedule.list` | **Read scheduled requests.** Lists saved requests and their timing. Needs `core.schedule.prompt`. |\n| `schedule.pause` | **Pause a scheduled request.** Stops future and queued occurrences. A turn already running can finish. Needs `core.schedule.prompt`. |\n| `schedule.remove` | **Remove a scheduled request.** Removes future and queued occurrences. The conversation and its history remain. Needs `core.schedule.prompt`. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `memory.forget` | **Forget a saved fact.** Forgets a fact the AI saved earlier. You can bring it back. Needs `core.memory.write`. |\n| `memory.relations` | **Look up how to save a fact about someone.** Tells an AI how to save a fact about a person or a thing, like \"Mia is Dana's daughter\". Then one fact is saved the same way each time. Needs `core.memory.write`. |\n| `memory.search` | **Search your memory.** Finds facts and notes saved in your memory. Needs `core.memory.read`. |\n| `memory.write` | **Save to your memory.** Saves a fact to your memory. You can see it and undo it. Needs `core.memory.write`. |\n| `recipe.run` | **Run a recipe.** Runs one of your recipes. Each step of the recipe needs its own switch here, unless the recipe is on under Recipes. |\n| `recipe.schedule` | **Schedule a recipe.** Sets a recipe to run later or on a timer. Needs `core.schedule.recipe`. Only you can schedule, from your own chat. An AI app that connects with a key cannot. |\n| `recipe.stop` | **Stop a recipe.** Stops a recipe run that the same conversation started. |\n| `recipe.stop_allowing` | **Stop allowing a recipe.** Ends what your chats, or an AI app, may do with a recipe without asking you. Only your own chat can. |\n| `schedule.list` | **Read scheduled requests.** Lists saved requests and their timing. Needs `core.schedule.prompt`. |\n| `schedule.pause` | **Pause a scheduled request.** Stops future and queued occurrences. A turn already running can finish. Needs `core.schedule.prompt`. |"
   },
   {
     "id": "reference/grant-switches#ai-tools-part-4",
@@ -3989,7 +4269,7 @@
     "section": "AI tools, part 4",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-4",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `schedule.resume` | **Resume a scheduled request.** Starts future occurrences of a paused request. Needs `core.schedule.prompt`. |\n| `schedule.run_prompt` | **Schedule an AI request.** Runs a saved request later in its own conversation. Needs `core.schedule.prompt`. |\n| `schedule.update` | **Edit a scheduled request.** Changes the saved request or its timing. Needs `core.schedule.prompt`. |\n| `situation.query` | **Ask what is going on.** Gets a short, ranked picture of what is going on around a time. Needs `core.situation.read`. Each kind of item in the picture also needs its own read switch and data switch. |\n| `work.create` | **Add a task, note or more.** Adds a task, note, commitment, project or thing you own. Needs `core.work-entity.task.create` to add tasks, `core.work-entity.note.create` to add notes, `core.work-entity.commitment.create` to add commitments, `core.work-entity.project.create` to add projects and `core.work-entity.asset.create` to add things you own. |\n| `work.read` | **Read a task, note or more.** Reads one task, note, commitment, project, booking or thing you own in full. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `schedule.remove` | **Remove a scheduled request.** Removes future and queued occurrences. The conversation and its history remain. Needs `core.schedule.prompt`. |\n| `schedule.resume` | **Resume a scheduled request.** Starts future occurrences of a paused request. Needs `core.schedule.prompt`. |\n| `schedule.run_prompt` | **Schedule an AI request.** Runs a saved request later in its own conversation. Needs `core.schedule.prompt`. |\n| `schedule.update` | **Edit a scheduled request.** Changes the saved request or its timing. Needs `core.schedule.prompt`. |\n| `situation.query` | **Ask what is going on.** Gets a short, ranked picture of what is going on around a time. Needs `core.situation.read`. Each kind of item in the picture also needs its own read switch and data switch. |\n| `work.create` | **Add a task, note or more.** Adds a task, note, commitment, project, thing you own or occasion. Needs `core.work-entity.task.create` to add tasks, `core.work-entity.note.create` to add notes, `core.work-entity.commitment.create` to add commitments, `core.work-entity.project.create` to add projects, `core.work-entity.asset.create` to add things you own and `core.situation.occasion-create` to add occasions. |\n| `work.read` | **Read a task, note or more.** Reads one task, note, commitment, project, booking or thing you own in full. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |"
   },
   {
     "id": "reference/grant-switches#ai-tools-part-5",
@@ -3997,7 +4277,7 @@
     "section": "AI tools, part 5",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#ai-tools-part-5",
-    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `work.search` | **Search tasks, notes and more.** Finds tasks, notes, commitments, projects, bookings and things you own. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |\n| `work.type` | **Look up a type of thing you own.** Tells an AI which dates and reminders a type of thing has, such as a passport, before it adds one. Needs `core.work-entity.asset.create`. |\n| `work.update` | **Change a task, note or more.** Changes a task, note, commitment, project or thing you own, or ticks a task off. Needs `core.work-entity.task.update` to change tasks, `core.work-entity.note.update` to change notes, `core.work-entity.commitment.update` to change commitments, `core.work-entity.project.update` to change projects, `core.work-entity.asset.update` to change things you own and `core.work-entity.task.mark-done` to tick a task off. |"
+    "body": "Each tool says what else it needs.\n\n| Switch | What it does |\n| --- | --- |\n| `work.search` | **Search tasks, notes and more.** Finds tasks, notes, commitments, projects, bookings and things you own. Needs `core.work-entity.read`. Also needs `data.task` for tasks, `data.note` for notes, `data.commitment` for commitments, `data.project` for projects, `data.booking` for bookings and `data.asset` for things you own. |\n| `work.type` | **Look up a type of thing you own.** Tells an AI which dates and reminders a type of thing has, such as a passport, before it adds one. Needs `core.work-entity.asset.create`. |\n| `work.update` | **Change a task, note or more.** Changes a task, note, commitment, project, booking, thing you own or occasion, or ticks a task off. Needs `core.work-entity.task.update` to change tasks, `core.work-entity.note.update` to change notes, `core.work-entity.commitment.update` to change commitments, `core.work-entity.project.update` to change projects, `core.work-entity.asset.update` to change things you own, `core.work-entity.task.mark-done` to tick a task off, `core.work-entity.booking.update` to change bookings and `core.situation.occasion-update` to change occasions. Closing something from your email, like a bill or a parcel, makes the item it becomes. That needs the switches for a commitment (a bill), a booking (a reservation) or a task (anything else). |"
   },
   {
     "id": "reference/grant-switches#operations",
@@ -4093,7 +4373,7 @@
     "section": "Tasks & notes",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#tasks-notes",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.asset.create` | **Add a thing you own.** Adds a thing you keep track of, like a car or a device, and where its facts came from. Needed by `work.type`, and by `work.create` to add things you own. |\n| `core.work-entity.asset.delete` | **Delete a thing you own.** Deletes a thing you keep track of, with its readings. |\n| `core.work-entity.asset.observe` | **Record a reading.** Lets a recipe record a reading, like a meter value, for a thing you own. It records only what you allowed. |\n| `core.work-entity.asset.update` | **Change a thing you own.** Changes the facts about a thing you keep track of. Needed by `work.update` to change things you own. |\n| `core.work-entity.booking.create` | **Create a booking.** Adds a booking: who the customer is, when it is, and what it is worth. |\n| `core.work-entity.booking.delete` | **Delete a booking.** Deletes a booking. |\n| `core.work-entity.booking.update` | **Change a booking.** Changes a booking, which is also how a booking is cancelled or finished. |\n| `core.work-entity.commitment.cancel` | **Cancel a commitment.** Marks a commitment as cancelled. |\n| `core.work-entity.commitment.create` | **Create a commitment.** Adds a commitment: a promise you made, or one made to you. Needed by `work.create` to add commitments. |\n| `core.work-entity.commitment.fulfill` | **Mark a commitment kept.** Marks a commitment as kept. |\n| `core.work-entity.commitment.propose` | **Suggest a commitment.** Suggests a commitment for you to check. It is only added once you say yes. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.asset.create` | **Add a thing you own.** Adds a thing you keep track of, like a car or a device, and where its facts came from. Needed by `work.type`, and by `work.create` to add things you own. |\n| `core.work-entity.asset.delete` | **Delete a thing you own.** Deletes a thing you keep track of, with its readings. |\n| `core.work-entity.asset.observe` | **Record a reading.** Lets a recipe record a reading, like a meter value, for a thing you own. It records only what you allowed. |\n| `core.work-entity.asset.update` | **Change a thing you own.** Changes the facts about a thing you keep track of. Needed by `work.update` to change things you own. |\n| `core.work-entity.booking.create` | **Create a booking.** Adds a booking: who the customer is, when it is, and what it is worth. |\n| `core.work-entity.booking.delete` | **Delete a booking.** Deletes a booking. |\n| `core.work-entity.booking.update` | **Change a booking.** Changes a booking, which is also how a booking is cancelled or finished. Needed by `work.update` to change bookings. |\n| `core.work-entity.commitment.cancel` | **Cancel a commitment.** Marks a commitment as cancelled. |\n| `core.work-entity.commitment.create` | **Create a commitment.** Adds a commitment: a promise you made, or one made to you. Needed by `work.create` to add commitments. |\n| `core.work-entity.commitment.fulfill` | **Mark a commitment kept.** Marks a commitment as kept. |\n| `core.work-entity.commitment.propose` | **Suggest a commitment.** Suggests a commitment for you to check. It is only added once you say yes. |"
   },
   {
     "id": "reference/grant-switches#tasks-notes-part-2",
@@ -4117,7 +4397,7 @@
     "section": "Tasks & notes, part 4",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#tasks-notes-part-4",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.task.mark-done` | **Mark a task done.** Ticks a task off as done. Needed by `work.update` to tick a task off. |\n| `core.work-entity.task.mark-reminder-fired` | **Mark a reminder task as sent.** Marks a reminder kept as a task as sent, so it is no longer due. |\n| `core.work-entity.task.update` | **Change a task.** Changes the fields of a task. Needed by `work.update` to change tasks. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.work-entity.task.mark-done` | **Mark a task done.** Ticks a task off as done. Needed by `work.update` to tick a task off, and by `episode.record` to tick off a task you did. |\n| `core.work-entity.task.mark-reminder-fired` | **Mark a reminder task as sent.** Marks a reminder kept as a task as sent, so it is no longer due. |\n| `core.work-entity.task.update` | **Change a task.** Changes the fields of a task. Needed by `work.update` to change tasks. |"
   },
   {
     "id": "reference/grant-switches#form-responses",
@@ -4189,7 +4469,7 @@
     "section": "Situations",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#situations",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.situation.prefetch` | **Look ahead before each chat turn.** Lets Recued add a short picture of what is going on to your chat before the AI answers. |\n| `core.situation.read` | **Read what is going on.** Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches. Needed by `situation.query`. |\n| `core.situation.record` | **Record your day.** Lets an AI record what you did or skipped on a day, in your words. Each day it records waits for your yes. Needed by `episode.record`. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.situation.occasion-create` | **Add an occasion.** Lets an AI add a date of yours that matters, like a doctor's appointment or a reunion. It sets who and where, whether it is private, its reminders and the steps before it. Each one waits for your yes. Needed by `work.create` to add occasions. |\n| `core.situation.occasion-update` | **Change an occasion.** Lets an AI rename, move or mute an occasion you made in Yours. It can also say whether it is private, change its place or add a step. A safety, legal or travel reminder stays on, and each change waits for your yes. Needed by `work.update` to change occasions. |\n| `core.situation.prefetch` | **Look ahead before each chat turn.** Lets Recued add a short picture of what is going on to your chat before the AI answers. |\n| `core.situation.read` | **Read what is going on.** Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches. Needed by `situation.query`. |\n| `core.situation.record` | **Record your day.** Lets an AI record what you did or skipped on a day, in your words. Each day it records waits for your yes. Needed by `episode.record`. |"
   },
   {
     "id": "reference/grant-switches#ai-models",
@@ -4205,7 +4485,7 @@
     "section": "Browser",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#browser",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.act` | **Act on web pages.** Reads, types, clicks and sends forms on web pages in your browser, through the Browser Bridge. It does several steps at once, across tabs. A click or a sent form cannot be undone. |\n| `core.dom.click` | **Click on a web page.** Clicks a link or a button, or presses a key, on a web page in your browser. It goes through the Browser Bridge. A click or a key can send, post or delete, and cannot be undone. |\n| `core.dom.download` | **Save a file from a web page.** Saves a file a web page in your browser links to, such as a PDF, among your files. It goes through the Browser Bridge and fetches the file as the page would, signed in as you are. |\n| `core.dom.inspect` | **See a whole web page.** Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.open` | **Open a web page.** Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site. |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.screenshot` | **Take a screenshot of a web page.** Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs \"Allow screenshots\" in the Bridge's side panel. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.dom.act` | **Act on web pages.** Reads, types, clicks and sends forms on web pages in your browser, through the Browser Bridge. It does several steps at once, across tabs. A click or a sent form cannot be undone. |\n| `core.dom.bridges` | **See your paired browsers.** Lists Browser Bridge IDs, names and connection status. Reads no pages and changes nothing. |\n| `core.dom.click` | **Click on a web page.** Clicks a link or a button, or presses a key, on a web page in your browser. It goes through the Browser Bridge. A click or a key can send, post or delete, and cannot be undone. |\n| `core.dom.download` | **Save a file from a web page.** Saves a file a web page in your browser links to, such as a PDF, among your files. It goes through the Browser Bridge and fetches the file as the page would, signed in as you are. |\n| `core.dom.inspect` | **See a whole web page.** Reads a web page open in your browser, with its links, buttons and form fields, through the Browser Bridge. Password and card fields come back empty. |\n| `core.dom.open` | **Open a web page.** Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site. |\n| `core.dom.read` | **Read from a web page.** Reads text from a web page open in your browser, through the Browser Bridge. |\n| `core.dom.screenshot` | **Take a screenshot of a web page.** Takes a picture of a web page open in your browser, through the Browser Bridge. The Bridge brings its tab to the front for a moment. The picture shows the page as you see it. Needs \"Allow screenshots\" in the Bridge's side panel. |"
   },
   {
     "id": "reference/grant-switches#browser-part-2",
@@ -4245,7 +4525,7 @@
     "section": "Recipes",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/grant-switches#recipes",
-    "body": "| Switch | What it does |\n| --- | --- |\n| `core.kitchen.draft.get` | **Read Kitchen draft source.** Reads source from a draft created through this connection. |\n| `core.kitchen.draft.import` | **Import source into Kitchen.** Adds recipe or pack source as a draft for you to review. It does not install or run it. |\n| `core.kitchen.draft.list` | **List Kitchen drafts.** Lists drafts created through this connection without returning their source. |\n| `core.kitchen.draft.update` | **Update Kitchen draft source.** Saves edited source to a draft created through this connection, checking its revision. It does not install or run it. |\n| `core.work-entity.approval-workflow.continue` | **Carry on a job a customer accepted.** After you approve, finishes a task, keeps a commitment or starts a saved recipe that a customer accepted. |"
+    "body": "| Switch | What it does |\n| --- | --- |\n| `core.kitchen.draft.from_job` | **Make a recipe from a job.** Makes a recipe draft of a job this connection recorded, for your review. It does not install or run it. |\n| `core.kitchen.draft.get` | **Read Kitchen draft source.** Reads source from a draft created through this connection. |\n| `core.kitchen.draft.import` | **Import source into Kitchen.** Adds recipe or pack source as a draft for you to review. It does not install or run it. |\n| `core.kitchen.draft.list` | **List Kitchen drafts.** Lists drafts created through this connection without returning their source. |\n| `core.kitchen.draft.update` | **Update Kitchen draft source.** Saves edited source to a draft created through this connection, checking its revision. It does not install or run it. |\n| `core.work-entity.approval-workflow.continue` | **Carry on a job a customer accepted.** After you approve, finishes a task, keeps a commitment or starts a saved recipe that a customer accepted. |"
   },
   {
     "id": "reference/grant-switches#data-switches",

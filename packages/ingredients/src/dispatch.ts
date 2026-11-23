@@ -256,7 +256,9 @@ export interface IngredientDispatchOptions {
   /** Resolve value references ({{vault.*}}, {{config.*}}) in the merged
    *  input. Called after manifest + step input merge so manifest defaults
    *  containing refs are resolved too. */
-  resolveRefs?: (obj: Record<string, unknown>) => Record<string, unknown>;
+  /** D-402 slice B4 — `slug` lets the host leave what an ingredient resolves itself (Act's data
+   *  steps' `{{item.*}}`) unresolved. */
+  resolveRefs?: (obj: Record<string, unknown>, slug?: string) => Record<string, unknown>;
 }
 
 /** Build an IngredientExecutor that routes by manifest.
@@ -318,7 +320,7 @@ export const createIngredientExecutor = (
     trustedSurfaceDispatch,
   });
   const resolvedInput = options.resolveRefs
-    ? options.resolveRefs(mergedInput)
+    ? options.resolveRefs(mergedInput, manifest.slug)
     : mergedInput;
 
   // Merge output: manifest base + step extensions (step wins)

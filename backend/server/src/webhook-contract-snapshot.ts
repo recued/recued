@@ -134,9 +134,10 @@ export const buildWebhookContractSnapshot = (
     //
     // ⛔⛔ THIS IS THE FIX FOR A DRIVEN DEFECT, NOT A PRECAUTION. With the ceiling
     // on a recipe dispatch, an outbound send crossed admission with NO preflight:
-    // `admin` relaxes the `write`, and `liftOutboundSend` is `user_self`-scoped so
-    // nothing re-raises it. Same source, same send, ceiling removed ⇒ the gate
-    // fires. See `d-209-webhook-outbound-send-ceiling.test.ts` for the A/B.
+    // `admin` relaxes the `write`, and nothing re-raised it (the by-name send lift,
+    // `user_self`-scoped then, is gone since D-177 §N.15.7). Same source, same send,
+    // ceiling removed ⇒ the gate fires. See `d-209-webhook-outbound-send-ceiling.test.ts`
+    // for the A/B.
     ...(dispatch_path === 'deterministic_handler'
       && live && def.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: def.max_risk_without_approval }

@@ -148,12 +148,16 @@ export const renderRecordsViewControls = (state: RecordsBrowseState, entity: Rec
       </div>`;
     }).join('')}
     <div class="records-view-actions">
+      <div class="records-view-tools">
       <button type="button" data-action="records-add-filter"${loading || state.viewDraft.filters.length >= Math.min(fields.length, RECORDS_MAX_PREDICATES) ? ' disabled' : ''}>Add filter</button>
       <label>Sort records<select data-action="records-view-sort" aria-label="Sort records"${disabled}>
         ${sorts.some(sort => sort.key === state.viewDraft.sort) ? '' : option(state.viewDraft.sort, `${state.viewDraft.sort} (unavailable)`, state.viewDraft.sort)}
         ${sorts.map(sort => option(sort.key, sort.label, state.viewDraft.sort)).join('')}</select></label>
+      </div>
+      <div class="records-view-apply-actions">
       <button type="submit" data-action="records-apply-view"${loading ? ' aria-disabled="true"' : ''}>Apply filters and sorting</button>
       <button type="button" data-action="records-reset-view"${loading ? ' aria-disabled="true"' : ''}>Reset filters and sorting</button>
+      </div>
     </div>
     <p class="records-help" data-records-draft-status role="status"${recordsViewHasDraft(state) ? '' : ' hidden'}>Unapplied changes. Apply filters and sorting before saving this view.</p>
   </form>${renderAppliedView(state.view, entity)}`;

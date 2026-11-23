@@ -1,4 +1,5 @@
-import { focusCustomerWorkspace, restoreCustomerWorkspaceControl } from './customer-workspace-focus.js';
+import { CUSTOMER_SIGNOFF_WORKSPACE_STYLES } from './customer-signoff-workspace-styles.js';
+import { focusCustomerWorkspace, restoreCustomerWorkspaceControl, trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { customerInvoiceRecordAddress } from '../data/records-navigation.js';
 import { receptionCustomerJobAddress, receptionInboxTargetAddress } from './navigation.js';
 import { customerRefundBalanceLines } from '@recued/contracts';
@@ -47,6 +48,7 @@ export const mountQuoteSignoffPanel = (opts: {
   reminders?: QuoteSignoffReminderOptions;
 }) => {
   const { document: doc, conn } = opts;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const root = doc.createElement('section'); root.setAttribute('data-recued-quote-signoffs', '');
   opts.host.appendChild(root);
   const style = doc.createElement('style'); style.textContent = `
@@ -92,6 +94,7 @@ export const mountQuoteSignoffPanel = (opts: {
     [data-recued-quote-signoffs] .signoff-filter-actions { grid-column:1/-1; }
     [data-recued-quote-signoffs] .signoff-actions { display:flex; flex-wrap:wrap; gap:10px; }
     [data-recued-quote-signoffs] :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    ${CUSTOMER_SIGNOFF_WORKSPACE_STYLES}
   `; root.appendChild(style);
   const add = (tag: string, text: string, host: HTMLElement = root) => {
     const node = doc.createElement(tag); node.textContent = text; host.appendChild(node); return node;
@@ -325,6 +328,7 @@ export const mountQuoteSignoffPanel = (opts: {
     if (keepPreview && reviewFreshness?.customerExpired()) { focusCustomerWorkspace(reviewFreshness.element); return; }
     const rememberLink = keepPreview && previewHost.querySelector<HTMLInputElement>('input[name=remember_link_for_reminders]')?.checked === true;
     let refreshFailed = false;
+    const ownsFocus = focusOwner.capture();
     setBusy(true); if (keepPreview) reviewFreshness?.invalidateReview(); else invalidate();
     try {
       const result = await conn('reception.signoff.resume', { signoff_id: signoffId });
@@ -338,7 +342,7 @@ export const mountQuoteSignoffPanel = (opts: {
       fields.display_name!.value = result.display_name; expiry.value = String(result.expiry_days);
       savedForm = formSnapshot(); formDirty = false; showPrepared(result,rememberLink);
     } catch (error) { if (!disposed) { message.textContent = errorMessage(error); if (keepPreview) { refreshFailed = true; reviewFreshness?.failed(); } } }
-    finally { if (!disposed) { setBusy(false); focusCustomerWorkspace(refreshFailed && reviewFreshness ? reviewFreshness.element : prepared ? previewHost : message); } }
+    finally { if (!disposed) { setBusy(false); if (ownsFocus()) focusCustomerWorkspace(refreshFailed && reviewFreshness ? reviewFreshness.element : prepared ? previewHost : message); } }
   };
   recoverPublish.addEventListener('click',() => {
     if (!busy && !disposed && canRecoverPublish()) void resumeSaved(publishRecovery!.id);
@@ -615,7 +619,7 @@ export const mountQuoteSignoffPanel = (opts: {
       publish = doc.createElement('button'); publish.type = 'button'; publish.textContent = 'Publish sign-off link';
       publish.className = 'signoff-primary'; publish.disabled = busy || reviewFreshness?.isExpired() === true; previewHost.appendChild(publish); reviewFreshness?.setBusy(busy);
       publish.addEventListener('click', async () => {
-        if (busy || disposed || !prepared || reviewFreshness?.isExpired()) return; const snapshot = prepared; setBusy(true);
+        if (busy || disposed || !prepared || reviewFreshness?.isExpired()) return; const snapshot = prepared; const ownsFocus = focusOwner.capture(); setBusy(true);
         let published = false;
         try {
           const created = await conn('reception.signoff.publish', { signoff_id: snapshot.signoff.signoff_id, preview_hash: snapshot.preview_hash,
@@ -632,13 +636,14 @@ export const mountQuoteSignoffPanel = (opts: {
           message.textContent = customerPreviewExpired(error)
           ? 'This preview expired. Choose Resume saved sign-off preview to review and publish the same saved request.'
           : `${errorMessage(error)} If the request is still a draft, choose Resume saved sign-off preview to try again.`; invalidate(); await load(); } }
-        finally { if (!disposed) { setBusy(false); focusCustomerWorkspace(published ? shareHost : message); } }
+        finally { if (!disposed) { setBusy(false); if (ownsFocus()) focusCustomerWorkspace(published ? shareHost : message); } }
       });
       message.textContent = 'Saved preview ready. Review the saved quote and scope, then publish its link. Its expiry is unchanged.';
   };
   form.addEventListener('submit', async (event) => {
     event.preventDefault(); if (busy || disposed) return;
     if (form.reportValidity && !form.reportValidity()) return;
+    const ownsFocus = focusOwner.capture();
     setPublishRecovery(); setBusy(true); invalidate(); share?.checking();
     try {
       const common = { display_name: fields.display_name!.value, scope: fields.scope!.value,
@@ -655,7 +660,7 @@ export const mountQuoteSignoffPanel = (opts: {
         ? 'Preview prepared. Earlier pending added-work requests have been replaced. Review the saved added work and new total, then publish its link.'
         : 'Preview prepared. Earlier active requests for this quote have been replaced. Review the saved quote and scope, then publish its link.'; await load();
     } catch (error) { if (!disposed) { message.textContent = errorMessage(error); await load(); } }
-    finally { await share?.check(); if (!disposed) { setBusy(false); focusCustomerWorkspace(prepared && previewHost.isConnected ? previewHost : message); } }
+    finally { await share?.check(); if (!disposed) { setBusy(false); if (ownsFocus()) focusCustomerWorkspace(prepared && previewHost.isConnected ? previewHost : message); } }
   });
   refresh.addEventListener('click', () => { if (!busy && !disposed) void load(undefined, refresh); });
   const interval = setInterval(() => { refreshCustomerRequestExpiries(root); if (!busy && !disposed && !historyLoading) { void load(); reminders?.update(); } }, 20_000);
@@ -663,5 +668,5 @@ export const mountQuoteSignoffPanel = (opts: {
   return { update: () => { if (!disposed) { void load(); reminders?.update(); } },
     hasUnsavedChanges: () => formDirty || payment?.hasUnsavedChanges() === true || paymentHistory.hasUnsavedChanges() || reminders?.hasUnsavedChanges() === true || completions.hasUnsavedChanges(),
     hasInFlightWork: () => paymentHistory.hasInFlightWork() || busy || completions.hasInFlightWork() || payment?.hasInFlightWork() === true || reminders?.hasInFlightWork() === true,
-    dispose: () => { saveBoard(); pane()?.removeEventListener('scroll', saveBoard); doc.removeEventListener?.('pointerdown', interactedWithPage, true); doc.removeEventListener?.('keydown', interactedWithPage, true); disposed = true; generation++; clearInterval(interval); if (recoveryTimer !== undefined) clearTimeout(recoveryTimer); historyInteraction.dispose(); reviewFreshness?.dispose(); paymentHistory.dispose(); payment?.dispose(); reminders?.dispose(); receipts.dispose(); completions.dispose(); share?.dispose(); root.remove(); } };
+    dispose: () => { focusOwner.dispose(); saveBoard(); pane()?.removeEventListener('scroll', saveBoard); doc.removeEventListener?.('pointerdown', interactedWithPage, true); doc.removeEventListener?.('keydown', interactedWithPage, true); disposed = true; generation++; clearInterval(interval); if (recoveryTimer !== undefined) clearTimeout(recoveryTimer); historyInteraction.dispose(); reviewFreshness?.dispose(); paymentHistory.dispose(); payment?.dispose(); reminders?.dispose(); receipts.dispose(); completions.dispose(); share?.dispose(); root.remove(); } };
 };

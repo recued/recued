@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('../automation/prompt-schedules-panel.js', () => import('./fixtures/prompt-schedules-panel-stub.js'));
 import { createMailWorkFixture } from '../../e2e/harness/mail-work-backend.js';
+import { CHAIN_SUGGESTION_ATTR } from '../contracts/chain-rules-panel.js';
 import { mailWorkChatPrompt } from '../mail/mail-work-investigation.js';
 import {
   type ChatDataDiagnosisContext,
@@ -514,6 +515,23 @@ describe('D-174 contracts route — list → detail shell', () => {
     });
     return { doc, root, route };
   };
+
+  it('D-348 — lists the requests you repeat beside the write rules, given their callers', async () => {
+    const listSuggestions = vi.fn(async () => ({ suggestions: [{
+      key_hash: 'kh-1', words: 'Tell Ann the new time', members: [], deletes: [],
+      evidence: { occasions: 3, members: [], deletes: [] }, suggested_at: 1,
+    }] }));
+    const { root, route } = mount({
+      contractsListCaller: async () => ({ contracts: [], total: 0, next_cursor: null }),
+      chainRules: {
+        listSuggestions, listRules: async () => ({ rules: [] }),
+        accept: vi.fn(), dismiss: vi.fn(), revoke: vi.fn(),
+      } as never,
+    });
+    await route.whenLoaded();
+    await vi.waitFor(() => expect(collectByAttr(root, CHAIN_SUGGESTION_ATTR)).toHaveLength(1));
+    expect(listSuggestions).toHaveBeenCalledTimes(1);
+  });
 
   it('defaults to addressable Built-in / Customer / Others tabs', async () => {
     const builtInContract = agentContract({
@@ -2540,7 +2558,7 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       expect(disclosureRows.some((row) => allText(row).includes('checking prior notes')))
         .toBe(true);
       const startedTool = disclosureRows.find((row) =>
-        allText(row).includes('running mail.search...'),
+        allText(row).includes('searching your mail...'),
       )!;
       expect(startedTool.getAttribute('data-status')).toBe('started');
 
@@ -2559,7 +2577,7 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       rows = assistantRows(h.root);
       disclosureRows = activityRows(rows[0]!);
       const completedTool = disclosureRows.find((row) =>
-        allText(row).includes('used mail.search ' + checkMark),
+        allText(row).includes('searched your mail ' + checkMark),
       )!;
       expect(completedTool.getAttribute('data-status')).toBe('ok');
 
@@ -2636,7 +2654,7 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       row = assistantRows(h.root).find(candidate => messageContent(candidate) === 'Tool-backed answer.')!;
       const disclosureRows = activityRows(row);
       expect(disclosureRows).toHaveLength(1);
-      expect(allText(disclosureRows[0]!)).toContain('used mail.search ' + checkMark);
+      expect(allText(disclosureRows[0]!)).toContain('searched your mail ' + checkMark);
       expect(allText(row)).not.toContain('checking prior notes');
 
       h.route.dispose();
@@ -2850,7 +2868,7 @@ describe('D-174 P2 chat route transparency prefs threading', () => {
     expect(toggle.textContent).toContain('Activity (1)');
     const activityRows = collectByAttr(row, CHAT_ROUTE_ACTIVITY_ROW_ATTR);
     expect(activityRows).toHaveLength(1);
-    expect(allText(activityRows[0]!)).toContain('running mail.search...');
+    expect(allText(activityRows[0]!)).toContain('searching your mail...');
     expect(allText(row)).not.toContain('checking hidden context');
 
     route.dispose();
@@ -8048,6 +8066,7 @@ describe('D-174 P2 chat route — an answer shown before its closing brief', () 
     const db = new Database(':memory:'); ensureChatSchema(db);
     const { readSessionCarry: _read, writeSessionCarry: _write, deleteSessionCarry: _delete, ...store } = createChatStore(db);
     store.createSession({ id: 'chat_1', title: 'Acme offer' });
+    // The delayed writer below returns the Standard brief format.
     store.setRollingBriefEnabled(true);
     const bus = subscriber();
     const broadcast = { emit: (event: { kind: string }) => { setTimeout(() => bus.publish(event), 0); } };
@@ -8106,7 +8125,9 @@ describe('D-174 P2 chat route — an answer shown before its closing brief', () 
       } };
   };
 
-  it('removes the answer when Stop lands during the closing brief, and Try again shows one answer', async () => {
+  // D-343 (the owner, 2026-11-14: "go ahead with ... the speed fixes") — the answer is saved, and the
+  // turn done, before its closing brief; before, Stop during the brief withdrew it.
+  it('saves the answer and ends the turn before its closing brief, and keeps it once the brief is written', async () => {
     const h = mountOnRealQueue();
     const wait = { timeout: 5_000 };
     try {
@@ -8115,22 +8136,12 @@ describe('D-174 P2 chat route — an answer shown before its closing brief', () 
       await vi.waitFor(() => expect(answersOnScreen(h.root))
         .toEqual(['Answer 1: the client asked for a revised offer.']), wait);
       expect(h.calls.brief).toBe(1);
-      expect(await h.saved()).toEqual([]);
-
-      button(h.root, 'Stop turn')!.click();
-      await vi.waitFor(async () => expect(await h.statuses()).toEqual(['cancelling']), wait);
+      await vi.waitFor(async () => expect(await h.saved()).toEqual(['Answer 1: the client asked for a revised offer.']), wait);
+      await vi.waitFor(async () => expect(await h.statuses()).toEqual(['completed']), wait);
       h.releaseBrief();
-      await vi.waitFor(() => expect(queueStrip(h.root)).toContain('Cancelled: What did the client ask for?'), wait);
-      // The screen now matches what was saved: the question, and no answer.
-      expect(await h.saved()).toEqual([]);
-      expect(answersOnScreen(h.root)).toEqual([]);
-
-      button(h.root, 'Try again')!.click();
-      await vi.waitFor(async () => expect(await h.saved())
-        .toEqual(['Answer 2: the client asked for a revised offer.']), wait);
-      await vi.waitFor(() => expect(answersOnScreen(h.root))
-        .toEqual(['Answer 2: the client asked for a revised offer.']), wait);
-      expect(await h.statuses()).toEqual(['cancelled', 'completed']);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await h.saved()).toEqual(['Answer 1: the client asked for a revised offer.']);
+      expect(answersOnScreen(h.root)).toEqual(['Answer 1: the client asked for a revised offer.']);
     } finally { await h.close(); }
   });
 

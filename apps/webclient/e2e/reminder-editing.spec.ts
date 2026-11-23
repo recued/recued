@@ -52,6 +52,85 @@ const boot = async (page: Page): Promise<void> => {
   await expect(row(page)).toContainText('Call the dentist');
 };
 
+test('time presets preview without writing and save the chosen repeated-hour instant', async ({ page }, testInfo) => {
+  const now = Date.parse('2030-11-03T04:30:12.345Z');
+  await page.clock.setFixedTime(new Date(now)); await page.setViewportSize({ width: 390, height: 844 }); await boot(page);
+  await row(page).getByRole('button', { name: 'Edit reminder', exact: true }).click();
+  const presets = row(page).getByRole('group', { name: 'Choose a reminder time' });
+  await presets.getByRole('button', { name: 'In 15 minutes', exact: true }).press('Enter');
+  await expect(field(page, 'at')).toHaveValue('2030-11-03T00:45');
+  await presets.getByRole('button', { name: 'In 1 hour', exact: true }).press('Enter');
+  await expect(field(page, 'at')).toHaveValue('2030-11-03T01:30');
+  await expect(presets.getByRole('button', { name: 'In 1 hour', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(field(page, 'text')).toHaveValue('Call the dentist');
+  const preview = row(page).locator('[data-reminder-time-preview]');
+  await expect(preview).toContainText('GMT-4'); await expect(preview).toContainText('12.345');
+  await expect(preview).toContainText('America/New_York');
+  expect(await page.evaluate(() => window.__reminderEdit.writes)).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath('reminder-time-presets-phone.png'), fullPage: true });
+  page.once('dialog', dialog => { void dialog.dismiss(); });
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(preview).toBeVisible(); await expect(field(page, 'text')).toHaveValue('Call the dentist');
+  await field(page, 'text').fill('Call Dr Patel about the invoice');
+  await row(page).getByRole('button', { name: 'Save', exact: true }).press('Enter');
+  await expect(row(page).getByRole('button', { name: 'Edit reminder', exact: true })).toBeFocused();
+  expect(await page.evaluate(() => window.__reminderEdit.writes)).toEqual([
+    { reminder_id: 'rem-edit', text: 'Call Dr Patel about the invoice', at: now + 3_600_000 },
+  ]);
+  expect(await page.evaluate(() => window.__reminderEdit.saved().at)).toBe(now + 3_600_000);
+});
+
+test('tomorrow uses the reminder’s calendar date and a manual edit replaces the preset preview', async ({ page }) => {
+  await page.clock.setFixedTime(new Date(REMINDER_WORKSPACE_NOW));
+  const fixture = await installReminderWorkspaceFixture(page, true);
+  const id = fixture.seed({ text: 'Call the pharmacy' });
+  try {
+    await page.goto(`${HARNESS_URL}?journey=verification#data/reminder`); await page.waitForFunction(() => window.__app?.ready === true);
+    const item = page.locator(`.reminders-row[data-reminder-id="${id}"]`);
+    await item.getByRole('button', { name: 'Edit reminder', exact: true }).click();
+    const at = item.locator('[data-recued-reminders-field="at"]'), preview = item.locator('[data-reminder-time-preview]');
+    await item.getByRole('button', { name: 'Tomorrow at 9am', exact: true }).press('Enter');
+    await expect(at).toHaveValue('2026-11-02T09:00'); await expect(preview).toContainText('GMT-5');
+    expect(fixture.get(id)?.at).toBe(REMINDER_WORKSPACE_NOW + 3_600_000);
+    await item.getByRole('button', { name: 'Save', exact: true }).press('Enter');
+    await expect(item.getByRole('button', { name: 'Edit reminder', exact: true })).toBeFocused();
+    expect(fixture.get(id)?.at).toBe(Date.parse('2026-11-02T14:00:00Z'));
+    await item.getByRole('button', { name: 'Edit reminder', exact: true }).click();
+    await item.getByRole('button', { name: 'In 15 minutes', exact: true }).click();
+    await at.fill('2026-11-02T10:05');
+    await expect(preview).toContainText('10:05'); await expect(preview).toContainText('GMT-5');
+    await expect(item.getByRole('button', { name: 'In 15 minutes', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    await item.getByRole('button', { name: 'Save', exact: true }).press('Enter');
+    await expect(item.getByRole('button', { name: 'Edit reminder', exact: true })).toBeFocused();
+    expect(fixture.get(id)?.at).toBe(Date.parse('2026-11-02T15:05:00Z'));
+  } finally { fixture.dispose(); }
+});
+
+test('rescheduling out of a filtered page refills its loaded prefix and focuses a nearby reminder', async ({ page }) => {
+  await page.clock.setFixedTime(new Date(REMINDER_WORKSPACE_NOW));
+  const fixture = await installReminderWorkspaceFixture(page, true);
+  const ids = Array.from({ length: 125 }, (_, index) => fixture.seed({ text: `Follow up ${String(index).padStart(3, '0')}`,
+    at: REMINDER_WORKSPACE_NOW + 3_600_000 + index * 60_000 }));
+  try {
+    await page.goto(`${HARNESS_URL}?journey=verification#data/reminder`); await page.waitForFunction(() => window.__app?.ready === true);
+    const host = page.locator('[data-recued-reminders]'), items = host.getByRole('list', { name: 'Reminders still to ring' }).getByRole('listitem');
+    const query = host.getByRole('searchbox', { name: 'Search reminders', exact: true });
+    await query.fill('Follow up'); await host.getByRole('combobox', { name: 'Dates', exact: true }).selectOption('today');
+    await host.getByRole('button', { name: 'Apply filters', exact: true }).click(); await expect(items).toHaveCount(50);
+    await host.getByRole('button', { name: 'Load more', exact: true }).press('Enter'); await expect(items).toHaveCount(100);
+    const edited = host.locator(`.reminders-row[data-reminder-id="${ids[99]}"]`);
+    await edited.getByRole('button', { name: 'Edit reminder', exact: true }).click();
+    await edited.getByRole('button', { name: 'Tomorrow at 9am', exact: true }).click();
+    await edited.getByRole('button', { name: 'Save', exact: true }).press('Enter');
+    await expect(edited).toHaveCount(0); await expect(items).toHaveCount(100);
+    await expect(items.last()).toContainText('Follow up 100');
+    const nearby = host.locator(`[data-recued-reminders-focus="row:${ids[98]}"]`);
+    await expect(nearby).toBeFocused(); await expect(nearby).toBeInViewport();
+    await expect(query).toHaveValue('Follow up'); await expect(host.getByRole('combobox', { name: 'Dates', exact: true })).toHaveValue('today');
+    await expect(host).toContainText('Showing 100 of 124 matching reminders');
+  } finally { fixture.dispose(); }
+});
+
 test('changes only the wording, keeps the exact repeated-hour instant, and retains the confirmed edit after a failed refresh', async ({ page }) => {
   await boot(page);
   await row(page).getByRole('button', { name: 'Edit reminder', exact: true }).click();
@@ -89,7 +168,7 @@ test('keeps both fields on interruption, then reports a reminder that rang befor
   await expect(page.locator('[data-recued-reminders-focus="notice"]')).toContainText('already rung');
   await expect(row(page)).toHaveCount(0);
   await page.locator('.reminders-history summary').click();
-  await expect(page.locator('.reminders-history [data-reminder-id="rem-edit"]')).toContainText('Rang');
+  await expect(page.locator('.reminders-history .reminders-row[data-reminder-id="rem-edit"]')).toContainText('Rang');
   expect(await page.evaluate(() => window.__reminderEdit.saved().text)).toBe('Call the dentist');
 });
 
@@ -200,7 +279,7 @@ test('creates a reminder in Data, reconciles a lost reply and retains the result
     fixture.loseNextCreate();
     await form.getByRole('button', { name: 'Set reminder', exact: true }).press('Enter');
     await expect(form.getByRole('alert')).toBeVisible();
-    await expect(form.getByRole('button', { name: 'Set reminder', exact: true })).toBeFocused();
+    await expect(form.getByRole('button', { name: 'Check save', exact: true })).toBeFocused();
     expect(fixture.pendingCount()).toBe(1);
     fixture.failNextRead();
     fixture.holdNextCreate();
@@ -243,7 +322,7 @@ test('creates a reminder in Data, reconciles a lost reply and retains the result
     await expect(refresh).toBeFocused();
     await fixture.cancelLatestCreated();
     fixture.failNextRead();
-    await form.getByRole('button', { name: 'Set reminder', exact: true }).press('Enter');
+    await form.getByRole('button', { name: 'Check save', exact: true }).press('Enter');
     await expect(form).toHaveCount(0);
     await expect(notice).toContainText('Reminder history');
     await expect(notice).toContainText('not been scheduled again');

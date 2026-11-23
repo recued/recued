@@ -29,6 +29,8 @@ const llmMocks = vi.hoisted(() => {
     createDefaultTranscriptionRegistry: vi.fn(),
     createQuotaTracker: vi.fn(),
     executeLLM: vi.fn(),
+    // ⚠ The real rule is `call-outcome.test.ts`'s; here only what the wiring does with its answer.
+    answeredByAnotherModel: vi.fn((_asked: string, _answered: string): boolean => false),
     executeEmbedding: vi.fn(),
     transcribe: vi.fn(),
     // D-208 follow-on phase 4 — durable endpoint capabilities. ⚠ This mock is a
@@ -76,6 +78,7 @@ type ExecuteLLMOptions = {
       | { source: { kind: 'slot' }; slot: { provider: string; model: string } }
       | { source: { kind: 'pool' }; slot: { provider: string; model: string } };
   }) => void;
+  onTokenUsage?: (usage: { input_tokens: number; output_tokens: number; total_tokens: number; answered_model?: string }) => void;
 };
 
 const envConfig = { slot_1: { provider: 'openai', model: 'gpt-4.1-mini' } } as unknown as LLMConfig;
@@ -659,6 +662,30 @@ describe('composeHousekeepingLlmCallables LLMError throws and model_id derivatio
       result: llmResult,
       model_id: 'groq:llama-3.3-70b',
     });
+  });
+
+  /** A row a swapped-in model wrote is not the chosen model's: its badge names the one that answered
+   *  (Google routes `gemini-2.5-flash` to `gemini-3.5-flash-lite` from 2026-12-01). */
+  it('llmWithMeta names the model that answered when the provider says another one did', async () => {
+    const answeringWith = (answered: string) => llmMocks.executeLLM.mockImplementation(
+      async (_manifest, _input, options: ExecuteLLMOptions) => {
+        options.onMatchResolved?.({ winner: { source: { kind: 'slot' }, slot: { provider: 'google', model: 'gemini-2.5-flash' } } });
+        options.onTokenUsage?.({ input_tokens: 1, output_tokens: 1, total_tokens: 2, answered_model: answered });
+        return llmResult;
+      });
+    const bundle = composeHousekeepingLlmCallables({ substrate: makeSubstrate() });
+
+    answeringWith('gemini-3.5-flash-lite');
+    llmMocks.answeredByAnotherModel.mockReturnValueOnce(true);
+    await expect(bundle.llmWithMeta(manifest as never, input as never)).resolves.toEqual({
+      result: llmResult, model_id: 'google:gemini-3.5-flash-lite' });
+    expect(llmMocks.answeredByAnotherModel).toHaveBeenLastCalledWith('gemini-2.5-flash', 'gemini-3.5-flash-lite');
+
+    // The same model under a dated name keeps the chosen name.
+    answeringWith('gemini-2.5-flash-001');
+    llmMocks.answeredByAnotherModel.mockReturnValueOnce(false);
+    await expect(bundle.llmWithMeta(manifest as never, input as never)).resolves.toEqual({
+      result: llmResult, model_id: 'google:gemini-2.5-flash' });
   });
 
 });

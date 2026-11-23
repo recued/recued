@@ -74,11 +74,11 @@ export interface PreflightTool {
  *  D-187 policy-matrix retirement (slice 4) — APPROVAL is now `admitByOpRisk`
  *  (op-risk × stage-trust), NOT the matrix `admitWithPolicyMatrix`. The op-risk is the
  *  tool's `risk_tier` (a simple-form ingredient IS its own op — read→never/admit,
- *  write/admin→ask, destructive→always); the stage-trust ceiling is contract-less
- *  owner/automation `admin` (behavior-preserving) or the contract's trust derived from
- *  the snapshot's `approval_required` (`resolveTrustCeiling`). The outbound-send LIFT
- *  inside `admitByOpRisk` (user_self-scoped) keeps the "every external send surfaces"
- *  promise the matrix `escalateOutboundSend` used to. The catalog gateway remains the
+ *  write/admin→ask, destructive→always); the stage-trust ceiling (`resolveTrustCeiling`)
+ *  is `admin` for the owner's own app, `read` for the owner's chats (D-177 §N.15.7),
+ *  automation and a contracted source, or the contract's trust derived from the
+ *  snapshot's `approval_required`. A send asks by its own approval: the outbound-send
+ *  lift that once asked by name is gone. The catalog gateway remains the
  *  authoritative per-OPERATION gate for catalog-form dispatches (`effective_risk_tier`);
  *  this simple-form probe keys off the manifest `risk_tier` and only RELAXES under
  *  trust, so it can never over-admit a catalog op the gateway would ask for.
@@ -147,12 +147,12 @@ export const evaluatePreflightAdmission = (args: {
   if (accessDeny) return accessDeny;
   // D-187 slice 4 — APPROVAL = op-risk × stage-trust, replacing the matrix's
   // `admitWithPolicyMatrix` approval verdict. The op-risk is the tool's `risk_tier` (a
-  // simple-form ingredient IS its own op); the ceiling is contract-less owner/automation
-  // `admin` or the contracted LOW default (`read`) so an AI's writes/admin surface. The
-  // outbound-send LIFT inside `admitByOpRisk` (user_self-scoped) keeps the send-approval
-  // promise. The matrix's coarse `allowed_kinds` / `allowed_risk_tiers` gate is retired
-  // (Layer-1 access + owner/system trust subsume it); its per-door `scope_restrictions`
-  // are re-homed onto the snapshot (fenced above).
+  // simple-form ingredient IS its own op); the ceiling (`resolveTrustCeiling`) is `admin`
+  // for the owner's own app, and `read` for the owner's chats (D-177 §N.15.7), automation
+  // and a contracted source, so an AI's writes/admin surface. No op asks by its name: a
+  // send asks by its own approval like any op. The matrix's coarse `allowed_kinds` /
+  // `allowed_risk_tiers` gate is retired (Layer-1 access + owner/system trust subsume it);
+  // its per-door `scope_restrictions` are re-homed onto the snapshot (fenced above).
   return admitByOpRisk({
     slug: args.tool.slug,
     risk_tier: args.tool.risk_tier,
@@ -183,6 +183,10 @@ export const raiseOnAsk = (
   decision: AdmissionDecision,
   context: {
     slug: string;
+    /** The resolved `connection` wire arg, when the call goes out on one: the
+     *  account the ask names, and the one a held call's "Allow in this chat"
+     *  is bound to (D-177 N.15), as the grant lookup reads it. */
+    connection_name?: string;
     /** D-177 P5a (N.10) — the held call's P1b action identity + resolved-
      *  args wire projection, when the Gateway computed them. Ride the
      *  signal so the host can register the hold as a batch-ask member
@@ -226,10 +230,14 @@ export const raiseOnAsk = (
       reason: decision.detail,
       authorization_provenance: decision.authorization_provenance,
       // D-165 follow-on (op-identity binding) — the ingredient identity for
-      // `Checkpoint.approved_target`. The simple-form gate has no
-      // operation / connection axis, so only the slug is captured; the
-      // commit-gateway's resume admission stays position+slug-bound.
+      // `Checkpoint.approved_target`. The simple-form gate has no operation
+      // axis; the commit-gateway's resume admission stays position+slug-bound.
+      // The connection is carried for the ask and its offers (D-177 N.15),
+      // never compared on resume here.
       ingredient_slug: context.slug,
+      ...(context.connection_name !== undefined
+        ? { connection_name: context.connection_name }
+        : {}),
       ...(context.arg_shape_hash !== undefined
         ? { arg_shape_hash: context.arg_shape_hash }
         : {}),

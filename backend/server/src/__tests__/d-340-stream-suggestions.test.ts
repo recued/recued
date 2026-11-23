@@ -1,8 +1,10 @@
-/** D-340 slice 4 — the AI suggestions inside the stream (§3.2, §3.3, ruling 9). Their run starts ten
- *  minutes ahead of the stream, which carries them when they finished: under what holds today, ending
- *  with "Talk it over", their conversation. Carried, they never go again on their own. A run still
- *  going when the stream goes follows on its own as before, and one that ran out of its lookups says
- *  nothing. Today shows the day's.
+/** D-340 slice 4 — the AI suggestions inside the stream (§3.2, §3.3), under D-340 ruling 13 (the owner,
+ *  2026-11-15): the stream's time is when Recued starts preparing the day, and its suggestions start then
+ *  too, with no head start. The message waits while they make progress and goes ONCE: with them inside,
+ *  under what holds today and ending with "Talk it over", or with a plain line saying why they are
+ *  missing (failed, out of lookups, stuck for `SUGGESTIONS_STALL_MS`, past `SUGGESTIONS_BACKSTOP_MS`).
+ *  Suggestions that finish after it went are in Today and their conversation, never a notice of their
+ *  own: a second message that changes a list already planned around is a second decision point.
  *
  *  Through the real scheduler, its gated read, the Yours service, the scheduled-prompt service, its
  *  turn queue and the done notices. Only the sources and the send are stand-ins, and a turn writes
@@ -14,10 +16,10 @@ import type { NotificationBlock } from '@recued/notification';
 import type { WsClient } from '../ws-server.js';
 import { createSituationQuery } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
-import { createScheduledSituations } from '../situations/scheduled-situations.js';
+import { createScheduledSituations, SUGGESTIONS_MISSING } from '../situations/scheduled-situations.js';
 import { createYoursService } from '../situations/yours-service.js';
 import { makeYoursHandlers } from '../situations/yours-handler.js';
-import { agendaSuggestionsCron, SUGGESTIONS_TOOL_ROUNDS } from '../situations/agenda-suggestions.js';
+import { agendaSuggestionsCron, SUGGESTIONS_BACKSTOP_MS, SUGGESTIONS_STALL_MS, SUGGESTIONS_TOOL_ROUNDS } from '../situations/agenda-suggestions.js';
 import { createSituationStore } from '../storage/situation-store.js';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
 import { createContractStore } from '../storage/contract-store.js';
@@ -56,7 +58,7 @@ const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
 /** `base`: the server's public address, or null for none. `quietEnd`: quiet hours, as the stream reads them. */
-const fixture = (options: { base?: string | null; quietEnd?: (minute: number) => number | null } = {}) => {
+const fixture = (options: { base?: string | null; quietEnd?: (minute: number) => number | null; recheckMs?: number } = {}) => {
   let clock = MORNING;
   const db = new Database(':memory:'); ensureWorkEntitySchema(db); ensureChatSchema(db);
   const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
@@ -91,7 +93,7 @@ const fixture = (options: { base?: string | null; quietEnd?: (minute: number) =>
   // As `compose-collection-context.ts` and `compose-listeners.ts` compose them.
   const scheduled = createScheduledSituations({ db, work, store, query, timeZone: () => 'UTC', isVaultUnlocked: () => true,
     isQuiet: () => false, now: () => clock, send, overview: () => yours.overview(), promptSchedules: () => schedules,
-    ...(options.quietEnd ? { quietEnd: options.quietEnd } : {}) });
+    ...(options.quietEnd ? { quietEnd: options.quietEnd } : {}), ...(options.recheckMs !== undefined ? { suggestionsRecheckMs: options.recheckMs } : {}) });
   scheduled.bindAccess(createSituationAccess({ contracts: createContractStore(db), query, now: () => clock, isVaultUnlocked: () => true }));
   schedules.setRunGate('agenda', (schedule, due_at) => scheduled.agendaRunGate(schedule, due_at));
   yours.bindScheduled(scheduled);
@@ -129,26 +131,22 @@ const fixture = (options: { base?: string | null; quietEnd?: (minute: number) =>
       .map(row => row.outcome) };
 };
 
-describe('D-340 slice 4 — the AI suggestions start ahead of the stream (§3.3, ruling 9)', () => {
-  it('start ten minutes before it, know their lookups are few, and keep the Agenda\'s own time', async () => {
+describe('D-340 ruling 13 — the suggestions start when the stream does (§3.3)', () => {
+  it('start at the stream\'s time, know their lookups are few, and keep the Agenda\'s own time', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
-    expect(schedule.cron_expression).toBe('20 7 * * *');
-    expect(schedule.prompt).toContain('My agenda for today goes to me in a few minutes.');
+    expect(schedule.cron_expression).toBe('30 7 * * *');
+    expect(schedule.prompt).toContain('My agenda for today goes to me with your suggestions as soon as you answer.');
     // The read holds the pursuits and their recorded days, and the lookups are a ceiling in no order:
     // told there was "room for 2 lookups after reading today", 7 of 15 live runs spent a second round
     // looking for what the owner had done on a pursuit.
     expect(schedule.prompt).toContain('That read has what most suggestions need, my pursuits and the days I recorded each too: look '
       + `something else up only if a suggestion cannot do without it, at most ${String(SUGGESTIONS_TOOL_ROUNDS - 1)} lookups besides the read.`);
     expect(schedule.prompt).not.toContain('after reading');
-    // At its day's first minutes, the evening before: the day before's weekday for a weekly one.
     const agenda = { enabled: true, time: '00:05', day: 'today' as const, frequency: 'daily' as const, weekday: 1, suggestions: true };
-    expect(agendaSuggestionsCron({ ...agenda, head_start: true })).toBe('55 23 * * *');
-    expect(agendaSuggestionsCron({ ...agenda, frequency: 'weekly', head_start: true })).toBe('55 23 * * 0');
-    expect(agendaSuggestionsCron({ ...agenda, frequency: 'weekly', weekday: 7, head_start: true })).toBe('55 23 * * 6');
-    expect(agendaSuggestionsCron({ ...agenda, time: '00:10', frequency: 'weekly', weekday: 7, head_start: true })).toBe('0 0 * * 0');
-    // The Agenda's own, before the streams, run at its time.
+    expect(agendaSuggestionsCron({ ...agenda, head_start: true })).toBe('5 0 * * *');
+    expect(agendaSuggestionsCron({ ...agenda, frequency: 'weekly', weekday: 7, head_start: true })).toBe('5 0 * * 0');
     expect(agendaSuggestionsCron(agenda)).toBe('5 0 * * *');
   });
 
@@ -156,36 +154,41 @@ describe('D-340 slice 4 — the AI suggestions start ahead of the stream (§3.3,
     const f = fixture();
     await f.stream('07:30'); await f.stream('07:30', 'weekly');
     const run = (schedule_id: string) => ({ channel: 'schedule', actor: 'system', schedule_id,
-      prompt_schedule: { schedule_id, occurrence_id: 'occurrence-1', revision: 1, due_at: at('07:20'), cron: '20 7 * * *' } }) as ExecutionSource;
+      prompt_schedule: { schedule_id, occurrence_id: 'occurrence-1', revision: 1, due_at: at('07:30'), cron: '30 7 * * *' } }) as ExecutionSource;
     expect(f.scheduled.suggestionsToolRounds(run((await f.suggestions()).schedule_id))).toBe(SUGGESTIONS_TOOL_ROUNDS);
     expect(f.scheduled.suggestionsToolRounds(run((await f.suggestions('weekly')).schedule_id))).toBe(SUGGESTIONS_TOOL_ROUNDS);
     expect(f.scheduled.suggestionsToolRounds(run('someone-elses'))).toBeUndefined();
     expect(f.scheduled.suggestionsToolRounds({ channel: 'chat', actor: 'user_self' } as ExecutionSource)).toBeUndefined();
   });
 
-  it('run for the day the stream goes: one at 00:05 reads the next day the evening before, and goes inside it', async () => {
+  it('⛔ keep the backstop out of the rounds\' reach: raising the rounds means revisiting it (the owner, 2026-11-15)', () => {
+    // Each round is a model reply (≤ about a minute measured) and its lookups; the stall limit already
+    // ends a run that stops moving. If the rounds grow so that a working run could outlast the backstop,
+    // this fails, so the backstop is raised with them.
+    expect(SUGGESTIONS_TOOL_ROUNDS * SUGGESTIONS_STALL_MS).toBeLessThanOrEqual(SUGGESTIONS_BACKSTOP_MS);
+  });
+
+  it('run for the day the stream goes, and skip a day the Agenda lists nothing', async () => {
     const f = fixture();
     await f.stream('00:05');
     const schedule = await f.suggestions();
-    expect(schedule.cron_expression).toBe('55 23 * * *');
-    // Tuesday has the dentist and Wednesday nothing: Tuesday evening's run would read Wednesday's.
-    expect(await f.scheduled.agendaRunGate(schedule, at('23:55', '2026-10-20'))).toBe('skip');
-    expect(await f.scheduled.agendaRunGate(schedule, at('23:55', '2026-10-21'))).toBe('run');
-    // Monday evening's run is Tuesday's, and Tuesday's stream carries it.
-    await f.clockRun(at('23:55'));
-    f.setClock(at('00:05', '2026-10-20')); await f.scheduled.tick();
+    expect(schedule.cron_expression).toBe('5 0 * * *');
+    // Wednesday has nothing on; Thursday has the flight.
+    expect(await f.scheduled.agendaRunGate(schedule, at('00:05', '2026-10-21'))).toBe('skip');
+    expect(await f.scheduled.agendaRunGate(schedule, at('00:05', '2026-10-22'))).toBe('run');
+    await f.clockRun(at('00:05', '2026-10-20'));
+    await f.scheduled.tick();
     expect(f.sent.map(message => message.title)).toEqual(['Your day · Tue 20 Oct']);
     expect(f.sent[0]!.text).toContain(`Suggestions\n${ANSWER}\n`);
     expect((await f.yours.overview()).suggestions).toEqual({ text: ANSWER, session_id: schedule.session_id, day: '2026-10-20' });
   });
 });
 
-describe('D-340 slice 4 — the stream carries them (§3.2, §3.3)', () => {
-  it('in a stream that lists tomorrow: the ones that ran ahead of it today', async () => {
+describe('D-340 ruling 13 — one message, with them inside (§3.2, §3.3)', () => {
+  it('in a stream that lists tomorrow', async () => {
     const f = fixture();
     await f.stream('07:30', 'daily', 'tomorrow');
-    await f.clockRun(at('07:20'));
-    f.setClock(at('07:30')); await f.scheduled.tick();
+    await f.clockRun(at('07:30')); await f.scheduled.tick();
     expect(f.sent.map(message => message.title)).toEqual(['Your day · Tue 20 Oct']);
     expect(f.sent[0]!.text).toContain(`Suggestions\n${ANSWER}\n`);
   });
@@ -194,42 +197,39 @@ describe('D-340 slice 4 — the stream carries them (§3.2, §3.3)', () => {
     // A stream at 23:30, in quiet hours from 23:00 to 07:00: it goes at 07:00 the morning after.
     const f = fixture({ quietEnd: minute => minute >= 23 * 60 ? 7 * 60 : null });
     await f.stream('23:30');
-    expect((await f.suggestions()).cron_expression).toBe('20 23 * * *');
-    // Monday evening's run is for Tuesday morning's stream, which lists Tuesday's dentist.
-    await f.clockRun(at('23:20'));
+    expect((await f.suggestions()).cron_expression).toBe('30 23 * * *');
+    await f.clockRun(at('23:30'));
     f.setClock(at('07:00', '2026-10-20')); await f.scheduled.tick();
     expect(f.sent.map(message => message.title)).toEqual(['Your day · Tue 20 Oct']);
     expect(f.sent[0]!.text).toContain(`Suggestions\n${ANSWER}\n`);
   });
 
-  it('in a Send now before the stream\'s time, which then goes without them', async () => {
+  it('a Send now before the stream\'s time goes without them, and the stream then carries them', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
-    await f.clockRun(at('07:20'));
     f.setClock(at('07:25')); await f.change({ action: 'stream.send_now', stream: 'daily' });
-    expect(f.sent[0]!.text).toContain(`Suggestions\n${ANSWER}\n`);
-    expect(f.claim(schedule.schedule_id)).toEqual(['included']);
-    f.setClock(at('07:30')); await f.scheduled.tick();
+    expect(f.sent[0]!.text).not.toContain('Suggestions');
+    await f.clockRun(at('07:30')); await f.scheduled.tick();
     expect(f.sent).toHaveLength(2);
-    expect(f.sent[1]!.text).not.toContain('Suggestions');
+    expect(f.sent[1]!.text).toContain(`Suggestions\n${ANSWER}\n`);
+    expect(f.claim(schedule.schedule_id)).toEqual(['included']);
   });
 
   it('under what holds today, ending with "Talk it over", and they do not go again on their own', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
-    await f.clockRun(at('07:20'));
-    // Finished, they wait for the stream, and its preview counts them.
+    await f.clockRun(at('07:30'));
     await f.done.tick();
     expect(f.notify).not.toHaveBeenCalled();
-    const { preview } = await f.change({ action: 'stream.preview', stream: 'daily' });
-    expect(preview!.counts.suggestions).toBe(1);
-    f.setClock(at('07:30')); await f.scheduled.tick();
+    await f.scheduled.tick();
     expect(f.sent.map(message => message.text)).toEqual([['Short night · Oura ring · until 22:00', '',
       'Suggestions', ...ANSWER.split('\n'), `Talk it over: https://owner.example.test/#chat/session/${encodeURIComponent(schedule.session_id)}`, '',
       'Agenda', '07:00 Run 5 km', '13:00 Lunch with Sam'].join('\n')]);
     expect(f.claim(schedule.schedule_id)).toEqual(['included']);
+    // Today shows when it started preparing and how its suggestions went.
+    expect(f.scheduled.agendaStatus().streams!.daily.last_sent).toMatchObject({ prepared_at: at('07:30'), suggestions: 'included' });
     await f.done.tick(); await f.done.tick();
     expect(f.notify).not.toHaveBeenCalled();
     // A Send now later that day does not carry them again; Today still shows them.
@@ -237,7 +237,6 @@ describe('D-340 slice 4 — the stream carries them (§3.2, §3.3)', () => {
     expect(f.sent).toHaveLength(2);
     expect(f.sent[1]!.text).not.toContain('Suggestions');
     expect((await f.yours.overview()).suggestions).toEqual({ text: ANSWER, session_id: schedule.session_id, day: '2026-10-19' });
-    // The next day's Today does not show them.
     f.setClock(at('06:00', '2026-10-20'));
     expect((await f.yours.overview()).suggestions).toBeUndefined();
   });
@@ -247,8 +246,7 @@ describe('D-340 slice 4 — the stream carries them (§3.2, §3.3)', () => {
     await f.stream('07:30');
     const schedule = await f.suggestions();
     f.answers.set(schedule.session_id, `${'x'.repeat(DONE_TEXT_MAX_CHARS)}END`);
-    await f.clockRun(at('07:20'));
-    f.setClock(at('07:30')); await f.scheduled.tick();
+    await f.clockRun(at('07:30')); await f.scheduled.tick();
     const lines = f.sent[0]!.text.split('\n');
     expect(lines.slice(2, 5)).toEqual(['Suggestions', `${'x'.repeat(DONE_TEXT_MAX_CHARS)}…`, 'Talk it over: reply to this message, or open Today in Recued.']);
     expect((await f.yours.overview()).suggestions!.text).toBe(`${'x'.repeat(DONE_TEXT_MAX_CHARS)}…`);
@@ -258,10 +256,10 @@ describe('D-340 slice 4 — the stream carries them (§3.2, §3.3)', () => {
     const f = fixture();
     await f.stream('07:30'); await f.stream('07:30', 'weekly');
     const daily = await f.suggestions(); const weekly = await f.suggestions('weekly');
-    expect(weekly.cron_expression).toBe('20 7 * * 1');
+    expect(weekly.cron_expression).toBe('30 7 * * 1');
     f.answers.set(daily.session_id, 'Daily: leave at 06:40.'); f.answers.set(weekly.session_id, 'Weekly: book the dentist taxi.');
-    f.setClock(at('07:20')); await f.schedules.tick(); await f.settled(daily.session_id); await f.settled(weekly.session_id);
-    f.setClock(at('07:30')); await f.scheduled.tick();
+    f.setClock(at('07:30')); await f.schedules.tick(); await f.settled(daily.session_id); await f.settled(weekly.session_id);
+    await f.scheduled.tick();
     const byTitle = Object.fromEntries(f.sent.map(message => [message.title?.split(' · ')[0], message.text]));
     expect(byTitle['Your day']).toContain('Suggestions\nDaily: leave at 06:40.\n');
     expect(byTitle['Your day']).not.toContain('Weekly:');
@@ -271,82 +269,108 @@ describe('D-340 slice 4 — the stream carries them (§3.2, §3.3)', () => {
   });
 });
 
-describe('D-340 slice 4 — what the stream does not carry (§3.3)', () => {
-  it('lets a run still going when the stream goes follow on its own, as before', async () => {
+describe('D-340 ruling 13 — the message waits for them, or says why they are missing', () => {
+  it('waits while the run is going, then goes once with them inside; never a second notice', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
     const release = f.hold();
-    f.setClock(at('07:20')); await f.schedules.tick();
-    f.setClock(at('07:30')); await f.scheduled.tick();
-    expect(f.sent).toHaveLength(1);
-    expect(f.sent[0]!.text).not.toContain('Suggestions');
+    f.setClock(at('07:30')); await f.schedules.tick(); await f.scheduled.tick();
+    f.setClock(at('07:31')); await f.scheduled.tick();
+    expect(f.sent).toHaveLength(0);
     release(); await f.settled(schedule.session_id);
-    await f.done.tick();
-    expect(f.notify).toHaveBeenCalledOnce();
-    expect(f.notify.mock.calls[0]![0]).toMatchObject({ title: 'Agenda suggestions', text: ANSWER });
-    expect(f.claim(schedule.schedule_id)).toEqual(['sent']);
-    // Today shows them all the same.
+    f.setClock(at('07:32')); await f.scheduled.tick();
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]!.text).toContain(`Suggestions\n${ANSWER}\n`);
+    await f.done.tick(); await f.done.tick();
+    expect(f.notify).not.toHaveBeenCalled();
+  });
+
+  it('goes within moments of them finishing, without waiting for the next minute\'s tick', async () => {
+    const f = fixture({ recheckMs: 20 });
+    await f.stream('07:30');
+    const schedule = await f.suggestions();
+    const release = f.hold();
+    f.setClock(at('07:30')); await f.schedules.tick(); await f.scheduled.tick();
+    expect(f.sent).toHaveLength(0);
+    // Nobody ticks again: the waiting message checks on its own.
+    release(); await f.settled(schedule.session_id);
+    await vi.waitFor(() => expect(f.sent).toHaveLength(1), { timeout: 2_000 });
+    expect(f.sent[0]!.text).toContain(`Suggestions\n${ANSWER}\n`);
+  });
+
+  it('goes without a run that made no progress for the stall limit, says so, and never notifies them later', async () => {
+    const f = fixture();
+    await f.stream('07:30');
+    const schedule = await f.suggestions();
+    const release = f.hold();
+    f.setClock(at('07:30')); await f.schedules.tick(); await f.scheduled.tick();
+    f.setClock(at('07:30') + SUGGESTIONS_STALL_MS - 60_000); await f.scheduled.tick();
+    expect(f.sent).toHaveLength(0);
+    f.setClock(at('07:30') + SUGGESTIONS_STALL_MS); await f.scheduled.tick();
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]!.text).toContain(`Suggestions\n${SUGGESTIONS_MISSING.stuck}\n`);
+    expect(f.scheduled.agendaStatus().streams!.daily.last_sent).toMatchObject({ prepared_at: at('07:30'), suggestions: 'stuck',
+      at: at('07:30') + SUGGESTIONS_STALL_MS });
+    // They finish after it went: in Today and their conversation, with no notice of their own.
+    release(); await f.settled(schedule.session_id);
+    await f.done.tick(); await f.done.tick();
+    expect(f.notify).not.toHaveBeenCalled();
     expect((await f.yours.overview()).suggestions).toEqual({ text: ANSWER, session_id: schedule.session_id, day: '2026-10-19' });
   });
 
-  it('leaves out a run that failed, whatever it wrote', async () => {
+  it('goes at once with a run that failed, saying so plainly, whatever it wrote', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
     f.failing.add(schedule.session_id);
-    await f.clockRun(at('07:20'));
+    await f.clockRun(at('07:30'));
     expect((await f.schedules.get(schedule.schedule_id)).last_outcome).toMatchObject({ status: 'failed' });
-    f.setClock(at('07:30')); await f.scheduled.tick();
-    expect(f.sent[0]!.text).not.toContain('Suggestions');
+    await f.scheduled.tick();
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]!.text).toContain(`Suggestions\n${SUGGESTIONS_MISSING.failed}\n`);
+    expect(f.sent[0]!.text).not.toContain('provider failure');
     expect((await f.yours.overview()).suggestions).toBeUndefined();
   });
 
-  it('leaves out a Run now the owner started', async () => {
+  it('goes at once with a run that ran out of its lookups: says so, no notice, not on Today', async () => {
+    const f = fixture();
+    await f.stream('07:30');
+    const schedule = await f.suggestions();
+    f.answers.set(schedule.session_id, `I read the day.\n\n${TOOL_BUDGET_EXHAUSTED_MESSAGE}`);
+    await f.clockRun(at('07:30')); await f.scheduled.tick();
+    expect(f.sent[0]!.text).toContain(`Suggestions\n${SUGGESTIONS_MISSING.unfinished}\n`);
+    await f.done.tick(); await f.done.tick();
+    expect(f.notify).not.toHaveBeenCalled();
+    expect((await f.yours.overview()).suggestions).toBeUndefined();
+  });
+
+  it('a Run now the owner started is not this message\'s: it waits for its own run', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
     f.setClock(at('07:25'));
     await f.schedules.runNow({ schedule_id: schedule.schedule_id, expected_revision: schedule.revision, submission_id: 'by-hand' });
     await f.settled(schedule.session_id);
-    expect((await f.schedules.get(schedule.schedule_id)).last_outcome?.status).toBe('finished');
     const { preview } = await f.change({ action: 'stream.preview', stream: 'daily' });
     expect(preview!.counts.suggestions).toBe(0);
     f.setClock(at('07:30')); await f.scheduled.tick();
-    expect(f.sent[0]!.text).not.toContain('Suggestions');
-    expect((await f.yours.overview()).suggestions).toBeUndefined();
+    expect(f.sent).toHaveLength(0);
   });
 
-  it('says nothing of a run that ran out of its lookups: not in the stream, no notice, not on Today', async () => {
+  it('says nothing with the suggestions off, and carries nothing from another day', async () => {
     const f = fixture();
     await f.stream('07:30');
     const schedule = await f.suggestions();
-    f.answers.set(schedule.session_id, `I read the day.\n\n${TOOL_BUDGET_EXHAUSTED_MESSAGE}`);
-    await f.clockRun(at('07:20'));
-    f.setClock(at('07:30')); await f.scheduled.tick();
-    expect(f.sent[0]!.text).not.toContain('Suggestions');
-    await f.done.tick(); await f.done.tick();
-    expect(f.notify).not.toHaveBeenCalled();
-    expect(f.claim(schedule.schedule_id)).toEqual(['skipped']);
-    expect((await f.yours.overview()).suggestions).toBeUndefined();
-  });
-
-  it('carries nothing with the suggestions off, or from another day', async () => {
-    const f = fixture();
-    await f.stream('07:30');
-    const schedule = await f.suggestions();
-    await f.clockRun(at('07:20'));
+    await f.clockRun(at('07:30'));
     // Monday's, unsent, are not Tuesday's.
-    f.setClock(at('07:30', '2026-10-20'));
+    f.setClock(at('07:29', '2026-10-20'));
     const { preview } = await f.change({ action: 'stream.preview', stream: 'daily' });
     expect(preview!.counts.suggestions).toBe(0);
-    expect((await f.yours.overview()).suggestions).toBeUndefined();
-    // Off: Monday's stream lists none, and Today shows none.
-    f.setClock(at('07:29'));
     await f.change({ action: 'stream.update', stream: 'daily', settings: { suggestions: false } });
-    f.setClock(at('07:30')); await f.scheduled.tick();
+    f.setClock(at('07:30', '2026-10-20')); await f.scheduled.tick();
+    expect(f.sent).toHaveLength(1);
     expect(f.sent[0]!.text).not.toContain('Suggestions');
-    expect((await f.yours.overview()).suggestions).toBeUndefined();
     expect(f.claim(schedule.schedule_id)).toEqual([]);
   });
 });

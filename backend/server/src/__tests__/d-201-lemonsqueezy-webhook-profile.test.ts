@@ -205,6 +205,8 @@ describe('D-201 Slice 9BQ Lemon Squeezy webhook profile', () => {
     expect(descriptor?.event_types).toEqual({
       kind: 'open',
       known_values: DOCUMENTED_EVENT_TYPES,
+      // D-201 Slice 10C — the language beyond the documented names.
+      grammar: { kind: 'lowercase_identifier_event_type.v1', max_characters: 128 },
     });
     expect(descriptor?.fields).toEqual([expect.objectContaining({
       key: 'signing_secret',

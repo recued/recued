@@ -178,6 +178,24 @@ describe('pack-discovery config', () => {
     expect(packBadges(pr({}), undefined, undefined, undefined, undefined, new Map([['other', ['Linear']]]))).toEqual([]);
   });
 
+  it('D-404 slice E — a pack with nothing in Yours to work on needs one, named when it is one type, in danger tone', () => {
+    const one = packBadges(pr({}), undefined, undefined, undefined, undefined, undefined,
+      new Map([['p', [{ type_id: 'body', type_name: 'Body' }]]]));
+    expect(one).toEqual([expect.objectContaining({
+      label: 'Needs a Body', tone: 'danger', title: 'This pack works on a Body in Yours, and there is none yet. Open the pack to add one.',
+    })]);
+    const three = packBadges(pr({}), undefined, undefined, undefined, undefined, undefined, new Map([['p', [
+      { type_id: 'travel_passport', type_name: 'Passport' }, { type_id: 'travel_id_card', type_name: 'ID card' },
+      { type_id: 'travel_visa', type_name: 'Visa' },
+    ]]]));
+    expect(three[0]).toMatchObject({
+      label: 'Needs a thing in Yours', tone: 'danger',
+      title: 'This pack works on a Passport, an ID card or a Visa in Yours, and there is none yet. Open the pack to add one.',
+    });
+    expect(packBadges(pr({}), undefined, undefined, undefined, undefined, undefined,
+      new Map([['other', [{ type_id: 'body', type_name: 'Body' }]]]))).toEqual([]);
+  });
+
   it('says nothing about a pack that is not in the unrunnable set', () => {
     expect(packBadges(pr({}), undefined, new Set(['someone-else'])).map((x) => x.label))
       .not.toContain('Needs update');

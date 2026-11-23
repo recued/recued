@@ -207,6 +207,7 @@ export interface LearningPanelState {
   flowArmed: string | null;
   /** The flow being made into a recipe or forgotten, or null. */
   flowBusy: string | null;
+  flowBusyAction: 'recipe' | 'forget' | null;
   flowError: { flow_id: string; message: string } | null;
 }
 
@@ -274,6 +275,7 @@ export const mountLearningPanel = (
     flows: null,
     flowArmed: null,
     flowBusy: null,
+    flowBusyAction: null,
     flowError: null,
   };
   let pendingLoad: Promise<void> = Promise.resolve();
@@ -383,6 +385,7 @@ export const mountLearningPanel = (
 
   const caseFocusAttributes = [LEARNING_PANEL_CASES_RETRY_ATTR,
     LEARNING_PANEL_DRAFT_PROMPT_ATTR, LEARNING_PANEL_DRAFT_ATTR,
+    LEARNING_PANEL_FLOW_RECIPE_ATTR, LEARNING_PANEL_FLOW_FORGET_ATTR,
     LEARNING_PANEL_FORGET_ATTR, LEARNING_PANEL_CASES_ERROR_ATTR,
     LEARNING_PANEL_CASES_EMPTY_ATTR, LEARNING_PANEL_CASES_ATTR];
   const captureCaseFocus = () => {
@@ -391,6 +394,7 @@ export const mountLearningPanel = (
     for (const attribute of caseFocusAttributes) {
       if (!Array.from(opts.host.querySelectorAll<HTMLElement>(`[${attribute}]`)).includes(active)) continue;
       return { attribute, value: active.getAttribute(attribute) ?? '',
+        index: Array.from(opts.host.querySelectorAll<HTMLElement>(`[${attribute}]`)).indexOf(active),
         ...(attribute === LEARNING_PANEL_DRAFT_PROMPT_ATTR
           ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection } : {}),
       };
@@ -407,6 +411,11 @@ export const mountLearningPanel = (
         (target as HTMLTextAreaElement).setSelectionRange?.(previous.start, previous.end, previous.direction ?? undefined);
       }
       return;
+    }
+    if (previous.attribute === LEARNING_PANEL_FLOW_FORGET_ATTR) {
+      const remaining = Array.from(opts.host.querySelectorAll<HTMLElement>(`[${LEARNING_PANEL_FLOW_FORGET_ATTR}]`));
+      const next = remaining[Math.min(previous.index, remaining.length - 1)];
+      if (next) { next.focus({ preventScroll: true }); return; }
     }
     if (focusByAttribute(LEARNING_PANEL_CASES_RETRY_ATTR)) return;
     if (focusByAttribute(LEARNING_PANEL_CASES_EMPTY_ATTR)) return;
@@ -1213,23 +1222,27 @@ export const mountLearningPanel = (
     title.className = 'learning-row-label';
     title.textContent = `On ${flow.sites.join(', ')}`;
     item.appendChild(title);
-    const list = doc.createElement('ol');
-    list.className = 'learning-row-detail learning-flow-steps';
+    let list: HTMLOListElement | undefined;
     let page = '';
-    for (const step of flow.steps) {
+    for (const [index, step] of flow.steps.entries()) {
       // Where the steps move to another page, it says so.
-      if (step.url !== page) {
+      if (!list || step.url !== page) {
         page = step.url;
-        const where = doc.createElement('li');
+        const where = doc.createElement('div');
         where.className = 'learning-muted learning-flow-page';
         where.textContent = `On “${step.title}” (${hostOf(step.url)})`;
-        list.appendChild(where);
+        item.appendChild(where);
+        // Page captions are not actions. Keep only real steps in the ordered
+        // lists, continuing their numbering when the steps move to a new page.
+        list = doc.createElement('ol');
+        list.className = 'learning-row-detail learning-flow-steps';
+        list.setAttribute('start', String(index + 1));
+        item.appendChild(list);
       }
       const line = doc.createElement('li');
       line.textContent = stepWords(step);
       list.appendChild(line);
     }
-    item.appendChild(list);
     const meta = doc.createElement('div');
     meta.className = 'learning-muted';
     meta.textContent = `Kept on ${new Date(flow.kept_at).toLocaleDateString()}`;
@@ -1239,10 +1252,12 @@ export const mountLearningPanel = (
     make.setAttribute('type', 'button');
     make.setAttribute(LEARNING_PANEL_FLOW_RECIPE_ATTR, flow.flow_id);
     make.className = 'rx-btn rx-btn-secondary';
-    make.innerHTML = renderActionLabel('forward', state.flowBusy === flow.flow_id && state.flowArmed !== flow.flow_id
+    const making = state.flowBusy === flow.flow_id && state.flowBusyAction === 'recipe';
+    make.innerHTML = renderActionLabel('forward', making
       ? 'Making the recipe…' : 'Make a recipe');
     make.setAttribute('aria-label', `Make a recipe of the browser steps on ${flow.sites.join(', ')}`);
     if (locked) make.setAttribute('aria-disabled', 'true');
+    if (making) make.setAttribute('aria-busy', 'true');
     make.addEventListener('click', () => {
       if (disposed || state.flowBusy !== null || casesReading) return;
       pendingForget = doFlowRecipe(flow.flow_id);
@@ -1253,9 +1268,11 @@ export const mountLearningPanel = (
     forget.setAttribute('type', 'button');
     forget.setAttribute(LEARNING_PANEL_FLOW_FORGET_ATTR, flow.flow_id);
     forget.className = 'rx-btn rx-btn-danger';
-    forget.innerHTML = renderActionLabel('delete', armed ? 'Tap again to forget' : 'Forget');
+    const forgetting = state.flowBusy === flow.flow_id && state.flowBusyAction === 'forget';
+    forget.innerHTML = renderActionLabel('delete', forgetting ? 'Forgetting…' : armed ? 'Tap again to forget' : 'Forget');
     forget.setAttribute('aria-label', `${armed ? 'Confirm forgetting' : 'Forget'} the browser steps on ${flow.sites.join(', ')}`);
     if (locked) forget.setAttribute('aria-disabled', 'true');
+    if (forgetting) forget.setAttribute('aria-busy', 'true');
     forget.addEventListener('click', () => {
       if (disposed || state.flowBusy !== null || casesReading) return;
       if (state.flowArmed !== flow.flow_id) {
@@ -1277,32 +1294,32 @@ export const mountLearningPanel = (
     return item;
   };
   const doFlowRecipe = async (flow_id: string): Promise<void> => {
-    setState({ flowBusy: flow_id, flowArmed: null, flowError: null });
+    setState({ flowBusy: flow_id, flowBusyAction: 'recipe', flowArmed: null, flowError: null });
     try {
       const made = await opts.runFlowRecipe!({ flow_id });
       if (disposed) return;
       if (!made.ok || made.recipe === undefined) {
-        setState({ flowBusy: null, flowError: { flow_id, message: `Recued could not make a recipe of it: ${made.issues.join(' ')}` } });
+        setState({ flowBusy: null, flowBusyAction: null, flowError: { flow_id, message: `Recued could not make a recipe of it: ${made.issues.join(' ')}` } });
         return;
       }
       const handed = opts.onFlowDraftReady!({ flow_id, recipe: made.recipe, notes: made.issues });
-      setState({ flowBusy: null, ...(handed === false
+      setState({ flowBusy: null, flowBusyAction: null, ...(handed === false
         ? { flowError: { flow_id, message: 'Recued made the recipe, but could not open it in Kitchen: try again.' } } : {}) });
     } catch (err) {
       if (disposed) return;
-      setState({ flowBusy: null, flowError: { flow_id, message: `Recued could not make a recipe of it: ${humanizeRpcError(err)}` } });
+      setState({ flowBusy: null, flowBusyAction: null, flowError: { flow_id, message: `Recued could not make a recipe of it: ${humanizeRpcError(err)}` } });
     }
   };
   const doFlowForget = async (flow_id: string): Promise<void> => {
-    setState({ flowBusy: flow_id, flowArmed: null, flowError: null });
+    setState({ flowBusy: flow_id, flowBusyAction: 'forget', flowArmed: null, flowError: null });
     try {
       await opts.runFlowForget!({ flow_id });
       if (disposed) return;
       // Re-read, as a case's Forget does: the server says what is kept.
-      await loadCases(undefined, { flowBusy: null });
+      await loadCases(undefined, { flowBusy: null, flowBusyAction: null });
     } catch (err) {
       if (disposed) return;
-      setState({ flowBusy: null, flowArmed: flow_id, flowError: { flow_id, message: `Recued could not forget it: ${humanizeRpcError(err)}` } });
+      setState({ flowBusy: null, flowBusyAction: null, flowArmed: flow_id, flowError: { flow_id, message: `Recued could not forget it: ${humanizeRpcError(err)}` } });
     }
   };
 
@@ -1405,7 +1422,6 @@ export const LEARNING_PANEL_STYLES = `
   padding-left: 18px;
 }
 [${LEARNING_PANEL_HOST_ATTR}] .learning-flow-page {
-  list-style: none;
-  margin-left: -18px;
+  margin: 0;
 }
 `;

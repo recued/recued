@@ -204,6 +204,8 @@ export const findRoleRestrictions = (
   for (const slug of collectIngredientSlugs(recipe)) {
     const manifest = getManifest(slug);
     if (!manifest) continue;
+    // Browser discovery reads the server's pairing roster, including offline devices.
+    if (manifest.slug === 'dom-bridges') continue;
     if (BROWSER_ONLY_KINDS.has(manifest.kind)) {
       restricted.push({ slug, adapter: manifest.kind });
     }

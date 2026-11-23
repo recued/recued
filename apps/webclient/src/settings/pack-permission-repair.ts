@@ -15,6 +15,11 @@ export interface PackInstallResume {
   also_connections: string[];
   webhook_picks: Array<[string, string]>;
   template_keep: Array<[string, 'recipe' | 'existing']>;
+  /** D-201 Slice 10AO (10AM finding 14) — the door switches the owner set for
+   *  recipes the install brings from another publisher, by their key. Dropped
+   *  at the repair before, and a dropped pick is not sent: the door was made
+   *  as it was left, not as the owner set it. */
+  webhook_doors: Array<[string, 'open' | 'closed']>;
 }
 export interface PackPermissionRepairRequest {
   name: string;

@@ -74,9 +74,12 @@ import type {
 } from '@recued/contracts';
 import {
   buildPreflightAsk,
+  applyPreparedPreflightDenial,
+  PREPARED_PREFLIGHT_DENIAL_KIND,
   NEVER_ASK_OPERATION_OPTION_ID,
   PREFLIGHT_HANDLER_KIND,
   readPreflightOverrideOffer,
+  readPreparedPreflightEdits,
   readSessionGrantPayload,
   RELAX_OPERATION_TO_ASK_OPTION_ID,
 } from '@recued/gateway';
@@ -85,6 +88,8 @@ import type {
   PreflightBatchAnswerHooks,
   PreflightNotifier,
   PreflightResumer,
+  PreparedPreflightEdits,
+  PreflightOverrideWriter,
 } from '@recued/gateway';
 import type { Answer } from '@recued/notification';
 import type { BatchAskStore, CheckpointStore } from '@recued/storage';
@@ -190,10 +195,9 @@ export interface CreateBatchApprovalCoordinatorDeps {
   readonly gatedActionStore?: GatedActionStore;
   /** D-211 — authoritative standing-ruling writer. The coordinator owns
    *  this side effect for batch answers so its version guard runs first. */
-  readonly upsertOverride?: (
-    offer: NonNullable<PreflightAskContext['owner_override_offer']>,
-  ) => Promise<void>;
+  readonly upsertOverride?: PreflightOverrideWriter;
   readonly now?: () => number;
+  readonly recordPreparedDenial?: (answer: Answer) => Promise<void>;
   readonly newBatchId?: () => string;
 }
 
@@ -464,6 +468,9 @@ export const createBatchApprovalCoordinator = (
       checkpoint: await withMemberLabels(row, checkpoint),
       context,
     });
+    // Internal binding for answer-audit projection, including an inbox
+    // approval opened from an older member rather than the newest hold.
+    handler.payload.batch_checkpoint_ids = row.members.map(m => m.checkpoint_id);
     // Establish the stable decision group before the ask can be answered. An
     // immediate answer must never surface one member as a standalone result
     // just before the remaining receipts are linked into the same batch.
@@ -819,10 +826,17 @@ export const createBatchApprovalCoordinator = (
     option: string,
     grantContractId: string | undefined,
     approvedAt: number,
+    prepared?: PreparedPreflightEdits,
   ): Promise<void> => {
     for (const m of row.members) {
-      const checkpoint = await deps.checkpointStore.get(m.checkpoint_id);
+      let checkpoint = await deps.checkpointStore.get(m.checkpoint_id);
       if (checkpoint === null) continue;
+      if (prepared?.checkpoint_id === m.checkpoint_id) {
+        checkpoint = await deps.checkpointStore.setArgOverrides(m.checkpoint_id, {
+          arg_overrides: prepared.arg_overrides,
+          ...(prepared.approved_target !== undefined ? { approved_target: prepared.approved_target } : {}),
+        });
+      }
       const context: PreflightAskContext = {
         recipe_id: row.recipe_id,
         gated_step_id: checkpoint.gated_step_id,
@@ -917,14 +931,39 @@ export const createBatchApprovalCoordinator = (
           );
           return 'handled';
         }
+        const row = closed.row;
+        let prepared: PreparedPreflightEdits | undefined;
+        if (answer.prepared?.kind === PREPARED_PREFLIGHT_DENIAL_KIND) {
+          const checkpointId = answer.prepared.checkpoint_id;
+          if (typeof checkpointId !== 'string' || !row.members.some(m => m.checkpoint_id === checkpointId)) {
+            throw new Error('batch-approval: prepared denial does not bind an approved member');
+          }
+          await applyPreparedPreflightDenial(answer, checkpointId, deps.recordPreparedDenial);
+        } else if (answer.prepared !== undefined) {
+          const checkpointId = answer.prepared.checkpoint_id;
+          if (typeof checkpointId !== 'string'
+            || !row.members.some(m => m.checkpoint_id === checkpointId)
+            || !['approve', 'allow_session'].includes(recordedOption)) {
+            throw new Error('batch-approval: prepared edits do not bind an approved member');
+          }
+          prepared = readPreparedPreflightEdits(answer.prepared, checkpointId);
+        }
         // D-211 — only a successfully version-guarded close may change a
-        // standing owner ruling. Re-entry repeats the idempotent upsert before
-        // retrying member settlement; a stale answer never reaches this line.
+        // standing owner ruling. Re-entry carries the same durable decision
+        // identity; the host must not reapply it over a later owner setting.
         if (overrideOffer !== undefined) {
-          await deps.upsertOverride!(overrideOffer);
+          const revision = payload.owner_override_policy_revision;
+          if (revision !== undefined && (typeof revision !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(revision))) {
+            throw new Error('batch-approval: malformed standing-policy revision');
+          }
+          await deps.upsertOverride!(overrideOffer, {
+            decision_id: JSON.stringify(['preflight_batch', row.batch_id, row.payload_version]),
+            answered_at: answer.answered_at,
+            holds: row.members.map(member => ({ run_id: member.run_id, checkpoint_id: member.checkpoint_id })),
+            ...(revision !== undefined ? { policy_revision: revision } : {}),
+          });
         }
         const option = overrideOffer !== undefined ? 'approve' : recordedOption;
-        const row = closed.row;
         if (option === 'deny') {
           await settleMembers(row, 'deny', undefined, answer.answered_at);
           await deps.batchAskStore.markAnswered(batch.batch_id);
@@ -937,10 +976,16 @@ export const createBatchApprovalCoordinator = (
           // commit Gateway mints the exact-mode grant. No batch grant,
           // no claim marker.
           const m = row.members[0];
-          const checkpoint = await deps.checkpointStore.get(m.checkpoint_id);
+          let checkpoint = await deps.checkpointStore.get(m.checkpoint_id);
           if (checkpoint !== null) {
+            if (prepared !== undefined) {
+              checkpoint = await deps.checkpointStore.setArgOverrides(m.checkpoint_id, {
+                arg_overrides: prepared.arg_overrides,
+                ...(prepared.approved_target !== undefined ? { approved_target: prepared.approved_target } : {}),
+              });
+            }
             const grant =
-              option === 'allow_session'
+              option === 'allow_session' && payload.session_grant_decision_version === 1
                 ? readSessionGrantPayload(payload.session_grant)
                 : undefined;
             await deps.resumer.resumeRun(checkpoint, {
@@ -950,6 +995,7 @@ export const createBatchApprovalCoordinator = (
               risk_tier: row.risk_tier,
               approved_at: answer.answered_at,
               ...(grant !== undefined ? { session_grant: grant } : {}),
+              ...(grant !== undefined ? { session_grant_decision_version: 1 as const } : {}),
             });
             await deps.checkpointStore.delete(m.checkpoint_id);
           }
@@ -962,7 +1008,10 @@ export const createBatchApprovalCoordinator = (
         // failed / unwired mint degrades to plain marker resumes — the
         // human-approved actions still execute; only the replay-
         // absorption accounting is dropped.
-        const grantContractId = deps.sessionGrantResolver?.mintBatch({
+        // Edited payloads no longer match the batch's original hash snapshot.
+        // Execute this approval without minting replay authority for that snapshot.
+        const hasEdits = prepared !== undefined && (Object.keys(prepared.arg_overrides).length > 0 || prepared.approved_target !== undefined);
+        const grantContractId = hasEdits ? undefined : deps.sessionGrantResolver?.mintBatch({
           channel: row.channel,
           actor: row.actor,
           channel_session_id: row.channel_session_id,
@@ -992,7 +1041,7 @@ export const createBatchApprovalCoordinator = (
             canonical_payload_hash: m.canonical_payload_hash,
           })),
         });
-        await settleMembers(row, option, grantContractId, answer.answered_at);
+        await settleMembers(row, option, grantContractId, answer.answered_at, prepared);
         await deps.batchAskStore.markAnswered(batch.batch_id);
         return 'handled';
       }),

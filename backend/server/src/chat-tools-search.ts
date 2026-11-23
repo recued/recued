@@ -55,6 +55,8 @@ import { forwardedRegistryHooks } from './registry-forwarding.js';
 export type ToolsSearchInstallOffers = (
   query: string,
   installed: ReadonlyArray<InstalledMatchText>,
+  /** D-405 slice 8 — the search's call: an offer its conversation already carried is not made again. */
+  ctx?: ChatDispatchContext,
 ) => Promise<ReadonlyArray<InstallOffer>>;
 
 // Re-exported so existing importers (`chat-tool-handlers.ts`, tests) resolve it
@@ -202,6 +204,9 @@ export interface ToolsSearchWrapOptions {
 export interface ToolsSearchTurnedOffEntry {
   entry: ToolEntry;
   tab: 'Ops' | 'Recipes';
+  /** Where the owner turns it on when that is not its row on the Contracts page alone: a Body's numbers'
+   *  recipe is the switch on every Body page (D-339 slice 12a). Absent ⇒ its row on the Contracts page. */
+  turn_on_under?: string;
 }
 export type ToolsSearchTurnedOffSource = (source?: ExecutionSource) => ReadonlyArray<ToolsSearchTurnedOffEntry>;
 
@@ -279,6 +284,7 @@ const dispatchToolsSearch = (
     // any other caller, and a door never reaches here (`ownerCatalogGuard`).
     const turnedOff = ownerTurnedOff?.(ctx?.execution_source) ?? [];
     const tabOf = new Map(turnedOff.map(({ entry, tab }) => [entry.name, tab] as const));
+    const placeOf = new Map(turnedOff.flatMap(({ entry, turn_on_under }) => turn_on_under !== undefined ? [[entry.name, turn_on_under] as const] : []));
     const offMatches = turnedOff.length > 0
       ? searchToolCatalog(turnedOff.map(({ entry }) => entry), args.query, limit)
       : [];
@@ -301,7 +307,7 @@ const dispatchToolsSearch = (
         name: entry.name,
         ...(entry.description !== undefined ? { description: entry.description } : {}),
         tags: entry.topic_tags,
-      }))).catch(() => [])
+      })), ctx).catch(() => [])
       : [];
     return {
       ok: true,
@@ -327,7 +333,7 @@ const dispatchToolsSearch = (
               turned_off: offMatches.map((entry) => ({
                 recipe_slug: entry.name,
                 description: entry.description,
-                turn_on_under: `Self (you) → ${tabOf.get(entry.name) ?? 'Recipes'} on the Contracts page`,
+                turn_on_under: placeOf.get(entry.name) ?? `Self (you) → ${tabOf.get(entry.name) ?? 'Recipes'} on the Contracts page`,
               })),
             }
           : {}),

@@ -132,6 +132,7 @@ import type {
 import {
   assertMailSentReconciliationQuery,
   detectMailAttachmentMimeType,
+  MAIL_SENT_RECONCILIATION_MAX_ATTACHMENT_BYTES,
   normalizeRfcMessageId,
   type MailProvider,
 } from './provider.js';
@@ -683,6 +684,9 @@ export interface MailCollection extends Collection {
    *  Measured: the model asked for `near_id` correctly and got an empty result,
    *  then reported the PROPOSAL as the settled outcome. */
   neighbours(query: { anchor_id: string; next?: number; prev?: number }): CollectionRecord[];
+  /** D-406 — a message's place in its thread in this mailbox (`CollectionTable.threadPlace`), which every
+   *  `mail.read` result carries. ⛔ Declared and forwarded here for the reason `neighbours` is. */
+  threadPlace(record_id: string): { index: number; total: number } | null;
 
   readonly platform: 'mail';
   readonly sendCapable: boolean;
@@ -2040,7 +2044,7 @@ export const createMailCollection = (
         // file it produced in THIS run, so unlike a `cleanup_after` flag it
         // cannot be pointed at the owner's own files.
         //
-        // ⚠ Held sends are the NORMAL path for this (`liftOutboundSend` asks the
+        // ⚠ Held sends are the NORMAL path for this (a send set to ask asks the
         // owner), and the bytes survive it: `reclaimRunScratchUnlessResumable`
         // preserves the scratch of a run that is merely paused, and the run
         // resumes under the SAME run_id. Same property the ask-tier records
@@ -2204,7 +2208,13 @@ export const createMailCollection = (
           { slug, recipient_count: recipients.length },
         );
       }
+      // One file is proof only while reconciliation can read it back from Sent
+      // (`MAIL_SENT_RECONCILIATION_MAX_ATTACHMENT_BYTES`, 3 MiB). A larger one
+      // (sent since 2026-11-17, up to 25 MiB) is proven by the envelope, as a
+      // message with several files always was; claimed with its size, the
+      // query would be refused as malformed and the send never proven.
       const attachment = resolvedAttachments?.length === 1
+        && resolvedAttachments[0]!.size_bytes <= MAIL_SENT_RECONCILIATION_MAX_ATTACHMENT_BYTES
         ? resolvedAttachments[0]
         : undefined;
       const { result, claim } = claims.claim({
@@ -2511,6 +2521,7 @@ export const createMailCollection = (
     // returns nothing. Measured: the model correctly asked for `near_id` and got
     // an empty result, then reported the PROPOSAL as the outcome.
     neighbours: (query: Parameters<typeof table.neighbours>[0]) => table.neighbours(query),
+    threadPlace: (record_id: string) => table.threadPlace(record_id),
     countFrom: (email: string): number => table.countByAddress('from', email),
     legacyAttachmentsAmbiguous,
     health,

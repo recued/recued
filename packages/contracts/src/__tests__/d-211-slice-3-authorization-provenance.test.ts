@@ -17,7 +17,7 @@ const OWNER: ExecutionSource = {
 };
 
 describe('D-211 Slice 3 authorization provenance', () => {
-  it('captures review-only owner send authorization after trust relax, before the send lift', () => {
+  it('an owner send relaxes from the app; no review lift records anything (D-177 §N.15.6)', () => {
     const decision = admitByOpRisk({
       slug: 'mail-send',
       risk_tier: 'write',
@@ -25,11 +25,8 @@ describe('D-211 Slice 3 authorization provenance', () => {
       source: OWNER,
     });
 
-    expect(decision.verdict).toBe('ask');
-    expect(decision.authorization_provenance).toEqual({
-      pre_lift_approval: 'never',
-      lift_reason: 'review_send',
-    });
+    expect(decision.verdict).toBe('admit');
+    expect(decision.authorization_provenance).toEqual({ pre_lift_approval: 'never' });
   });
 
   it('preserves an owner always ruling instead of misclassifying it as a review lift', () => {

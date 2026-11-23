@@ -1326,13 +1326,16 @@ const renderCredentialRotationRecovery = (
 };
 
 const renderListView = (props: ConnectionsPageProps): string => {
+  const retry = button({ label: 'Refresh connections', action: 'connections-retry-inventory', size: 'sm',
+    ariaDisabled: props.loading, ariaBusy: props.loading });
   if (props.loading) {
     return `
       <p class="connections-loading">Loading enrolled connections…</p>
+      ${retry}
     `;
   }
   if (props.error) {
-    return inlineError(props.error);
+    return inlineError(props.error) + retry;
   }
   const filters = props.inventoryFilters;
   const visible = props.connections.filter(row => (!filters?.query || [row.display_name, row.name, row.vendor, row.base_url].join(' ').toLowerCase().includes(filters.query.toLowerCase()))
@@ -3937,6 +3940,7 @@ ${REFERENCE_PROVENANCE_STYLES}
   gap: 16px;
   padding: 16px;
 }
+.connections-page > [data-action="connections-retry-inventory"] { align-self: flex-start; max-width: 100%; }
 .connections-page-header {
   display: flex;
   flex-direction: column;

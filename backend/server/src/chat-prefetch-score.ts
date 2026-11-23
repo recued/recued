@@ -101,6 +101,12 @@ export interface PrefetchScoreContext extends PrefetchQueryContext {
    *  truncation; a future caller with page-local uniqueness would pass `false` to
    *  suppress phone hits. */
   readonly phoneFormsComplete: boolean;
+  /** D-406 follow-up (2026-11-20) — the emails (the store's key form) of the contacts the message carries by
+   *  their exact id: the records the owner picked in "Add records" or "Chat about this" (`chat-picked-contacts.ts`).
+   *  Each is an exact identifier, pinned as a typed email is. Its name and company words are taken as naming it, so
+   *  a contact matched only through those words is its namesake, not a second reference, and is dropped before the
+   *  §2 contest. Absent or empty: every candidate is scored as before. */
+  readonly pickedEmails?: ReadonlySet<string>;
   /** True iff the phone form maps to exactly one contact STORE-WIDE — the index
    *  adapter backs this with `contact_phone_forms` (a `COUNT(DISTINCT contact)`).
    *  National/trunk forms can collide across countries; the FULL E.164 is unique by
@@ -139,7 +145,7 @@ export const scorePrefetchCandidates = (
   rows: readonly PrefetchScoreRow[],
   ctx: PrefetchScoreContext,
 ): PrefetchCandidate[] => {
-  const { queryTokens, phoneRunSet, emailRunSet, limit, fuzzyComplete, phoneFormsComplete, isUnique } = ctx;
+  const { queryTokens, phoneRunSet, emailRunSet, limit, fuzzyComplete, phoneFormsComplete, isUnique, pickedEmails } = ctx;
   const scored: Array<{
     readonly ref: string;
     readonly label: string;
@@ -222,6 +228,8 @@ export const scorePrefetchCandidates = (
     // unique, so a match is DEFINITIVELY the one contact with no ambiguity — needs
     // neither the `scanComplete` nor the page-local-uniqueness gate phone carries.
     if (emailRunSet.size > 0 && emailRunSet.has(rec.email)) { score += 5; pinned = true; }
+    // D-406 follow-up — a contact the owner picked is named exactly, as a typed email names one.
+    if (!pinned && pickedEmails?.has(rec.email) === true) { score += 5; pinned = true; }
     if (score > 0) {
       scored.push({
         ref: rec.email,
@@ -234,6 +242,23 @@ export const scorePrefetchCandidates = (
       });
     }
   }
+  // D-406 follow-up (2026-11-20) — a contact the owner picked settles its own name (`chat-picked-contacts.ts`).
+  // The words of its name and company name it, so a fuzzy candidate that matched nothing else is its namesake,
+  // not a second reference, and is dropped before the contest below. Without this, a pick's own title made the
+  // pick and its namesake contest one reference, and the block said "Do NOT assume which one is meant: ask the
+  // user" of a record the owner had chosen. The one drop this scorer makes, and only beside a pick: a message
+  // with no picked id is scored exactly as before. The cost of the bag below applies here too: beside a picked
+  // Priya Raman, the owner's own "Priya" is taken as her; a contact named by any other word stays.
+  const pickedWords = new Set<string>();
+  if (pickedEmails !== undefined && pickedEmails.size > 0) {
+    for (const rec of rows) {
+      if (!pickedEmails.has(rec.email)) continue;
+      for (const tok of wordSet(rec.name ?? '')) pickedWords.add(tok);
+      for (const tok of wordSet(rec.company ?? '')) pickedWords.add(tok);
+    }
+  }
+  const settled = pickedWords.size === 0 ? scored
+    : scored.filter((c) => c.pinned === true || [...c.matchedTokens].some((tok) => !pickedWords.has(tok)));
   // D-167 §2 ambiguity-gate — flag a fuzzy candidate AMBIGUOUS when a reference it
   // matched is CONTESTED: 2+ fuzzy candidates matched the same query token. PINNED
   // (exact-identifier) matches are definitive — the user typed the value — so they
@@ -260,7 +285,7 @@ export const scorePrefetchCandidates = (
   // mark every fuzzy candidate ambiguous (the pinned EMAIL + exact phone paths are
   // unaffected — they don't depend on fuzzy completeness). Correct: a token matching
   // more contacts than the cap is genuinely ambiguous.
-  const fuzzy = scored.filter((s) => s.pinned !== true);
+  const fuzzy = settled.filter((s) => s.pinned !== true);
   if (!fuzzyComplete) {
     for (const c of fuzzy) c.ambiguous = true;
   } else {
@@ -282,14 +307,14 @@ export const scorePrefetchCandidates = (
   // unique "Kim" surfaces ahead of the many ambiguous "Megacorp" contacts. Among
   // candidates of equal score AND ambiguity the sort is stable, preserving the
   // retrieval's `last_interaction DESC` recency order.
-  scored.sort((a, b) =>
+  settled.sort((a, b) =>
     (b.score - a.score)
     || ((a.ambiguous === true ? 1 : 0) - (b.ambiguous === true ? 1 : 0)));
 
   // Keep every EXACT-identifier (pinned) match past the top-K cap so its values
   // always reach the alias ledger; fill the rest of `limit` with top fuzzy
   // (D-167 B1 — `selectWithPinned`). A name-only result set is unaffected.
-  return selectWithPinned(scored, limit).map<PrefetchCandidate>(({ ref, label, score, phone, company, pinned, ambiguous }) => ({
+  return selectWithPinned(settled, limit).map<PrefetchCandidate>(({ ref, label, score, phone, company, pinned, ambiguous }) => ({
     ref,
     label,
     kind: 'contact',

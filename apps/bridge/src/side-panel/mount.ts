@@ -26,8 +26,12 @@ import {
   SIDE_PANEL_ACTIVE_CONTROL_ATTR,
   SIDE_PANEL_ACTIVE_ROW_ATTR,
   SIDE_PANEL_KEEP_FIELD_ATTR,
+  SIDE_PANEL_KEEP_REMOVE_ATTR,
+  SIDE_PANEL_KEEP_UNDO_ATTR,
   SIDE_PANEL_ROOT_ATTR,
   SIDE_PANEL_SITES_INPUT_ATTR,
+  SIDE_PANEL_SITES_REMOVE_ATTR,
+  SIDE_PANEL_SITES_UNDO_ATTR,
   SIDE_PANEL_WATCH_BUTTON_ATTR,
   renderActiveExecutionsSection,
   renderApprovalsSection,
@@ -274,7 +278,19 @@ export const mountSidePanel = (
     | { kind: 'diagnostic-refresh' }
     | { kind: 'diagnostic-copy' }
     | { kind: 'diagnostic-summary'; start: number | null; end: number | null; direction: 'forward' | 'backward' | 'none' | null }
-    | { kind: 'active-control'; action: string; rowId: string };
+    | { kind: 'active-control'; action: string; rowId: string }
+    | { kind: 'sites-control'; attr: string; value: string };
+
+  /** D-347 follow-up 30 — a listed site's × and the Undo a removal leaves, each by its site: kept focused through
+   *  the redraws Keep signed in's status brings every minute or so. */
+  const SITES_CONTROLS = [SIDE_PANEL_SITES_REMOVE_ATTR, SIDE_PANEL_SITES_UNDO_ATTR, SIDE_PANEL_KEEP_REMOVE_ATTR,
+    SIDE_PANEL_KEEP_UNDO_ATTR];
+  /** A Sites control by its attribute's value, found without a value selector, which the unit tests' DOM fakes lack. */
+  const sitesControl = (surface: HTMLElement, attr: string, value: string): HTMLElement | null =>
+    (Array.from((surface as HTMLElement & {
+      querySelectorAll?: (selector: string) => NodeListOf<Element>;
+    }).querySelectorAll?.(`[${attr}]`) ?? []) as HTMLElement[]).find((candidate) => candidate.getAttribute(attr) === value)
+    ?? null;
 
   const captureFocus = (surface: HTMLElement): FocusToken | null => {
     const activeElement = (doc as Document & { activeElement?: Element | null })
@@ -305,6 +321,10 @@ export const mountSidePanel = (
         rowId: row?.getAttribute(SIDE_PANEL_ACTIVE_ROW_ATTR) ?? '',
       };
     }
+    for (const attr of SITES_CONTROLS) {
+      const value = activeElement.getAttribute(attr);
+      if (value !== null) return { kind: 'sites-control', attr, value };
+    }
     if (activeElement.tagName === 'SUMMARY') return { kind: 'summary' };
     return null;
   };
@@ -328,6 +348,8 @@ export const mountSidePanel = (
       target = query.querySelector?.(`[${SIDE_PANEL_DIAGNOSTIC_COPY_ATTR}]`) as HTMLElement | null;
     } else if (token.kind === 'diagnostic-summary') {
       target = query.querySelector?.(`[${SIDE_PANEL_DIAGNOSTIC_SUMMARY_ATTR}]`) as HTMLTextAreaElement | null;
+    } else if (token.kind === 'sites-control') {
+      target = sitesControl(surface, token.attr, token.value);
     } else {
       const controls = query.querySelectorAll?.(
         `[${SIDE_PANEL_ACTIVE_CONTROL_ATTR}]`,
@@ -485,6 +507,13 @@ export const mountSidePanel = (
     if (previous.sites !== state.sites) {
       pairedNodes.sites = replaceSurface(pairedNodes.sites, renderSites(state, now), false,
         sameSitesLists(previous.sites, state.sites));
+      // D-347 follow-up 30 — once: the Undo a removal leaves, or the × an undo puts back, unless the owner has
+      // moved to another control meanwhile.
+      const focus = state.sites.focus;
+      const active = (doc as Document & { activeElement?: Element | null }).activeElement ?? null;
+      if (focus !== undefined && focus !== previous.sites.focus && (active === null || active === doc.body)) {
+        sitesControl(pairedNodes.sites, focus.attr, focus.value)?.focus?.();
+      }
     }
     if (previous.element_watch !== state.element_watch) {
       pairedNodes.watch = replaceSurface(pairedNodes.watch, renderWatch(state, now));

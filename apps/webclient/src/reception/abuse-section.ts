@@ -21,9 +21,11 @@
  *  + Review log R19 / R19.1. */
 
 import { e } from '@recued/ui-shared/template';
-import { emptyHint, panel } from '@recued/ui-shared/primitives';
+import { button, emptyHint, panel } from '@recued/ui-shared/primitives';
 import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';
 
+import { RECEPTION_ABUSE_WORKSPACE_STYLES } from './followups-abuse-styles.js';
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { serializeShellRoute } from '../shell/route.js';
 import {
   renderAbuseInboxPanel,
@@ -82,6 +84,7 @@ export const mountReceptionAbuseSection = (
   opts: ReceptionAbuseSectionOptions,
 ): ReceptionAbuseSectionMount => {
   const { host, shell } = opts;
+  const focusOwner = host.ownerDocument ? trackCustomerWorkspaceFocus(host.ownerDocument) : null;
   const navigate =
     opts.navigate ??
     ((hash: string): void => {
@@ -116,12 +119,16 @@ export const mountReceptionAbuseSection = (
     const body =
       state.abuse_inbox !== null
         ? renderAbuseInboxPanel(state.abuse_inbox)
-        : emptyHint({ message: 'Loading abuse signals…' });
+        : state.last_error !== null
+          ? emptyHint({ message: 'Could not load abuse signals. Try again.' })
+            + button({ label: 'Retry abuse signals', action: 'reception-open-abuse-inbox' })
+          : emptyHint({ message: 'Loading abuse signals…' });
     const html = `
       <section class="reception-page reception-abuse-section"
         ${RECEPTION_ABUSE_SECTION_ATTR}
-        role="region"
+        role="region" aria-busy="${state.loading}"
         aria-labelledby="recued-reception-abuse-heading">
+        <style>${RECEPTION_ABUSE_WORKSPACE_STYLES}</style>
         <h2 class="reception-section-heading"
           ${RECEPTION_ABUSE_HEADING_ATTR}
           id="recued-reception-abuse-heading">Abuse signals</h2>
@@ -131,6 +138,7 @@ export const mountReceptionAbuseSection = (
     if (html === lastHtml) return;
     host.innerHTML = html;
     lastHtml = html;
+    for (const control of host.querySelectorAll?.<HTMLButtonElement>('button[data-action]') ?? []) control.disabled = state.loading && control.dataset.action !== 'reception-open-detail';
   };
 
   // Fire-and-forget against the shell — the shell routes rpc failures into
@@ -140,16 +148,32 @@ export const mountReceptionAbuseSection = (
     void p.catch(() => {});
   };
 
+  const act = (action: ReceptionAbuseAction, data: DOMStringMap, work: () => Promise<unknown>): void => {
+    if (disposed || shell.getState().loading) return;
+    const ownsFocus = focusOwner?.capture() ?? (() => false);
+    swallow(work().finally(() => {
+      if (disposed || !ownsFocus()) return;
+      const controls = [...(host.querySelectorAll?.<HTMLButtonElement>('button[data-action]') ?? [])];
+      const matchesSource = (node: HTMLButtonElement) => node.dataset.endpointId === data.endpointId
+        && node.dataset.sourceIpHash === data.sourceIpHash;
+      const counterpart = action === 'reception-ban-ip' ? 'reception-unban-ip' : action === 'reception-unban-ip' ? 'reception-ban-ip' : action;
+      const target = controls.find(node => node.dataset.action === action && matchesSource(node))
+        ?? controls.find(node => node.dataset.action === counterpart && matchesSource(node))
+        ?? controls.find(node => node.dataset.action === 'reception-open-abuse-inbox');
+      if (target && !target.disabled) target.focus({ preventScroll: true });
+    }));
+  };
+
   const handlers = {
-    'reception-open-abuse-inbox': () => swallow(shell.loadAbuseInbox()),
+    'reception-open-abuse-inbox': (d: DOMStringMap) => act('reception-open-abuse-inbox', d, () => shell.loadAbuseInbox()),
     'reception-ban-ip': (d: DOMStringMap) => {
       if (d.endpointId && d.sourceIpHash) {
-        swallow(shell.banIp(d.endpointId, d.sourceIpHash));
+        act('reception-ban-ip', d, () => shell.banIp(d.endpointId!, d.sourceIpHash!));
       }
     },
     'reception-unban-ip': (d: DOMStringMap) => {
       if (d.endpointId && d.sourceIpHash) {
-        swallow(shell.unbanIp(d.endpointId, d.sourceIpHash));
+        act('reception-unban-ip', d, () => shell.unbanIp(d.endpointId!, d.sourceIpHash!));
       }
     },
     'reception-open-detail': (d: DOMStringMap) => {
@@ -174,6 +198,7 @@ export const mountReceptionAbuseSection = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      focusOwner?.dispose();
       unsubscribe();
       detachDispatcher();
       host.innerHTML = '';

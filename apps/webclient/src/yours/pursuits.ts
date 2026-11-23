@@ -1,5 +1,6 @@
-import { PURSUIT_CLASS_ID, isAssetDate, type Asset, type AssetPatch, type AssetReading, type PursuitEnding } from '@recued/contracts';
+import { PURSUIT_CLASS_ID, isAssetDate, type Asset, type AssetPatch, type AssetReading, type BodyGoalProgress, type PursuitEnding } from '@recued/contracts';
 import { yoursCalendarDate } from './yours-dates.js';
+import { goalProgressWords } from './body-goal-words.js';
 
 /** D-342 — what the owner is working toward, as the Pursuits tab and its form read it. A
  * pursuit is an asset of the built-in Pursuit class; its own facts are its horizon, why and
@@ -9,7 +10,9 @@ export const isPursuit = (asset: Pick<Asset, 'class_id'>): boolean => asset.clas
 export const pursuitActive = (asset: Pick<Asset, 'status'>): boolean => asset.status === 'active' || asset.status === 'lent';
 /** The facts a pursuit's page shows in its Pursuit section, so its Facts list leaves them
  * out. Progress stays with the readings, where its history and updates are. */
-export const PURSUIT_FACTS: ReadonlySet<string> = new Set(['attributes.horizon', 'attributes.why', 'attributes.where_i_am', 'attributes.ended_as', 'dates.target_on']);
+export const PURSUIT_FACTS: ReadonlySet<string> = new Set(['attributes.horizon', 'attributes.why', 'attributes.where_i_am', 'attributes.ended_as', 'dates.target_on',
+  /** D-339 slice 15 — a goal on a Body, shown as its Goal. */
+  'settings.goal']);
 export const PURSUIT_ENDING_WORDS: Readonly<Record<PursuitEnding, string>> = { reached: 'Reached', let_go: 'Let go' };
 
 const words = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
@@ -69,13 +72,16 @@ export const pursuitEndingWords = (asset: Asset): string => {
  * line on the Pursuits tab gives the horizon, where they are, progress and the target date;
  * its page gives why in place of progress, which its readings show with their history. A
  * fact not given is left out. */
-export const pursuitFacts = (asset: Asset, place: 'line' | 'page' = 'line'): Array<[label: string, value: string, path: string]> => {
-  const progress = place === 'line' ? progressOf(asset) : null; const target = targetOn(asset);
+export const pursuitFacts = (asset: Asset, place: 'line' | 'page' = 'line',
+  /** D-339 slice 15 — a goal on a Body: where it stands, in place of a typed progress, on both. */
+  goal?: BodyGoalProgress): Array<[label: string, value: string, path: string]> => {
+  const progress = place === 'line' && !goal ? progressOf(asset) : null; const target = targetOn(asset);
   const why = place === 'page' ? words(asset.attributes.why) : '';
   return [
     ...(words(asset.attributes.horizon) ? [['Horizon', words(asset.attributes.horizon), 'attributes.horizon'] as [string, string, string]] : []),
     ...(why ? [['Why', why, 'attributes.why'] as [string, string, string]] : []),
     ...(words(asset.attributes.where_i_am) ? [['Where I am', words(asset.attributes.where_i_am), 'attributes.where_i_am'] as [string, string, string]] : []),
+    ...(goal ? [['Goal', goalProgressWords(goal), 'settings.goal'] as [string, string, string]] : []),
     ...(progress ? [['Progress', `${progress.value} ${progress.unit}`, 'readings.progress'] as [string, string, string]] : []),
     ...(target ? [['Target date', yoursCalendarDate(target), 'dates.target_on'] as [string, string, string]] : []),
   ];

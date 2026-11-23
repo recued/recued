@@ -3,6 +3,7 @@
   "housekeeping-read-recovery.spec.ts",
   "ai-models.spec.ts",
   "settings.spec.ts",
+  "settings-finder.spec.ts",
   "certificate-upload-editing.spec.ts",
   "certificate-upload-focus.spec.ts",
   "certificate-removal-focus.spec.ts",

@@ -95,6 +95,7 @@ import {
   type EnterAuthoringTarget,
   type ReceptionHostPromptAction,
   type ReceptionPageHost,
+  type ReceptionPageHostOptions,
 } from './page-host.js';
 import {
   mountReceptionPromptsHost,
@@ -158,6 +159,7 @@ export interface ReceptionSettingsOptions {
    *  standalone templates-browser modal renders the Foundation-pack
    *  gallery. */
   getTemplates?: () => ReadonlyArray<IntakeFormTemplate>;
+  onLoadTemplates?: ReceptionPageHostOptions['onLoadTemplates'];
   /** Forwarded to `ReceptionPageHostOptions.getConfigTemplates` (D-151).
    *  The natural impl returns the route's `reception.template.list`
    *  `config_templates` cache so the standalone gallery renders the
@@ -291,6 +293,7 @@ export const mountReceptionSettings = (
     ...(opts.getTemplates !== undefined
       ? { getTemplates: opts.getTemplates }
       : {}),
+    ...(opts.onLoadTemplates ? { onLoadTemplates: opts.onLoadTemplates } : {}),
     ...(opts.getConfigTemplates !== undefined
       ? { getConfigTemplates: opts.getConfigTemplates }
       : {}),

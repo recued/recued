@@ -542,7 +542,21 @@ describe('D-325 one situation tool and independent bounded prefetch', () => {
     const adapter = createKernelAdapter({ situationQuery: read });
     const call = { slug: 'situation-query', input, output: {}, risk_tier: 'read', manifest_version: 1, stepMeta: { execution_source: owner } } as never;
     expect(await adapter(call)).toMatchObject({ clusters: [{ items: [{ what: { value: 'Passport' } }] }] });
-    expect(read).toHaveBeenCalledWith(input, owner);
+    expect(read).toHaveBeenCalledWith(input, owner, undefined);
+  });
+
+  it('takes a recipe read reservation only from host metadata', async () => {
+    const read = vi.fn(async () => ({ clusters: [], omitted: 0, ambiguous: [] }));
+    const adapter = createKernelAdapter({ situationQuery: read });
+    const reservation = {}, forged = {};
+    const raw = { ...input, contract_dispatch_reservation: forged,
+      origin_execution_source: { ...owner, contract_id: 'forged-door' } };
+    const call = { slug: 'situation-query', input: raw, output: {}, risk_tier: 'read', manifest_version: 1,
+      stepMeta: { execution_source: owner, contract_dispatch_reservation: reservation } };
+    await adapter(call as never);
+    expect(read).toHaveBeenLastCalledWith(raw, owner, reservation);
+    await adapter({ ...call, stepMeta: { execution_source: owner } } as never);
+    expect(read).toHaveBeenLastCalledWith(raw, owner, undefined);
   });
 });
 
@@ -672,5 +686,59 @@ describe('what the lookup finds reaches the model', () => {
     // Its name, place and ids reach the model as aliases, as in the tool's result.
     expect(block).not.toMatch(/Sam Rivera|14 Cedar Avenue|passport-private-id/u);
     expect(block).toMatch(/"id":"pii\./u);
+  });
+});
+
+describe('D-406 follow-up: a contact the owner picked settles its own name in the lookup', () => {
+  // Both people's birthdays, each `ambiguous`, under "ask which one before acting": what a contact added in
+  // "Add records" brought beside a same-named contact, measured live 2026-11-20 (`chat-picked-contacts.ts`).
+  const seed = () => {
+    const store = createContactStore(db);
+    const lumen = store.upsertManual({ email: 'priya.raman@lumen.example.test', name: 'Priya Raman', company: 'Lumen Studio' }, at);
+    const northgate = store.upsertManual({ email: 'p.raman@northgate.example.test', name: 'Priya Raman', company: 'Northgate Freight' }, at);
+    const { access } = drive([fact('lumen-birthday', { title: 'Priya Raman · birthday', people: [lumen.contact_id!] }),
+      fact('northgate-birthday', { title: 'Priya Raman · birthday', people: [northgate.contact_id!] })]);
+    // The chat's own list, so the settlement is the one the chat wires, not one handed in here.
+    const lookup = createChatStreamMiddlewares({ getSituationAccess: () => access, getContactStore: () => store } as unknown as ChatStreamMiddlewareDeps)
+      .find(middleware => middleware.id === SITUATION_PREFETCH_MIDDLEWARE_ID)!;
+    const ask = async (text: string) => {
+      const result = context(text); await clockStill(() => lookup.prompt!(result.ctx));
+      const rows = result.parts.flatMap(part => part.payload) as Array<{ ref: { id: string }; ambiguous?: boolean }>;
+      return { rows: rows.map(row => `${row.ref.id}${row.ambiguous === true ? ' ambiguous' : ''}`).sort(),
+        block: result.parts.map(part => part.render(part.payload)).join('\n') };
+    };
+    return { lumen: lumen.contact_id!, northgate: northgate.contact_id!, ask };
+  };
+  // As the webclient sends them (`apps/webclient/src/chat/record-context.ts`), each block's words cut to a sentence.
+  const addRecords = (question: string, id: string): string => `${question}\n\nUse the exact owner-selected saved-record references `
+    + `below as context.\n${JSON.stringify({ kind: 'recued.records_question', version: 1, records: [{ record: { kind: 'contact', id, created_at: at },
+      title: 'Priya Raman' }] })}`;
+  const chatAboutThis = (question: string, id: string, email: string): string => `${question}\n\nRead the current saved contact using the `
+    + `exact contact reference below before answering about them.\n${JSON.stringify({ kind: 'recued.contact_question', version: 1, contact: { id, email } })}`;
+
+  it('the name alone brings both, each ambiguous, as before', async () => {
+    const { ask } = seed();
+    expect((await ask('When is Priya Raman’s birthday?')).rows).toEqual(['lumen-birthday ambiguous', 'northgate-birthday ambiguous']);
+  });
+
+  it('a contact added in "Add records" brings its own item alone, not ambiguous, counted as all there is', async () => {
+    const { ask, lumen, northgate } = seed();
+    const picked = await ask(addRecords('When is their birthday, and where do they work?', lumen));
+    expect(picked.rows).toEqual(['lumen-birthday']);
+    expect(picked.block).not.toContain('Shown here');
+    expect((await ask(addRecords('When is their birthday, and where do they work?', northgate))).rows).toEqual(['northgate-birthday']);
+  });
+
+  it('"Chat about this" on a contact (its id and email) settles it too', async () => {
+    const { ask, lumen } = seed();
+    expect((await ask(chatAboutThis('When is their birthday?', lumen, 'priya.raman@lumen.example.test'))).rows).toEqual(['lumen-birthday']);
+  });
+
+  it('the namesake stays when the owner\'s own words reach it another way, and an id no contact holds changes nothing', async () => {
+    const { ask, lumen } = seed();
+    expect((await ask(addRecords('When is their birthday, and the Northgate one’s?', lumen))).rows)
+      .toEqual(['lumen-birthday ambiguous', 'northgate-birthday ambiguous']);
+    expect((await ask(addRecords('When is their birthday?', '0123456789abcdef0123456789abcdef'))).rows)
+      .toEqual(['lumen-birthday ambiguous', 'northgate-birthday ambiguous']);
   });
 });

@@ -11,7 +11,9 @@
  *  prompt, "Morning bills" (`ps_e2e_morning`), which already carries one pre-approval: it may add a
  *  task without asking. A scheduled prompt's changes are learned from their asks, so none is
  *  offered on its card. `=older` is a server from before pre-approvals: it lists the same triggers
- *  and scheduled prompt, and answers each pre-approval method `unknown_method`. */
+ *  and scheduled prompt, and answers each pre-approval method `unknown_method`. `=whole` (D-402
+ *  ruling 5) is a server that grants every write of a recipe from the page: its lists say so
+ *  (`grants_whole_recipe`), and a grant of `["*"]` covers them all, with no count. */
 import type {
   PromptSchedule,
   TriggerPreapprovalChoice,
@@ -147,7 +149,7 @@ export const triggerPreapprovalDemoReply = (method: string, args: unknown): {
     if (method === 'collection.contract.triggerPreapprovalChoices') {
       if (trigger === undefined) return { error: { code: 'bad_request', message: 'trigger is required' } };
       const recipe = RECIPES[trigger.kind];
-      return { result: { recipes: [{ ...recipe, preapprovals: state.rows
+      return { result: { recipes: [{ ...recipe, ...(scenario === 'whole' ? { grants_whole_recipe: true } : {}), preapprovals: state.rows
         .filter((row) => sameTrigger(row.trigger, trigger) && row.recipe_id === recipe.recipe_id)
         .sort((a, b) => b.created_at - a.created_at) }] } };
     }
@@ -164,13 +166,16 @@ export const triggerPreapprovalDemoReply = (method: string, args: unknown): {
       }
       const recipe = RECIPES[trigger.kind];
       const writes = input.writes as string[];
+      // D-402 ruling 5 — every write of the recipe, with no count.
+      const whole = writes.length === 1 && writes[0] === '*';
       const row: TriggerPreapprovalView = {
         id: `tpa_e2e_${state.rows.length + 1}`, trigger,
         ...(trigger.kind === 'webhook' || trigger.kind === 'reception' ? { door_contract_id: 'door-e2e' } : {}),
         recipe_id: recipe.recipe_id, recipe_sha256: 'a'.repeat(64), writes,
-        max_per_run: input.max_per_run as number, uses: 0, created_at: Date.now(), state: 'live',
+        max_per_run: whole ? 0 : input.max_per_run as number, uses: 0, created_at: Date.now(), state: 'live',
         recipe_name: recipe.recipe_name, ai_steps: recipe.ai_steps,
-        write_labels: writes.map((op) => recipe.writes.find((write) => write.op === op)?.label ?? op),
+        write_labels: whole ? recipe.writes.filter((write) => write.offerable).map((write) => write.label)
+          : writes.map((op) => recipe.writes.find((write) => write.op === op)?.label ?? op),
         description: `When ${trigger.kind} runs "${recipe.recipe_name}", it may do this without asking.`,
       };
       state.rows.push(row);

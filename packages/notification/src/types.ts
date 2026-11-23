@@ -26,7 +26,33 @@ export interface NotificationMessage {
   text: string;
   /** Optional deep link a surface renders as an affordance. */
   link_url?: string;
+  /** D-343 (the owner, 2026-11-14) — the same message in plain words, for the channels that show
+   *  text (Telegram, Slack, email): an approval of an AI tool call without its tool name or raw
+   *  arguments. The app's card reads `text`, whose lines it parses, so `text` stays as it is.
+   *  Stored and replayed with the rest of the message. */
+  plain?: { title?: string; text: string };
+  /** D-335 slice Z (2026-11-17) — the message as a chat app (Telegram, Slack…) shows it, when a reply
+   *  typed there can answer it: a sign-in code asked for at a browser step. The app's card and email
+   *  keep `text` / `plain`, whose words send the owner to the app. A chat app shows this only where
+   *  it can tell the owner's reply from anyone else's (its connection names the owner), so it never
+   *  invites a reply it would not take. Stored and replayed with the rest of the message. */
+  chat?: { title?: string; text: string };
 }
+
+/** What a text channel shows of a message: its plain words when it has them. */
+export const forTextChannel = (message: NotificationMessage): NotificationMessage => {
+  if (message.plain === undefined) return message;
+  const { plain, ...rest } = message;
+  return { ...rest, text: plain.text, ...(plain.title !== undefined ? { title: plain.title } : {}) };
+};
+
+/** What a chat app shows of a message: its chat words when it has them, else what any text channel
+ *  shows (`forTextChannel`). */
+export const forChatChannel = (message: NotificationMessage): NotificationMessage => {
+  if (message.chat === undefined) return forTextChannel(message);
+  const { chat, plain: _plain, ...rest } = message;
+  return { ...rest, text: chat.text, ...(chat.title !== undefined ? { title: chat.title } : {}) };
+};
 
 /** Host-only delivery of an already-durable notification. The caller must
  * persist its notification_fired activity before invoking notify. This is
@@ -133,6 +159,10 @@ export interface Answer {
    *  ⚠ Capped at {@link ASK_NOTE_MAX} at the point of entry, because on a peer
    *  ask the author of this text is ANOTHER SERVER'S OWNER. */
   note?: string;
+  /** Opaque JSON prepared by trusted host code under the winning-answer
+   *  lock. Inbound channel replies cannot supply it. Persisted with the
+   *  answer so the handler receives the same snapshot after a restart. */
+  prepared?: Record<string, unknown>;
 }
 
 /** A consumer's handler slug — a closed-list string identifying the
@@ -448,6 +478,8 @@ export interface AnswerAuditRecord {
   title?: string;
   answered_at: number;
   answered_via: ChannelName;
+  /** Trusted host snapshot, for an idempotent host audit projection. */
+  prepared?: Record<string, unknown>;
   /** FN-2 — the ask's own `handler_payload`, passed through UNINTERPRETED.
    *
    *  ⛔ WHY A PASS-THROUGH AND NOT PARSED FIELDS. This block treats

@@ -207,7 +207,9 @@ describe('reviewed resource execution', () => {
     expect(inner).not.toHaveBeenCalled();
   });
 
-  it('does not require a snapshot for an independent session grant, but captures one if consumption fails', async () => {
+  // D-348 §7.8 — a call a standing grant lets through runs under a snapshot of its change, so it
+  // can be undone, as an approved one can (before, it took none unless its grant failed).
+  it('takes a snapshot for a call an independent session grant admits; one that is no longer admitted asks with it', async () => {
     const f = await fixture();
     const hooks = f.hooks();
     const capture = vi.fn(hooks.capture);
@@ -224,11 +226,12 @@ describe('reviewed resource execution', () => {
       sessionGrants: { match: () => 'grant', consume },
     });
     await expect(executor('calendar-update', input)).resolves.toBe('grant-admitted');
-    expect(capture).not.toHaveBeenCalled();
+    expect(capture).toHaveBeenCalledTimes(1);
     expect(inner).toHaveBeenCalledTimes(1);
     consume.mockReturnValue(false);
     await expect(executor('calendar-update', input)).rejects.toMatchObject({ resource_review: { operation: 'calendar-update' } });
-    expect(capture).toHaveBeenCalledTimes(1);
+    // The ask carries the snapshot taken as the grant admitted it: no second one.
+    expect(capture).toHaveBeenCalledTimes(2);
     expect(inner).toHaveBeenCalledTimes(1);
   });
 

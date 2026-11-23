@@ -6,12 +6,15 @@ import { createProactiveHistoryStore } from '../../../backend/server/src/storage
 import { createProactiveProposalStore } from '../../../backend/server/src/storage/proactive-proposal-store.js';
 import { handleContactGet, handleContactList, handleContactSearchLocal } from '../../../backend/server/src/contact-handler.js';
 import { applyContactFileImport, planContactFileImport } from '../../../backend/server/src/contact-import-file.js';
+import { parseContactFile } from '../../../backend/server/src/contact-import-parse.js';
+import { readFile } from 'node:fs/promises';
 import type { ContactImportOccasionSelection, YoursCommand, YoursSnapshot } from '@recued/contracts';
 import { installProjectOverviewFixture } from './helpers/project-overview-fixture.js';
 import { installCommitmentWorkspaceFixture } from './helpers/commitment-workspace-fixture.js';
 import { installDocumentSearchFixture } from './helpers/document-content-search-fixture.js';
 import { expect, test, type Page } from '@playwright/test';
-import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
+import { installSearchEverywhereFixture } from './helpers/search-everywhere-fixture.js';
+import type { ContactRecord, MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView, WorkEntity } from '@recued/contracts';
 import {
   DATA_DETAIL_HEADING, HARNESS_URL, SHARED_PROVENANCE, SHARED_PROVENANCE_DETAIL,
   SHARED_PROVENANCE_PRIMARY, SHARED_REFERENCE, SHARED_REFERENCE_ID, installFullAppHooks,
@@ -363,10 +366,19 @@ test.describe('Standalone Notes reader', () => {
     last_seen_at: Date.parse('2026-09-08T19:00:00Z'), last_user_action_at: Date.parse('2026-09-08T19:00:00Z'),
     related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [], related_project_ids: [],
   });
-  const boot = async (page: Page, notes: Extract<WorkEntity, { _kind: 'note' }>[]) => {
+  const boot = async (page: Page, notes: Extract<WorkEntity, { _kind: 'note' }>[], durablePair = false) => {
     await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
     await page.addInitScript(rows => {
-      sessionStorage.setItem('recued-test-today-entities', JSON.stringify(rows));
+      const project = { _kind: 'project', id: 'project-one', title: 'Launch project', state: 'active', source_id: 'recued.project',
+        sync_state: 'live', conflict_policy: 'recued_wins', related_contact_ids: [], created_at: 1, updated_at: 1, last_seen_at: 1 };
+      Object.assign(window, { __connectionsFixture: async (method: string, args: Record<string, unknown>) => {
+        if (method === 'work_entity.get' && args.kind === 'project') return { result: { entity: args.id === project.id ? project : null } };
+        if (method === 'work_entity.search' && args.kind === 'project') return { result: { groups: [{ kind: 'project', offset: 0, more: false,
+          matches: project.title.toLowerCase().includes(String(args.query).toLowerCase()) ? [{ id: project.id, title: project.title, excerpt: '',
+            source_id: project.source_id, source_label: 'Recued', updated_at: 1, stale: false, pending_write: false }] : [] }] } };
+        return undefined;
+      } });
+      if (sessionStorage.getItem('recued-test-today-entities') === null) sessionStorage.setItem('recued-test-today-entities', JSON.stringify(rows));
       const state = window as unknown as ClipboardWindow;
       state.__noteCopies = []; state.__holdNoteCopy = false;
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => {
@@ -374,7 +386,7 @@ test.describe('Standalone Notes reader', () => {
         if (state.__holdNoteCopy) { state.__holdNoteCopy = false; await new Promise<void>(resolve => { state.__releaseNoteCopy = resolve; }); }
       } } });
     }, notes);
-    await page.goto(`${HARNESS_URL}?data=today#data/note`);
+    await page.goto(`${HARNESS_URL}?data=today${durablePair ? '&server_profiles=multiple' : ''}#data/note`);
     await page.waitForFunction(() => window.__app?.ready === true);
     await expect(page.getByRole('heading', { name: 'Notes', exact: true })).toBeVisible();
   };
@@ -382,6 +394,144 @@ test.describe('Standalone Notes reader', () => {
   const reader = (page: Page) => page.locator('.work-entity-note-reader');
   const editor = (page: Page) => page.getByRole('dialog', { name: 'Edit Note', exact: true });
   const writes = (page: Page) => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as { args: Record<string, unknown> }[]);
+  const reloadNote = async (page: Page) => {
+    const accept = (dialog: import('@playwright/test').Dialog) => { void dialog.accept(); };
+    page.on('dialog', accept);
+    try { await page.reload(); } finally { page.off('dialog', accept); }
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.getByRole('heading', { name: 'Notes', exact: true })).toBeVisible();
+  };
+
+  test('broadens Find in note into Universal Search with the current literal query and records only that explicit search', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const body = '# Context\n\nUse the saved source.';
+    await boot(page, [note('search-everywhere-note', 'Source note', body, 'imported.note')]);
+    await installSearchEverywhereFixture(page); await open(page, 'search-everywhere-note');
+    const view = reader(page); await view.getByRole('button', { name: 'Formatted', exact: true }).click();
+    await view.getByRole('button', { name: 'Find in note', exact: true }).click();
+    const find = view.getByRole('searchbox', { name: 'Find in this note', exact: true });
+    const everywhere = view.locator('[data-note-find-everywhere]'); await expect(everywhere).toBeDisabled();
+    await find.fill('   '); await expect(everywhere).toBeDisabled(); await find.fill('first fragment');
+    const query = 'Café & <renewal>'; await find.fill(`  ${query}  `);
+    await expect(view.locator('[data-note-find-status]')).toHaveText('No matches.');
+    await expect(everywhere).toHaveAccessibleName(`Search everywhere for ${query}`); await expect(everywhere).toBeEnabled();
+    expect(await page.evaluate(() => window.__searchEverywhereFixture.calls)).toEqual([]);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('note-search-everywhere-phone.png') });
+    await everywhere.focus(); await everywhere.press('Enter');
+    const global = page.getByRole('searchbox', { name: 'Search everything', exact: true });
+    await expect(global).toHaveValue(query); await expect(global).toBeFocused(); await expect(view).toHaveCount(0);
+    await expect(page.locator('[data-search-record]')).toContainText(`Global result for ${query}`);
+    expect(await page.evaluate(() => window.__searchEverywhereFixture.calls.filter(call => call.method === 'collection.searchAll'))).toEqual([{ method: 'collection.searchAll', args: { query } }]);
+    await global.fill(''); await page.clock.runFor(350);
+    await expect(page.getByRole('region', { name: 'Recent searches', exact: true }).locator('.rq-recent-run')).toHaveText([query]);
+    expect(await writes(page)).toEqual([]);
+    await page.goBack(); await expect(view.getByRole('heading', { name: 'Source note', exact: true })).toBeVisible();
+    expect(await view.locator('[data-note-body]').textContent()).toContain('Use the saved source.');
+  });
+
+  test('formats an imported note safely, navigates its outline with the keyboard, and copies the exact source on a phone', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const body = '# Café & **brief**\r\n\r\n- First item\r\n- Second item\r\n\r\n'
+      + '[Website](https://example.com/notes) [Unsafe](java&#x73;cript:alert%281%29) [App route](#data/task)\r\n\r\n'
+      + '<img src=x onerror="throw new Error(\'unsafe\')">\r\n\r\n![Remote image](https://example.com/tracker.png)\r\n\r\n'
+      + '```md\r\n# Only code\r\n<img src=x>\r\n```\r\n\r\n'
+      + `${'A full paragraph before the next section.\r\n\r\n'.repeat(25)}## Decisions\r\n\r\n`
+      + 'Use the original **source**.\r\n\r\n## Decisions\r\n\r\n'
+      + `${'More text after the final heading.\r\n\r\n'.repeat(20)}  `;
+    await boot(page, [note('markdown-import', 'Imported brief', body, 'imported.note'), note('plain-next', 'Next note', '# Literal text')]);
+    await open(page, 'markdown-import');
+    const view = reader(page);
+    await expect(view.getByRole('button', { name: 'Plain text', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await view.getByRole('button', { name: 'Formatted', exact: true }).click();
+    await expect(view.getByRole('button', { name: 'Formatted', exact: true })).toBeFocused();
+    await expect(view.getByRole('heading', { name: 'Café & brief', exact: true })).toBeVisible();
+    await expect(view.locator('[data-note-body] strong').first()).toHaveText('brief');
+    await expect(view.getByRole('listitem').filter({ hasText: 'First item' })).toHaveCount(1);
+    await expect(view.locator('pre code')).toHaveText('# Only code\n<img src=x>');
+    await expect(view.getByRole('link', { name: 'Website', exact: true })).toHaveAttribute('href', 'https://example.com/notes');
+    await expect(view.getByRole('link', { name: 'Website', exact: true })).toHaveAttribute('rel', 'noopener noreferrer');
+    await expect(view.getByRole('link', { name: /Unsafe|App route/ })).toHaveCount(0);
+    await expect(view.locator('[data-note-body] img, [data-note-body] script')).toHaveCount(0);
+    await expect(view.locator('[data-note-body]')).toContainText('<img src=x onerror=');
+    await expect(view.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    const outline = view.locator('[data-note-section="outline"]');
+    await outline.locator('summary').click();
+    await expect(outline.getByRole('button')).toHaveCount(3);
+    await expect(outline.getByRole('button', { name: 'Only code', exact: true })).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('notes-formatted-phone.png') });
+    const hash = await page.evaluate(() => location.hash);
+    const decisions = outline.getByRole('button', { name: 'Decisions', exact: true }).last();
+    await decisions.focus(); await decisions.press('Enter');
+    await expect(view.getByRole('heading', { name: 'Decisions', exact: true }).last()).toBeFocused();
+    expect(await view.locator('.work-entity-note-content').evaluate(element => element.scrollTop)).toBeGreaterThan(500);
+    expect(await page.evaluate(() => location.hash)).toBe(hash);
+    const position = await view.locator('.work-entity-note-content').evaluate(element => element.scrollTop);
+    await page.evaluate(() => { (window as unknown as ClipboardWindow).__holdNoteCopy = true; });
+    await view.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(view.getByRole('button', { name: 'Copying…', exact: true })).toBeVisible();
+    await view.getByRole('heading', { name: 'Decisions', exact: true }).last().focus();
+    await page.evaluate(() => { (window as unknown as ClipboardWindow).__releaseNoteCopy?.(); });
+    await expect(view.locator('[data-note-notice]')).toHaveText('Note text copied.');
+    await expect(view.getByRole('heading', { name: 'Decisions', exact: true }).last()).toBeFocused();
+    expect(await page.evaluate(() => (window as unknown as ClipboardWindow).__noteCopies)).toEqual([body]);
+    expect(await view.locator('.work-entity-note-content').evaluate(element => element.scrollTop)).toBe(position);
+    // Each representation keeps its own place; the Markdown source is unchanged.
+    await view.getByRole('button', { name: 'Plain text', exact: true }).click();
+    expect(await view.locator('[data-note-body]').textContent()).toBe(body.replace(/\r\n/g, '\n'));
+    await view.getByRole('button', { name: 'Formatted', exact: true }).click();
+    expect(await view.locator('.work-entity-note-content').evaluate(element => element.scrollTop)).toBe(position);
+    await expect(outline).toHaveAttribute('open', '');
+    await outline.locator('summary').focus(); await outline.locator('summary').press('Enter');
+    await expect(outline).not.toHaveAttribute('open', '');
+    await view.getByRole('button', { name: 'Back to notes', exact: true }).click();
+    await open(page, 'plain-next');
+    await expect(reader(page).getByRole('button', { name: 'Plain text', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(reader(page).locator('[data-note-body]')).toHaveText('# Literal text');
+    expect(await reader(page).locator('.work-entity-note-content').evaluate(element => element.scrollTop)).toBe(0);
+    expect(await writes(page)).toEqual([]);
+  });
+
+  test('returns to the same formatted section after cancel, discard, and a confirmed edit above that section', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1100, height: 900 });
+    const body = '# Project brief\n\n' + 'An opening paragraph with **context**.\n\n'.repeat(32)
+      + '## Decisions\n\n' + 'The decision and its supporting details.\n\n'.repeat(30);
+    await boot(page, [note('markdown-edit', 'Project brief', body)]); await open(page, 'markdown-edit');
+    const view = reader(page);
+    await view.getByRole('button', { name: 'Formatted', exact: true }).click();
+    await view.locator('[data-note-section="outline"] summary').click();
+    await page.screenshot({ path: testInfo.outputPath('notes-formatted-desktop.png') });
+    await view.getByRole('navigation', { name: 'Note headings' }).getByRole('button', { name: 'Decisions', exact: true }).click();
+    const offset = () => view.getByRole('heading', { name: 'Decisions', exact: true }).evaluate(heading =>
+      heading.getBoundingClientRect().top - heading.closest('.work-entity-note-content')!.getBoundingClientRect().top);
+    const before = await offset();
+    expect(before).toBeGreaterThanOrEqual(0); expect(before).toBeLessThan(40);
+    await view.getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(editor(page).getByLabel('Note text')).toHaveValue(body);
+    await editor(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(view.getByRole('button', { name: 'Formatted', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    expect(Math.abs(await offset() - before)).toBeLessThan(2);
+    await view.getByRole('button', { name: 'Edit', exact: true }).click();
+    await editor(page).getByLabel('Note text').fill('An unsaved replacement');
+    await editor(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await editor(page).getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await expect(editor(page).getByLabel('Note text')).toHaveValue('An unsaved replacement');
+    await editor(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await editor(page).getByRole('button', { name: 'Discard changes', exact: true }).click();
+    await expect(view.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+    expect(Math.abs(await offset() - before)).toBeLessThan(2);
+    expect(await writes(page)).toEqual([]);
+    await view.getByRole('button', { name: 'Edit', exact: true }).click();
+    const saved = '# Project brief\n\n' + 'New source text before the section.\n\n'.repeat(10) + body.slice('# Project brief\n\n'.length);
+    await editor(page).getByLabel('Note text').fill(saved);
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(view.locator('[data-note-notice]')).toHaveText('Note saved.');
+    await expect(view.locator('[data-note-notice]')).toBeFocused();
+    expect(Math.abs(await offset() - before)).toBeLessThan(2);
+    await expect(view.locator('[data-note-section="outline"]')).toHaveAttribute('open', '');
+    expect((await writes(page))[0]?.args).toEqual({ kind: 'note', id: 'markdown-edit', body: saved });
+    await view.getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(editor(page).getByLabel('Note text')).toHaveValue(saved);
+  });
 
   test('reads and copies a standalone imported note, preserves the list, and ignores late copy feedback', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -438,7 +588,7 @@ test.describe('Standalone Notes reader', () => {
     await editor(page).getByLabel('Title', { exact: true }).fill('');
     await editor(page).getByLabel('Note text').fill(changed);
     await editor(page).getByRole('button', { name: 'More details', exact: true }).click();
-    await expect(editor(page).getByRole('textbox', { name: 'Related project 1', exact: true })).toHaveValue('project-one');
+    await expect(editor(page).getByRole('combobox', { name: 'Related project 1', exact: true })).toHaveValue(/Launch project/);
     await editor(page).getByRole('button', { name: 'Fewer details', exact: true }).click();
     await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
     await expect(reader(page).getByRole('heading', { name: 'Note', exact: true })).toBeVisible();
@@ -469,7 +619,8 @@ test.describe('Standalone Notes reader', () => {
     await dialog.getByRole('button', { name: 'More details', exact: true }).click();
     const addProject = dialog.locator('[data-form-array-add="related_project"]');
     await expect(addProject).toBeVisible(); await addProject.click();
-    await dialog.getByRole('textbox', { name: 'Related project 1', exact: true }).fill('project-one');
+    await dialog.getByRole('combobox', { name: 'Related project 1', exact: true }).fill('Launch');
+    await dialog.getByRole('option', { name: 'Launch project · Recued', exact: true }).click();
     await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -508,6 +659,235 @@ test.describe('Standalone Notes reader', () => {
     await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
     await expect(editor(page).getByRole('alert')).toContainText('waiting for its source'); expect(await writes(page)).toHaveLength(2);
     expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-today-entities')!)[0].title)).toBe('Changed at source');
+  });
+
+  test('finds only note body text, wraps through matches, and closes Find before the note on a phone', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gap = '\n\nA paragraph between the things we want to find.'.repeat(30);
+    await boot(page, [note('find-phone', 'Needle in the title', `needle at the start${gap}\n\nNEEDLE in the middle${gap}\n\nneedle at the end`)]);
+    await open(page, 'find-phone');
+    const view = reader(page), trigger = view.getByRole('button', { name: 'Find in note', exact: true });
+    await trigger.focus(); await trigger.press('Control+f');
+    const field = view.getByRole('searchbox', { name: 'Find in this note', exact: true });
+    const status = view.locator('[data-note-find-status]');
+    await expect(field).toBeFocused(); await field.fill('needle');
+    await expect(status).toHaveText('1 of 3 matches.');
+    await field.press('Enter'); await expect(status).toHaveText('2 of 3 matches.');
+    await expect(view.locator('[data-note-find-current]')).toBeInViewport();
+    await field.press('Shift+Enter'); await expect(status).toHaveText('1 of 3 matches.');
+    await field.press('Shift+Enter'); await expect(status).toHaveText('3 of 3 matches.');
+    await expect(view.locator('[data-note-find-current]')).toBeInViewport();
+    await field.press('Enter'); await expect(status).toHaveText('1 of 3 matches.');
+    const next = view.getByRole('button', { name: 'Next match', exact: true });
+    await next.click(); await expect(next).toBeFocused(); await expect(status).toHaveText('2 of 3 matches.');
+    await view.getByRole('button', { name: 'Previous match', exact: true }).click();
+    await expect(status).toHaveText('1 of 3 matches.');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('note-find-phone-dark.png') });
+    await field.fill('absent text'); await expect(status).toHaveText('No matches.');
+    await expect(next).toBeDisabled();
+    await expect(view.getByRole('button', { name: 'Previous match', exact: true })).toBeDisabled();
+    await field.press('Escape'); await expect(field).toHaveCount(0); await expect(view).toBeVisible(); await expect(trigger).toBeFocused();
+    await trigger.press('Meta+f'); await expect(field).toBeFocused(); await expect(field).toHaveValue('absent text');
+    await field.press('Escape'); await trigger.press('Escape'); await expect(view).toHaveCount(0);
+    expect(await writes(page)).toEqual([]);
+  });
+
+  test('finds phrases across formatted inline text without changing links, source, or safe markup', async ({ page }, testInfo) => {
+    const body = '# Heading\r\n\r\nRe**newal** [deadline](https://example.test/secret-target) is soon.\r\n\r\n'
+      + 'Renewal **deadline** is later.\r\n\r\n<img src=x onerror="throw new Error(\'unsafe\')">\r\n\r\n'
+      + '```txt\r\nrenewal deadline\r\n```\r\n\r\nAcme\r\n\r\nCorp';
+    await boot(page, [note('find-formatted', 'Renewal deadline', body, 'imported.note')]); await open(page, 'find-formatted');
+    const view = reader(page), formatted = view.getByRole('button', { name: 'Formatted', exact: true });
+    const plain = view.getByRole('button', { name: 'Plain text', exact: true });
+    await formatted.click();
+    const originalMarkup = await view.locator('[data-note-body]').innerHTML();
+    await plain.click(); await view.getByRole('button', { name: 'Find in note', exact: true }).click();
+    const field = view.getByRole('searchbox', { name: 'Find in this note', exact: true });
+    const status = view.locator('[data-note-find-status]');
+    await field.fill('renewal deadline'); await expect(status).toHaveText('1 of 1 matches.');
+    await formatted.click(); await expect(field).toHaveValue('renewal deadline'); await expect(status).toHaveText('1 of 3 matches.');
+    expect(await view.locator('[data-note-find-match="0"]').allTextContents()).toEqual(['Re', 'newal', ' ', 'deadline']);
+    await expect(view.getByRole('link', { name: 'deadline', exact: true })).toHaveAttribute('href', 'https://example.test/secret-target');
+    await expect(view.getByRole('link', { name: 'deadline', exact: true })).toHaveAttribute('rel', 'noopener noreferrer');
+    await expect(view.locator('[data-note-body] img, [data-note-body] script')).toHaveCount(0);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('note-find-formatted.png') });
+    await view.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(view.locator('[data-note-notice]')).toHaveText('Note text copied.');
+    expect(await page.evaluate(() => (window as unknown as ClipboardWindow).__noteCopies)).toEqual([body]);
+    await field.fill('secret-target'); await expect(status).toHaveText('No matches.');
+    await plain.click(); await expect(status).toHaveText('1 of 1 matches.');
+    await formatted.click(); await expect(status).toHaveText('No matches.');
+    await field.fill('<img'); await expect(status).toHaveText('1 of 1 matches.');
+    await expect(view.locator('[data-note-body] img, [data-note-body] script')).toHaveCount(0);
+    await field.fill('Acme Corp'); await expect(status).toHaveText('No matches.');
+    await field.fill('renewal deadline'); await view.getByRole('button', { name: 'Close Find', exact: true }).click();
+    expect(await view.locator('[data-note-body]').innerHTML()).toBe(originalMarkup);
+    await expect(view.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    expect(await writes(page)).toEqual([]);
+  });
+
+  test('keeps Find selection and reading position through a copy repaint, edits raw source, and isolates notes', async ({ page }) => {
+    const body = `needle first\n\n${'A paragraph to scroll past.\n\n'.repeat(70)}needle last`;
+    await boot(page, [note('find-edit', 'Editable search', body), note('find-other', 'Another note', 'needle elsewhere')]);
+    await open(page, 'find-edit');
+    const view = reader(page);
+    await view.getByRole('button', { name: 'Find in note', exact: true }).click();
+    const field = view.getByRole('searchbox', { name: 'Find in this note', exact: true });
+    const status = view.locator('[data-note-find-status]');
+    await field.fill('needle'); await field.press('Enter'); await expect(status).toHaveText('2 of 2 matches.');
+    await page.evaluate(() => { (window as unknown as ClipboardWindow).__holdNoteCopy = true; });
+    await view.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(view.getByRole('button', { name: 'Copying…', exact: true })).toBeVisible();
+    await field.focus(); await field.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 4, 'backward'));
+    const scroll = await view.locator('.work-entity-note-content').evaluate(element => element.scrollTop);
+    await page.evaluate(() => { (window as unknown as ClipboardWindow).__releaseNoteCopy?.(); });
+    await expect(view.locator('[data-note-notice]')).toHaveText('Note text copied.');
+    await expect(field).toBeFocused();
+    expect(await field.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd, element.selectionDirection])).toEqual([1, 4, 'backward']);
+    expect(await view.locator('.work-entity-note-content').evaluate(element => element.scrollTop)).toBe(scroll);
+    await expect(status).toHaveText('2 of 2 matches.');
+    await view.getByRole('button', { name: 'Edit', exact: true }).click();
+    const text = editor(page).getByLabel('Note text'); await expect(text).toHaveValue(body);
+    expect(await text.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true, cancelable: true })))).toBe(true);
+    await expect(page.locator('[data-note-find-input]')).toHaveCount(0);
+    await text.fill(`needle added\n\n${body}`); await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(view).toBeVisible(); await expect(field).toHaveValue('needle'); await expect(status).toHaveText('2 of 3 matches.');
+    expect((await writes(page)).map(write => write.args)).toEqual([{ kind: 'note', id: 'find-edit', body: `needle added\n\n${body}` }]);
+    await view.getByRole('button', { name: 'Back to notes', exact: true }).click(); await open(page, 'find-other');
+    await expect(field).toHaveCount(0); await view.getByRole('button', { name: 'Find in note', exact: true }).click();
+    await expect(field).toHaveValue(''); await expect(status).toHaveText('Type to find text.');
+  });
+
+  test('recovers a new note immediately after reload, including exact text and collapsed related records', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 }); await boot(page, [], true);
+    await page.getByRole('button', { name: '+ New Note', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'New Note', exact: true });
+    const body = '\n  Café 🧾\n<img src=x onerror="throw new Error(\'unsafe\')">\nTrailing spaces  \n';
+    await dialog.getByLabel('Title', { exact: true }).fill('Unfinished <brief>'); await dialog.getByLabel('Note text').fill(body);
+    await dialog.getByRole('button', { name: 'More details', exact: true }).click();
+    await dialog.locator('[data-form-array-add="related_project"]').click();
+    await dialog.getByRole('combobox', { name: 'Related project 1', exact: true }).fill('Launch');
+    await dialog.getByRole('option', { name: 'Launch project · Recued', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
+    await reloadNote(page);
+    const recovery = page.getByRole('region', { name: 'Unfinished notes', exact: true });
+    await expect(recovery.getByRole('heading', { name: 'Unfinished <brief>', exact: true })).toBeVisible();
+    await recovery.getByRole('button', { name: 'Review draft', exact: true }).click();
+    await expect(recovery.getByLabel('Draft text', { exact: true })).toHaveValue(body);
+    await expect(recovery.locator('img,script')).toHaveCount(0); expect(await writes(page)).toEqual([]);
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('note-draft-recovery-phone.png') });
+    await recovery.getByRole('button', { name: 'Resume draft', exact: true }).click();
+    await expect(dialog.getByLabel('Title', { exact: true })).toHaveValue('Unfinished <brief>');
+    await expect(dialog.getByLabel('Note text')).toHaveValue(body);
+    await expect(dialog.getByRole('combobox', { name: 'Related project 1', exact: true })).toHaveValue(/Launch project/);
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click(); await expect(dialog).toHaveCount(0);
+    expect((await writes(page)).map(write => write.args)).toEqual([expect.objectContaining({ kind: 'note', source_id: 'recued.note', body, related_project_ids: ['project-one'] })]);
+    await expect(recovery).toHaveCount(0); await reloadNote(page); await expect(recovery).toHaveCount(0);
+  });
+
+  test('resumes existing note edits, keeps the caret while checkpointing, and clears confirmed saves and explicit discards', async ({ page }) => {
+    await boot(page, [{ ...note('draft-edit', 'Saved title', 'Saved body'), related_project_ids: ['project-one'] }], true); await open(page, 'draft-edit');
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    const body = editor(page).getByLabel('Note text'); await body.fill('Recovered edit 🧾\n  with spaces  ');
+    await body.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(2, 7, 'backward'));
+    await page.clock.runFor(350); await expect(editor(page).locator('[data-note-recovery-status]')).toHaveText('Changes kept in this tab.');
+    await expect(body).toBeFocused(); expect(await body.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([2, 7]);
+    await reloadNote(page);
+    const recovery = reader(page).getByRole('region', { name: 'Unfinished notes', exact: true });
+    await recovery.getByRole('button', { name: 'Resume draft', exact: true }).click();
+    await expect(body).toHaveValue('Recovered edit 🧾\n  with spaces  ');
+    await expect(editor(page).getByRole('combobox', { name: 'Related project 1', exact: true })).toHaveValue(/Launch project/);
+    await editor(page).getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(reader(page).locator('[data-note-notice]')).toHaveText('Note saved.'); await expect(recovery).toHaveCount(0);
+    expect((await writes(page)).map(write => write.args)).toEqual([{ kind: 'note', id: 'draft-edit', body: 'Recovered edit 🧾\n  with spaces  ' }]);
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click(); await body.fill('Explicitly discarded');
+    await page.clock.runFor(350); await editor(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes', exact: true }).click();
+    await reloadNote(page); await expect(recovery).toHaveCount(0);
+    expect(await reader(page).locator('[data-note-body]').textContent()).toBe('Recovered edit 🧾\n  with spaces  ');
+  });
+
+  test('shows both the recovery text and the changed saved note without applying an outdated draft', async ({ page }, testInfo) => {
+    await boot(page, [note('draft-conflict', 'Saved title', 'Original body')], true); await open(page, 'draft-conflict');
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click(); await editor(page).getByLabel('Note text').fill('My unfinished text');
+    await page.addInitScript(() => {
+      const rows = JSON.parse(sessionStorage.getItem('recued-test-today-entities')!); rows[0].body = 'Changed elsewhere, with the same timestamp';
+      sessionStorage.setItem('recued-test-today-entities', JSON.stringify(rows));
+    });
+    await reloadNote(page);
+    const recovery = reader(page).getByRole('region', { name: 'Unfinished notes', exact: true });
+    await recovery.getByRole('button', { name: 'Resume draft', exact: true }).click();
+    await expect(recovery.getByRole('alert')).toContainText('saved note changed'); await expect(recovery.getByRole('alert')).toBeFocused();
+    await expect(recovery.getByLabel('Draft text', { exact: true })).toHaveValue('My unfinished text');
+    await expect(editor(page)).toHaveCount(0); expect(await reader(page).locator('[data-note-body]').textContent()).toBe('Changed elsewhere, with the same timestamp');
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('note-draft-conflict.png') });
+    expect(await writes(page)).toEqual([]);
+    await recovery.getByRole('button', { name: 'Discard draft', exact: true }).click();
+    await expect(recovery.getByRole('button', { name: 'Keep draft', exact: true })).toBeFocused();
+    await recovery.getByRole('button', { name: 'Keep draft', exact: true }).click(); await expect(recovery).toBeVisible();
+    await recovery.getByRole('button', { name: 'Discard draft', exact: true }).click();
+    await recovery.getByRole('button', { name: 'Discard recovery copy', exact: true }).click(); await expect(recovery).toHaveCount(0);
+  });
+
+  test('rechecks source write access before restoring an edit and keeps its text available', async ({ page }) => {
+    await boot(page, [note('draft-readonly', 'Saved title', 'Original body')], true); await open(page, 'draft-readonly');
+    await reader(page).getByRole('button', { name: 'Edit', exact: true }).click(); await editor(page).getByLabel('Note text').fill('Keep this draft');
+    await page.addInitScript(() => { document.addEventListener('DOMContentLoaded', () => { document.documentElement.dataset.notesReadonly = '1'; }); });
+    await reloadNote(page);
+    const recovery = reader(page).getByRole('region', { name: 'Unfinished notes', exact: true });
+    await recovery.getByRole('button', { name: 'Resume draft', exact: true }).click();
+    await expect(recovery.getByRole('alert')).toContainText('cannot be reopened for editing');
+    await expect(recovery.getByLabel('Draft text', { exact: true })).toHaveValue('Keep this draft');
+    await expect(editor(page)).toHaveCount(0); await expect(reader(page).getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    expect(await writes(page)).toEqual([]);
+  });
+
+  test('keeps unconfirmed new-note saves for review without allowing a second create after reload', async ({ page }) => {
+    await boot(page, [], true); await page.getByRole('button', { name: '+ New Note', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'New Note', exact: true }); await dialog.getByLabel('Title', { exact: true }).fill('Unconfirmed note');
+    await dialog.getByLabel('Note text').fill('Check this note before creating another.');
+    await page.evaluate(() => { document.documentElement.dataset.todayAwaitingVerify = '1'; });
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click(); await expect(dialog.getByRole('alert')).toContainText('did not confirm the new note');
+    await reloadNote(page);
+    const recovery = page.getByRole('region', { name: 'Unfinished notes', exact: true });
+    await expect(recovery).toContainText('Save was not confirmed'); await expect(recovery.getByRole('button', { name: 'Resume draft', exact: true })).toBeDisabled();
+    await recovery.getByRole('button', { name: 'Review draft', exact: true }).click(); await expect(recovery.getByLabel('Draft text', { exact: true })).toHaveValue('Check this note before creating another.');
+    expect(await writes(page)).toHaveLength(1); await recovery.getByRole('button', { name: 'Open saved note', exact: true }).click();
+    await expect(reader(page).getByRole('heading', { name: 'Unconfirmed note', exact: true, level: 2 })).toBeVisible(); expect(await writes(page)).toHaveLength(1);
+  });
+
+  test('reports a blocked recovery checkpoint without repainting the editor and retries when storage returns', async ({ page }) => {
+    await page.addInitScript(() => {
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith('recued.note.draft-recovery.v1:') && document.documentElement.dataset.noteStorageBlocked === '1') throw new DOMException('Full', 'QuotaExceededError');
+        setItem.call(this, key, value);
+      };
+    });
+    await boot(page, [], true); await page.getByRole('button', { name: '+ New Note', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'New Note', exact: true }), text = dialog.getByLabel('Note text');
+    await page.evaluate(() => { document.documentElement.dataset.noteStorageBlocked = '1'; }); await text.fill('Still in the editor'); await page.clock.runFor(350);
+    await expect(dialog.locator('[data-note-recovery-status]')).toContainText('Latest edits could not be kept'); await expect(text).toBeFocused(); await expect(text).toHaveValue('Still in the editor');
+    await page.evaluate(() => { delete document.documentElement.dataset.noteStorageBlocked; }); await text.fill('Storage returned'); await page.clock.runFor(350);
+    await expect(dialog.locator('[data-note-recovery-status]')).toHaveText('Changes kept in this tab.'); await reloadNote(page);
+    const recovery = page.getByRole('region', { name: 'Unfinished notes', exact: true }); await recovery.getByRole('button', { name: 'Review draft', exact: true }).click();
+    await expect(recovery.getByLabel('Draft text', { exact: true })).toHaveValue('Storage returned'); expect(await writes(page)).toEqual([]);
+  });
+
+  test('bounds dense-note highlights and leaves composing key events to the input', async ({ page }) => {
+    await boot(page, [note('find-dense', 'Dense note', 'needle '.repeat(1001))]); await open(page, 'find-dense');
+    const view = reader(page); await view.getByRole('button', { name: 'Find in note', exact: true }).click();
+    const field = view.getByRole('searchbox', { name: 'Find in this note', exact: true });
+    const status = view.locator('[data-note-find-status]'); await field.fill('needle');
+    await expect(status).toHaveText('1 of 1,000+ matches. Narrow your search to see more.');
+    await expect(view.locator('[data-note-find-match]')).toHaveCount(1000);
+    await field.press('Shift+Enter'); await expect(status).toHaveText('1000 of 1,000+ matches. Narrow your search to see more.');
+    await expect(view.locator('[data-note-find-current]')).toBeInViewport();
+    expect(await field.evaluate(element => ['Escape', 'Enter'].map(key => element.dispatchEvent(new KeyboardEvent('keydown', { key, isComposing: true, bubbles: true, cancelable: true }))))).toEqual([true, true]);
+    await expect(field).toBeVisible(); await expect(status).toHaveText('1000 of 1,000+ matches. Narrow your search to see more.');
+    await field.press('Escape'); await expect(field).toHaveCount(0); await expect(view).toBeVisible();
+    expect(await writes(page)).toEqual([]);
   });
 });
 
@@ -549,7 +929,8 @@ test.describe('Task editing and due-date shortcuts', () => {
       last_seen_at: 1, created_at: 1, updated_at: 1,
     }])));
     await boot(page);
-    await page.getByRole('link', { name: 'Edit details: File the return', exact: true }).click();
+    await page.getByRole('link', { name: 'Open task: File the return', exact: true }).click();
+    await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Edit Task', exact: true });
     await expect(dialog).toBeVisible();
     await expect(page).toHaveURL(/#data\/task\/task-edit$/);
@@ -558,7 +939,8 @@ test.describe('Task editing and due-date shortcuts', () => {
     await dialog.getByLabel('Priority', { exact: true }).selectOption('high');
     await dialog.getByRole('button', { name: 'Due tomorrow', exact: true }).click();
     await dialog.getByRole('button', { name: 'More details', exact: true }).click();
-    await expect(dialog.getByRole('textbox', { name: 'Blocks task 1', exact: true })).toHaveValue('follow-up');
+    await expect(dialog.locator('[data-form-array-item="blocks_task"][data-form-array-index="0"]')).toHaveValue('follow-up');
+    await expect(dialog.getByRole('combobox', { name: 'Depends on 1', exact: true })).toHaveValue('Unavailable task');
     await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -567,10 +949,10 @@ test.describe('Task editing and due-date shortcuts', () => {
       body: '', priority: 'high', due_at: Date.parse('2026-09-09T00:00:00Z') });
     expect(saved).not.toHaveProperty('blocks_task_ids');
 
-    await page.locator('[data-action="open-edit-work-entity"][data-entity-id="task-edit"]').click();
+    await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
     await expect(dialog.getByLabel('Notes', { exact: true })).toHaveValue('');
     await dialog.getByRole('button', { name: 'More details', exact: true }).click();
-    await expect(dialog.getByRole('textbox', { name: 'Blocks task 1', exact: true })).toHaveValue('follow-up');
+    await expect(dialog.locator('[data-form-array-item="blocks_task"][data-form-array-index="0"]')).toHaveValue('follow-up');
     await dialog.getByLabel('Priority', { exact: true }).selectOption('');
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(dialog.getByRole('alert')).toContainText('already has a priority');
@@ -581,7 +963,7 @@ test.describe('Task editing and due-date shortcuts', () => {
     await expect(dialog).toHaveCount(0);
     expect((await log(page))[1]?.args).toMatchObject({ kind: 'task', id: 'task-edit', clear_due_at: true });
     expect((await log(page))[1]?.args).not.toHaveProperty('due_at');
-    await page.locator('[data-action="open-edit-work-entity"][data-entity-id="task-edit"]').click();
+    await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
     await dialog.getByRole('button', { name: 'More details', exact: true }).click();
     await dialog.getByRole('button', { name: 'Fewer details', exact: true }).click();
     await page.keyboard.press('Escape');
@@ -596,7 +978,8 @@ test.describe('Task editing and due-date shortcuts', () => {
       created_at: Date.parse('2026-09-08T12:00:00-07:00'), updated_at: Date.now(), last_seen_at: Date.now(),
     }])));
     await boot(page);
-    await page.getByRole('link', { name: 'Edit details: Review the brief', exact: true }).click();
+    await page.getByRole('link', { name: 'Open task: Review the brief', exact: true }).click();
+    await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Edit Task', exact: true });
     await dialog.getByLabel('Notes', { exact: true }).fill('Keep this draft');
     await page.evaluate(() => {
@@ -656,6 +1039,7 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   const records = page.locator(`[${DATA_TAB}="records"]`);
   const search = page.locator(`[${DATA_TAB}="search"]`);
   await expect(tablist).toBeVisible();
+  await expect(tablist).toHaveAttribute('aria-orientation', 'vertical');
   // D-290 — Today left this tablist for its own `#today` route (18 → 17),
   // D-315 put Mail facts under Received (17 → 18), and the Webhooks collection
   // was deleted (`3452f3017`, 18 → 17), and D-324 put Reminders last under
@@ -671,7 +1055,7 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(page.getByRole('tabpanel', { name: 'Contacts' })).toBeVisible();
 
   await contacts.focus();
-  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowDown');
   await expect(page).toHaveURL(/#data\/task$/);
   await expect(tasks).toHaveAttribute('aria-selected', 'true');
   await expect(tasks).toBeFocused();
@@ -681,8 +1065,12 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(page).toHaveURL(/#data\/search$/);
   await expect(search).toHaveAttribute('aria-selected', 'true');
   await expect(search).toBeFocused();
+  const railBounds = (await tablist.boundingBox())!;
+  const searchBounds = (await search.boundingBox())!;
+  expect(searchBounds.y).toBeGreaterThanOrEqual(railBounds.y - 1);
+  expect(searchBounds.y + searchBounds.height).toBeLessThanOrEqual(railBounds.y + railBounds.height + 1);
 
-  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowUp');
   await expect(page).toHaveURL(/#data\/records$/);
   await expect(records).toHaveAttribute('aria-selected', 'true');
   await expect(records).toBeFocused();
@@ -692,6 +1080,14 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(contacts).toHaveAttribute('aria-selected', 'true');
   await expect(contacts).toBeFocused();
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect(tablist).toHaveAttribute('aria-orientation', 'horizontal');
+  await expect(contacts).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(tasks).toBeFocused();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(tablist).toHaveAttribute('aria-orientation', 'vertical');
+  await expect(tasks).toBeFocused();
 });
 
 test('Data exposes full mobile targets for its persistent navigation', async ({ page }) => {
@@ -719,6 +1115,7 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
 });
 
 for (const { query, collection, label } of [
+  { query: 'task', collection: 'task', label: 'Tasks' },
   { query: 'calendar', collection: 'calendar', label: 'Calendar' },
   { query: 'pack', collection: 'records', label: 'Pack records' },
 ]) {
@@ -1125,6 +1522,151 @@ test('Data protects an unfinished task create from Escape', async ({ page }) => 
   await expect(trigger).toBeFocused();
 });
 
+test.describe('Contact quick actions', () => {
+  type QuickState = { copies: string[]; mode: 'ok' | 'deny' | 'hold'; release?: () => void;
+    legacyCopies: string[]; legacyWorks: boolean; restoreURL?: () => void; calls: string[] };
+  type QuickWindow = Window & { __contactQuick: QuickState };
+  const primary: ContactRecord = {
+    _id: 'zoe@example.test', _collection: 'contact', email: 'zoe@example.test', name: 'Zoë Example 🧭',
+    phone: '+442079460123', company: 'Northwind', title: 'Research lead', birthday: '--02-29',
+    mailing_address: { address1: '10 downing street', address2: 'unit 4', city: 'london', state: 'london', zip: 'SW1A 2AA', country: 'GB' },
+    source: 'manual', first_seen: 1, last_interaction: 1, interaction_count: 1, created_at: 1, updated_at: 1,
+  };
+  const noEmail: ContactRecord = { ...primary, _id: 'mention-only-no-email@_recued.invalid',
+    email: 'mention-only-no-email@_recued.invalid', name: 'Without email', phone: '<img src=x onerror=alert(1)>', mailing_address: undefined };
+  const boot = async (page: Page) => {
+    await page.addInitScript(({ primary, noEmail }) => {
+      const state: QuickState = { copies: [], mode: 'ok', legacyCopies: [], legacyWorks: true, calls: [] };
+      Object.assign(window, { __contactQuick: state,
+        __connectionsFixture: async (method: string, args: Record<string, unknown>) => {
+          state.calls.push(method);
+          if (method === 'contact.list' || method === 'contact.search.local') return { result: { contacts: [primary, noEmail], total: 2, rollups: {} } };
+          if (method === 'contact.get') return { result: { contact: args.email === primary.email ? primary : args.email === noEmail.email ? noEmail : null,
+            ...(args.email === primary.email ? { identifiers: { emails: ['zoe@work.test'], phones: ['020 7946 0123 ext. 42'] } } : {}) } };
+          if (method === 'contact.contributions') return { result: { contributions: [] } };
+          if (method === 'data.timeline' && String(args.entity_id).startsWith('contact:')) return { result: { entries: [] } };
+          return undefined;
+        },
+      });
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => {
+        state.copies.push(text);
+        if (state.mode === 'deny') throw new Error('Clipboard denied');
+        if (state.mode === 'hold') { state.mode = 'ok'; await new Promise<void>(resolve => { state.release = resolve; }); }
+      } } });
+    }, { primary, noEmail });
+    await page.goto(`${HARNESS_URL}?data=contacts&settle_reads=1#data/contact`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.locator(`[${DATA_CONTACT_ROW}="${primary.email}"]`).click();
+    await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toHaveText(primary.name!);
+  };
+  const detail = (page: Page) => page.locator('[data-recued-data-contact-detail]');
+  const copy = (page: Page, label: string) => detail(page).getByRole('button', { name: `Copy ${label}`, exact: true });
+  const expectNoWrites = async (page: Page) => expect(await page.evaluate(() =>
+    (window as unknown as QuickWindow).__contactQuick.calls.filter(method => /^contact\.(?:upsert|create|delete|merge|add_email|set_email|change_email|add_phone)/u.test(method)))).toEqual([]);
+
+  test('copies displayed primary and additional values, exposes phone links, and downloads the contact on a phone', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 }); await boot(page);
+    const address = '10 downing street, unit 4, london, london, SW1A 2AA, GB';
+    const values = [
+      ['email address: zoe@example.test', primary.email], ['phone number: +442079460123', primary.phone!],
+      ['mailing address: ' + address, address], ['email address: zoe@work.test', 'zoe@work.test'],
+      ['phone number: 020 7946 0123 ext. 42', '020 7946 0123 ext. 42'],
+    ];
+    for (const [label, value] of values) {
+      const button = copy(page, label!); await button.click();
+      await expect(button.locator('..').getByRole('status')).toHaveText('Copied.');
+      await expect(button).toBeFocused();
+      expect(await page.evaluate(() => (window as unknown as QuickWindow).__contactQuick.copies.at(-1))).toBe(value);
+    }
+    await expect(detail(page).getByRole('link', { name: 'Call +442079460123', exact: true })).toHaveAttribute('href', 'tel:+442079460123');
+    await expect(detail(page).getByRole('link', { name: 'Call 020 7946 0123 ext. 42', exact: true })).toHaveAttribute('href', 'tel:02079460123;ext=42');
+    await detail(page).locator('[data-contact-more] summary').click();
+    const download = page.waitForEvent('download');
+    await detail(page).getByRole('button', { name: 'Download contact (.vcf)', exact: true }).click();
+    const file = await download;
+    expect(file.suggestedFilename().normalize('NFC')).toBe('contact-Zoë Example 🧭.vcf');
+    const parsed = parseContactFile(await readFile((await file.path())!, 'utf8'));
+    expect(parsed.errors).toEqual([]); expect(parsed.entries).toHaveLength(1);
+    expect(parsed.entries[0]).toMatchObject({ name: primary.name, email: primary.email, emails: [primary.email, 'zoe@work.test'],
+      phones: [primary.phone, '020 7946 0123 ext. 42'], address: primary.mailing_address, birthday: '--02-29', company: 'Northwind', title: 'Research lead' });
+    await expect(detail(page).getByText('Contact download started.', { exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('contact-actions-phone.png'), fullPage: true });
+    await expectNoWrites(page);
+  });
+
+  test('reports denied copies, prevents duplicate clipboard calls, and ignores a completion after opening another contact', async ({ page }) => {
+    await boot(page);
+    await page.evaluate(() => { (window as unknown as QuickWindow).__contactQuick.mode = 'deny'; });
+    await copy(page, 'email address: zoe@example.test').click();
+    await expect(detail(page).getByRole('alert')).toHaveText('Could not copy. Select this value and copy it.');
+    await page.evaluate(() => { (window as unknown as QuickWindow).__contactQuick.mode = 'hold'; });
+    const pending = copy(page, 'email address: zoe@example.test'); await pending.click();
+    await expect(pending).toHaveText('Copying…');
+    const otherCopy = copy(page, 'email address: zoe@work.test');
+    await expect(otherCopy).toHaveAttribute('aria-disabled', 'true'); await otherCopy.dispatchEvent('click');
+    expect(await page.evaluate(() => (window as unknown as QuickWindow).__contactQuick.copies)).toEqual([primary.email, primary.email]);
+    await detail(page).getByRole('button', { name: '← Back to contacts', exact: true }).click();
+    await page.locator(`[${DATA_CONTACT_ROW}="${noEmail.email}"]`).click();
+    await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toHaveText('Without email');
+    await page.evaluate(async () => {
+      (window as unknown as QuickWindow).__contactQuick.release?.();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+    });
+    await expect(detail(page).getByRole('button', { name: /^Copy email address/ })).toHaveCount(0);
+    await expect(detail(page).getByRole('link', { name: /^Call / })).toHaveCount(0);
+    await expect(detail(page).locator('img')).toHaveCount(0);
+    await expect(detail(page).getByText('Copied.', { exact: true })).toHaveCount(0);
+    await detail(page).locator('[data-contact-more] summary').click();
+    const download = page.waitForEvent('download'); await detail(page).getByRole('button', { name: 'Download contact (.vcf)', exact: true }).click();
+    const content = await readFile((await (await download).path())!, 'utf8');
+    expect(content).toContain('FN:Without email'); expect(content).not.toContain('@_recued.invalid'); expect(content).not.toContain(primary.email);
+    await expectNoWrites(page);
+  });
+
+  test('leaves an editing draft and its focus intact when a clipboard write finishes', async ({ page }) => {
+    await boot(page);
+    await page.evaluate(() => { (window as unknown as QuickWindow).__contactQuick.mode = 'hold'; });
+    const button = copy(page, 'email address: zoe@example.test'); await button.click();
+    await expect(button).toHaveText('Copying…');
+    await detail(page).getByRole('button', { name: 'Edit', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: 'Edit contact', exact: true });
+    const name = editor.getByLabel('Name', { exact: true }); await name.fill('An unfinished contact draft');
+    await page.evaluate(async () => {
+      (window as unknown as QuickWindow).__contactQuick.release?.();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+    });
+    await expect(name).toHaveValue('An unfinished contact draft'); await expect(name).toBeFocused();
+    await editor.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.locator(`[${DATA_CONTACT_DISCARD_COMMIT}]`).click();
+    await expect(editor).toHaveCount(0); await expect(button).toHaveText('Copy');
+    await expectNoWrites(page);
+  });
+
+  test('uses the clipboard fallback and keeps download failures retryable', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1100, height: 900 }); await boot(page);
+    await page.evaluate(() => {
+      const state = (window as unknown as QuickWindow).__contactQuick;
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      document.execCommand = () => { state.legacyCopies.push((document.activeElement as HTMLTextAreaElement).value); return state.legacyWorks; };
+      const original = URL.createObjectURL; state.restoreURL = () => { URL.createObjectURL = original; };
+      URL.createObjectURL = () => { throw new Error('Download unavailable'); };
+    });
+    const button = copy(page, 'email address: zoe@work.test'); await button.click();
+    await expect(button.locator('..').getByRole('status')).toHaveText('Copied.'); await expect(button).toBeFocused();
+    expect(await page.evaluate(() => (window as unknown as QuickWindow).__contactQuick.legacyCopies)).toEqual(['zoe@work.test']);
+    await detail(page).locator('[data-contact-more] summary').click();
+    const downloadButton = detail(page).getByRole('button', { name: 'Download contact (.vcf)', exact: true });
+    await downloadButton.click();
+    await expect(detail(page).getByRole('alert')).toHaveText('The contact could not be downloaded. Try again.');
+    await expect(downloadButton).toBeFocused();
+    await page.evaluate(() => { (window as unknown as QuickWindow).__contactQuick.restoreURL?.(); });
+    const download = page.waitForEvent('download'); await downloadButton.click(); await download;
+    await expect(detail(page).getByRole('alert')).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('contact-actions-desktop.png'), fullPage: true });
+    await expectNoWrites(page);
+  });
+});
+
 test('Data contact search retains its keyboard query while refreshing', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#data/contact'));
@@ -1269,8 +1811,27 @@ test('Data focuses the invalid Contact field after validation', async ({ page })
   await expect(save).toBeFocused();
   await page.keyboard.press('Enter');
 
-  await expect(dialog.getByRole('alert')).toHaveText('Email is required.');
+  // D-336 (2026-11-17) — a contact may be a name alone, so an empty form asks for either.
+  await expect(dialog.getByRole('alert')).toHaveText('Write an email address or a name.');
   await expect(dialog.getByLabel('Email')).toBeFocused();
+});
+
+/** D-336 (the owner, 2026-11-17: "it is okay to create a contact with just a name because it can be
+ *  beneficial to PII feature") — New contact takes a name alone, added as the Memory form's picker
+ *  adds one (`contact.create_by_name`), with nothing more sent when nothing more was written. */
+test('Data adds a contact from a name alone on New contact', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.getByRole('button', { name: 'New contact', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  await expect(dialog).toContainText('Optional: someone with no email address can be added by name alone.');
+  await dialog.getByLabel('Name').fill('Ada Okonkwo');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.create_by_name'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('contact.upsert'))).toBe(0);
 });
 
 test('Data moves keyboard focus into the editable Contact field', async ({ page }) => {
@@ -1923,13 +2484,14 @@ test('Data contains long work-entity text on a narrow phone', async ({ page }) =
   }
 
   await row.click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   await expect(dialog.getByLabel('Title')).toHaveValue(longTitle);
   await expect(dialog.getByLabel('Notes')).toHaveValue(longBody);
   await expect(dialog.locator('.work-entity-dialog-source-value'))
     .toHaveText(longSource);
   await dialog.getByRole('button', { name: 'More details', exact: true }).click();
-  await expect(dialog.getByRole('textbox', { name: 'Blocks task 1' }))
+  await expect(dialog.locator('[data-form-array-item="blocks_task"][data-form-array-index="0"]'))
     .toHaveValue(longRelationship);
   const dialogGeometry = await dialog.evaluate((surface) => {
     const elements = [
@@ -2035,6 +2597,7 @@ test('Data carries task-row focus through edit loading and back from the dialog'
     () => page.evaluate(() => window.__app.rpcCallCount('work_entity.get')),
   ).toBe(readsBefore + 1);
 
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await expect(title).toHaveValue('Task 0');
@@ -2064,6 +2627,7 @@ test('Data protects an unfinished task edit from dismissal', async ({ page }) =>
     '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
   );
   await row.click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   const close = dialog.getByRole('button', { name: 'Close', exact: true });
@@ -2111,15 +2675,16 @@ test('Data focuses a newly added task relationship without losing the draft', as
   await page.locator(
     '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
   ).click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('Draft survives repaint');
   await dialog.getByRole('button', { name: 'More details', exact: true }).click();
-  const add = dialog.getByRole('button', { name: 'Add Blocks task' });
+  const add = dialog.getByRole('button', { name: 'Add Depends on' });
   await add.focus();
   await page.keyboard.press('Enter');
 
-  const entry = dialog.getByRole('textbox', { name: 'Blocks task 1' });
+  const entry = dialog.getByRole('combobox', { name: 'Depends on 1' });
   await expect(entry).toHaveCount(1);
   await expect(entry).toBeFocused();
   await expect(entry).toBeInViewport();
@@ -2128,6 +2693,15 @@ test('Data focuses a newly added task relationship without losing the draft', as
 
 test('Data restores task relationship removal focus to a survivor or Add', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => Object.assign(window, { __connectionsFixture: (method: string, args: { kind?: string; id?: string; query?: string }) => {
+    const tasks = ['a', 'b'].map(letter => ({ _kind: 'task', id: `task-${letter}`, title: `Dependency ${letter.toUpperCase()}`,
+      done: false, blocks_task_ids: [], source_id: 'recued.task', sync_state: 'live', conflict_policy: 'recued_wins', created_at: 1, updated_at: 1, last_seen_at: 1 }));
+    if (method === 'work_entity.get' && args.kind === 'task' && tasks.some(task => task.id === args.id)) return { result: { entity: tasks.find(task => task.id === args.id) } };
+    if (method === 'work_entity.search' && args.kind === 'task') return { result: { groups: [{ kind: 'task', offset: 0, more: false,
+      matches: tasks.filter(task => task.title.toLowerCase().includes((args.query ?? '').toLowerCase())).map(task => ({ id: task.id, title: task.title,
+        source_id: task.source_id, source_label: 'Recued', excerpt: '', updated_at: 1, stale: false, pending_write: false })) }] } };
+    return undefined;
+  } }));
   await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/task'));
@@ -2135,29 +2709,33 @@ test('Data restores task relationship removal focus to a survivor or Add', async
   await page.locator(
     '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
   ).click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('Removal draft survives');
   await dialog.getByRole('button', { name: 'More details', exact: true }).click();
-  const add = dialog.getByRole('button', { name: 'Add Blocks task' });
+  const add = dialog.getByRole('button', { name: 'Add Depends on' });
   await add.click();
-  await dialog.getByRole('textbox', { name: 'Blocks task 1' }).fill('task-a');
+  await dialog.getByRole('combobox', { name: 'Depends on 1' }).fill('Dependency A');
+  await dialog.getByRole('option', { name: 'Dependency A · Recued', exact: true }).click();
   await add.click();
-  await dialog.getByRole('textbox', { name: 'Blocks task 2' }).fill('task-b');
+  await dialog.getByRole('combobox', { name: 'Depends on 2' }).fill('Dependency B');
+  await dialog.getByRole('option', { name: 'Dependency B · Recued', exact: true }).click();
 
   const firstRemove = dialog.getByRole('button', {
-    name: 'Remove Blocks task 1',
+    name: 'Remove Depends on 1',
   });
   await firstRemove.focus();
   await page.keyboard.press('Enter');
-  const survivor = dialog.getByRole('textbox', { name: 'Blocks task 1' });
-  await expect(survivor).toHaveValue('task-b');
+  const survivor = dialog.getByRole('combobox', { name: 'Depends on 1' });
+  await expect(survivor).toHaveValue('Dependency B · Recued');
+  await expect(dialog.locator('[data-form-array-item="blocks_task"][data-form-array-index="0"]')).toHaveValue('task-b');
   await expect(survivor).toBeFocused();
   await expect(survivor).toBeInViewport();
   await expect(title).toHaveValue('Removal draft survives');
 
   const lastRemove = dialog.getByRole('button', {
-    name: 'Remove Blocks task 1',
+    name: 'Remove Depends on 1',
   });
   await lastRemove.focus();
   await page.keyboard.press('Enter');
@@ -2177,6 +2755,7 @@ test('Data keeps task save visible, single-flight, and returns focus to the upda
     '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
   );
   await row.click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   await dialog.getByLabel('Title').fill('Task polished');
   const save = dialog.locator(
@@ -2215,6 +2794,7 @@ test('Data keeps task save visible, single-flight, and returns focus to the upda
 
   await expect(dialog).toHaveCount(0);
   await expect(row).toContainText('Task polished');
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Back to tasks', exact: true }).click();
   await expect(row).toBeFocused();
 });
 
@@ -2227,6 +2807,7 @@ test('Data moves task validation ownership to the first invalid field', async ({
   await page.locator(
     '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
   ).click();
+  await page.locator('.work-entity-task-reader').getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit Task' });
   const title = dialog.getByLabel('Title');
   await title.fill('');
@@ -4959,8 +5540,9 @@ for (const action of ['save', 'cancel'] as const) {
           await expect(host.locator('.reminders-list[aria-label] [data-reminder-id="rem_1"]')).toHaveCount(0);
         }
         if (moveAway) await expect(neighbor).toBeFocused();
-        else await expect(action === 'save' && readOutcome !== 'missing'
-          ? page.locator('[data-recued-reminders-focus="edit:rem_1"]') : notice).toBeFocused();
+        else await expect(action === 'save'
+          ? page.locator(`[data-recued-reminders-focus="${readOutcome === 'missing' ? 'row:rem_2' : 'edit:rem_1'}"]`)
+          : notice).toBeFocused();
         expect(await page.evaluate(() => window.__reminderFocus.reads)).toBe(2);
         await expectReminderWrite(page, action);
       });
@@ -5239,6 +5821,133 @@ test.describe('Records CSV import', () => {
   });
 });
 
+test.describe('project task triage', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' });
+  const openProject = async (page: Page) => {
+    await page.goto(`${HARNESS_URL}?data=today#data/project`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.locator('[data-entity-id="launch"]').click();
+    await expect(page.locator('[data-project-section="task"] [data-project-item-id]')).toHaveCount(10);
+  };
+  const overview = (page: Page) => page.locator('[data-project-overview="launch"]');
+  const tasks = (page: Page) => overview(page).locator('[data-project-section="task"]');
+  const change = (page: Page, id: string) => tasks(page).locator(`[data-project-task-id="${id}"]`);
+  const status = (page: Page) => tasks(page).locator('[data-project-focus="task-status"]');
+
+  test('completes and reopens inline, filters the entire project and retains the filter through a task visit', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 }); await installProjectOverviewFixture(page); await openProject(page);
+    await expect(overview(page)).toContainText('12 open · 2 completed tasks');
+    await tasks(page).getByRole('button', { name: 'Open', exact: true }).click();
+    await expect(tasks(page).locator('.project-work-count')).toHaveText('12');
+    await change(page, 'task-00').click();
+    await expect(status(page)).toContainText('Task completed.'); await expect(status(page)).toBeFocused();
+    await expect(overview(page)).toContainText('11 open · 3 completed tasks');
+    await expect(tasks(page).locator('[data-project-item-id="task-00"]')).toHaveCount(0);
+    await tasks(page).getByRole('button', { name: 'Completed', exact: true }).click();
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(3);
+    await expect(tasks(page).locator('.project-work-count')).toHaveText('3');
+    await page.screenshot({ path: testInfo.outputPath('project-tasks-phone.png'), fullPage: true, animations: 'disabled' });
+    await change(page, 'task-00').click();
+    await expect(status(page)).toContainText('Task reopened.');
+    await expect(overview(page)).toContainText('12 open · 2 completed tasks');
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(2);
+    await tasks(page).locator('[data-project-item-id="task-12"]').click();
+    await page.getByRole('button', { name: 'Back to project', exact: true }).click();
+    await expect(tasks(page).getByRole('button', { name: 'Completed', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(2);
+    await tasks(page).getByRole('button', { name: 'All', exact: true }).click();
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(10);
+    await tasks(page).getByRole('button', { name: 'More tasks', exact: true }).click();
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(14);
+    expect(await page.evaluate(() => window.__projectOverview.writes.filter(write => write.method === 'work_entity.task.mark_done')))
+      .toEqual([{ method: 'work_entity.task.mark_done', id: 'task-00', done: true }, { method: 'work_entity.task.mark_done', id: 'task-00', done: false }]);
+  });
+
+  test('shows overdue only for unfinished tasks whose timed or local-day deadline has passed', async ({ page }, testInfo) => {
+    await page.clock.setFixedTime(new Date(1_700_000_000_000));
+    await installProjectOverviewFixture(page);
+    await page.goto(HARNESS_URL); await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => {
+      window.__projectOverview.patchTask('task-00', { due_at: 1_700_000_000_000 - 3_600_000 });
+      window.__projectOverview.patchTask('task-01', { due_at: Date.parse('2023-11-14T00:00:00Z') });
+      window.__projectOverview.patchTask('task-02', { due_at: Date.parse('2023-11-13T00:00:00Z') });
+      window.__projectOverview.patchTask('task-12', { due_at: Date.parse('2023-11-13T00:00:00Z') });
+      window.__app.setHash('#data/project');
+    });
+    await page.locator('[data-entity-id="launch"]').click();
+    await expect(tasks(page).locator('[data-project-item-id="task-00"]')).toContainText('Overdue');
+    await expect(tasks(page).locator('[data-project-item-id="task-01"]')).not.toContainText('Overdue');
+    await expect(tasks(page).locator('[data-project-item-id="task-02"]')).toContainText('Overdue');
+    await tasks(page).getByRole('button', { name: 'Completed', exact: true }).click();
+    await expect(tasks(page).locator('[data-project-item-id="task-12"]')).toContainText('Completed');
+    await expect(tasks(page).locator('[data-project-item-id="task-12"]')).not.toContainText('Overdue');
+    await page.screenshot({ path: testInfo.outputPath('project-tasks-desktop.png'), fullPage: true, animations: 'disabled' });
+  });
+
+  test('checks a lost completion response without sending another write', async ({ page }) => {
+    await installProjectOverviewFixture(page); await openProject(page);
+    await page.evaluate(() => window.__projectOverview.loseTaskReply());
+    await change(page, 'task-00').click();
+    await expect(tasks(page).getByRole('button', { name: 'Check task status', exact: true })).toBeVisible();
+    await expect(change(page, 'task-01')).toBeDisabled();
+    await tasks(page).getByRole('button', { name: 'Check task status', exact: true }).click();
+    await expect(status(page)).toContainText('Task is completed.');
+    await expect(overview(page)).toContainText('11 open · 3 completed tasks');
+    await tasks(page).getByRole('button', { name: 'Completed', exact: true }).click();
+    await expect(change(page, 'task-00')).toHaveText('Reopen');
+    expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(1);
+  });
+
+  test('holds browsing and duplicate actions until a completion is confirmed', async ({ page }) => {
+    await installProjectOverviewFixture(page); await openProject(page);
+    await page.evaluate(() => window.__projectOverview.holdTaskWrite()); await change(page, 'task-00').click();
+    await expect.poll(() => page.evaluate(() => window.__projectOverview.writes.length)).toBe(1);
+    await expect(change(page, 'task-01')).toBeDisabled();
+    await expect(tasks(page).getByRole('button', { name: 'Completed', exact: true })).toBeDisabled();
+    await expect(tasks(page).locator('[data-project-item-id="task-01"]')).toBeDisabled();
+    await overview(page).getByRole('button', { name: 'Back to projects', exact: true }).click();
+    await expect(overview(page)).toBeVisible();
+    await page.evaluate(() => window.__projectOverview.releaseTaskWrite());
+    await expect(status(page)).toContainText('Task completed.');
+    await expect(overview(page)).toContainText('11 open · 3 completed tasks');
+    expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(1);
+  });
+
+  test('refuses a moved task and newly revoked source permission before writing', async ({ page }) => {
+    await installProjectOverviewFixture(page); await openProject(page);
+    await page.evaluate(() => window.__projectOverview.changeLinks('task', 'task-00', ['other']));
+    await change(page, 'task-00').click(); await expect(status(page)).toContainText('project link changed');
+    expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(0);
+    await page.evaluate(() => window.__projectOverview.setSourceWritable('task', false));
+    await change(page, 'task-01').click(); await expect(status(page)).toContainText('read-only');
+    expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(0);
+  });
+
+  test('ignores an older unfiltered page after switching to Completed', async ({ page }) => {
+    await installProjectOverviewFixture(page); await openProject(page);
+    await page.evaluate(() => window.__projectOverview.holdTaskPage());
+    await tasks(page).getByRole('button', { name: 'More tasks', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__projectOverview.reads.some(read => read.kind === 'task' && read.offset === 10))).toBe(true);
+    await tasks(page).getByRole('button', { name: 'Completed', exact: true }).click();
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(2);
+    await page.evaluate(() => window.__projectOverview.releaseTaskPage());
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(2);
+    await expect(tasks(page)).not.toContainText('Launch task 0');
+    await expect(overview(page)).toContainText('12 open · 2 completed tasks');
+  });
+
+  test('keeps an older server readable while explaining unavailable filters and inline changes', async ({ page }) => {
+    await installProjectOverviewFixture(page); await page.goto(HARNESS_URL); await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => { window.__projectOverview.legacyTaskPages(true); window.__app.setHash('#data/project'); });
+    await page.locator('[data-entity-id="launch"]').click();
+    await expect(tasks(page).locator('[data-project-item-id]')).toHaveCount(10);
+    await expect(tasks(page)).toContainText('Update your Recued server to filter project tasks.');
+    await expect(tasks(page).getByRole('button', { name: 'Open', exact: true })).toBeDisabled();
+    await expect(change(page, 'task-00')).toBeDisabled();
+    expect(await page.evaluate(() => window.__projectOverview.writes.length)).toBe(0);
+  });
+});
+
 // Projects assemble only explicit links; the existing editors retain their
 // mutation and draft guards while the overview owns the return navigation.
 test('project commitments expose blockers, preserve closed history, and review new and existing links', async ({ page }, testInfo) => {
@@ -5365,6 +6074,7 @@ test('project linking rechecks task moves and source permissions and requires co
   const overview = page.locator('[data-project-overview="launch"]');
   await overview.locator('[data-project-section="task"]').getByRole('button', { name: 'Link existing', exact: true }).click();
   await page.getByRole('searchbox', { name: 'Search tasks', exact: true }).fill('Other project task');
+  await expect(page.locator('[data-entity-id]')).toHaveCount(1);
   await page.locator('[data-entity-id="other-task"]').click();
   const review = page.locator('[data-project-link-review]');
   await page.evaluate(() => window.__projectOverview.changeLinks('task', 'other-task', []));
@@ -5458,14 +6168,17 @@ test('project overview pages linked work and returns from editing and creating t
   expect(await page.locator('[data-recued-webclient-content]').evaluate(node => node.scrollTop)).toBe(scroll);
   await expect(notes.locator('[data-project-item-id]')).toHaveCount(12);
   await tasks.locator('[data-project-item-id="task-00"]').click();
+  const taskView = page.locator('.work-entity-task-reader');
+  await taskView.getByRole('button', { name: 'Edit', exact: true }).click();
   const task = page.getByRole('dialog', { name: 'Edit Task', exact: true });
   await task.getByRole('textbox', { name: /^Title/ }).fill('Revised launch task');
   await task.getByRole('button', { name: 'Save', exact: true }).click();
+  await taskView.getByRole('button', { name: 'Back to project', exact: true }).click();
   await expect(tasks.locator('[data-project-item-id="task-00"]')).toContainText('Revised launch task');
   await tasks.locator('[data-project-item-id="task-00"]').click();
-  await task.getByRole('button', { name: 'Complete', exact: true }).click();
-  await expect(task).toContainText('Task completed.');
-  await task.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await taskView.getByRole('button', { name: 'Complete', exact: true }).click();
+  await expect(taskView).toContainText('Task completed.');
+  await taskView.getByRole('button', { name: 'Back to project', exact: true }).click();
   await expect(overview).toContainText('11 open · 3 completed tasks');
   await tasks.getByRole('button', { name: 'New task', exact: true }).click();
   const newTask = page.getByRole('dialog', { name: 'New Task', exact: true });
@@ -5947,13 +6660,13 @@ test('Document contents search continues through saved files and returns from th
   expect(await page.evaluate(() => window.__documentSearchDrive.searches)).toEqual([]);
   await panel.getByRole('button', { name: 'Search file contents', exact: true }).click();
   await expect(panel).toContainText('5 pending');
-  await expect(page.getByRole('button', { name: /Renewal email/ })).toBeVisible();
+  await expect(page.locator('[data-recued-data-action="universal-search-open-record"][data-search-record="renewal-mail"]')).toHaveAccessibleName(/Renewal email/);
   await panel.getByRole('button', { name: 'Search more files', exact: true }).click();
   const hits = panel.locator('[data-document-search-file]');
   await expect(hits).toHaveCount(2);
   await expect(panel).toContainText('1 file needs an installed and authorized');
   expect(await page.evaluate(() => window.__documentSearchDrive.searches[1]?.cursor)).toBe('prepare-next');
-  await panel.screenshot({ path: testInfo.outputPath('document-search-desktop.png') });
+  await page.screenshot({ path: testInfo.outputPath('document-search-desktop.png'), fullPage: true });
   await hits.first().click();
   const preview = page.getByRole('dialog', { name: 'File preview', exact: true });
   await expect(preview.getByLabel('File text', { exact: true })).toContainText('Read the complete terms before cancelling.');

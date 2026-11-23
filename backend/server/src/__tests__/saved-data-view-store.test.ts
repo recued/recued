@@ -34,6 +34,33 @@ afterEach(() => {
 });
 
 describe('saved Data view persistence', () => {
+  it('persists reminder date settings and protects a newer window from a stale update', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'saved-reminder-dates-')); dirs.push(dir);
+    const path = join(dir, 'realm.db'), db = open(path), store = createSavedDataViewStore(db);
+    const definition = { tab: 'search', query: '', result_type: 'reminder', reminder_state: 'pending',
+      reminder_dates: { range: 'week', time_zone: 'America/New_York' } } as const;
+    const saved = store.create({ name: 'Upcoming reminders', definition });db.close();
+    const reopened = createSavedDataViewStore(open(path));expect(reopened.get(saved.id)?.definition).toEqual(definition);
+    const custom = { ...definition, reminder_dates: { range: 'custom', time_zone: 'Asia/Tokyo', from: '2026-11-01', through: '2026-11-03' } } as const;
+    const updated = reopened.update({ id: saved.id, expected_revision: saved.revision, definition: custom });
+    expect(() => reopened.update({ id: saved.id, expected_revision: saved.revision, definition })).toThrow(/another browser/);
+    expect(reopened.get(saved.id)).toEqual(updated);expect(updated.definition).toEqual(custom);
+  });
+  it.each(['mail', 'decision'] as const)('keeps search type %s across reopening and updates it through the existing revision guard', resultType => {
+    const dir = mkdtempSync(join(tmpdir(), 'saved-search-type-')); dirs.push(dir);
+    const path = join(dir, 'realm.db'), db = open(path);
+    const store = createSavedDataViewStore(db);
+    const saved = store.create({ name: 'Renewal results', definition: { tab: 'search', query: 'renewal', result_type: resultType } });
+    db.close();
+    const reopened = createSavedDataViewStore(open(path));
+    expect(reopened.get(saved.id)?.definition).toEqual({ tab: 'search', query: 'renewal', result_type: resultType });
+    const updated = reopened.update({ id: saved.id, expected_revision: saved.revision,
+      definition: { tab: 'search', query: 'renewal', result_type: 'chat' } });
+    expect(updated.definition).toEqual({ tab: 'search', query: 'renewal', result_type: 'chat' });
+    expect(() => reopened.update({ id: saved.id, expected_revision: saved.revision,
+      definition: { tab: 'search', query: 'renewal' } })).toThrow();
+    expect(reopened.get(saved.id)?.definition).toEqual(updated.definition);
+  });
   it('updates every supported definition without changing the bookmark, name or creation time', () => {
     const dir = mkdtempSync(join(tmpdir(), 'saved-data-view-update-')); dirs.push(dir);
     const path = join(dir, 'realm.db');

@@ -11,11 +11,18 @@
  *  clock), each record's words and outcome, and each cited item, which must exist and be one the
  *  caller may read. The approved run repeats the checks, as the write it is. On for the owner,
  *  off for every AI app until granted (`core.situation.record`, owner-on / door-off).
+ *
+ *  🔑 A TASK RECORDED AS DONE IS TICKED OFF BY THE SAME CALL (the owner, 2026-11-14: "it takes up
+ *  two approvals which should have been just one"). Its ask lists it ("Ticks off: …",
+ *  `episodeRecordTickOffs`), and the call needs the tick-off switch too
+ *  (`core.work-entity.task.mark-done`), checked before the owner is asked, so a caller without it
+ *  is refused rather than recording a day whose tasks stay open.
  *  ⚠ Model-facing — `chat-prompt-optimization-log.md`. */
 
 import { COLLECTION_GRANT_PREFIX, isAssetDate, isOwnersOwnCall, readRefusalSentence, zonedWallClockToEpochMs, type ChatDispatchContext, type ChatDispatchResult, type ExecutionSource, type SituationRef } from '@recued/contracts';
 import type { Tier1Handler } from '@recued/middleware/internal-tool-registry/index.js';
-import { isAiToolPrincipal, isCollectionReadGrantedForDispatch, neededSwitchOff, type ChatToolHandlerDeps } from './chat-tool-handlers.js';
+import { isAiToolPrincipal, isCollectionReadGrantedForDispatch, neededSwitchOff, TASK_MARK_DONE_OP_ID, type ChatToolHandlerDeps } from './chat-tool-handlers.js';
+import { guardTaskMarkDone } from './work-entity-crud-handler.js';
 import type { ClosingItem, ClosingRecordInput } from './situations/closing-records.js';
 import { situationSourceAccess } from './situations/sources.js';
 
@@ -61,6 +68,9 @@ const refOf = (value: unknown): SituationRef | null => {
 };
 
 interface Parsed { readonly day: string; readonly time_zone?: string; readonly records: readonly ClosingRecordInput[] }
+/** The tasks a day's records tick off: each one recorded as done. */
+const tickOffs = (records: readonly ClosingRecordInput[]): ClosingRecordInput[] =>
+  records.filter((record) => record.outcome === 'done' && record.item?.ref.collection === 'task');
 
 const parse = (deps: ChatToolHandlerDeps, raw: unknown, ctx: ChatDispatchContext): Parsed | ChatDispatchResult => {
   const closing = deps.getClosingRecords?.();
@@ -106,6 +116,13 @@ const parse = (deps: ChatToolHandlerDeps, raw: unknown, ctx: ChatDispatchContext
     seen.add(key);
     records.push({ title, outcome: row.outcome, ...(item ? { item } : {}) });
   }
+  if (tickOffs(records).length > 0) {
+    const gate = deps.getOpAdmissionGate?.();
+    if (gate === undefined || ctx.execution_source === undefined || !gate.isOpGranted(ctx.execution_source, TASK_MARK_DONE_OP_ID)) {
+      return neededSwitchOff('episode.record', TASK_MARK_DONE_OP_ID, ctx.execution_source);
+    }
+    if (deps.getWorkEntityCrudDeps?.() === undefined) return { ok: false, reason: 'execution_error', detail: 'episode.record: tasks cannot be ticked off on this server' };
+  }
   return { day: raw.day, ...(zone !== undefined ? { time_zone: zone } : {}), records };
 };
 
@@ -119,8 +136,38 @@ export const createEpisodeRecordHandler = (deps: ChatToolHandlerDeps): Tier1Hand
   if ('ok' in parsed) return parsed;
   try {
     const saved = deps.getClosingRecords!()!.record(parsed);
+    // Then each task recorded as done is ticked off, as `work.update` ticks one off (its lock, and
+    // no new completion time for one already done). A tick-off that fails leaves the record.
+    const crud = deps.getWorkEntityCrudDeps?.();
+    // A day closed after it ended (the owner, 2026-11-14: "closing an old entry many days after"):
+    // its tasks were done that day, so they are ticked off at its last moment on the owner's clock,
+    // not when the record was approved. Today's are ticked off now.
+    const closing = deps.getClosingRecords!()!;
+    const zone = parsed.time_zone;
+    const nextDay = new Date(Date.parse(`${parsed.day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    const dayEnd = parsed.day < closing.today(zone) ? zonedWallClockToEpochMs(`${nextDay}T00:00`, zone ?? 'UTC') : null;
+    const completedAt = dayEnd !== null ? dayEnd - 1 : undefined;
+    const ticked: string[] = []; const notTicked: string[] = [];
+    for (const record of tickOffs(parsed.records)) {
+      try {
+        if (crud === undefined) throw new Error('unavailable');
+        await guardTaskMarkDone(crud, { id: record.item!.ref.id, done: true, ...(completedAt !== undefined ? { completed_at: completedAt } : {}) });
+        ticked.push(record.title);
+      } catch { notTicked.push(record.title); }
+    }
+    // D-343 (the owner's day audit, 2026-11-15) — a task recorded as skipped is still open: "Didn't call
+    // the plumber" left it due that day and the chat moved on. Said here, where the reply after the
+    // owner's yes is written, so the chat offers to move it.
+    const stillOpen = parsed.records.flatMap((record) => {
+      if (record.outcome !== 'skipped' || record.item?.ref.collection !== 'task') return [];
+      const task = crud?.store.readTask(record.item.ref.id);
+      return task !== null && task !== undefined && task.completed_at == null ? [{ title: task.title, id: task.id }] : [];
+    });
     return { ok: true, result: { recorded: saved.length, day: parsed.day,
-      records: saved.map((episode) => ({ title: episode.title, outcome: episode.outcome })) } };
+      records: saved.map((episode) => ({ title: episode.title, outcome: episode.outcome })),
+      ...(ticked.length > 0 ? { ticked_off: ticked } : {}), ...(notTicked.length > 0 ? { not_ticked_off: notTicked } : {}),
+      ...(stillOpen.length > 0 ? { still_open: stillOpen,
+        next: 'These skipped tasks are still open. Ask the user whether to move each to another day; change nothing until they say.' } : {}) } };
   } catch (e) {
     return { ok: false, reason: 'execution_error', detail: `episode.record failed: ${e instanceof Error ? e.message : String(e)}` };
   }

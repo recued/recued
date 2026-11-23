@@ -1,4 +1,5 @@
-import { focusCustomerWorkspace,restoreCustomerWorkspaceControl } from './customer-workspace-focus.js';
+import { mountCustomerFinancialWorkspaceStyles } from './customer-financial-workspace-styles.js';
+import { focusCustomerWorkspace,restoreCustomerWorkspaceControl,trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { RECEIVABLE_AGING_BUCKETS,type Conn,type ServerRpcRegistry,type CustomerReceivablesAging,
   type CustomerReceivableInvoice,type ReceivableAgingFilter } from '@recued/contracts';
 
@@ -8,7 +9,8 @@ const labels: Record<ReceivableAgingFilter,string> = { all: 'All receivables',cu
 export const mountCustomerReceivablesAging = (opts: { host: HTMLElement;document: Document;conn: CustomerReceivablesAgingConn;
   canOpen: () => boolean;onStateChanged: () => void;
   onAction: (action: 'invoice' | 'job',row: CustomerReceivableInvoice,back: () => void) => void }) => {
-  const doc = opts.document;const root = doc.createElement('section');root.hidden = true;root.tabIndex = -1;root.setAttribute('data-receivables-aging','');root.setAttribute('aria-label','Receivables aging');opts.host.appendChild(root);
+  const doc = opts.document;const focusOwner = trackCustomerWorkspaceFocus(doc);const root = doc.createElement('section');root.hidden = true;root.tabIndex = -1;root.setAttribute('data-receivables-aging','');root.setAttribute('aria-label','Receivables aging');opts.host.appendChild(root);
+  mountCustomerFinancialWorkspaceStyles(doc,root);
   const add = (tag: string,text: string,host: HTMLElement = root) => { const el = doc.createElement(tag);el.textContent = text;host.appendChild(el);return el; };
   const button = (text: string,host: HTMLElement = root) => { const el = doc.createElement('button');el.type = 'button';el.textContent = text;host.appendChild(el);return el; };
   add('style',`[data-receivables-aging]{display:grid;gap:14px;padding:18px;border:1px solid var(--border,#ddd);border-radius:12px;min-width:0;overflow-wrap:anywhere}
@@ -22,7 +24,7 @@ export const mountCustomerReceivablesAging = (opts: { host: HTMLElement;document
   add('h3','Receivables aging');add('p','Current recorded balances for invoices released through Customer jobs. Refresh to check for changes.');
   const form = add('form','');form.setAttribute('aria-label','Find receivables');
   const searchLabel = add('label','Customer, quote or invoice',form);const search = doc.createElement('input');search.type = 'search';search.maxLength = 200;searchLabel.appendChild(search);
-  const choice = (text: string,id: string) => { const label = add('label',text,form);const select = doc.createElement('select');select.id = id;label.setAttribute('for',id);form.appendChild(select);return select; };
+  const choice = (text: string,id: string) => { const field = add('div','',form);field.className = 'financial-field';const label = add('label',text,field);const select = doc.createElement('select');select.id = id;label.setAttribute('for',id);field.appendChild(select);return select; };
   const filter = choice('Age of receivables','recued-receivables-bucket');
   for (const value of ['all',...RECEIVABLE_AGING_BUCKETS,'needs_review'] as const) { const option = doc.createElement('option');option.value = value;option.textContent = labels[value];filter.appendChild(option); }
   const currency = choice('Currency','recued-receivables-currency');const allCurrency = doc.createElement('option');allCurrency.value = '';allCurrency.textContent = 'All currencies';currency.appendChild(allCurrency);
@@ -33,7 +35,7 @@ export const mountCustomerReceivablesAging = (opts: { host: HTMLElement;document
   const totals = add('div','');totals.setAttribute('data-aging-totals','');const notes = add('details','');add('summary','What the report includes',notes);const coverage = add('div','',notes);
   const rows = add('div','');rows.setAttribute('data-aging-rows','');
   const paging = add('div','');paging.setAttribute('data-aging-actions','');const previous = button('Previous receivables',paging);const more = button('More receivables',paging);
-  let focusOnLoad = false;let disposed = false;let busy = false;let sourceOpen = false;let generation = 0;let selected: CustomerReceivablesAging | null = null;let returnFocus: (() => void) | undefined;
+  let focusOnLoad = false;let ownsOpeningFocus = () => false;let disposed = false;let busy = false;let sourceOpen = false;let generation = 0;let selected: CustomerReceivablesAging | null = null;let returnFocus: (() => void) | undefined;
   let query: { search: string;currency?: string;bucket: ReceivableAgingFilter } = { search: '',bucket: 'all' };
   let page: { cursor?: string;previous: Array<string | undefined> } = { previous: [] };let next: string | undefined;let stalePage = false;
   const controls = () => { search.disabled = busy;filter.disabled = busy;currency.disabled = busy;apply.disabled = busy;refresh.disabled = busy;close.disabled = busy;
@@ -91,7 +93,7 @@ export const mountCustomerReceivablesAging = (opts: { host: HTMLElement;document
     } catch (error) {
       if (!disposed && generation === current) { stalePage = true;status.textContent = (error instanceof Error ? error.message : 'Receivables could not be loaded.')
         +(selected ? ' Previously loaded receivables remain visible. Refresh aging to retry.' : ' Refresh aging to retry.'); }
-    } finally { if (!disposed && generation === current) { busy = false;controls();if (focusOnLoad) { focusOnLoad = false;focusCustomerWorkspace(root); }else restoreCustomerWorkspaceControl(doc,source,[previous,more,refresh],priorFocus); } }
+    } finally { if (!disposed && generation === current) { busy = false;controls();if (focusOnLoad) { focusOnLoad = false;if (ownsOpeningFocus()) focusCustomerWorkspace(root); }else restoreCustomerWorkspaceControl(doc,source,[previous,more,refresh],priorFocus); } }
   };
   form.addEventListener('submit',event => { event.preventDefault();if (busy) return;query = { search: search.value.trim(),bucket: filter.value as ReceivableAgingFilter,...(currency.value ? { currency: currency.value } : {}) };void load({ previous: [] }); });
   refresh.addEventListener('click',() => { if (!busy) void load({ previous: [] },refresh); });
@@ -104,6 +106,6 @@ export const mountCustomerReceivablesAging = (opts: { host: HTMLElement;document
     if (!root.hidden) { focusCustomerWorkspace(root);return; }
     generation++;returnFocus = onClosed;selected = null;page = { previous: [] };next = undefined;stalePage = false;
     query = { search: '',bucket: 'all' };search.value = '';filter.value = 'all';currency.value = '';caption.textContent = '';scope.textContent = '';warning.textContent = '';totals.replaceChildren();rows.replaceChildren();coverage.replaceChildren();
-    focusOnLoad = true;root.hidden = false;await load();
-  },isOpen: () => !root.hidden,hasOpenSource: () => sourceOpen,hasInFlightWork: () => busy,dispose: () => { disposed = true;generation++;root.remove(); } };
+    focusOnLoad = true;ownsOpeningFocus = focusOwner.capture();root.hidden = false;await load();
+  },isOpen: () => !root.hidden,hasOpenSource: () => sourceOpen,hasInFlightWork: () => busy,dispose: () => { disposed = true;generation++;focusOwner.dispose();root.remove(); } };
 };

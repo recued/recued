@@ -20,7 +20,7 @@ export const createPreapprovalOutbox = (deps: {
     const workerId = deps.storage.workers.worker_id;
     for (const item of repository.takeOutbox(workerId)) {
       try {
-        const state = await repository.inspectExecution(item.future_ref);
+        const state = await repository.inspectExecution(item.future_ref, false);
         const prompts = repository.listPrompts(state.proposal_id);
         if (item.kind === 'review_requested' || prompts.length > 0) {
           await deps.notifications.project(state.proposal_id);
@@ -39,6 +39,12 @@ export const createPreapprovalOutbox = (deps: {
         else console.warn('[preapproval] owner review delivery pending', error);
       }
     }
-    await repository.retireReviewContent();
+    try { await repository.retireReviewContent(); }
+    catch (error) {
+      // Optional cleanup must not turn a committed review or delivery into a
+      // failed request. Its transaction leaves the content available to retry.
+      if (deps.onError) deps.onError(error);
+      else console.warn('[preapproval] review retirement pending', error);
+    }
   },
 });

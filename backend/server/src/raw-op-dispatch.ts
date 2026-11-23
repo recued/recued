@@ -80,6 +80,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   AuthorizationProvenance,
+  ChainRuleHooks,
   Checkpoint,
   ContractSnapshot,
   ExecutionSource,
@@ -92,6 +93,7 @@ import type {
   SessionGrantOffer,
   ChatDispatchContext,
   TriggerPreapprovalOffer,
+  KindGrantOffer,
 } from '@recued/contracts';
 import {
   primitiveGrantEntry,
@@ -115,6 +117,7 @@ import {
   type MemorySaveConflict,
   grantRefusalSentence,
   isOwnersOwnCall,
+  RpcError,
 } from '@recued/contracts';
 import {
   deriveChannelSessionId,
@@ -163,7 +166,11 @@ import {
 } from './server-executor.js';
 import { ownerEditsFor } from './chat-plan-edits.js';
 import { scheduledPromptHoldOffer } from './scheduled-prompt-preapproval.js';
+import { gatewayKindGrantOffer, tier1KindGrantOffer } from './kind-grants.js';
+import { heldCallOpLabel } from './trigger-preapproval-ops.js';
+import { gatherOpKey, tier1GatherOpKey, type DeferredHold } from './chat-gather.js';
 import { SERVER_PAUSED_DETAIL } from './pause-approval.js';
+import { chainFoundOfRequest, createRawOpChainRuleAdmission, teachesChains } from './chain-evidence.js';
 
 /** The reserved op-args key naming the enrolled connection a raw op binds
  *  (Model 1). Stripped from the op args before dispatch; the Inc D catalog tool
@@ -255,6 +262,8 @@ export type RawOpDispatchDeps = Pick<
   | 'gatedActionStore'
   // D-329 — a held Tier-1 tool call resumes through the tool registry.
   | 'tier1Registry'
+  // And, approved, runs under its proposal's reviewed change, so it can be undone.
+  | 'runApprovedTier1Write'
   // D-336 slice O's open item — told once a Tier-1 call is held.
   | 'onTier1Held'
   // D-329 — where a hold's ask went (its own record's channels), so a model told of the hold
@@ -274,6 +283,9 @@ export type RawOpDispatchDeps = Pick<
   // D-341 slice B3 — a scheduled prompt's held write offers its own standing pre-approval only
   // where an answer could grant it.
   | 'triggerPreapprovalGranter'
+  // D-348 slice 5 — the rules the owner accepted for the requests of their chats: a call on the
+  // rule for its request goes ahead at the catalog gate without asking (`chainRequest`).
+  | 'chainRules'
 > & {
   /** Test seam — substitute the IO executor UNDER the gateway (mirrors
    *  `CanonicalPollDeps.buildExecutor`): tests script wire responses while the
@@ -320,8 +332,20 @@ export interface RawOpDispatchRequest {
   /** D-337 slice K — asked where the op would be held, before anything is minted: the call of
    *  the caller's turn that still waits for the owner's answer, so this one is not asked yet
    *  (`not_asked`), or `undefined` to hold it as ever. A chat's own turn passes it
-   *  (`askAfterWaiting`); MCP does not. */
-  askAfter?: () => string | undefined;
+   *  (`askAfterWaiting`); MCP does not. D-177 §N.15.9: at the gate's hold it is told the held
+   *  op's key (`gatherOpKey`), so a call its round gathers may hold beside the others. */
+  askAfter?: (op_key?: string) => string | undefined;
+  /** D-177 §N.15.9 — set by the owner's chat for a call its round repeats: keep the hold's ask
+   *  for the round's end, to be asked with the round's other held calls of its op
+   *  (`deferToRound`). `true` kept it, and no ask is raised now; `false` raises its own, as
+   *  before. */
+  deferAsk?: (hold: DeferredHold) => boolean;
+  /** D-348 slice 5 — set by the owner's chat: the request its turn is part of (its key and id,
+   *  `chainRequestOf`) and the call's name in the audit (`<session>:<turn>:<tool>`). A call on the
+   *  rule the owner accepted for that request goes ahead at the catalog gate without asking, and
+   *  spends a use; slice 6, a delete only of a record a read of the same request found. MCP never
+   *  sets it, and a call resumed after an approval asks no rule. */
+  chainRequest?: { readonly key_hash: string; readonly request_id: string; readonly audit_target: string };
 }
 
 /** The outcome of a raw-op dispatch — a discriminated union so the route maps
@@ -353,6 +377,8 @@ export type RawOpDispatchOutcome =
       /** The channels its ask went to, once raised (`approvalAskChannels`); absent when they
        *  could not be read, or the hold joined one already waiting. */
       approval_channels?: readonly string[];
+      /** D-177 §N.15.9 — its ask was kept for its round's end (`RawOpDispatchRequest.deferAsk`). */
+      gathered?: true;
     }
   | { kind: 'ask'; op_id: string; message: string }
   | {
@@ -578,6 +604,24 @@ const dispatchRawOpOnce = async (
   //     decides admit / ask (`PreflightRequiredSignal`) / deny itself.
   const correlationId =
     executionSource.channel === 'mcp' ? executionSource.tool_call_id : undefined;
+  // D-348 slice 5 — the rule the owner accepted for the request the chat's turn is part of: the
+  // catalog gate asks it before it holds this call, as it asks a session grant.
+  const chainRules = deps.chainRules !== undefined && req.chainRequest !== undefined
+    && teachesChains(executionSource)
+    ? createRawOpChainRuleAdmission({
+        rules: deps.chainRules,
+        key_hash: req.chainRequest.key_hash,
+        catalog_slug: binding.catalog_slug,
+        operation,
+        operation_id: manifest.operations?.[operation]?.operation_id ?? operation,
+        connection_name: connectionName,
+        target: req.chainRequest.audit_target,
+        // What the request's reads found, across its direct calls: the records a delete may name.
+        found: chainFoundOfRequest(deps.chainRules, req.chainRequest.request_id),
+        ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      })
+    : undefined;
   const dispatch = await runRawOpThroughGateway(deps, {
     catalogSlug: binding.catalog_slug,
     manifest,
@@ -585,17 +629,44 @@ const dispatchRawOpOnce = async (
     opArgs,
     connectionName,
     executionSource,
+    ...(chainRules !== undefined ? { chainRules } : {}),
   });
   if (dispatch.kind === 'preflight') {
     const waiting = await waitingRun();
     if (waiting !== undefined) return { kind: 'held', op_id: opId, run_id: waiting };
+    // D-177 §N.15.9 — the held op as its gate named it: what a round's gathered approval shares.
+    const heldOpKey = gatherOpKey({
+      ingredient_slug: dispatch.signal.ingredient_slug ?? binding.catalog_slug,
+      operation_id: dispatch.signal.operation_id ?? manifest.operations?.[operation]?.operation_id ?? operation,
+      connection_name: dispatch.signal.connection_name ?? connectionName,
+    });
     // D-337 slice K — not asked while a call of the caller's turn waits for the owner.
-    const after = req.askAfter?.();
+    const after = req.askAfter?.(heldOpKey);
     if (after !== undefined) return { kind: 'not_asked', op_id: opId, waiting: after };
     // The catalog gateway held this op (a write / ask-tier OP). Build the
     // durable recipe-less hold off the signal's action identity — its hashes
     // make a `raw_op` grant mintable on an `allow_session` answer.
     const sig = dispatch.signal;
+    // D-177 N.15 (§N.15.6 1b) — the owner's own chat's direct op, held by its own approval, offers
+    // "Allow in this chat": the op on this connection for the conversation, recipe-less as the call
+    // is, named as the op names itself. Read off the signal, as the gate will match it.
+    const heldSlug = sig.ingredient_slug ?? binding.catalog_slug;
+    const heldOp = sig.operation_id ?? manifest.operations?.[operation]?.operation_id ?? operation;
+    const kindGrantOffer = deps.sessionGrantResolver !== undefined
+      ? gatewayKindGrantOffer({
+          source: executionSource,
+          channel_session_id: deriveChannelSessionId(executionSource),
+          ingredient_slug: heldSlug,
+          operation_id: heldOp,
+          connection_name: sig.connection_name ?? connectionName,
+          risk_tier: sig.risk_tier ?? manifest.risk_tier,
+          provenance: sig.authorization_provenance,
+          single: true,
+          resource_review: sig.resource_review !== undefined,
+          name: heldCallOpLabel({ slug: heldSlug, operation_id: heldOp },
+            (slug) => deps.executorConfig.manifests.get(slug)),
+        })
+      : undefined;
     return buildRawOpHold(
       deps,
       {
@@ -609,6 +680,8 @@ const dispatchRawOpOnce = async (
           ? { contractSnapshot: req.contractSnapshot }
           : {}),
         ...(correlationId !== undefined ? { correlationId } : {}),
+        ...(kindGrantOffer !== undefined ? { kindGrantOffer } : {}),
+        ...(req.deferAsk !== undefined ? { deferAsk: req.deferAsk, opKey: heldOpKey } : {}),
       },
       {
         // The catalog gateway gives no reason on purpose (its ask names the
@@ -979,6 +1052,8 @@ interface RawOpGatewayCall {
   opArgs: Record<string, unknown>;
   connectionName: string;
   executionSource: ExecutionSource;
+  /** D-348 slice 5 — a fresh call's request rule (`RawOpDispatchRequest.chainRequest`). */
+  chainRules?: ChainRuleHooks;
 }
 
 /** Build the recipe-less catalog session-grant hooks for a FRESH raw-op
@@ -1135,6 +1210,7 @@ const runRawOpThroughGateway = async (
     ...(contractId !== undefined ? { contract_id: contractId } : {}),
     ...(deps.contractScan ? { contractScan: deps.contractScan } : {}),
     ...(catalogSessionGrants ? { catalogSessionGrants } : {}),
+    ...(!resume && call.chainRules !== undefined ? { chainRules: call.chainRules } : {}),
     trigger_source: 'mcp',
   };
 
@@ -1289,6 +1365,13 @@ interface RawOpHoldInput {
   /** D-341 slice B3 — the standing pre-approval its ask offers ("Always allow for this scheduled
    *  prompt", `PreflightCheckpointContext.trigger_preapproval`), which an answer grants. */
   triggerPreapprovalOffer?: TriggerPreapprovalOffer;
+  /** D-177 N.15 — what this hold's "Allow in this chat" would grant
+   *  (`PreflightCheckpointContext.kind_grant`), which an answer grants. */
+  kindGrantOffer?: KindGrantOffer;
+  /** D-177 §N.15.9 — keep the ask for the round's end (`RawOpDispatchRequest.deferAsk`), with the
+   *  held op's key its members share. */
+  deferAsk?: (hold: DeferredHold) => boolean;
+  opKey?: string;
 }
 
 /** Resolve the `raw_op` session-grant offer for a hold — the `(mcp ×
@@ -1402,6 +1485,7 @@ const buildRawOpHold = async (
         ? { change_in_chat: hold.changeInChat.trim() }
         : {}),
       ...(hold.triggerPreapprovalOffer !== undefined ? { trigger_preapproval: hold.triggerPreapprovalOffer } : {}),
+      ...(hold.kindGrantOffer !== undefined ? { kind_grant: hold.kindGrantOffer } : {}),
     },
     raw_op: {
       ...(hold.tier1Tool !== undefined ? { tier1_tool: hold.tier1Tool } : {}),
@@ -1513,6 +1597,24 @@ const buildRawOpHold = async (
       ? { authorization_provenance: ctx.authorization_provenance }
       : {}),
   };
+  // D-177 §N.15.9 — a call its round gathers keeps its ask for the round's end: the round asks once
+  // for its held calls of one op, and records the ask's id on each hold's receipt, as below.
+  if (hold.deferAsk !== undefined && hold.opKey !== undefined) {
+    const kept = hold.deferAsk({
+      run_id,
+      op_key: hold.opKey,
+      notifier: deps.preflightNotifier,
+      checkpoint,
+      context: askContext,
+      item: { summary: hold.opId, args_preview: hold.opArgs },
+      link: async (ask_id) => {
+        if (actionRef !== undefined) await deps.gatedActionStore?.linkApproval(actionRef, actionRef, ask_id);
+      },
+      // D-329 — where it went, read as below once this hold's own ask is raised.
+      ...(deps.approvalAskChannels !== undefined ? { askChannels: deps.approvalAskChannels } : {}),
+    });
+    if (kept) return { kind: 'held', op_id: hold.opId, run_id, gathered: true };
+  }
   let approvalChannels: readonly string[] | undefined;
   try {
     const { ask_id } = await raisePreflightAsk(
@@ -1600,6 +1702,9 @@ export const holdTier1Call = async (
     memoryConflicts?: readonly MemorySaveConflict[];
     /** D-336 slice N's open item — the chat whose card can change it, named on its ask. */
     changeInChat?: string;
+    /** D-177 §N.15.9 (1c-b) — set by the owner's chat for a write its round repeats: keep the
+     *  hold's ask for the round's one approval of its kind (`deferToRound`). */
+    deferAsk?: (hold: DeferredHold) => boolean;
   },
 ): Promise<RawOpDispatchOutcome> => {
   // D-188 — the owner's ruling of 2026-11-08: nothing new is asked during a pause. A caller the
@@ -1612,6 +1717,11 @@ export const holdTier1Call = async (
   // D-341 slice B3 — a scheduled prompt's write offers its own standing pre-approval, where an
   // answer could grant it.
   const triggerPreapprovalOffer = scheduledPromptHoldOffer(deps, call.executionSource, call.tool, call.args);
+  // D-177 N.15 — a write the owner's own attended conversation made offers "Allow in this chat",
+  // when the answer could be granted (a resolver to mint it).
+  const kindGrantOffer = triggerPreapprovalOffer === undefined && deps.sessionGrantResolver !== undefined
+    ? tier1KindGrantOffer(call.executionSource, call.tool, call.args)
+    : undefined;
   const outcome = await buildRawOpHold(deps, {
     opId: call.tool,
     catalogSlug: TIER1_HOLD_CATALOG_SLUG,
@@ -1629,6 +1739,8 @@ export const holdTier1Call = async (
     ...(call.memoryConflicts !== undefined ? { memoryConflicts: call.memoryConflicts } : {}),
     ...(call.changeInChat !== undefined ? { changeInChat: call.changeInChat } : {}),
     ...(triggerPreapprovalOffer !== undefined ? { triggerPreapprovalOffer } : {}),
+    ...(kindGrantOffer !== undefined ? { kindGrantOffer } : {}),
+    ...(call.deferAsk !== undefined ? { deferAsk: call.deferAsk, opKey: tier1GatherOpKey(call.tool, call.args) } : {}),
     tier1Tool: call.tool,
   }, { risk_tier: 'write' });
   // D-336 slice O's open item — once held, the earlier saves of the same fact still waiting
@@ -1844,7 +1956,8 @@ const dispatchResumedTier1Call = async (
   deps: RawOpDispatchDeps,
   raw: RawOpHold,
   tool: string,
-  overrides?: unknown,
+  overrides: unknown,
+  run_id: string,
 ): Promise<RawOpResumeOutcome> => {
   if (!deps.approvalResumeAuthority) {
     console.warn(`[tier1-resume] '${tool}' approval-resume authority resolver is unavailable — not running`);
@@ -1927,9 +2040,25 @@ const dispatchResumedTier1Call = async (
         ...edited,
       };
   let result: Awaited<ReturnType<typeof registry.dispatch>>;
+  const dispatch = () => registry.dispatch(tool, edits === undefined ? raw.op_args : { ...raw.op_args, ...edits }, ctx);
+  // As approved, with nothing changed on its card: under its proposal's reviewed change, so the
+  // change keeps its receipt and can be undone, as a write approved on its card can.
+  const reviewed = edits === undefined && deps.runApprovedTier1Write !== undefined;
   try {
-    result = await registry.dispatch(tool, edits === undefined ? raw.op_args : { ...raw.op_args, ...edits }, ctx);
+    result = reviewed
+      ? await deps.runApprovedTier1Write!({ run_id, tool, args: raw.op_args, source, validate: () => {
+          if (deps.opAdmissionGate !== undefined && !deps.opAdmissionGate.isOpGranted(source, primitiveGrantEntry(tool))) {
+            throw new RpcError('tool_not_granted', `The contract no longer grants ${tool}, so the approved call was not run.`, 403);
+          }
+        } }, dispatch)
+      : await dispatch();
   } catch (error) {
+    // A reviewed change refused at its write (the record changed since it was proposed, or the
+    // grant went) was rolled back with it: nothing was made, so it failed, not "may have run".
+    const code = error instanceof Error ? (error as { code?: unknown }).code : undefined;
+    if (reviewed && typeof code === 'string' && (code.endsWith('_conflict') || code === 'tool_not_granted')) {
+      return { kind: 'failed', code, message: (error as Error).message };
+    }
     console.warn(`[tier1-resume] '${tool}' threw while running: `
       + (error instanceof Error ? error.message : String(error)));
     return {
@@ -2008,7 +2137,7 @@ const dispatchResumedRawOp = async (
   // D-329 — a held Tier-1 tool call has no catalog binding to re-resolve. Its owner's change
   // (D-336 slice E) is read off the checkpoint as claimed, the one the approval answered.
   if (raw.tier1_tool !== undefined) {
-    return dispatchResumedTier1Call(deps, raw, raw.tier1_tool, existing.arg_overrides);
+    return dispatchResumedTier1Call(deps, raw, raw.tier1_tool, existing.arg_overrides, checkpoint.run_id);
   }
 
   // 2 — re-resolve the op (the pack may have been uninstalled while paused) +
@@ -2088,7 +2217,16 @@ const dispatchResumedRawOp = async (
       message: `Fresh MCP authority denied the approved operation: ${authority.detail}`,
     };
   }
-  if (authority.contract_snapshot === undefined) {
+  // A source with no contract (the owner's own chat or app) has none to rebuild: its fresh
+  // authority admits it as itself, without a snapshot, as its first dispatch had none. Since D-177
+  // §N.15.7 the owner's chat holds a direct op set to ask, so its approval comes here; it was
+  // refused here before (`resume_contract_snapshot_missing`), and never ran. A contract on the
+  // approved call or on its fresh source still requires one.
+  if (
+    authority.contract_snapshot === undefined
+    && (executionSourceContractId(raw.execution_source) !== undefined
+      || executionSourceContractId(authority.execution_source) !== undefined)
+  ) {
     console.warn(
       `[raw-op-resume] '${raw.op_id}' fresh authority returned no contract snapshot — not dispatching`,
     );

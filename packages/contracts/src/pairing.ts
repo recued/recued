@@ -81,6 +81,9 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   // the client that started the flow claims the credential point-to-point
   // off the `flow_id`, siblings ignore on flow_id mismatch.
   'connection.vendor_oauth_completed',
+  // D-348 — a rule for a request the owner repeats was made, ended or used: Live control re-lists
+  // the live ones with their uses left.
+  'contract.chain_rule_changed',
   // D-171 — `contract_definition` lifecycle (mint / revoke). Paired
   // clients subscribe by default so the Settings → Privacy → Contracts
   // inspector + the MCP door's Advanced cap/expiry summary live-sync
@@ -92,6 +95,9 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   // rpc (owner-surface only, never model-visible — N.9.1).
   'contract.delegation_rule_suggested',
   'contract.delegation_rule_suggestion_resolved',
+  // D-402 slice F5 (§7.10) — a pre-approval granted, used or ended. The owner's "runs without asking"
+  // lists read again off it (owner rpcs; the payload names only the row and whose it is).
+  'contract.preapproval_changed',
   // D-177 N.11 rule 5 (5.c, slice C) — scoped-grant proposal surfaced /
   // resolved. Same default-subscribe + re-list-via-owner-rpc posture as the
   // delegation suggestion kinds.

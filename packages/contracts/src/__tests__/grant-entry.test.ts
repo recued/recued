@@ -129,6 +129,7 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       'core.data.form-response.set-state',
       // D-332 — every Kitchen draft op, not only import: a wildcard door read the
       // other three as permissive, with no grant row.
+      'core.kitchen.draft.from_job',
       'core.kitchen.draft.get',
       'core.kitchen.draft.import',
       'core.kitchen.draft.list',
@@ -136,6 +137,10 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       // D-198 Slice 4 — collective-memory write/read: owner-on, door-off default.
       'core.memory.read',
       'core.memory.write',
+      // D-407 slice 1 — the chat's new occasion: owner-on, door-off, as its change.
+      'core.situation.occasion-create',
+      // D-343 (§355) — the chat's change of an occasion made in Yours: owner-on, door-off.
+      'core.situation.occasion-update',
       'core.situation.prefetch',
       'core.situation.read',
       'core.situation.record',

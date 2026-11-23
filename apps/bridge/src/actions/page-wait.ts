@@ -9,7 +9,7 @@
  *  executor injects {@link checkPageElement}, one check, every
  *  {@link PAGE_WAIT_POLL_MS}, and keeps the clock itself. */
 
-import type { BridgeErrorCode } from '@recued/contracts';
+import { isBrowserConditionMatchCounts, type BrowserConditionMatchCounts, type BridgeErrorCode } from '@recued/contracts';
 
 import type { ActionExecutorOutcome } from '../queue/dispatcher.js';
 
@@ -24,8 +24,20 @@ export interface PageWaitCheck {
   text?: string;
 }
 
+/** A server-selected readiness predicate, never silently partially interpreted. */
+export const readReadyCheck = (value: unknown): PageWaitCheck | undefined | null => {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).some(key => !['selector', 'until', 'text'].includes(key))
+    || typeof raw.selector !== 'string' || !raw.selector.trim()
+    || (raw.until !== 'shown' && raw.until !== 'gone')
+    || raw.text !== undefined && typeof raw.text !== 'string') return null;
+  return { selector: raw.selector, until: raw.until as 'shown' | 'gone', ...(typeof raw.text === 'string' ? { text: raw.text } : {}) };
+};
+
 export type PageWaitCheckAnswer =
-  | { outputs: { url: string; title: string; met: boolean } }
+  | { outputs: { url: string; title: string; met: boolean; match_counts?: BrowserConditionMatchCounts } }
   | { invalid: true }
   | { blocked: true };
 
@@ -44,13 +56,71 @@ export const checkPageElement = (check: PageWaitCheck, expectedUrl?: string): Pa
   }
   const normal = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = check.text == null ? '' : normal(check.text);
-  const shown = (element: Element) => element.getAttribute('aria-hidden') !== 'true'
-    && (element.checkVisibility({ checkVisibilityCSS: true })
-      || getComputedStyle(element).display === 'contents');
-  const present = matches.some(element => shown(element)
-    && (wanted === '' || normal((element as HTMLElement).innerText ?? element.textContent ?? '').includes(wanted)));
+  const above = (at: Element): Element | null =>
+    at.assignedSlot ?? at.parentElement ?? (at.getRootNode() as ShadowRoot).host ?? null;
+  // 2026-11-22 — as `inspectPage` reads it: a dialog the page marks hidden, on it or around it, while a person
+  // sees it on top (where a click at the screen's centre, or at the centre of one of its quarters, lands) is
+  // shown; what the page marks hidden inside it is not. ⛔ The same rule, word for word, as `inspectPage`'s.
+  const onTop = new Set<Element>();
+  try {
+    const shadowOf = (element: Element): ShadowRoot | null => {
+      try {
+        const dom = (globalThis as typeof globalThis & {
+          chrome?: { dom?: { openOrClosedShadowRoot?: (host: Element) => ShadowRoot | null | undefined } } }).chrome?.dom;
+        return dom?.openOrClosedShadowRoot?.(element) ?? element.shadowRoot;
+      } catch {
+        return element.shadowRoot;
+      }
+    };
+    const DIALOG = 'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+    const marked = (element: Element) => {
+      for (let at: Element | null = element; at; at = above(at)) if (at.getAttribute('aria-hidden') === 'true') return true;
+      return false;
+    };
+    // And what covers the page at the screen's centre though the page marks it hidden, unless a modal dialog
+    // it does not hide is open (2026-11-22, `inspectPage`'s `covers`).
+    const openModal = [...document.querySelectorAll(DIALOG)].some((element) => !marked(element)
+      && (element.matches(':modal') || element.getAttribute('aria-modal') === 'true')
+      && element.checkVisibility({ checkVisibilityCSS: true }));
+    for (const [x, y] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as const) {
+      const px = innerWidth * x;
+      const py = innerHeight * y;
+      let hit = document.elementFromPoint(px, py);
+      for (let depth = 0; hit !== null && depth < 32; depth += 1) {
+        const inner = shadowOf(hit)?.elementFromPoint(px, py) ?? null;
+        if (inner === null || inner === hit) break;
+        hit = inner;
+      }
+      let dialog: Element | null = null;
+      for (let at: Element | null = hit; at; at = above(at)) if (at.matches(DIALOG) && marked(at)) dialog = at;
+      if (dialog !== null) onTop.add(dialog);
+      if (x !== 0.5 || y !== 0.5 || openModal) continue;
+      let cover: Element | null = null;
+      for (let at: Element | null = hit; at; at = above(at)) {
+        if (marked(at) && getComputedStyle(at).position === 'fixed') cover = at;
+      }
+      if (cover !== null) onTop.add(cover);
+    }
+  } catch {
+    onTop.clear();
+  }
+  const shown = (element: Element) => {
+    for (let at: Element | null = element; at; at = above(at)) {
+      if (onTop.has(at)) break;
+      if (at.getAttribute('aria-hidden') === 'true') return false;
+    }
+    return element.checkVisibility({ checkVisibilityCSS: true })
+      || getComputedStyle(element).display === 'contents';
+  };
+  let visible = 0, textMatched = 0;
+  for (const element of matches) if (shown(element)) {
+    visible += 1;
+    if (wanted === '' || normal((element as HTMLElement).innerText ?? element.textContent ?? '').includes(wanted)) textMatched += 1;
+  }
+  const present = textMatched > 0;
   const title = document.title.length > 200 ? `${document.title.slice(0, 200)}…` : document.title;
-  return { outputs: { url: location.href, title, met: check.until === 'gone' ? !present : present } };
+  return { outputs: { url: location.href, title, met: check.until === 'gone' ? !present : present,
+    match_counts: { matched: matches.length, visible, text_matched: textMatched } } };
 };
 
 /** A wait command's arguments, or why it cannot run. The server bounds
@@ -86,7 +156,7 @@ export const readFailCheck = (raw: unknown): PageWaitCheck | undefined | null =>
 /** One check's answer, or the error it means. Anything but exactly one known
  *  key proves nothing. */
 export const waitCheckOutcome = (answer: unknown):
-  | { url: string; title: string; met: boolean }
+  | { url: string; title: string; met: boolean; match_counts?: BrowserConditionMatchCounts }
   | { error: ActionExecutorOutcome } => {
   const error = (code: BridgeErrorCode, message: string) => ({ error: { status: 'error' as const, error: { code, message } } });
   if (!answer || typeof answer !== 'object' || Array.isArray(answer) || Object.keys(answer).length !== 1) {
@@ -97,8 +167,10 @@ export const waitCheckOutcome = (answer: unknown):
   if (reply.invalid === true) return error('selector_not_found', 'The selector is not valid CSS.');
   const outputs = reply.outputs as Record<string, unknown> | undefined;
   if (!outputs || typeof outputs.url !== 'string' || typeof outputs.title !== 'string' || typeof outputs.met !== 'boolean'
-    || Object.keys(outputs).length !== 3) {
+    || Object.keys(outputs).some(key => !['url', 'title', 'met', 'match_counts'].includes(key))
+    || outputs.match_counts !== undefined && !isBrowserConditionMatchCounts(outputs.match_counts)) {
     return error('unknown', 'bridge: no readable answer from the page');
   }
-  return { url: outputs.url, title: outputs.title, met: outputs.met };
+  return { url: outputs.url, title: outputs.title, met: outputs.met,
+    ...(isBrowserConditionMatchCounts(outputs.match_counts) ? { match_counts: outputs.match_counts } : {}) };
 };

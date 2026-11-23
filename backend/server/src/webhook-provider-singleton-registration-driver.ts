@@ -230,6 +230,8 @@ export const createWebhookProviderSingletonRegistrationDriver = (
   return Object.freeze({
     preset,
     profile_id: preset.profile_id,
+    // D-201 Slice 10BK (10BF finding 12) — one endpoint per account, under one id.
+    one_endpoint_per_account: true as const,
     find,
     create(
       context: ManagedWebhookRegistrationContext,

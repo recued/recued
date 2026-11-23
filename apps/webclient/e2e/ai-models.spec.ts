@@ -191,9 +191,11 @@ for (const [index, chatSwitch] of chatBehaviourSwitchCases.entries()) {
     await expect(toggle).toHaveText('Saving…');
     await expect(toggle).toBeFocused();
 
-    // Safari's full keyboard navigation includes ordinary buttons.
+    // Keep real Tab/Shift+Tab navigation between the two adjacent switches
+    // while their responses are held, including Safari's keyboard mode.
     const tabKey = index === 0 ? 'Tab' : 'Shift+Tab';
-    await page.keyboard.press(browserName === 'webkit' ? `Alt+${tabKey}` : tabKey);
+    const moveFocus = browserName === 'webkit' ? `Alt+${tabKey}` : tabKey;
+    await page.keyboard.press(moveFocus);
     await expect(other).toBeFocused();
     await page.keyboard.press('Space');
     await expect(other).toHaveText('Saving…');

@@ -45,9 +45,18 @@ export const WEBCLIENT_POLISH_STYLES = `
   --wc-radius: 9px;
   --wc-radius-lg: 14px;
   --wc-radius-pill: 999px;
-  --wc-control-h: 38px;
+  --wc-control-h: 40px;
+  --wc-task-action-width: 7.5rem;
+  --wc-task-filter-width: 6.5rem;
   --wc-pad-x: 14px;
   --wc-gap: 14px;
+  --wc-space-sm: 8px;
+  --wc-space-md: 16px;
+  --wc-space-lg: 24px;
+  --wc-page-pad: 24px;
+  --wc-font-body: 14px;
+  --wc-font-small: 12px;
+  --wc-font-title: clamp(24px, 3vw, 28px);
   /* One content column width every workspace/list route shares so the
      column stops jumping (960/980/1040/1120) as you navigate. Each route
      reads it via max-width: var(--wc-content-max, 1080px). The dedicated
@@ -71,6 +80,10 @@ export const WEBCLIENT_POLISH_STYLES = `
      bug. */
   --color-object-bg: var(--surface-sunk);
   --color-union-variant-bg: var(--surface-sunk);
+}
+:where([data-recued-webclient-content]) {
+  font-size: var(--wc-font-body);
+  line-height: 1.5;
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -104,6 +117,765 @@ export const WEBCLIENT_POLISH_STYLES = `
   padding: 8px 11px;
 }
 :where([data-recued-webclient-content]) textarea { resize: vertical; }
+
+/* Inventory fields share tracks rather than sizing themselves from the
+   currently selected provider or status. Labels sit above the same baseline. */
+/* Keep the filter axes stable when Clear filters appears. The container is
+   limited to the filter row so enrollment dialogs retain their viewport. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) {
+  container: connections-filters / inline-size;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px 12px;
+  min-width: 0;
+  margin: 0;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label {
+  display: grid; gap: 6px; min-width: 0;
+  font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(1) { grid-column: 1 / span 2; grid-row: 1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(2) { grid-column: 3; grid-row: 1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(3) { grid-column: 4; grid-row: 1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) :is(input, select) {
+  box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
+  height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px;
+  border-radius: var(--wc-radius, 9px);
+  background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; font-weight: 400;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > [role="status"] {
+  grid-column: 1 / span 3; grid-row: 2;
+  display: flex; align-items: center; min-width: 0; min-height: var(--wc-control-h, 44px);
+  color: var(--muted); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > button {
+  grid-column: 4; grid-row: 2; justify-self: end; max-width: 100%; min-width: 0;
+  min-height: var(--wc-control-h, 44px); padding: 0 12px; border-radius: var(--wc-radius, 9px);
+  font-size: 13px; font-weight: 600; white-space: normal; overflow-wrap: anywhere;
+}
+@container connections-filters (max-width: 52rem) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(1) { grid-column: 1 / -1; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(2) { grid-column: 1 / span 2; grid-row: 2; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(3) { grid-column: 3 / span 2; grid-row: 2; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > [role="status"] { grid-column: 1 / span 2; grid-row: 3; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > button { grid-column: 3 / span 2; grid-row: 3; }
+}
+@container connections-filters (max-width: 22rem) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(2) { grid-column: 1 / -1; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > label:nth-of-type(3) { grid-column: 1 / -1; grid-row: 3; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > [role="status"],
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-inventory-filters, .accounts-inventory-filters) > button { grid-row: 4; }
+}
+/* Inventory cards keep one inset and text scale across account and API lanes.
+   Let actions move below the details before they squeeze the identity column. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-group-rows, .accounts-rows) { gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row, .accounts-row) {
+  border-radius: var(--wc-radius-lg, 14px); background: var(--surface);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row, .accounts-row-main) { padding: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-row-main { gap: 6px; border-radius: inherit; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row, .accounts-cloud-source) {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 24px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-row-info { gap: 6px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-name, .accounts-row-name) {
+  font-size: 14px; font-weight: 600; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-meta, .accounts-row-sub) { font-size: 12px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-cloud-source > :is(.accounts-row-name, .accounts-row-meta) { grid-column: 1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-cloud-source > .accounts-form-actions { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-actions, .accounts-cloud-source > .accounts-form-actions) {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; max-width: 100%;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-actions, .accounts-cloud-source > .accounts-form-actions) > .rx-btn {
+  flex: 1 1 auto; box-sizing: border-box; min-height: var(--wc-control-h, 44px); max-width: 100%;
+  padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4;
+  white-space: normal; overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row, .accounts-cloud-source) { grid-template-columns: minmax(0, 1fr); row-gap: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-cloud-source > .accounts-form-actions { grid-column: 1; grid-row: auto; }
+}
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-row .connections-row-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-row-actions > :is([data-action="connections-manage-row-authentication"], [data-action="connections-engagement-toggle"]) { grid-column: 1 / -1; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-cloud-source > .accounts-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-actions, .accounts-cloud-source > .accounts-form-actions) { align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-actions, .accounts-cloud-source > .accounts-form-actions) > .rx-btn { padding: 4px 8px; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-row-actions, .accounts-cloud-source > .accounts-form-actions) { grid-template-columns: minmax(0, 1fr); }
+}
+/* Setup choices share a responsive grid and start their captions at the same
+   inset. Authentication cards retain the component's selected-state colours. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-title, .accounts-picker-title) {
+  margin: 0 0 16px; font-size: 20px; font-weight: 600; line-height: 1.3;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-grid, .accounts-picker-grid, .connections-auth-method-cards) {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 12px; min-width: 0; margin: 0;
+}
+/* Subtypes carry setup instructions and service limits; give that copy a
+   full-width reading row. The kind grid sits inside its own section. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-picker > .connections-picker-grid { grid-template-columns: minmax(0, 1fr); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-picker-section { gap: 12px; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-card, .accounts-picker-card, .connections-auth-method-card) {
+  display: grid; align-content: start; gap: 8px; box-sizing: border-box; min-width: 0; max-width: 100%;
+  padding: 16px; border-radius: var(--wc-radius-lg, 14px); text-align: left; white-space: normal; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-card, .accounts-picker-card, .connections-auth-method-card) > strong {
+  font-size: 14px; font-weight: 600; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-card-desc, .accounts-picker-card-desc, .connections-auth-method-card > span) {
+  font-size: 13px; line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-card, .accounts-picker-card) { background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker-card, .accounts-picker-card):hover { background: var(--surface-sunk); }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-picker > .connections-dialog-actions, .accounts-picker > .accounts-form-actions) {
+  justify-content: flex-start; gap: 8px; margin-top: 16px;
+}
+/* Account facts use stable label tracks on larger screens and a full reading
+   width on phones. Keep the native definition list and action order intact. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail { max-width: 780px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail-title {
+  margin: 0 0 16px; font-size: 20px; font-weight: 600; line-height: 1.3;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail-grid {
+  box-sizing: border-box; grid-template-columns: minmax(8rem, 10rem) minmax(0, 1fr); gap: 12px 24px;
+  padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 14px); background: var(--surface);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail-grid dt { font-size: 12px; font-weight: 600; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail-grid dd { font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail > .accounts-form-actions { gap: 8px; margin-top: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail > .accounts-form-actions > .rx-btn {
+  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 44px);
+  padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4;
+  white-space: normal; overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail-grid { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail-grid dd:not(:last-child) { margin-bottom: 8px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail > .accounts-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-detail > .accounts-form-actions > .rx-btn { padding: 4px 8px; }
+}
+/* Connection setup uses the same control scale as its inventory. Keep state
+   colours in the components so rejected credentials and locked fields read
+   correctly after sizing the native controls. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form-title, .accounts-form-title) {
+  font-size: 20px; font-weight: 600; line-height: 1.3;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form-description, .accounts-form-desc) {
+  font-size: 13px; line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form-fields, .accounts-form-fields) { gap: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-form .rx-form-row:not(.rx-form-row-inline) {
+  grid-template-columns: minmax(0, 1fr); align-items: start; min-width: 0; margin-bottom: 0;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-field-row, .accounts-form-fields .rx-form-row, .accounts-password-repair label) {
+  min-width: 0; gap: 6px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form, .accounts-form, .accounts-password-repair) label:not(:has(input[type="checkbox"], input[type="radio"])) {
+  font-size: 12px; font-weight: 600; line-height: 1.4;
+}
+:where([data-recued-webclient-content] :is(.connections-form, .accounts-form, .accounts-password-repair) label:not(:has(input[type="checkbox"], input[type="radio"]))) { color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form, .accounts-form, .accounts-password-repair) label:has(> select) {
+  display: grid; gap: 6px; min-width: 0;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form, .accounts-form, .accounts-password-repair) :is(
+  input:not([type]), input[type="text"], input[type="password"], input[type="number"],
+  input[type="url"], input[type="email"], input[type="search"],
+  select:not([multiple]):not([size]), select[size="1"]:not([multiple])
+) {
+  box-sizing: border-box; max-width: 100%; min-width: 0;
+  height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px;
+  border-radius: var(--wc-radius, 9px); font-size: 13px; font-weight: 400; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form, .accounts-form) textarea {
+  max-width: 100%; min-width: 0; font-size: 13px; line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-form :is(select:not([multiple]):not([size]), select[size="1"]:not([multiple])) { overflow: hidden; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.connections-form, .accounts-form) .rx-field-hint {
+  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
+}
+/* Saved app credentials follow the setup form scale. Leave field colours and
+   borders to their existing focus, disabled and validation treatments. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] {
+  display: grid; gap: 16px; min-width: 0; max-width: 780px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] > h3 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] > label { min-width: 0; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] :is(input, select) {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%;
+  height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px;
+  border-radius: var(--wc-radius, 9px); font-size: 13px; font-weight: 400; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] > p { margin: 0; font-size: 13px; line-height: 1.5; }
+:where([data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] > :is(label, p:not([role="alert"]))) { color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] > button { justify-self: start; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] .oauth-apps-form-actions { gap: 8px; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] button {
+  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 44px);
+  padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] .oauth-apps-form-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps [data-oauth-app-editor] button { padding: 4px 8px; }
+}
+/* Saved-app maintenance reviews use the same field and choice rhythm as setup. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) {
+  min-width: 0; padding-top: 16px; font-size: 13px; line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) h3 { margin: 0 0 12px; font-size: 20px; font-weight: 600; line-height: 1.3; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) :is(h4, h5) { margin: 16px 0 8px; font-size: 13px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) p { margin: 8px 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) button {
+  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 44px);
+  padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) .rx-btn-primary { color: var(--on-accent); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-permissions) label:not(:has(input[type="checkbox"])) { display: grid; gap: 6px; min-width: 0; margin: 16px 0 8px; font-size: 12px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-permissions) input:is([type="password"], [type="date"], [type="url"]) {
+  box-sizing: border-box; width: 100%; max-width: 780px; min-width: 0;
+  height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px;
+  border-radius: var(--wc-radius, 9px); font-size: 13px; font-weight: 400; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-maintenance-choices, .oauth-app-renewal > ul, .oauth-permission-scopes) { display: grid; gap: 8px; padding: 0; margin: 12px 0; list-style: none; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-maintenance-choices, .oauth-app-renewal > ul, .oauth-permission-scopes) > li { min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) label:has(input[type="checkbox"]) {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 8px; margin: 0;
+  min-width: 0; min-height: var(--wc-control-h, 44px); padding: 8px 0; box-sizing: border-box; font-size: 13px; line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) input[type="checkbox"] { box-sizing: border-box; width: 18px; min-width: 18px; height: 18px; min-height: 18px; margin: 1px 0 0; padding: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps .oauth-maintenance-choices label > span { display: grid; gap: 4px; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage [role="group"], [data-permission-group], [data-permission-cleanup-preview], [data-permission-cleanup-task]) { min-width: 0; margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is([data-permission-cleanup-preview], [data-permission-cleanup-task]) > :first-child { margin-top: 0; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage, .oauth-app-renewal, .oauth-permissions) button { width: 100%; margin: 4px 0; padding: 6px 8px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-apps :is(.oauth-app-usage [role="group"], [data-permission-group], [data-permission-cleanup-preview], [data-permission-cleanup-task]) { padding: 12px; }
+}
+/* Identity settings share caption tracks and the setup control scale. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is([data-recued-settings-section="account"], [data-recued-settings-section="servers"]) { --wc-control-h: 40px; gap: 16px; font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is([data-recued-settings-section="account"], [data-recued-settings-section="servers"]) > h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] { gap: 16px; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-card { min-width: 0; padding: 16px; gap: 12px; border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] h3 { font-size: 16px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(.account-bind-kv, .account-bind-pro-item) { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: start; gap: 4px 12px; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(.account-bind-k, .account-bind-pro-label) { min-width: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(.account-bind-v, .account-bind-pro-value) { min-width: 0; overflow-wrap: anywhere; word-break: normal; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(.account-bind-pro-value, .account-bind-pro-state, .account-bind-pro-detail, .account-bind-dashboard-inline) { grid-column: 2; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-pro-items { gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-conflict { padding: 12px; gap: 12px; border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-actions { gap: 8px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(button, .account-bind-dashboard-link) { box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-card > .account-bind-dashboard-link { align-self: flex-start; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .rx-btn-primary { color: var(--on-accent); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] [data-server-address-panel] { gap: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] [data-server-address-row] { padding: 16px; border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] .server-address-name { font-size: 16px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] :is(.server-address-caption, .server-address-field > span) { font-size: 12px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] .server-address-field { gap: 6px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] [data-server-address-input] { height: var(--wc-control-h, 40px); min-height: var(--wc-control-h, 40px); padding: 0 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] .server-address-actions { gap: 8px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] [data-server-address-row] button { min-height: var(--wc-control-h, 40px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] [data-server-address-status] { border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.5; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is([data-recued-settings-section="account"], [data-recued-settings-section="servers"]) { --wc-control-h: 44px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-card,
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-section="servers"] [data-server-address-row] { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(.account-bind-kv, .account-bind-pro-item) { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] :is(.account-bind-pro-value, .account-bind-pro-state, .account-bind-pro-detail, .account-bind-dashboard-inline) { grid-column: auto; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-actions { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-account-binding-panel] .account-bind-card > .account-bind-dashboard-link { align-self: stretch; }
+}
+/* Backup forms keep the same label track even when a time or count control is
+   shorter than a storage selector. Native disclosures and file controls stay native. */
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] { --wc-control-h: 40px; gap: 16px; font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] > h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] h3 { margin: 0 0 12px; font-size: 16px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] :is([data-backup-card], [data-unattended-backups], [data-backup-history-card]) { padding: 16px; margin-block: 16px; border-radius: var(--wc-radius-lg, 14px); min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-backup-card] { margin-block: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-unattended-backups] { margin-top: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-backup-disclosure] { margin-block: 16px; border-radius: var(--wc-radius, 9px); min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-backup-disclosure] > summary { padding: 10px 12px; font-size: 13px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-backup-disclosure-body] { padding: 0 12px 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-backup-disclosure="tools"] [data-backup-disclosure-body] > div + div { padding-top: 16px; margin-top: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-remote-backups] label:has(> :is(select, input:not([type="checkbox"]))) { display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: center; gap: 6px 12px; margin-block: 12px; min-width: 0; font-size: 12px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-remote-backups] :is(select, input:not([type="checkbox"])) { width: 100%; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4; background: var(--surface); color: var(--fg); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-remote-backups] :is(input[type="number"], input[type="time"]) { max-width: 12rem; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] label:has(> input[type="checkbox"]) { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 8px; min-height: var(--wc-control-h, 40px); margin-block: 8px; font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] input[type="checkbox"] { grid-column: 1; grid-row: 1; width: 18px; min-width: 18px; height: 18px; min-height: 18px; padding: 0; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] button { box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] .rx-btn-primary { color: var(--on-accent); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] :is([data-archive-import-check], [data-archive-import-dismiss]) { margin: 4px 8px 4px 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] .archive-backup-block { gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] .archive-backup-field { gap: 6px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] :is(.archive-backup-manifest, textarea, .archive-backup-field input[type="text"]) { border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] .archive-backup-actions { flex-wrap: wrap; gap: 8px; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] { --wc-control-h: 44px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] :is([data-backup-card], [data-unattended-backups], [data-backup-history-card]) { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-remote-backups] label:has(> :is(select, input:not([type="checkbox"]))) { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] [data-remote-backups] :is(input[type="number"], input[type="time"]) { max-width: 100%; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] button { width: 100%; margin: 4px 0; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] :is([data-archive-import-check], [data-archive-import-dismiss]) { margin: 4px 0; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-backup-workspace] .archive-backup-actions > button { margin: 0; }
+}
+/* Authentication choices share tracks rather than taking their widths from
+   their labels. Component variants still own selected and busy states. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .auth-management {
+  box-sizing: border-box; max-width: 100%; gap: 12px; margin: 16px 0; padding: 16px; border-radius: var(--wc-radius-lg, 14px);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-panel .auth-management { max-width: 780px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .auth-management-head { gap: 8px 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .auth-management-head h3 { font-size: 16px; font-weight: 600; line-height: 1.35; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .auth-management-choices {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: 8px; align-items: stretch;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .auth-management-choices > .rx-btn {
+  box-sizing: border-box; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 44px);
+  padding: 6px 10px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.auth-management-status, .auth-management-note) { font-size: 13px; line-height: 1.5; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .auth-management-choices { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .auth-management-choices > .rx-btn { padding: 4px 8px; }
+}
+/* Broker fields start at the same baseline even when only one has a hint.
+   The key toggle follows its input row, including validation messages. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-editor { border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-field { align-content: start; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-field > :is(label, span) { font-size: 12px; font-weight: 600; line-height: 1.4; }
+:where([data-recued-webclient-content] .connections-managed-oauth .managed-oauth-field > :is(label, span)) { color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-field :is(input[type="text"], input[type="password"], input[type="url"], select) {
+  height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); border-radius: var(--wc-radius, 9px);
+  font-size: 13px; font-weight: 400; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-field input:is([type="text"], [type="password"], [type="url"]) { padding: 0 10px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-field select { padding: 0 32px 0 10px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-editor button {
+  box-sizing: border-box; min-height: var(--wc-control-h, 44px); max-width: 100%; padding: 6px 12px;
+  border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+}
+@media (min-width: 641px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-key { row-gap: 6px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-key > .managed-oauth-field { grid-column: 1; grid-row: 1 / span 3; grid-template-rows: subgrid; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-key > .managed-oauth-field:has(.managed-oauth-field-error) { grid-row-end: span 4; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-key > button { grid-column: 2; grid-row: 2; align-self: stretch; justify-self: stretch; margin: 0; }
+}
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-editor > .managed-oauth-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-editor button { padding: 4px 8px; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-editor > .managed-oauth-actions { grid-template-columns: minmax(0, 1fr); }
+}
+/* Account usage keeps names, API status and activity in separate reading rows.
+   Connection actions share a stable phone grid within each saved account. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-usage { gap: 12px; padding: 16px; border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-usage > h5 { font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection {
+  gap: 12px; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > h5 { display: grid; gap: 4px; font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > h5 > code { font-size: 11px; font-weight: 400; line-height: 1.5; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection dl { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection dl > div { display: grid; align-content: start; gap: 4px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection dt { font-size: 12px; font-weight: 500; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection dd { font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > ul { margin: 0; padding-left: 18px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > ul > li + li { margin-top: 4px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-usage button { min-height: var(--wc-control-h, 44px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection dl { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > .managed-oauth-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > .managed-oauth-actions > button { justify-self: stretch; padding: 4px 8px; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-account-connection > .managed-oauth-actions { grid-template-columns: minmax(0, 1fr); }
+}
+/* Permission groups share reading tracks instead of wrapping as uneven chips.
+   The decision, explanations and warnings keep the full review width. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview > * { grid-column: 1 / -1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview > .managed-oauth-scopes { grid-column: auto; align-content: start; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview > .managed-oauth-scopes > h5 { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; align-items: center; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview-head > button { min-height: var(--wc-control-h, 44px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview .managed-oauth-scope-list { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview .managed-oauth-scope-list > li { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview .managed-oauth-scope-list code { display: block; padding: 6px 8px; border-radius: var(--wc-radius, 9px); }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview,
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview-head { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-managed-oauth .managed-oauth-preview-head > button { justify-self: stretch; }
+}
+/* Account comparisons and affected connections use the same review rhythm.
+   A single account fills the comparison, and phone comparisons read in order. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 14px); background: var(--surface-sunk); font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > :is(h4, h5, p) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > h4 { font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > h5,
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact [data-file-source-authentication] > h5 { font-size: 12px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card { display: grid; align-content: start; gap: 8px; padding: 16px; border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card:only-child { grid-column: 1 / -1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card > :is(h5, p) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card > h5 { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card > p:has(> strong) { display: grid; gap: 4px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card code { font-size: 11px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact [data-managed-vendor-email] { font-weight: 600; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul > li { display: grid; gap: 8px; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul > li > :is(h5, p) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul > li > h5 { display: grid; gap: 4px; font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul > li > h5 > code { font-size: 11px; font-weight: 400; line-height: 1.5; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul > li > ul,
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact [data-file-source-authentication] > ul { margin: 0; padding-left: 18px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact > ul > li > ul > li + li { margin-top: 4px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact [data-file-source-authentication] { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact [data-file-source-authentication] > :is(h5, p) { margin: 0; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-cards { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .managed-oauth-impact .managed-oauth-account-card { padding: 12px; }
+}
+/* Bulk setup uses stacked captions and shared field widths. Checkbox choices
+   keep their control beside a stable name, identifier and sign-in summary. */
+[data-recued-webclient-shell] [data-recued-webclient-content] section.connections-bulk-migration { display: grid; gap: 16px; max-width: 780px; font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > :is(h2, h3, p) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > h2 { font-size: 20px; font-weight: 600; line-height: 1.3; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > h3 { font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label:not(.bulk-account-choice) { display: grid; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label:has(> input[type="url"]) { padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 14px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label > p { margin: 0; font-size: 13px; font-weight: 400; line-height: 1.5; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label > code { font-size: 11px; font-weight: 400; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label > :is(select, input[type="url"]) { width: 100%; height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; font-weight: 400; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label > select { overflow: hidden; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-choice { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 10px; align-items: start; margin: 0; padding: 16px; border-radius: var(--wc-radius-lg, 14px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-choice > input { width: 16px; height: 16px; margin: 2px 0 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-summary { display: grid; gap: 4px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-summary > strong { font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-summary > :is(code, span) { font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-summary > code { font-size: 11px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-choice:has(> input:checked) { border-color: var(--accent); background: var(--accent-weak); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > p[role="alert"] { padding: 12px; border-left: 3px solid var(--danger); border-radius: var(--wc-radius, 9px); background: var(--danger-weak); color: var(--danger); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration button { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > div:last-child { display: flex; flex-wrap: wrap; gap: 8px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > div:last-child > button,
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > button[data-bulk-resume] { min-height: var(--wc-control-h, 44px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > label:has(> input[type="url"]),
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-account-choice { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > div:last-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > div:last-child > button { justify-self: stretch; padding: 4px 8px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > div:last-child:has(> button:last-child:nth-child(odd)) > [data-bulk-action="close"] { grid-column: 1 / -1; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration > div:last-child { grid-template-columns: minmax(0, 1fr); }
+}
+/* Results separate the connection, outcome and read-check reference. Keep the
+   recorded outcome text so colour never substitutes for what was verified. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-progress { padding: 12px; border-radius: var(--wc-radius, 9px); background: var(--surface-sunk); font-weight: 600; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-results { display: grid; gap: 16px; margin: 0; padding: 0; list-style: none; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result { display: grid; gap: 12px; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius-lg, 14px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > :is(h4, p) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > h4 { display: grid; gap: 4px; font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > h4 > code { font-size: 11px; font-weight: 400; line-height: 1.5; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > p[role="status"] { padding: 8px 10px; border-radius: var(--wc-radius, 9px); background: var(--surface-sunk); color: var(--fg); font-weight: 500; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result:is([data-bulk-row-state="verified"], [data-bulk-row-state="applying"]) > p[role="status"] { background: var(--accent-weak); color: var(--accent); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result[data-bulk-row-state="migrated"] > p[role="status"] { font-weight: 600; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result[data-bulk-row-state="failed"] > p[role="status"] { background: var(--danger-weak); color: var(--danger); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > p:not([role]) { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > p:not([role]) > code { font-size: 11px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > details > summary { min-height: var(--wc-control-h, 44px); padding: 8px 0; font-size: 12px; font-weight: 600; line-height: 1.4; cursor: pointer; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result > details[open] > summary { margin-bottom: 12px; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connections-bulk-migration .bulk-migration-result { padding: 12px; }
+}
+/* Guided sign-in help shares the form scale. Keep ordered steps, native
+   checkbox labels and the local-review qualification easy to read. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help { margin: 16px 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help:has(> div) { box-sizing: border-box; max-width: 780px; padding: 16px; border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help > div { display: grid; gap: 12px; margin-top: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help > div > :is(h3, p) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help h3 { font-size: 16px; font-weight: 600; line-height: 1.35; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-field { display: grid; gap: 6px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-field > label { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-field > select { height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; font-weight: 400; line-height: 1.4; overflow: hidden; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help ol { display: grid; gap: 12px; margin: 0; padding-left: 24px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help li { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help li::marker { font-size: 12px; font-weight: 600; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help li label { display: inline-grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 10px; width: 100%; vertical-align: top; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help input[type="checkbox"] { min-height: 18px; padding: 0; margin: 2px 0 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-callback { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface-sunk); font-size: 11px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help button { min-height: var(--wc-control-h, 44px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-actions + p { font-size: 12px; color: var(--muted); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help > div > p[role="status"] { padding: 10px 12px; border-radius: var(--wc-radius, 9px); background: var(--surface-sunk); }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-actions > button { justify-self: stretch; padding: 4px 8px; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .oauth-help-actions { grid-template-columns: minmax(0, 1fr); }
+}
+/* Replacement steps share the connection form scale. Account comparisons use
+   bounded tracks so their identities remain inside narrow review panels. */
+[data-recued-webclient-shell] [data-recued-webclient-content] section.connection-replacement { max-width: 780px; gap: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-step { gap: 12px; padding: 16px; border-radius: var(--wc-radius-lg, 14px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-step-title { font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-pair { gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-field { gap: 6px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-field-label { line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement select { height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4; overflow: hidden; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-arrow { display: grid; align-items: center; height: var(--wc-control-h, 44px); padding: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-choices { gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-choices > li { gap: 8px; padding: 12px; border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-choices .replacement-muted { padding-left: 28px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-check { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-check input { min-height: 18px; padding: 0; margin: 2px 0 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-identities { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-identity { gap: 6px; padding: 12px; border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-identity-role { font-size: 12px; font-weight: 600; line-height: 1.4; letter-spacing: 0; text-transform: none; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-identity-detail { gap: 4px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-identity-detail > strong { font-size: 14px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-identity-id { font-size: 11px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .rx-btn { min-height: var(--wc-control-h, 44px); padding: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-result { gap: 12px; padding: 16px; border-radius: var(--wc-radius-lg, 14px); background: var(--surface); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-history-list { gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-history-list > li { padding: 12px; border-radius: var(--wc-radius, 9px); }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-step { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement :is(.replacement-pair, .replacement-identities) { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-arrow { display: none; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-actions > .rx-btn { justify-self: stretch; padding: 4px 8px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-actions > :only-child { grid-column: 1 / -1; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-history-list > li { display: grid; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .connection-replacement .replacement-actions { grid-template-columns: minmax(0, 1fr); }
+}
+/* Access reviews also mount inside the repair worklist. Give their own cards
+   explicit padding and flow so the worklist's article grid cannot flatten
+   nested resource fields against the card border. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-incidents) {
+  font-size: var(--wc-font-body, 14px); line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-incidents > h2 {
+  margin: 0 0 12px; font-size: var(--wc-font-title, 26px); line-height: 1.2; font-weight: 680; letter-spacing: -.025em;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-incidents) h3 {
+  margin: 0 0 12px; font-size: 15px; line-height: 1.4; font-weight: 650;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-incidents) :is(h4, h5) {
+  margin: 16px 0 8px; font-size: 14px; line-height: 1.4; font-weight: 650;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-incidents) p { margin: 0 0 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-incidents > p { max-width: 84ch; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-history-filters, .authentication-history-file, .authentication-history-preview) {
+  padding: 16px; border-radius: var(--wc-radius, 9px);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-access > article {
+  display: block; margin: 0; padding: 16px 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .bulk-authentication-access > article {
+  margin: 12px 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-incidents > article {
+  padding: 16px; border-radius: var(--wc-radius, 9px);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-incidents) article > :first-child { margin-top: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-incidents) :is(button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="file"])) {
+  box-sizing: border-box; min-height: var(--wc-control-h, 40px); border-radius: var(--wc-radius, 9px); padding: 8px 11px; font-size: 13px; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-access label:has(> input[type="checkbox"]) {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; margin: 8px 0 12px; cursor: pointer;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-access label > input[type="checkbox"] { margin: 4px 0 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access label:not(:has(input)), .authentication-history-filter-fields label, .authentication-history-file label) {
+  margin: 0 0 6px; color: var(--fg-muted); font-size: 12px; font-weight: 600; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-filter-fields {
+  grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-filter-fields > div { min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-filters > p { margin-top: 12px; color: var(--fg-muted); font-size: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-export-privacy { gap: 8px 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-export-privacy select { height: var(--wc-control-h, 40px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-file input[type="file"] {
+  min-height: var(--wc-control-h, 40px); padding: 0; border: 0; border-radius: 0; background: transparent;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-file input::file-selector-button {
+  min-height: var(--wc-control-h, 40px); margin-right: 8px; padding: 8px 11px; border-radius: var(--wc-radius, 9px); font-size: 13px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview button { margin-right: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview select { height: var(--wc-control-h, 40px); }
+/* Bundle and support sections contain more than their copy controls. Keep
+   the compact copy tool, while allowing the surrounding history to use the
+   record's reading width. Saved fields follow the other record fact grids. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is(
+  [data-history-preview-related="bundle"], [data-history-preview-support="timeline"]
+) { max-width: none; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is(
+  [data-history-preview-related="bundle"], [data-history-preview-support="timeline"]
+) > summary { margin-bottom: 8px; font-weight: 600; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is(
+  [data-history-preview-related="bundle"], [data-history-preview-support="timeline"]
+) > p { max-width: 84ch; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is([data-history-preview-record], [data-history-preview-related-record], [data-history-preview-linked-record]) > dl {
+  display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 1fr); align-items: start; gap: 8px 16px; margin: 16px 0;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is([data-history-preview-record], [data-history-preview-related-record], [data-history-preview-linked-record]) > dl > dt {
+  margin: 0; color: var(--fg-muted); font-size: 12px; line-height: 1.5; font-weight: 600;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is([data-history-preview-record], [data-history-preview-related-record], [data-history-preview-linked-record]) > dl > dd { margin: 0; min-width: 0; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is([data-history-preview-record], [data-history-preview-related-record], [data-history-preview-linked-record]) > dl { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-preview :is([data-history-preview-record], [data-history-preview-related-record], [data-history-preview-linked-record]) > dl > dd { margin-bottom: 8px; }
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .access-comparison-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .access-comparison-controls > :is(button, a) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .access-comparison-controls > :is(div, p) { flex-basis: 100%; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .access-comparison {
+  padding: 16px; border-radius: var(--wc-radius, 9px); background: var(--surface-subtle, var(--surface-sunk));
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .access-comparison-clocks { gap: 16px; }
+/* Native account repair and saved-app switches share the same field rhythm
+   as API setup. Their action wrappers keep wrapping independent of labels. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-repair, .accounts-oauth-app-switch, .accounts-bulk-app-switch) {
+  padding: 16px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-repair, .accounts-oauth-app-switch, .accounts-bulk-app-switch) :is(h2, h3) {
+  margin: 0 0 12px; font-size: 15px; font-weight: 650; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-repair, .accounts-oauth-app-switch, .accounts-bulk-app-switch) > p { margin: 0 0 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-repair, .accounts-oauth-app-switch, .accounts-bulk-app-switch) label:where(:not(:has(input[type="checkbox"])):not(:has(input[type="radio"]))) {
+  display: flex; flex-direction: column; min-width: 0; gap: 6px; margin: 12px 0; color: var(--fg-muted); font-size: var(--wc-font-small, 12px); line-height: 1.4; font-weight: 600;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-repair, .accounts-oauth-app-switch, .accounts-bulk-app-switch) :is(select, input:not([type="checkbox"]):not([type="radio"])) {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); padding: 8px 11px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-oauth-app-switch, .accounts-bulk-app-switch) select:not([multiple]):not([size]) { overflow: hidden; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-password-repair form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-password-repair form > label { margin: 0; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-password-repair form > :is(p, .accounts-password-actions, label:only-of-type) { grid-column: 1 / -1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-password-repair form > p { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-actions, .accounts-oauth-app-actions, [data-bulk-app-footer]) {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-actions, .accounts-oauth-app-actions, [data-bulk-app-footer]) > button { width: auto; min-width: 0; max-width: 100%; margin: 0; min-height: var(--wc-control-h, 40px); border-radius: var(--wc-radius, 9px); white-space: normal; overflow-wrap: anywhere; }
+[data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-oauth-app-actions, [data-bulk-app-footer]) > p { flex-basis: 100%; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-bulk-app-accounts {
+  padding: 0; margin: 12px 0; list-style: none; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-bulk-app-accounts > li { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-bulk-app-accounts > li + li { border-top: 1px solid var(--border); }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-bulk-app-accounts label { display: flex; align-items: start; gap: 8px; min-height: var(--wc-control-h, 40px); margin: 0; padding: 10px 12px; cursor: pointer; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .accounts-bulk-app-accounts input[type="checkbox"] { flex: 0 0 auto; margin: 3px 0 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-credential-rotation { padding: 12px; gap: 6px; border-radius: var(--wc-radius, 9px); }
+/* Recovery actions follow their explanation so long handoff labels do not
+   squeeze the provider's correction into a narrow desktop column. */
+[data-recued-webclient-shell] [data-recued-webclient-content] :is([data-connection-credential-recovery], .connections-credential-correction, .connections-external-change) {
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; min-width: 0;
+  padding: 12px; gap: 6px 12px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is([data-connection-credential-recovery], .connections-credential-correction, .connections-external-change) :is(.connections-credential-recovery-action, .connections-credential-correction-action, .connections-external-change-action) {
+  grid-column: 1 / -1; grid-row: auto; display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; min-width: 0; margin-top: 4px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] :is([data-connection-credential-recovery], .connections-credential-correction, .connections-external-change) .rx-btn {
+  width: auto; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); margin: 0;
+  border-radius: var(--wc-radius, 9px); white-space: normal; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-credential-closure-status { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-credential-admin-handoff { margin-top: 4px; padding-top: 8px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-credential-admin-handoff > summary { min-height: var(--wc-control-h, 40px); line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-credential-admin-handoff-body { gap: 12px; padding: 4px 0 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .connections-credential-admin-handoff pre { padding: 12px; border-radius: var(--wc-radius, 9px); font-size: var(--wc-font-small, 12px); line-height: 1.5; }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is([data-connection-credential-recovery], .connections-credential-correction, .connections-external-change) :is(.connections-credential-recovery-action, .connections-credential-correction-action, .connections-external-change-action) {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch;
+  }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is([data-connection-credential-recovery], .connections-credential-correction, .connections-external-change) :is(.connections-credential-recovery-action, .connections-credential-correction-action, .connections-external-change-action) { grid-template-columns: minmax(0, 1fr); }
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .source-sphere-choice span { box-sizing: border-box; min-height: calc(var(--wc-control-h, 40px) - 6px); }
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-repair, .accounts-oauth-app-switch, .accounts-bulk-app-switch) { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .accounts-password-repair form { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-actions, .accounts-oauth-app-actions, [data-bulk-app-footer]) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-oauth-app-actions, [data-bulk-app-footer]) > p { grid-column: 1 / -1; }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.accounts-password-actions, .accounts-oauth-app-actions, [data-bulk-app-footer]) { grid-template-columns: minmax(0, 1fr); }
+}
+/* Webhook setup and delivery readers use the same field and fact scale as
+   the other Connections lanes. Keep their status colours and write gates. */
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] { min-width: 0; gap: 16px; font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr); gap: 16px; align-items: end; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] label { min-width: 0; gap: 6px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px);
+  padding: 8px 11px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] select:not([multiple]):not([size]) { overflow: hidden; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] button {
+  min-width: 0; max-width: 100%; min-height: var(--wc-control-h, 40px); padding: 8px 12px; border-radius: var(--wc-radius, 9px); font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] button.wh-primary { color: var(--on-accent); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] :is([data-recued-webhooks-form], [data-recued-webhooks-card]) { min-width: 0; padding: 16px; gap: 12px; border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] [data-recued-webhooks-form] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-form] > :not(label) { grid-column: 1 / -1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; padding: 12px; border-radius: var(--wc-radius, 9px); min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types > :not(label) { grid-column: 1 / -1; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types label { min-height: var(--wc-control-h, 40px); padding: 6px 8px; font-size: 13px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types label:has(input:checked) { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); border-radius: var(--wc-radius, 9px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types input[type="checkbox"] { flex: 0 0 auto; margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types .wh-event-custom label { padding: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] dl { grid-template-columns: 168px minmax(0, 1fr); gap: 8px 16px; font-size: 13px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] dt { font-size: var(--wc-font-small, 12px); font-weight: 600; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-card-head { min-width: 0; gap: 12px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-card-head h3 { min-width: 0; overflow-wrap: anywhere; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-strays] { display: grid; gap: 12px; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-strays] .wh-stray-group { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface-sunk); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-strays] :is(h4, p, .wh-actions) { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-strays] p { max-width: 90ch; overflow-wrap: anywhere; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-recipes] { display: grid; gap: 8px; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-recipes] h4 { margin: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-recipes] ul { display: grid; gap: 16px; margin: 0; padding-inline-start: 18px; }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-recipes] li > p { margin: 4px 0 8px; }
+@media (max-width: 900px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] :is(.wh-filters, .wh-grid, [data-recued-webhooks-form]) { grid-template-columns: minmax(0, 1fr); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] :is([data-recued-webhooks-form], [data-recued-webhooks-card]) { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] dl { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] dd:not(:last-child) { margin-bottom: 8px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-card-head { flex-direction: column; align-items: flex-start; gap: 8px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-actions > .wh-note { grid-column: 1 / -1; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-actions > :is([data-recued-webhooks-action="deliveries"], [data-recued-webhooks-action="rejections"], [data-recued-webhooks-action="dead-letters"]) { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-event-types { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 360px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-webhooks-panel] .wh-actions { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-filter-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] :is(.authentication-access, .authentication-history-filters, .authentication-history-file, .authentication-history-preview, .access-comparison) { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .bulk-authentication-access > article { padding: 12px; }
+  [data-recued-webclient-shell] [data-recued-webclient-content] .authentication-history-filter-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
 /* A field's border, and on a field the border names mean the field edge.
    Components draw their fields with var(--border) or var(--border-strong),
    which everywhere else are meant to be quiet (1.2-1.5:1 on white);
@@ -166,14 +938,13 @@ export const WEBCLIENT_POLISH_STYLES = `
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .wc-button, .data-button, .runs-button, .recipes-button, .automation-button
 ):hover:not(:disabled) {
   background: var(--surface-sunk);
   border-color: var(--border-strong);
-  transform: translateY(-1px);
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .wc-button, .data-button, .runs-button, .recipes-button, .automation-button
@@ -223,10 +994,7 @@ export const WEBCLIENT_POLISH_STYLES = `
   border-radius: var(--wc-radius);
   min-height: var(--wc-control-h);
   font-weight: 600;
-  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
-}
-[data-recued-webclient-shell] [data-recued-webclient-content] .rx-btn:hover:not(:disabled):not([aria-disabled="true"]) {
-  transform: translateY(-1px);
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] .rx-btn-link {
   min-height: 0;
@@ -375,15 +1143,15 @@ export const WEBCLIENT_POLISH_STYLES = `
 }
 
 /* ════════════════════════════════════════════════════════════════
-   7 · Card / row cohesion — consistent radius + hover lift
+   7 · Card / row cohesion — quiet, stable interaction surfaces
    ════════════════════════════════════════════════════════════════ */
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .recipe-card, .data-row-button, .data-timeline-row,
   .work-entity-list-row-button,
   [data-recued-runs-row], [data-recued-automation-row]
 ) {
-  border-radius: 12px;
-  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  border-radius: var(--wc-radius);
+  transition: border-color 120ms ease, background 120ms ease;
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .recipe-card, .data-row-button, .work-entity-list-row-button,
@@ -391,14 +1159,87 @@ export const WEBCLIENT_POLISH_STYLES = `
 ):hover {
   border-color: var(--border-strong);
   background: var(--surface-sunk);
-  box-shadow: 0 6px 18px rgba(24, 24, 27, 0.055);
-  transform: translateY(-1px);
 }
 /* Keep an actionable row's accent affordance on hover. */
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .recipe-card, .work-entity-list-row-button
 ):hover {
   border-color: var(--accent);
+}
+
+/* Work records read as one list. Selection belongs to the entire row; Source
+   names are quiet text while exceptional origin/sync badges keep their chips. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list {
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius);
+  background: var(--surface);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 120ms ease;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row:first-child {
+  border-top-left-radius: var(--wc-radius);
+  border-top-right-radius: var(--wc-radius);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row:last-child {
+  border-bottom: 0;
+  border-bottom-left-radius: var(--wc-radius);
+  border-bottom-right-radius: var(--wc-radius);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list .work-entity-list-row-button {
+  border: 1px solid transparent;
+  border-radius: 0;
+  padding: 12px 16px;
+  background: transparent;
+  gap: 4px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row:has(.work-entity-list-row-button:hover) {
+  background: var(--surface-sunk);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list .work-entity-list-row-button:hover {
+  border-color: transparent;
+  background: transparent;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row:has(.work-entity-task-select input:checked) {
+  background: var(--accent-weak);
+  box-shadow: inset 3px 0 var(--accent);
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row:has(.work-entity-task-select) {
+  align-items: start;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row .work-entity-task-select {
+  align-self: start;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row-button:focus-visible {
+  position: relative;
+  z-index: 1;
+  border-radius: 6px;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row-primary {
+  font-weight: 600;
+  line-height: 1.5;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row-secondary {
+  line-height: 1.45;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row-source {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-source-dropdown-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+[data-recued-webclient-shell] [data-recued-webclient-content] .work-entity-list-row-footer {
+  column-gap: 12px;
+  row-gap: 4px;
+  line-height: 1.5;
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -426,16 +1267,32 @@ export const WEBCLIENT_POLISH_STYLES = `
   .connections-route-title, .contracts-title, .packs-route-title, .logs-title,
   .mail-route-title, [data-recued-today-route] .today-header h2
 ) {
-  font-size: clamp(24px, 3vw, 29px);
-  font-weight: 720;
+  font-size: var(--wc-font-title);
+  font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.025em;
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] > h1 {
-  font-size: clamp(24px, 3vw, 29px);
-  font-weight: 720;
+  color: var(--fg);
+  font-size: var(--wc-font-title);
+  font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.025em;
+}
+/* Keep Settings' narrower form column while sharing workspace insets and the
+   setup-field scale. The rail keeps its intentional phone scroll strip. */
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] { padding: var(--wc-page-pad, 24px); gap: var(--wc-space-lg, 24px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] .settings-shell { gap: var(--wc-space-lg, 24px); }
+[data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-nav-item] { min-height: var(--wc-control-h, 40px); padding: 8px 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .settings-finder { gap: 8px; margin: 0; min-width: 0; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .settings-finder label { font-size: 12px; font-weight: 600; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .settings-finder input { box-sizing: border-box; min-width: 0; height: var(--wc-control-h, 40px); min-height: var(--wc-control-h, 40px); padding: 0 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.4; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .settings-finder p { font-size: 12px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .settings-finder button { min-width: 0; min-height: var(--wc-control-h, 40px); padding: 12px; border-radius: var(--wc-radius, 9px); font-size: 13px; line-height: 1.5; }
+[data-recued-webclient-shell] [data-recued-webclient-content] .settings-finder button span { font-size: 12px; line-height: 1.5; }
+@media (max-width: 720px) {
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-route] .settings-shell { gap: var(--wc-space-md, 16px); }
+  [data-recued-webclient-shell] [data-recued-webclient-content] [data-recued-settings-nav-item] { min-height: 44px; }
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   [data-recued-chat-route-session-list],
@@ -443,7 +1300,6 @@ export const WEBCLIENT_POLISH_STYLES = `
   [data-recued-packs-panel]
 ) {
   border-radius: var(--wc-radius-lg);
-  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -581,6 +1437,7 @@ export const WEBCLIENT_POLISH_STYLES = `
   [data-recued-webclient-shell], [data-recued-webclient-overlay] {
     --wc-control-h: 44px;
     --wc-pad-x: 12px;
+    --wc-page-pad: 16px;
   }
   /* Every text field and select is a finger's height on a phone. ⛔ The floor
      above held them at 40px, and its :not() chain outranks the 44px a route

@@ -11,16 +11,18 @@ export const assetKernelReadGates = (
   grants: GatedReadGrantResolver | undefined,
   access?: SituationAccess,
 ): Pick<KernelDispatchers, 'workEntityList' | 'workEntityGet'> => {
-  const admit = (kind: string, source: ExecutionSource | undefined): void => {
+  const admit = (kind: string, source: ExecutionSource | undefined, reservation?: object): void => {
     if (kind !== 'asset') return;
-    const checker = source && grants?.resolveForSource(source);
+    const checker = source && (grants?.resolveForDispatch
+      ? grants.resolveForDispatch(source, reservation)
+      : grants?.resolveForSource(source));
     if (!checker?.isVerbOpGranted('core.work-entity.read') || !checker.isCollectionReadGranted('asset')) {
       throw new IngredientError('INGREDIENT_SCOPE_INSUFFICIENT', 'Asset reads require core.work-entity.read and data.asset for the actual execution source');
     }
   };
   return {
     ...(dispatchers.workEntityList ? { workEntityList: async (input) => {
-      admit(input.kind, input.origin_execution_source);
+      admit(input.kind, input.origin_execution_source, input.contract_dispatch_reservation);
       const scope = access && createReadScope(access, input.origin_execution_source);
       if (scope?.limited) {
         const visible: Awaited<ReturnType<NonNullable<KernelDispatchers['workEntityList']>>>['entities'] = [];
@@ -38,7 +40,7 @@ export const assetKernelReadGates = (
       return dispatchers.workEntityList!(input);
     } } : {}),
     ...(dispatchers.workEntityGet ? { workEntityGet: async (input) => {
-      admit(input.kind, input.origin_execution_source);
+      admit(input.kind, input.origin_execution_source, input.contract_dispatch_reservation);
       const result = await dispatchers.workEntityGet!(input);
       const scope = access && createReadScope(access, input.origin_execution_source);
       if (result.entity && scope?.limited) {

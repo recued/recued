@@ -341,6 +341,7 @@ const setup = (opts: {
   listGateAfterFirst?: Promise<void>;
   headingLevel?: 2 | 3;
   initialTargetId?:string;
+  rejectFailure?: { code: string; message: string };
 }): Harness => {
   const calls: ConnCall[] = [];
   let items = [...opts.items];
@@ -392,6 +393,7 @@ const setup = (opts: {
         });
       case 'reception.inbox.reject':
         return (opts.decisionGate ?? Promise.resolve()).then(() => {
+          if (opts.rejectFailure) throw opts.rejectFailure;
           decisionAcknowledged = true;
           if (opts.removeResolved === true) {
             const holdId = (payload as { hold_id: string }).hold_id;
@@ -944,6 +946,22 @@ describe('reception inbox panel — destination ref-picker', () => {
     const heading = h.root.querySelector(`[${RECEPTION_INBOX_HEADING_ATTR}]`);
     expect(heading?.getAttribute('tabindex')).toBe('-1');
     expect(h.document.activeElement).toBe(heading);
+  });
+
+  it('keeps a refused rejection open with its reason and an honest retry message', async () => {
+    const h = setup({ items: [item({ arg_schema: { fields: [] } })], removeResolved: true,
+      rejectFailure: { code: 'decision_not_recorded', message: 'Rejection was not accepted' } });
+    await flush();
+    dispatch(h.root.querySelector(`[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`)!, 'click');
+    const reason = h.root.querySelector('[data-recued-reception-inbox-reason]')!;
+    reason.value = 'Keep this reason'; dispatch(reason, 'input');
+    dispatch(findButton(h.root, 'Reject'), 'click'); await flush();
+    expect(h.mount.getState().selected_hold_id).toBe('hold-1');
+    expect(h.mount.getState().in_flight).toBe(false);
+    expect(h.mount.getState().error).toBe('Your rejection was not recorded. Open the request again and try once more.');
+    expect(h.root.querySelector('[data-recued-reception-inbox-reason]')?.value).toBe('Keep this reason');
+    expect(h.root.querySelector(`[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`)).not.toBeNull();
+    h.mount.dispose();
   });
 
   it('renders owner-only prior booking history in the review detail', async () => {

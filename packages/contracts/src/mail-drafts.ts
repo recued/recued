@@ -11,7 +11,11 @@ export interface MailDraft {
   draft_id: string; incarnation: string; revision: number; content: MailDraftContent;
   origin_contract_id: string | null; created_at: number; updated_at: number;
 }
-export type MailDraftSummary = Omit<MailDraft, 'content'> & { subject: string; sender_mail_instance: string };
+export type MailDraftSummary = Omit<MailDraft, 'content'> & {
+  subject: string; sender_mail_instance: string;
+  /** Optional for clients connected to a server predating recipient previews. */
+  to?: string[]; cc?: string[]; bcc?: string[];
+};
 export interface MailDraftCreateRequest { idempotency_key: string; content: MailDraftContent }
 export interface MailDraftUpdateRequest { draft_id: string; expected_revision: number; content: MailDraftContent }
 export interface MailDraftDeleteRequest { draft_id: string; expected_revision: number }
@@ -75,8 +79,13 @@ export const parseMailDraftDelete = (value: unknown): MailDraftDeleteRequest => 
   const row = object(value, ['draft_id', 'expected_revision']);
   return { draft_id: parseMailDraftId(row.draft_id), expected_revision: revision(row.expected_revision) };
 };
-export const parseMailDraftList = (value: unknown): { cursor: string; limit: number } => {
-  const row = object(value ?? {}, ['cursor', 'limit']); const limit = row.limit ?? 25;
+export const parseMailDraftList = (value: unknown): { cursor: string; limit: number; query: string; sender_mail_instance?: string } => {
+  const row = object(value ?? {}, ['cursor', 'limit', 'query', 'sender_mail_instance']); const limit = row.limit ?? 25;
   if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) bad('Draft page limit must be 1 to 100.');
-  return { cursor: row.cursor === undefined ? '' : parseMailDraftId(row.cursor), limit: limit as number };
+  if (row.query !== undefined && (typeof row.query !== 'string' || row.query.length > 200)) bad('Draft search must be at most 200 characters.');
+  if (row.sender_mail_instance !== undefined && (typeof row.sender_mail_instance !== 'string'
+    || !row.sender_mail_instance.trim() || row.sender_mail_instance.length > 256)) bad('A sender mailbox is required.');
+  return { cursor: row.cursor === undefined ? '' : parseMailDraftId(row.cursor), limit: limit as number,
+    query: (row.query as string | undefined)?.trim() ?? '',
+    ...(row.sender_mail_instance !== undefined ? { sender_mail_instance: row.sender_mail_instance as string } : {}) };
 };

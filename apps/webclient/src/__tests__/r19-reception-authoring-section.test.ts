@@ -154,7 +154,7 @@ const makeFakeShell = (createResult?: ReceptionEndpointCreateResult) => {
   const state = baseState();
   const listeners = new Set<(s: ReceptionPageShellState) => void>();
   const fns = {
-    runPreview: vi.fn(() => Promise.resolve({ preview_hash: 'ph' } as never)),
+    runPreview: vi.fn(() => Promise.resolve({ preview_hash: 'ph', html: '<p>Visitor preview</p>', visible_fields: [], expires_at: NOW + 600_000 })),
     createEndpoint: vi.fn(() =>
       Promise.resolve(
         createResult ?? {

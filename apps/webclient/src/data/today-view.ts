@@ -5,7 +5,7 @@ import type {
   ProactiveToday, SituationBasis, SituationCluster, SituationItem, SituationReason, SituationRef, SituationWindow, Sphere,
 } from '@recued/contracts';
 import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
-import { e, renderActionLabel, renderTaskDueActions, TASK_DUE_STYLES } from '@recued/ui-shared';
+import { e, renderActionLabel, renderTaskDueActions, renderTaskBlockers, TASK_DUE_STYLES } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { situationRefHref } from './situation-ref-href.js';
@@ -38,6 +38,8 @@ export interface TodayItem {
   direction?: string;
   unreachable?: boolean;
   taskId?: string;
+  taskDependencyIds?: readonly string[];
+  taskDependenciesUncertain?: boolean;
   commitmentId?: string;
   /** D-325 §15.7 (2026-10-24) — the occurrence of a renewal: Done acknowledges it. */
   renewalOccurrenceId?: string;
@@ -73,6 +75,11 @@ export interface TodayTaskActions {
   canDismissSituation?: boolean;
   /** The last dismissal, which the notice offers to undo. */
   undoDismissal?: string | null;
+  /** D-407 slice 2 — what the owner typed in "When is the next one?", by occasion id: Today repaints each minute
+   *  and on every broadcast, and a box drawn empty again would lose it. */
+  occasionDrafts?: ReadonlyMap<string, { on: string; time: string }>;
+  /** D-407 slice 2 — the shell can send the answer. Without it the section is not drawn. */
+  canAnswerOccasionNext?: boolean;
   /** D-343 slice 4 — "Close the day" opens the conversation for today's evening notice. */
   canCloseDay?: boolean;
   closingDay?: boolean;
@@ -188,6 +195,8 @@ const workItem = (entity: WorkEntity, window: ReturnType<typeof todayWindow>): T
     kind: entity._kind, sourceKey: `work:${entity.source_id}`,
     href: serializeShellRoute('data', entity._kind, entity.id),
     ...(entity._kind === 'task' ? { taskId: entity.id } : {}),
+    ...(entity._kind === 'task' && entity.blocks_task_ids.length ? { taskDependencyIds: entity.blocks_task_ids,
+      taskDependenciesUncertain: entity.sync_state !== 'live' || entity.pending_write !== undefined } : {}),
     ...(entity._kind === 'commitment' ? { commitmentId: entity.id } : {}),
     ...(entity._kind === 'commitment' ? { direction: { outbound: 'You promised', inbound: 'Promised to you', internal: 'Personal commitment' }[entity.direction] } : {}),
     ...(entity.sync_state === 'stale_unreachable' ? { unreachable: true } : {}),
@@ -506,24 +515,36 @@ export const TODAY_VIEW_STYLES = `
 ${TASK_DUE_STYLES}
 .today-action { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 .today-action > svg { flex-shrink:0; }
-.today-view { max-width:960px; margin-top:18px; }
-.today-header { display:flex; justify-content:space-between; align-items:start; gap:16px; }
-.today-header h2 { margin:0 0 6px; font-size:22px; }
+.today-view { max-width:960px; margin-top:var(--wc-space-lg, 24px); font-size:var(--wc-font-body, 14px); }
+.today-header { display:flex; justify-content:space-between; align-items:start; gap:16px; margin-bottom:12px; }
+.today-header h2 { margin:0 0 8px; font-size:var(--wc-font-title, 28px); font-weight:600; line-height:1.15; letter-spacing:-.025em; }
 .today-header-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .today-suggestions { margin:12px 0 16px; padding:12px 16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
 .today-suggestions h3 { margin:0 0 6px; font-size:15px; }
 .today-view .today-suggestions-text { margin:0 0 8px; color:var(--fg); white-space:pre-wrap; }
 .today-view p { color:var(--muted); line-height:1.5; }
-.today-header p { margin:0 0 12px; }
-.today-refresh { min-height:36px; flex-shrink:0; padding:6px 12px; font:inherit; font-size:13px; color:var(--fg); background:var(--surface); border:1px solid var(--border); border-radius:8px; cursor:pointer; }
+.today-header p { margin:0; }
+.today-toolbar { display:flex; flex-wrap:wrap; align-items:start; justify-content:space-between; gap:8px 16px; margin:12px 0; }
+.today-status-cluster { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; }
+.today-status-cluster p { margin:0; font-size:var(--wc-font-small,12px); }
+.today-scope-controls { display:grid; grid-template-columns:minmax(0,10rem) minmax(0,1fr); align-items:end; gap:8px 16px; min-width:0; }
+.today-scope-controls > label { display:grid; gap:4px; min-width:0; font-size:var(--wc-font-small,12px); }
+.today-scope-controls select { min-width:0; width:100%; height:var(--wc-control-h,40px); }
+.today-scope-controls .today-sources { min-width:0; margin:0; }
+.today-scope-controls .today-sources summary { min-height:var(--wc-control-h,40px); align-content:center; }
+@media(max-width:380px) { .today-scope-controls { grid-template-columns:minmax(0,1fr); width:100%; } }
+.today-header p + p, .today-updated { font-size:var(--wc-font-small, 12px); }
+.today-view > label { display:inline-flex; align-items:center; flex-wrap:wrap; gap:var(--wc-space-sm, 8px); font-size:var(--wc-font-small, 12px); }
+.today-refresh { min-height:var(--wc-control-h, 38px); flex-shrink:0; padding:6px 12px; font:inherit; font-size:13px; color:var(--fg); background:var(--surface); border:1px solid var(--border); border-radius:var(--wc-radius, 9px); cursor:pointer; }
 .today-refresh[aria-disabled="true"] { opacity:.6; cursor:wait; }
-.today-sources { margin:12px 0 22px; }
-.today-sources summary { cursor:pointer; }
+.today-sources { margin:var(--wc-space-md, 16px) 0; font-size:var(--wc-font-small, 12px); }
+.today-sources summary { cursor:pointer; color:var(--fg-muted); }
 .today-sources ul, .today-list { list-style:none; padding:0; }
 .today-sources li { display:flex; flex-wrap:wrap; gap:8px; padding:5px 0; }
-.today-group h3 { display:flex; gap:10px; align-items:center; font-size:16px; margin:24px 0 6px; }
-.today-count { font-size:12px; font-weight:400; opacity:.7; }
-.today-row { display:grid; grid-template-columns:145px minmax(0,1fr); gap:12px; padding:14px 0; border-bottom:1px solid var(--border, #303642); }
+.today-group { margin-top:var(--wc-space-lg, 24px); border-top:1px solid var(--border); }
+.today-group h3 { display:flex; gap:var(--wc-space-sm, 8px); align-items:center; font-size:15px; font-weight:600; margin:16px 0 8px; }
+.today-count { font-size:var(--wc-font-small, 12px); font-weight:400; color:var(--fg-muted); font-variant-numeric:tabular-nums; }
+.today-row { display:grid; grid-template-columns:145px minmax(0,1fr); gap:var(--wc-space-md, 16px); padding:16px 0; border-bottom:1px solid var(--border); }
 .today-row time { font-size:13px; color:var(--muted); }
 .today-row a { color:var(--fg); overflow-wrap:anywhere; text-decoration:none; }
 .today-row a:hover { text-decoration:underline; }
@@ -537,21 +558,22 @@ ${TASK_DUE_STYLES}
 .today-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-top:6px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
 .today-freshness { font-size:12px; padding:2px 6px; border:1px solid var(--border, #303642); border-radius:4px; }
 .today-freshness[data-warning] { color:var(--fg); background:var(--warn-soft); font-weight:600; }
-.today-notice { padding:10px 12px; border-left:3px solid var(--warn); background:var(--surface-sunk); }
-.today-empty { display:grid; justify-items:start; gap:8px; margin:18px 0 4px; padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+.today-notice { margin:12px 0; padding:10px 12px; border-left:3px solid var(--warn); background:var(--surface-sunk); }
+.today-empty { display:grid; justify-items:start; gap:var(--wc-space-sm, 8px); margin:24px 0 4px; padding:16px 0; }
 .today-empty-lead { margin:0; font-size:15px; color:var(--fg); }
 .today-empty-sub { margin:0; font-size:13px; }
 .today-empty-create { min-height:38px; padding:7px 14px; font:inherit; font-size:13px; font-weight:650; color:var(--on-accent); background:var(--accent); border:1px solid var(--accent); border-radius:8px; cursor:pointer; }
-.today-commitment-actions, .today-task-actions, .today-task-editor { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; min-width:0; }
+.today-commitment-actions, .today-task-actions, .today-task-editor, .today-occasion-next-fields { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; min-width:0; }
 .today-task-editor { border:1px solid var(--border); border-radius:8px; padding:12px; background:var(--surface-subtle, var(--surface)); border-inline-start:3px solid var(--accent); }
 .today-task-editor p { flex-basis:100%; margin:0; overflow-wrap:anywhere; }
 .today-task-editor .today-task-editor-title { color:var(--fg); font-weight:650; }
 .today-task-editor .today-task-hint { font-size:12px; }
-.today-task-editor label { display:grid; gap:5px; min-width:0; max-width:100%; }
-.today-commitment-actions button, .today-task-actions button, .today-task-editor button, .today-task-editor input { box-sizing:border-box; min-height:44px; max-width:100%; min-width:0; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--fg); font:inherit; font-size:13px; }
-.today-commitment-actions button, .today-task-actions button, .today-task-editor button { cursor:pointer; }
-.today-task-editor .today-task-primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
-.today-commitment-actions button[aria-disabled=true], .today-task-actions button[aria-disabled=true], .today-task-editor button[aria-disabled=true] { opacity:.6; cursor:default; }
+.today-occasion-next-fields { align-items:end; }
+.today-task-editor label, .today-occasion-next-fields label { display:grid; gap:5px; min-width:0; max-width:100%; }
+.today-commitment-actions button, .today-task-actions button, .today-task-editor button, .today-task-editor input, .today-occasion-next-fields button, .today-occasion-next-fields input { box-sizing:border-box; min-height:44px; max-width:100%; min-width:0; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--fg); font:inherit; font-size:13px; }
+.today-commitment-actions button, .today-task-actions button, .today-task-editor button, .today-occasion-next-fields button { cursor:pointer; }
+.today-task-editor .today-task-primary, .today-occasion-next-fields .today-task-primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
+.today-commitment-actions button[aria-disabled=true], .today-task-actions button[aria-disabled=true], .today-task-editor button[aria-disabled=true], .today-occasion-next-fields button[aria-disabled=true] { opacity:.6; cursor:default; }
 .today-task-actions button:not([aria-disabled=true]):hover, .today-commitment-actions button:not([disabled]):hover { border-color:var(--accent); }
 .today-task-actions > a { min-height:44px; display:inline-flex; align-items:center; padding:0 4px; font-size:13px; color:var(--accent); }
 .today-task-actions > a[aria-disabled=true] { opacity:.6; }
@@ -603,6 +625,25 @@ const renderSuggestions = (suggestions: ProactiveToday['suggestions']): string =
     <p class="today-suggestions-text">${e(suggestions.text)}</p>
     <a href="#chat/session/${e(encodeURIComponent(suggestions.session_id))}" data-today-suggestions-talk>Talk it over</a></section>`;
 
+/** D-407 slice 2 — "When is the next one?" for each occasion that comes back whenever the last one says and waits for
+ *  its next date: its date here, or "No next one". Nothing is drawn when none waits, or from a server before slice 2. */
+export const TODAY_OCCASION_NEXT_SAVE = 'today-occasion-next-save';
+const localIsoDay = (at: number): string => { const day = new Date(at);
+  return `${String(day.getFullYear())}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`; };
+export const TODAY_OCCASION_NEXT_NONE = 'today-occasion-next-none';
+const renderOccasionsWaiting = (waiting: ProactiveToday['occasions_waiting'], actionAttr: string, busy: boolean, today: string,
+  drafts?: ReadonlyMap<string, { on: string; time: string }>): string =>
+  !waiting?.length ? '' : `<section class="today-group today-occasion-next" data-today-occasion-next aria-labelledby="today-occasion-next-title">
+    <h3 id="today-occasion-next-title">When is the next one?<span class="today-count">${waiting.length}</span></h3>
+    <ul class="today-list">${waiting.map((row) => `<li class="today-row" data-today-occasion="${e(row.id)}"><div>
+      <a href="#yours/occasions/occasion/${e(encodeURIComponent(row.id))}">${e(row.title)}</a>
+      <span class="today-meta">last <time datetime="${e(row.last_on)}">${e(new Date(`${row.last_on}T00:00:00Z`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }))}</time></span>
+      <div class="today-occasion-next-fields"><label class="today-occasion-next-date">Date of the next one <input type="date" data-today-occasion-next-on="${e(row.id)}" min="${e(today)}" value="${e(drafts?.get(row.id)?.on ?? '')}"${busy ? ' disabled' : ''}></label>
+      <label class="today-occasion-next-date">Time (optional) <input type="time" data-today-occasion-next-time="${e(row.id)}" value="${e(drafts?.get(row.id)?.time ?? '')}"${busy ? ' disabled' : ''}></label>
+      <button type="button" class="today-task-primary today-action" ${actionAttr}="${TODAY_OCCASION_NEXT_SAVE}" data-today-occasion-id="${e(row.id)}"${busy ? ' aria-disabled="true"' : ''}>Save</button>
+      <button type="button" ${actionAttr}="${TODAY_OCCASION_NEXT_NONE}" data-today-occasion-id="${e(row.id)}"${busy ? ' aria-disabled="true"' : ''}>No next one</button></div>
+    </div></li>`).join('')}</ul></section>`;
+
 /** D-340 §4 — what holds today, one line each above the groups, under no title (D-340
  * ruling 10). Nothing is drawn when nothing holds. */
 const renderStates = (states: readonly TodayItem[]): string => states.length === 0 ? ''
@@ -611,7 +652,7 @@ const renderStates = (states: readonly TodayItem[]): string => states.length ===
       : ` <span class="today-meta">until <time datetime="${e(new Date(state.until).toISOString())}">${e(new Date(state.until).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</time></span>`}</div></li>`).join('')}</ul></section>`;
 
 export type TodaySphereFilter = 'all' | 'personal' | 'professional' | 'unsorted';
-export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions, sphereFilter: TodaySphereFilter = 'all'): string => {
+export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions, sphereFilter: TodaySphereFilter = 'all', remindersHtml = ''): string => {
   if (snapshot && sphereFilter !== 'all') snapshot = { ...snapshot, items: snapshot.items.filter(item => sphereFilter === 'unsorted' ? item.sphere === undefined && item.sphereReason !== undefined : item.sphere === sphereFilter) };
   const warning = snapshot !== null && (snapshot.issues.length > 0 || snapshot.sources.some((source) => source.freshness.warning)
     || snapshot.items.some((item) => item.unreachable));
@@ -627,7 +668,6 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
   return `<section class="today-view" data-today-view aria-busy="${loading}">
     <header class="today-header"><div><h2>Today</h2>
       <p>Tasks, commitments, and calendar events in one place.</p>
-      ${snapshot === null ? '' : `<p>Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>`}
     </div><div class="today-header-actions">${actions?.canOpenStream === true && snapshot?.proactive?.stream === true
       ? `<button type="button" class="today-action" ${actionAttr}="${TODAY_STREAM_ACTION}" data-today-stream-open aria-haspopup="dialog">Daily stream</button>` : ''}${actions?.canCloseDay === true && snapshot?.proactive?.close_day === true
       ? `<button type="button" class="today-action" ${actionAttr}="${TODAY_CLOSE_DAY_ACTION}" data-today-close-day aria-disabled="${actions.closingDay === true}">${actions.closingDay === true ? 'Opening…' : 'Close the day'}</button>` : ''}<button type="button" class="today-refresh today-action" ${actionAttr}="refresh-today" aria-disabled="${loading}">${renderActionLabel('refresh', 'Refresh')}</button></div></header>
@@ -636,16 +676,20 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
       ? ` <button type="button" class="today-action" ${actionAttr}="today-situation-restore" data-today-dismissal="${e(actions.undoDismissal)}">${renderActionLabel('undo', 'Undo')}</button>` : ''}</p>` : ''}
     ${actions?.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(actions.error)}</p>` : ''}
     ${actions?.edit && !snapshot?.items.some(item => item.key === actions.edit?.key) ? renderTaskEditor(actions, actionAttr) : ''}
+    ${remindersHtml}
     ${snapshot === null ? '<p role="status">Loading Today…</p>' : `
+      <div class="today-toolbar"><div class="today-status-cluster">
+      <p class="today-window">Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>
       <p class="today-updated" role="status">${snapshot.complete === false
         ? 'Still reading your sources. Here is what has come in so far.'
         : loading ? 'Loading again. These are the old results.'
         : `Checked ${e(new Date(snapshot.now).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}`}</p>
-      ${warning ? `<div class="today-notice" role="status"><p>Some sources may be missing or out of date. Results below may be incomplete.</p>${snapshot.issues.map((issue) => `<p>${e(issue)}</p>`).join('')}</div>` : ''}
-      <label>Sphere <select data-today-sphere aria-label="Today sphere" style="min-height:44px">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([value, title]) => `<option value="${value}"${value === sphereFilter ? ' selected' : ''}>${title}</option>`).join('')}</select></label>
+      </div><div class="today-scope-controls">
+      <label>Sphere <select data-today-sphere aria-label="Today sphere">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([value, title]) => `<option value="${value}"${value === sphereFilter ? ' selected' : ''}>${title}</option>`).join('')}</select></label>
       <details class="today-sources"${sourcesOpen ? ' open' : ''}><summary>Sources · ${snapshot.sources.length}${sourceWarnings > 0 ? ` · ${sourceWarnings} need attention` : ''}</summary><ul>
       ${snapshot.sources.map((source) => `<li><span>${e(source.label)} · ${e(kindLabel[source.kind])}</span>${renderFreshness(source.freshness)}<span>${e(source.freshness.detail)}</span></li>`).join('')}
-      </ul></details>
+      </ul></details></div></div>
+      ${warning ? `<div class="today-notice" role="status"><p>Some sources may be missing or out of date. Results below may be incomplete.</p>${snapshot.issues.map((issue) => `<p>${e(issue)}</p>`).join('')}</div>` : ''}
       ${snapshot.items.length === 0 && snapshot.complete && canCreate === true ? `<div class="today-empty" data-today-empty>
         <p class="today-empty-lead">${warning
           ? 'The sources that answered had nothing to show.'
@@ -654,6 +698,8 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
         <p class="today-empty-sub">A task, a note, a contact, or something you promised. No setup needed — it stays on this server.</p>
       </div>` : ''}
       ${renderSuggestions(snapshot.proactive?.suggestions)}
+      ${actions?.canAnswerOccasionNext === true
+        ? renderOccasionsWaiting(snapshot.proactive?.occasions_waiting, actionAttr, actions.commitmentBusy === true, localIsoDay(snapshot.now), actions.occasionDrafts) : ''}
       ${renderStates(snapshot.items.filter((item) => item.group === 'holds'))}
       ${groups.map((group) => {
         const items = snapshot.items.filter((item) => item.group === group.id);
@@ -667,10 +713,10 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
               <a href="${e(item.href)}"${actions?.canDismissSituation ? rowOpenAttrs(item, actionAttr) : ''}>${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
               ${item.sphereReason === undefined ? '' : `<span data-item-sphere title="${e(item.sphereReason)}">${item.sphere === 'personal' ? 'Personal' : item.sphere === 'professional' ? 'Work' : 'Unsorted'} · ${e(item.sphereReason)}</span>`}
               ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${item.kind === 'situation' ? '' : renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
-              </div>${renderCluster(item.cluster, item.cluster ? snapshot.proactive?.summaries?.[item.cluster.id] : undefined,
+              </div>${item.taskId && item.taskDependencyIds ? renderTaskBlockers(item.taskId, item.taskDependencyIds, item.taskDependenciesUncertain || source?.freshness.warning === true) : ''}${renderCluster(item.cluster, item.cluster ? snapshot.proactive?.summaries?.[item.cluster.id] : undefined,
                 actions?.canDismissSituation ? { actionAttr, busy: actions.commitmentBusy === true } : undefined, people)}${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
                 ${actions.canComplete ? `<button type="button" ${actionAttr}="today-task-complete" data-today-task="${e(item.key)}" aria-label="Complete ${e(item.title)}"${actions.edit ? ' aria-disabled="true"' : ''}>${actions.edit?.key === item.key && actions.edit.busy && actions.edit.action === 'complete' ? 'Completing…' : 'Complete'}</button>` : ''}
-                <a ${actions.edit ? 'aria-disabled="true"' : `href="${e(item.href)}"`} aria-label="Edit details: ${e(item.title)}">Edit details</a>
+                <a ${actions.edit ? 'aria-disabled="true"' : `href="${e(item.href)}"`} aria-label="Open task: ${e(item.title)}">Open task</a>
                 ${actions.canReschedule ? renderTaskDueActions({ actionAttr, prefix: 'today-task-due',
                   taskKey: item.key, title: item.title, hasDue: true, disabled: actions.edit !== null,
                   pickAction: 'today-task-reschedule', pickExpanded: actions.edit?.key === item.key && actions.edit.action === 'reschedule' }) : ''}

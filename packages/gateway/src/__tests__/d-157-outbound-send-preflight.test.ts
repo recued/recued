@@ -21,6 +21,13 @@ const USER: ExecutionSource = {
   user_id: 'u',
   client_token_id: 't',
 };
+// D-177 §N.15.6 — the owner's chat follows each op's approval (the `read` ceiling).
+const CHAT: ExecutionSource = {
+  channel: 'chat',
+  actor: 'user_self',
+  chat_session_id: 's',
+  user_id: 'u',
+};
 const SCHEDULE: ExecutionSource = {
   channel: 'schedule',
   actor: 'system',
@@ -40,10 +47,16 @@ const HOUSEKEEPING: ExecutionSource = {
 const MAIL_SEND: PreflightTool = { slug: 'mail-send', kind: 'storage', risk_tier: 'write' };
 
 describe('D-157 outbound-send preflight (gateway)', () => {
-  it('a user-driven mail-send → ask → raiseOnAsk throws PreflightRequiredSignal', () => {
-    const decision = evaluatePreflightAdmission({ source: USER, tool: MAIL_SEND });
+  it('a mail-send in the owner\'s chat → ask → raiseOnAsk throws PreflightRequiredSignal', () => {
+    const decision = evaluatePreflightAdmission({ source: CHAT, tool: MAIL_SEND });
     expect(decision.verdict).toBe('ask');
     expect(() => raiseOnAsk(decision, { slug: 'mail-send' })).toThrow(PreflightRequiredSignal);
+  });
+
+  it('a mail-send the owner runs from the app → admit, like every write (no send is lifted by name)', () => {
+    const decision = evaluatePreflightAdmission({ source: USER, tool: MAIL_SEND });
+    expect(decision.verdict).toBe('admit');
+    expect(() => raiseOnAsk(decision, { slug: 'mail-send' })).not.toThrow();
   });
 
   it('an admin-shell (system) mail-send → admit → no preflight (lift is system-exempt)', () => {

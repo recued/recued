@@ -18,7 +18,7 @@ export const mountCustomerJobTimeline = (opts: { host: HTMLElement;document: Doc
   const summary = add('div','');summary.setAttribute('data-job-timeline-summary','');
   const form = add('form','');form.setAttribute('aria-label','Find job activity');
   const searchLabel = add('label','Find activity',form);const search = doc.createElement('input');search.type = 'search';search.maxLength = 200;searchLabel.appendChild(search);
-  const filterLabel = add('label','Activity type',form);const filter = doc.createElement('select');filter.id = 'recued-job-timeline-category';filterLabel.setAttribute('for',filter.id);form.appendChild(filter);
+  const filterField = add('div','',form);filterField.className = 'job-timeline-field';const filterLabel = add('label','Activity type',filterField);const filter = doc.createElement('select');filter.id = 'recued-job-timeline-category';filterLabel.setAttribute('for',filter.id);filterField.appendChild(filter);
   for (const value of CUSTOMER_JOB_TIMELINE_CATEGORIES) { const node = doc.createElement('option');node.value = value;node.textContent = labels[value];filter.appendChild(node); }
   const button = (text: string,host: HTMLElement = root) => { const node = doc.createElement('button');node.type = 'button';node.textContent = text;host.appendChild(node);return node; };
   const apply = button('Find activity',form);apply.type = 'submit';

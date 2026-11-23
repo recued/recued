@@ -356,7 +356,7 @@ export const createConnectionAdapter = (
     // without passing Kitchen at all, for the same reason.
     //
     // ⚠ `stripCorePrefix` because a `core-<bare>` alias is the SAME
-    // ingredient — the identical hole `isOutboundSendSlug` strips for.
+    // ingredient (as `isOutboundSendSlug` strips it too).
     //
     // ⚠ The failure mode if a future engine path ever loses `stepMeta`
     // is self-announcing rather than silent: the same field carries

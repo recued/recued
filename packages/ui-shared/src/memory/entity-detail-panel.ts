@@ -111,6 +111,8 @@ export interface EntityDetailPanelProps {
   enrichments: ReadonlyArray<EnrichmentSummary>;
   /** Mixed-source timeline feed for the entity, newest first. */
   timelineEntries: ReadonlyArray<TimelineEntry>;
+  /** Trusted host-rendered timeline controls and feed; other sections retain their own data. */
+  timelineHtml?: string;
   /** D-226 — per-pack standing aggregates from the same `data.timeline`
    *  response. Undefined ⇒ the section is omitted entirely (the collection has
    *  no declared roots); `[]` ⇒ it renders "nothing tracks this contact". */
@@ -634,7 +636,7 @@ export const renderEntityDetailPanel = (props: EntityDetailPanelProps): string =
         cardHeadingLevel,
       )}
       ${renderRollupsSection(props.rollups, sectionHeadingLevel, cardHeadingLevel)}
-      ${renderTimelineSection(
+      ${props.timelineHtml ?? renderTimelineSection(
         props.timelineEntries,
         props.now,
         props.runHref,

@@ -61,7 +61,7 @@ export interface ActionExecutorRequest {
 export interface ActionExecutorOutcome {
   status: BridgeResultStatus;
   outputs?: Record<string, unknown>;
-  error?: { code: BridgeErrorCode; message: string; detail?: string };
+  error?: BridgeResult['error'];
 }
 
 /** Pure interface — chrome content-script DOM dispatch lives behind

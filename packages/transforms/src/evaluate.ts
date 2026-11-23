@@ -78,7 +78,8 @@ export const evaluateOp = (left: unknown, operator: ConditionOp, right?: unknown
     case 'greater_or_equal': return compareNumbers(left, right, (a, b) => a >= b);
     case 'less': return compareNumbers(left, right, (a, b) => a < b);
     case 'less_or_equal': return compareNumbers(left, right, (a, b) => a <= b);
-    case 'contains': return typeof left === 'string' && typeof right === 'string' && left.includes(right);
+    case 'contains': return Array.isArray(left) ? left.includes(right)
+      : typeof left === 'string' && typeof right === 'string' && left.includes(right);
     case 'not_contains': return !evaluateOp(left, 'contains', right);
     case 'in': return Array.isArray(right) && right.includes(left);
     case 'not_in': return !evaluateOp(left, 'in', right);

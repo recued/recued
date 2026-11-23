@@ -1,4 +1,19 @@
+import { renderActionIcon, type IconName } from '@recued/ui-shared';
 import { trackSearchAssetRoute } from './shell/search-asset-return.js';
+import { createBodyChat, type BodyChatCall } from './yours/body-chat.js';
+import { createBodyMeasure } from './yours/body-measure.js';
+import { createAppleHealthConnect } from './yours/body-apple-health.js';
+import type { CallerPreapprovalPanelCallers } from './contracts/caller-preapproval-panel.js';
+import { trackSearchNavigationRoute, readSearchNavigationReturn } from './shell/search-navigation-return.js';
+import { SEARCH_OPEN_PROMPT } from './automation/prompt-search-view.js';
+import { SEARCH_OPEN_DECISION } from './approvals/decision-search-view.js';
+import { decisionSearchHref, readDecisionSearchKey } from './approvals/decision-search-record.js';
+import type { PendingDecisionSearchCallers } from './approvals/pending-decision-search.js';
+import { SEARCH_OPEN_RECOVERY_DRAFT } from './data/recovery-draft-search.js';
+import { promptScheduleHref, promptScheduleIdentity, type PromptSelection } from './automation/prompt-search.js';
+import type { PromptListMemory } from './automation/bootstrap-automation-route.js';
+import { readSearchChatReturn, trackSearchChatRoute } from './shell/search-chat-return.js';
+import { trackReaderPassageRoute } from './data/reader-passage.js';
 import { mountKitchenWorkItemRoute } from './kitchen/work-item-route.js';
 import { mountKitchenHomeRoute } from './kitchen/kitchen-home-route.js';
 import { bootstrapRecipeEditorRoute as bootstrapImportedRecipeEditor } from './kitchen/recipe-editor/recipe-editor-route.js';
@@ -154,6 +169,7 @@ import { createAccountSetupContinuity } from './connections/account-setup-contin
  *  Spec: D-148 § A.4 (Thin Webclient). */
 
 import { createRecipeSimulationCaller } from './kitchen/recipe-editor/recipe-simulation-caller.js';
+import { createRecipeTryCaller } from './kitchen/recipe-editor/recipe-try-caller.js';
 import { createRecipeRegressionCaller } from './kitchen/recipe-editor/recipe-regression-caller.js';
 import { createRecipeRunCaptureCaller } from './kitchen/recipe-editor/recipe-run-capture-caller.js';
 import { createRecipeReleaseCaller } from './kitchen/recipe-editor/recipe-release-caller.js';
@@ -180,9 +196,10 @@ import {
   createRecordRefSearchCaller,
 } from './record-ref-search.js';
 import {
-  RunModal, Upload } from '@recued/ui-shared';
-import { setRunModalProgramSwitch, setRunModalProgramSwitchReads, setRunModalToolStatus, wireRunModal } from './shell/run-modal.js';
+  RunModal, Upload, type BrowserVariableCallers } from '@recued/ui-shared';
+import { setRunModalBrowserMove, setRunModalProgramSwitch, setRunModalProgramSwitchReads, setRunModalToolStatus, wireRunModal } from './shell/run-modal.js';
 import { setChatFixActions } from './chat/chat-fixes.js';
+import { setChatHintActions } from './chat/chat-hints.js';
 import { noteServerPaused, onServerPauseChange } from './shell/server-pause-signal.js';
 
 import {
@@ -317,6 +334,7 @@ import {
   bootstrapSettingsRoute,
   type SettingsRoute,
 } from './settings/bootstrap-settings-route.js';
+import { parseSettingsFinderHash } from './settings/settings-finder-targets.js';
 import type {
   TlsDomainListCaller,
   TlsDomainRemoveCaller,
@@ -343,6 +361,18 @@ import {
   type ApprovalSubscribeCaller,
 } from './approvals/bootstrap-approvals-route.js';
 import { bootstrapMailRoute } from './mail/bootstrap-mail-route.js';
+import { createMailRecoveryStore, type MailRecoveryStorage } from './mail/compose-recovery.js';
+import { createNoteRecoveryStore, type NoteRecoveryStorage } from './data/note-draft-recovery.js';
+import { createWorkRecoveryStore, type WorkRecoveryStorage } from './data/work-draft-recovery.js';
+import { createCalendarRecoveryStore, type CalendarRecoveryStorage } from './data/calendar-draft-recovery.js';
+import { createReminderRecoveryStore, type ReminderRecoveryStorage } from './reminders/reminder-draft-recovery.js';
+import { createPromptRecoveryStore, type PromptDraftEntry, type PromptRecoveryStorage } from './automation/prompt-draft-recovery.js';
+import { createCalendarEditRecoveryStore } from './data/calendar-edit-recovery.js';
+import { createRecentSearches, type RecentSearchStorage } from './data/recent-searches.js';
+import { createRecentWorkRecords } from './data/recent-work-records.js';
+import { createRecentReferenceChoices } from './data/recent-reference-choices.js';
+import { createPinnedRecords } from './data/pinned-records.js';
+import { createReaderStateStore } from './data/reader-state.js';
 import { bootstrapMailWorkRoute } from './mail/mail-work-route.js';
 import { MAIL_WORK_REVIEW_TIMEOUT_MS } from '@recued/contracts';
 import { bootstrapPreapprovalRoute, preapprovalHref, removePreapproval } from './approvals/preapproval-route.js';
@@ -521,6 +551,9 @@ import {
 } from './logs/bootstrap-logs-route.js';
 // D-250 § D7 — the owner's own metrics surface.
 import { bootstrapStatsRoute } from './stats/bootstrap-stats-route.js';
+import { bootstrapSetupRoute } from './setup/bootstrap-setup-route.js';
+import { isAnyAiSourceConfigured } from './settings/llm-availability.js';
+import { hasAnyRecipe } from './shell/paged-lists.js';
 import {
   bootstrapAutomationRoute,
   isAutomationSectionToken,
@@ -553,6 +586,7 @@ import {
 import type { SituationCloseDaySettings, SituationStreamKind, SituationStreamSettings } from '@recued/contracts';
 import { streamChannelsOf } from './today/stream-panel.js';
 import { noticeReplyDraft } from './chat/quoted-replies.js';
+import { requestRecipeOpenHash } from './chat/request-recipe.js';
 import {
   parseConnectedSourceChatSetup,
   parseChatConnectedSource,
@@ -609,9 +643,11 @@ import {
   kitchenNewRecipeSeed,
   kitchenPackDraftId,
   parseChatAnswerAddress,
+  serializeChatAnswerAddress,
   parseChatPlanAddress,
   parseChatSessionAddress,
   serializeChatSessionAddress,
+  parseChatCarryOnAddress,
   parseDataEntityVerificationAddress,
   parseLogsRunAddress,
   parseRouteFromHash,
@@ -700,6 +736,8 @@ import {
   type ApprovalAttentionPopoverMount,
 } from './attention/approval-attention-popover.js';
 import { bootstrapTodayRoute } from './today/bootstrap-today-route.js';
+import { createTodayReminderNavigation } from './today/reminder-navigation.js';
+import { createTaskBlockerNavigation } from './data/task-blocker-navigation.js';
 import { bootstrapYoursRoute } from './yours/bootstrap-yours-route.js';
 import {
   createBrowserInactiveProfileRecoveryDiscovery,
@@ -759,6 +797,8 @@ import type {
   WebhooksDeliveryListCaller,
   WebhooksDisableCaller,
   WebhooksEnableCaller,
+  WebhooksDoorSetCaller,
+  WebhooksStraysDismissCaller,
   WebhooksListCaller,
   WebhooksManualConfirmCaller,
   WebhooksRegistrationReconcileCaller,
@@ -766,6 +806,10 @@ import type {
   WebhooksRetireCaller,
   WebhooksTestDeliveryCaller,
   WebhooksRetentionPruneCaller,
+  WebhooksDeadLetterListCaller,
+  WebhooksDeadLetterRequeueCaller,
+  WebhooksDeadLetterResolveCaller,
+  WebhooksUpdateCaller,
 } from './connections/webhooks-panel.js';
 import type {
   ConnectionsCompleteVendorOAuthCaller,
@@ -1075,8 +1119,8 @@ interface WebclientDrawerItem {
    * `New chat` uses `['new']` so it cannot collapse into the Chats history
    * landing while still participating in the shell's leave guard. */
   readonly segments?: ReadonlyArray<string>;
-  /** Leading affordance glyph for action seats (`+ New chat`, `✎ Create`). */
-  readonly glyph?: string;
+  /** Shared outline icon; the visible label remains the accessible name. */
+  readonly icon?: IconName;
   /** Whether this seat owns the active highlight for its `route`. EXACTLY one
    *  seat per route sets this, so same-surface destinations (New chat + Chats
    *  under Chat, Settings + Account under Settings) light a single row. */
@@ -1100,11 +1144,11 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
       {
         id: 'new-chat',
         label: 'New chat',
-        glyph: '+',
+        icon: 'add',
         route: 'chat',
         segments: ['new'],
       },
-      { id: 'chats', label: 'Chats', route: 'chat', highlight: true },
+      { id: 'chats', icon: 'chat', label: 'Chats', route: 'chat', highlight: true },
     ],
   },
   {
@@ -1120,33 +1164,35 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
     // rail seat"), which traded the seat for prominence on the Home cockpit —
     // a surface that was then retired. See D-174 § I-8.
     items: [
-      { id: 'create', label: 'Create', glyph: '✎', route: null, action: 'create' },
-      { id: 'find', label: 'Find', glyph: '🔍', route: 'data', segments: ['search'] },
-      { id: 'today', label: 'Today', route: 'today' },
-      { id: 'yours', label: 'Yours', route: 'yours' },
-      { id: 'tasks', label: 'Tasks', route: 'data', segments: ['task'] },
-      { id: 'notes', label: 'Notes', route: 'data', segments: ['note'] },
-      { id: 'contacts', label: 'Contacts', route: 'data', segments: ['contact'] },
+      { id: 'create', label: 'Create', icon: 'rename', route: null, action: 'create' },
+      { id: 'find', label: 'Find', icon: 'search', route: 'data', segments: ['search'] },
+      { id: 'today', icon: 'schedule', label: 'Today', route: 'today' },
+      { id: 'yours', icon: 'user', label: 'Yours', route: 'yours' },
+      { id: 'tasks', icon: 'task', label: 'Tasks', route: 'data', segments: ['task'] },
+      { id: 'notes', icon: 'note', label: 'Notes', route: 'data', segments: ['note'] },
+      { id: 'contacts', icon: 'contacts', label: 'Contacts', route: 'data', segments: ['contact'] },
       // D-291 — the owner's OWN curated entry points, promoted out of Data.
       // Reaching a shortcut by first opening the surface it shortcuts was the
       // whole reason to move it.
-      { id: 'views', label: 'Saved views', route: 'views' },
-      { id: 'data', label: 'Data', route: 'data', highlight: true },
+      { id: 'views', icon: 'bookmark', label: 'Saved views', route: 'views' },
+      { id: 'data', icon: 'database', label: 'Data', route: 'data', highlight: true },
     ],
   },
   {
     items: [
-      { id: 'recipes', label: 'Recipes', route: 'recipes', highlight: true },
-      { id: 'automation', label: 'Automation', route: 'automation', highlight: true },
+      { id: 'recipes', icon: 'play', label: 'Recipes', route: 'recipes', highlight: true },
+      { id: 'automation', icon: 'schedule', label: 'Automation', route: 'automation', highlight: true },
     ],
   },
   {
-    // The control-plane stack — dependency order: reach → bundle+access → grantee.
+    // The control-plane stack — dependency order: reach → bundle+access → grantee. D-405 slice 4 — Set up
+    // heads it: what is connected and what each pack still needs, before the pages that do each step.
     items: [
-      { id: 'connections', label: 'Connections', route: 'connections', highlight: true },
-      { id: 'packs', label: 'Packs', route: 'packs', highlight: true },
-      { id: 'contracts', label: 'Contracts', route: 'contracts', highlight: true },
-      { id: 'reception', label: 'Reception', route: 'reception', highlight: true },
+      { id: 'setup', icon: 'settings', label: 'Set up', route: 'setup', highlight: true },
+      { id: 'connections', icon: 'link', label: 'Connections', route: 'connections', highlight: true },
+      { id: 'packs', icon: 'marketplace', label: 'Packs', route: 'packs', highlight: true },
+      { id: 'contracts', icon: 'note', label: 'Contracts', route: 'contracts', highlight: true },
+      { id: 'reception', icon: 'mailbox', label: 'Reception', route: 'reception', highlight: true },
     ],
   },
   {
@@ -1154,16 +1200,17 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
     // (which is operational configuration — exposure, certs, keys, maintenance) and not
     // replacing Chat as the landing.
     items: [
-      { id: 'log', label: 'Logs', route: 'logs', highlight: true },
-      { id: 'stats', label: 'Stats', route: 'stats', highlight: true },
+      { id: 'log', icon: 'info', label: 'Logs', route: 'logs', highlight: true },
+      { id: 'stats', icon: 'chart', label: 'Stats', route: 'stats', highlight: true },
     ],
   },
   {
     pinnedBottom: true,
     items: [
-      { id: 'settings', label: 'Settings', route: 'settings', highlight: true },
+      { id: 'settings', icon: 'settings', label: 'Settings', route: 'settings', highlight: true },
       {
         id: 'account',
+        icon: 'user',
         label: 'Account',
         route: 'settings',
         segments: ['account'],
@@ -1199,9 +1246,7 @@ export const WEBCLIENT_SHELL_STYLES = `
      shell column (and, transitively, the top bar) beyond the viewport. */
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  background:
-    radial-gradient(circle at 18% 0%, var(--accent-weak), transparent 34rem),
-    var(--surface-sunk);
+  background: var(--surface);
   color: var(--fg);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -1218,10 +1263,7 @@ export const WEBCLIENT_SHELL_STYLES = `
   gap: 24px;
   padding: 10px 24px;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  box-shadow: 0 1px 0 rgba(24, 24, 27, 0.02), 0 8px 24px rgba(24, 24, 27, 0.035);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--surface);
 }
 [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-navigation,
 [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-utilities {
@@ -1318,7 +1360,7 @@ export const WEBCLIENT_SHELL_STYLES = `
   gap: 10px;
   color: var(--fg-strong, var(--fg));
   font-size: 16px;
-  font-weight: 750;
+  font-weight: 650;
   letter-spacing: -0.025em;
   text-decoration: none;
   transition: color 90ms ease;
@@ -1440,9 +1482,7 @@ export const WEBCLIENT_SHELL_STYLES = `
   min-height: 0;
   height: 100%;
   overflow: auto;
-  background:
-    radial-gradient(circle at 72% -8%, var(--accent-weak), transparent 30rem),
-    var(--surface-sunk);
+  background: var(--surface);
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
 }
@@ -1486,9 +1526,7 @@ export const WEBCLIENT_SHELL_STYLES = `
      lets the list scroll clear of it instead of ending underneath it. */
   padding: 12px 12px calc(16px + var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px));
   border-right: 1px solid var(--border);
-  background:
-    linear-gradient(160deg, var(--accent-weak), transparent 180px),
-    var(--surface);
+  background: var(--surface);
   box-shadow: 14px 0 48px rgba(9, 9, 11, 0.24);
   transform: translateX(-100%);
   visibility: hidden;
@@ -1809,7 +1847,7 @@ const createWebclientShell = (opts: {
   toggleBtn.setAttribute('aria-controls', WEBCLIENT_SHELL_DRAWER_ID);
   toggleBtn.setAttribute('aria-expanded', 'false');
   toggleBtn.setAttribute('aria-label', 'Open navigation');
-  toggleBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>';
+  toggleBtn.innerHTML = renderActionIcon('menu');
   navigation.appendChild(toggleBtn);
   const brand = doc.createElement('a');
   brand.className = 'webclient-shell-brand';
@@ -1828,7 +1866,7 @@ const createWebclientShell = (opts: {
   const searchGlyph = doc.createElement('span');
   searchGlyph.className = 'webclient-shell-search-glyph';
   searchGlyph.setAttribute('aria-hidden', 'true');
-  searchGlyph.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="10.75" cy="10.75" r="6.75"></circle><path d="m16 16 4.5 4.5"></path></svg>';
+  searchGlyph.innerHTML = renderActionIcon('search');
   const searchLabel = doc.createElement('span');
   searchLabel.className = 'webclient-shell-search-label';
   searchLabel.textContent = 'Search your data';
@@ -1898,7 +1936,7 @@ const createWebclientShell = (opts: {
   closeBtn.setAttribute('type', 'button');
   closeBtn.className = 'webclient-shell-drawer-close';
   closeBtn.setAttribute('aria-label', 'Close navigation');
-  closeBtn.textContent = '✕'; // ✕
+  closeBtn.innerHTML = renderActionIcon('close');
   head.appendChild(title);
   head.appendChild(closeBtn);
   drawer.appendChild(head);
@@ -2057,11 +2095,11 @@ const createWebclientShell = (opts: {
           setDrawerOpen(false, { returnFocus: true });
           opts.onCreateSeat?.();
         });
-        if (item.glyph !== undefined) {
+        if (item.icon !== undefined) {
           const glyph = doc.createElement('span');
           glyph.className = 'webclient-shell-drawer-glyph';
           glyph.setAttribute('aria-hidden', 'true');
-          glyph.textContent = item.glyph;
+          glyph.innerHTML = renderActionIcon(item.icon);
           button.appendChild(glyph);
         }
         const actionLabel = doc.createElement('span');
@@ -2107,11 +2145,11 @@ const createWebclientShell = (opts: {
       link.addEventListener('click', () =>
         setDrawerOpen(false, { returnFocus: true }),
       );
-      if (item.glyph !== undefined) {
+      if (item.icon !== undefined) {
         const glyph = doc.createElement('span');
         glyph.className = 'webclient-shell-drawer-glyph';
         glyph.setAttribute('aria-hidden', 'true');
-        glyph.textContent = item.glyph;
+        glyph.innerHTML = renderActionIcon(item.icon);
         link.appendChild(glyph);
       }
       const labelEl = doc.createElement('span');
@@ -2792,6 +2830,28 @@ export interface BootstrapWebclientOptions {
    *  to sessionStorage; null disables the Kitchen hand-off without breaking the
    *  panel. */
   draftStashStorage?: ExecutionCaseDraftStorage | null;
+  /** Bounded same-tab unfinished mail. Null disables recovery for embeddings. */
+  mailRecoveryStorage?: MailRecoveryStorage | null;
+  /** Same-tab unfinished note text and links, scoped to this pairing. */
+  noteRecoveryStorage?: NoteRecoveryStorage | null;
+  /** Same-tab unfinished Task and Project fields, scoped to this pairing. */
+  workRecoveryStorage?: WorkRecoveryStorage | null;
+  /** Same-tab unfinished calendar creation and edits, including unconfirmed saves. */
+  calendarRecoveryStorage?: CalendarRecoveryStorage | null;
+  reminderRecoveryStorage?: ReminderRecoveryStorage | null;
+  promptRecoveryStorage?: PromptRecoveryStorage | null;
+  /** Pairing-scoped search words for this tab. Defaults to sessionStorage;
+   * null keeps recent searches in memory for the current boot only. */
+  recentSearchStorage?: RecentSearchStorage | null;
+  /** Recently opened record references for this tab and pairing. Null keeps
+   * them in memory for the current boot only. */
+  recentWorkStorage?: RecentSearchStorage | null;
+  /** Reference choices for this tab and pairing. Null keeps choices in memory. */
+  recentReferenceStorage?: RecentSearchStorage | null;
+  /** Same-tab saved reading positions and Find, scoped to this pairing. */
+  readerStateStorage?: RecentSearchStorage | null;
+  /** Device-local pinned record references, isolated to this pairing. Null keeps pins in memory. */
+  pinnedRecordStorage?: RecentSearchStorage | null;
   /** Silent URL rewrite used to remove source-server record ids before the
    *  reload. Production defaults to history.replaceState. */
   replaceHashForServerSwitch?: (hash: string) => void;
@@ -3203,6 +3263,53 @@ export const bootstrapWebclient = async (
   const bootProfileId = options.profileStore !== undefined
     ? await options.profileStore.ensureProfile(pair.serverUrl)
     : null;
+  const searchPair = await localStore.get('pair_metadata');
+  const recentSearches = createRecentSearches({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]),
+    storage: options.recentSearchStorage,
+  });
+  const recentWorkRecords = createRecentWorkRecords({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]),
+    storage: options.recentWorkStorage,
+  });
+  const recentReferenceChoices = createRecentReferenceChoices({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]),
+    storage: options.recentReferenceStorage,
+  });
+  const pinnedRecords = createPinnedRecords({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]),
+    storage: options.pinnedRecordStorage,
+  });
+  const projectViewMemory: import('./data/project-view-state.js').ProjectViewMemory = {};
+  const readerStates = createReaderStateStore({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]),
+    storage: options.readerStateStorage,
+  });
+  const mailRecovery = options.mailRecoveryStorage === null ? undefined : createMailRecoveryStore({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null]),
+    storage: options.mailRecoveryStorage,
+  });
+  const noteRecovery = options.noteRecoveryStorage === null ? undefined : createNoteRecoveryStore({
+    scope: JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]),
+    storage: options.noteRecoveryStorage,
+  });
+  const workRecoveryScope = JSON.stringify([bootProfileId ?? pair.serverUrl, pair.serverPublicKey, searchPair?.instance_id ?? null, searchPair?.paired_at ?? null]);
+  const workRecovery = options.workRecoveryStorage === null ? undefined : {
+    task: createWorkRecoveryStore({ kind: 'task', scope: workRecoveryScope, storage: options.workRecoveryStorage }),
+    project: createWorkRecoveryStore({ kind: 'project', scope: workRecoveryScope, storage: options.workRecoveryStorage }),
+  };
+  const calendarRecovery = options.calendarRecoveryStorage === null ? undefined : createCalendarRecoveryStore({
+    scope: workRecoveryScope, storage: options.calendarRecoveryStorage,
+  });
+  const calendarEditRecovery = options.calendarRecoveryStorage === null ? undefined : createCalendarEditRecoveryStore({
+    scope: workRecoveryScope, storage: options.calendarRecoveryStorage,
+  });
+  const reminderRecovery = options.reminderRecoveryStorage === null ? undefined : createReminderRecoveryStore({
+    scope: workRecoveryScope, storage: options.reminderRecoveryStorage,
+  });
+  const promptRecovery = options.promptRecoveryStorage === null ? undefined : createPromptRecoveryStore({
+    scope: workRecoveryScope, storage: options.promptRecoveryStorage,
+  });
   let bootProfileLabel = defaultProfileLabel(pair.serverUrl);
   let knownServerProfiles: ReadonlyArray<WebclientServerProfile> = [];
   const serverSwitchArrival = consumeServerSwitchArrival(
@@ -3563,7 +3670,21 @@ export const bootstrapWebclient = async (
   // 4. Reception page shell — constructed once because the `#reception`
   // route owns its broadcast-backed Settings projection.
   const receptionShell = createReceptionPageShell({
-    call: rpcConn.call,
+    beginWizardWork: () => switchWorkTracker.begin({ label: 'Setting up Reception', returnHref: '#reception/endpoints/setup' }),
+    call: new Proxy(rpcConn.call, {
+      apply: (call, receiver, args) => {
+        const invoke = (): Promise<unknown> => Reflect.apply(call, receiver, args);
+        // Reads can run during boot. These UI writes begin after the app work
+        // tracker is installed; the proxy preserves all Conn overloads/options.
+        return args[0] === 'reception.abuse_inbox.ban_ip' || args[0] === 'reception.abuse_inbox.unban_ip'
+          || args[0] === 'reception.endpoint.enable' || args[0] === 'reception.endpoint.disable'
+          || args[0] === 'reception.endpoint.extend' || args[0] === 'reception.endpoint.revoke'
+          || args[0] === 'reception.endpoint.rotate_token' || args[0] === 'reception.emergency_disable_all'
+          || args[0] === 'reception.endpoint.create' || args[0] === 'reception.page.upsert'
+          ? switchWorkTracker.track(invoke)()
+          : invoke();
+      },
+    }),
     subscribe: subscriber.on,
     now: options.now ?? Date.now,
     initialStatus: options.initialReceptionStatus ?? DEFAULT_RECEPTION_STATUS,
@@ -3651,6 +3772,15 @@ export const bootstrapWebclient = async (
   let pendingChatHandoff: { hash: string; draft: ChatRouteRecoveryDraft } | undefined;
   let pendingYoursFileAttachment: { assetId: string; assetName: string } | undefined;
   let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest } | undefined;
+  let pendingPromptRecovery: { hash: string; entry: PromptDraftEntry } | undefined;
+  let pendingSavedPrompt: { hash: string; selection: PromptSelection } | undefined;
+  const promptListMemory: { value?: PromptListMemory } = {};
+  const openSavedPrompt = (selection: PromptSelection): boolean => {
+    const here = parseShellRoute(hashSource?.getHash() ?? activeHash);
+    if (here.surface !== 'automation' && here.surface !== 'views' && (here.surface !== 'data' || here.segments[0] !== 'search')) return false;
+    if (here.surface !== 'automation') promptListMemory.value = undefined;
+    const hash = promptScheduleHref(selection.id); pendingSavedPrompt = { hash, selection: structuredClone(selection) }; navigateHash(hash); return true;
+  };
   const navigateHash = (hash: string): void => {
     if (hashSource?.setHash !== undefined) {
       hashSource.setHash(hash);
@@ -3660,6 +3790,8 @@ export const bootstrapWebclient = async (
     if (location !== undefined) location.hash = hash;
   };
   const packPermissionRepairs = createPackPermissionRepairContinuity();
+  const taskBlockerNavigation = createTaskBlockerNavigation(navigateHash);
+  const todayReminderNavigation = createTodayReminderNavigation(navigateHash);
   const reconnectWorklistRepairs = createReconnectWorklistContinuity();
   const accountSetupContinuity = createAccountSetupContinuity();
   /** Navigate from an address that only hands over to another route, so Back
@@ -5123,6 +5255,7 @@ export const bootstrapWebclient = async (
       views: { label: 'Saving a Data change', returnLabel: 'Return to Saved views' },
       today: { label: 'Saving a task change', returnLabel: 'Return to Today' },
       yours: { label: 'Saving a Yours change', returnLabel: 'Return to Yours' },
+      setup: { label: 'Showing a hint again', returnLabel: 'Return to Set up' },
       logs: { label: 'Finishing a run action', returnLabel: 'Return to Runs' },
       stats: { label: 'Finishing a stats action', returnLabel: 'Return to Stats' },
       chat: { label: 'Finishing a Chat action', returnLabel: 'Return to Chat' },
@@ -7603,8 +7736,11 @@ export const bootstrapWebclient = async (
     rpcConn.call('work_entity.source.list', undefined);
   const dataWorkEntityListCaller: DataWorkEntityListCaller = (args) =>
     rpcConn.call('work_entity.list', args);
+  const dataWorkEntityLinkedFromCaller: import('./data/work-linked-from.js').LinkedFromCaller = args =>
+    rpcConn.call('work_entity.linked_from', args);
   const dataWorkEntitySearchCaller: DataWorkEntitySearchCaller = (args) =>
     rpcConn.call('work_entity.search', args);
+  const dataProjectAttentionCaller: import('./data/project-attention.js').ProjectAttentionCaller = args => rpcConn.call('work_entity.project.attention', args);
   const dataProjectItemsCaller: import('./data/project-work.js').ProjectItemsCaller = (args) =>
     rpcConn.call('work_entity.project.items', args);
   const dataWorkEntityGetCaller: DataWorkEntityGetCaller = (args) =>
@@ -7780,6 +7916,9 @@ export const bootstrapWebclient = async (
   // D-324 — Data → Owned → Reminders. A move and a cancel are tracked so a
   // server switch waits for them.
   const dataReminderCallers: ReminderCallers = {
+    triagePreview: (args) => rpcConn.call('reminder.triage.preview', args),
+    triageApply: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('reminder.triage.apply', input))(args),
     get: (args) => rpcConn.call('reminder.get', args),
     list: (args) => rpcConn.call('reminder.list', args),
     create: (args) =>
@@ -7798,6 +7937,11 @@ export const bootstrapWebclient = async (
     listMail: () => rpcConn.call('collection.mail.list', undefined),
     listCalendars: () => rpcConn.call('collection.calendar.list', undefined),
   });
+  // D-402 slice H2b — the owner's paired browsers, by the names routing uses, for a dish's browser
+  // settings (`browser-variable.ts`).
+  const browserVariableCallers: BrowserVariableCallers = {
+    list: async () => (await rpcConn.call('pair.browsers', undefined)).browsers,
+  };
   const mailTemplateVariableCallers = createMailTemplateVariableCallers({
     listTemplates: () => rpcConn.call('mail_fact.template.list', undefined),
     listRecipes: () => recipesListCaller(),
@@ -8319,7 +8463,10 @@ export const bootstrapWebclient = async (
   const notificationGiveSecretCaller: AsksGiveSecretCaller | undefined =
     options.enableApprovalsRoute === false
       ? undefined
-      : (args) => rpcConn.call('notification.giveSecret', args);
+      : (args) => switchWorkTracker.track(
+        (input: typeof args) => rpcConn.call('notification.giveSecret', input),
+        { label: 'Providing a sign-in value', returnHref: serializeShellRoute('approvals'), returnLabel: 'View approvals' },
+      )(args);
   const notificationAsksSubmitAnswerCaller: AsksSubmitAnswerCaller | undefined =
     options.enableApprovalsRoute === false
       ? undefined
@@ -8621,6 +8768,12 @@ export const bootstrapWebclient = async (
           promoteCaller: runsPromoteCaller,
           grantsListCaller: runsGrantsListCaller,
           grantsRevokeCaller: runsGrantsRevokeCaller,
+          // D-348 — your rules for the requests you repeat, with their uses left (the methods the
+          // Contracts panel lists and ends them with).
+          chainsListCaller: () => rpcConn.call('collection.contract.listChainRules', undefined),
+          chainsRevokeCaller: switchWorkTracker.track(
+            (input: { rule_id: string }) => rpcConn.call('collection.contract.revokeChainRule', input),
+          ),
           subscribe: subscriber.on,
           ...(options.now !== undefined ? { now: options.now } : {}),
         });
@@ -9350,6 +9503,14 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('webhook.ingress.disable', args);
+  const webhooksDoorSetCaller: WebhooksDoorSetCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('webhook.ingress.door.set', args);
+  const webhooksStraysDismissCaller: WebhooksStraysDismissCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('webhook.ingress.strays.dismiss', args);
   const webhooksTestDeliveryCaller: WebhooksTestDeliveryCaller | undefined =
     options.enableConnectionsEnrollPanel === false
       ? undefined
@@ -9379,6 +9540,26 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('webhook.delivery.retention.prune', args);
+  // D-201 Slice 10C — change which events an existing webhook takes. A server
+  // older than 10C projects no event catalog, so the card offers no editor.
+  const webhooksUpdateCaller: WebhooksUpdateCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('webhook.ingress.update', args);
+  // D-201 Slice 10B — the messages that did not reach their recipes. A server
+  // without them sends no count, so the card offers none.
+  const webhooksDeadLetterListCaller: WebhooksDeadLetterListCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('webhook.delivery.dead_letter.list', args);
+  const webhooksDeadLetterRequeueCaller: WebhooksDeadLetterRequeueCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('webhook.delivery.dead_letter.requeue', args);
+  const webhooksDeadLetterResolveCaller: WebhooksDeadLetterResolveCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('webhook.delivery.dead_letter.resolve', args);
 
   // D-166/D-174 — contract override callers for the optional non-door
   // restriction editor under `#contracts`. Default ON; tests opt out via
@@ -9519,6 +9700,11 @@ export const bootstrapWebclient = async (
           principal: CLI_REACHABILITY_OWNER_PRINCIPAL, ingredient_id, operation_id, allowed: true,
         });
       });
+  // D-402 slice H3c (ruling 14) — "Use “Work” instead": a run its browser stopped before step 1 moves the
+  // dish's settings off that browser to the only other one connected, in one click.
+  setRunModalBrowserMove(async ({ dish_id, from, to }) => {
+    await rpcConn.call('dishes.use_browser', { dish_id, from, to });
+  });
   // D-346 follow-up (2026-11-08) — "Turn it on" under a chat answer: the owner's own switch
   // that refused a call (their contract's grant), or a program's switch.
   setChatFixActions({
@@ -9530,6 +9716,12 @@ export const bootstrapWebclient = async (
         principal: CLI_REACHABILITY_OWNER_PRINCIPAL, ingredient_id, operation_id, allowed: true,
       });
     },
+  });
+  // D-405 slice 3 — "Not now" on a hint under a chat answer: the server keeps the list.
+  setChatHintActions({
+    list: () => rpcConn.call('chat.hints.list', undefined),
+    notNow: (key, label) => rpcConn.call('chat.hints.not_now', { key, label }),
+    restore: (key) => rpcConn.call('chat.hints.restore', { key }),
   });
   // …and says before a run which of the recipe's programs are switched off for the owner.
   setRunModalProgramSwitchReads(options.enableCliReachability === false
@@ -9663,13 +9855,35 @@ export const bootstrapWebclient = async (
         // D-335 slice Z — the logins remembered for browser steps, listed after the passes.
         logins: {
           list: () => rpcConn.call('collection.contract.listBrowserLogins', undefined),
-          forget: (args: { origin: string; field: string }) => rpcConn.call('collection.contract.forgetBrowserLogin', args),
+          forget: (args: { browser: string; origin: string; field: string }) => rpcConn.call('collection.contract.forgetBrowserLogin', args),
         },
         // D-341 slice B2 — the triggers' pre-approvals, ended here, listed after the passes.
         triggers: {
           list: () => rpcConn.call('collection.contract.listTriggerPreapprovals', undefined),
           revoke: (args: { id: string }) => rpcConn.call('collection.contract.revokeTriggerPreapproval', args),
         },
+      };
+  // D-402 slice F4d (§7.9) — what your chats and AI apps run without asking, and ending it (same panel
+  // gate, the same owner-only family): on Contracts, an AI app's page and a recipe's page.
+  const callerPreapprovalCallers = options.enableContractsPanel === false
+    ? undefined
+    : {
+        list: () => rpcConn.call('collection.contract.listCallerPreapprovals', undefined),
+        stopAllowing: (args: Parameters<CallerPreapprovalPanelCallers['stopAllowing']>[0]) =>
+          rpcConn.call('collection.contract.stopAllowing', args),
+      };
+  // D-348 — the chains the owner's approvals teach: a request they repeat, and its rule (same
+  // panel gate and the same owner-only family).
+  const chainRulesCallers = options.enableContractsPanel === false
+    ? undefined
+    : {
+        listSuggestions: () => rpcConn.call('collection.contract.listChainSuggestions', undefined),
+        accept: (args: { key_hash: string; deletes?: boolean; ttl_ms?: number; max_uses?: number }) =>
+          rpcConn.call('collection.contract.acceptChainSuggestion', args),
+        dismiss: (args: { key_hash: string; part?: 'all' | 'deletes' }) =>
+          rpcConn.call('collection.contract.dismissChainSuggestion', args),
+        listRules: () => rpcConn.call('collection.contract.listChainRules', undefined),
+        revoke: (args: { rule_id: string }) => rpcConn.call('collection.contract.revokeChainRule', args),
       };
   // D-177 rule 5 (5.c, slice C) — the scoped-grant proposal section (same
   // panel gate; same reserved-out-of-MCP family — the webclient bearer path
@@ -10136,6 +10350,18 @@ export const bootstrapWebclient = async (
       ? undefined
       : (args: { surface: string; force?: boolean }) =>
         rpcConn.call('server.runPressureReclaim', args);
+  // D-403 — Server ▸ Storage: what takes space, by kind, and the owner's purge.
+  const storageKindsCaller = () => rpcConn.call('storage.kinds.read', {});
+  const storagePurgePreviewCaller = (args: import('@recued/contracts').StoragePurgePreviewRequest) =>
+    rpcConn.call('storage.purge.preview', args);
+  const storagePurgeRunCaller = (args: import('@recued/contracts').StoragePurgeRunRequest) =>
+    rpcConn.call('storage.purge.run', args);
+  const storageRecordsExportCaller = async (args: { owner: import('@recued/contracts').RecordsPackRef; entity: string; format: 'csv' }) => {
+    const exported = await rpcConn.call('records.export', args);
+    return { csv: 'csv' in exported ? exported.csv : '' };
+  };
+  const storageRunsExportCaller = (args: import('@recued/contracts').AuditExportRequest) =>
+    rpcConn.call('audit.export.page', args);
   const housekeepingPanelTrustReadCaller:
     | HousekeepingTrustReadCaller
     | undefined =
@@ -10426,6 +10652,8 @@ export const bootstrapWebclient = async (
     chatFile?: import('@recued/contracts').FileAttachmentSelection,
     workPrompt?: { prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest },
     handoffDraft?: ChatRouteRecoveryDraft,
+    promptDraft?: PromptDraftEntry,
+    savedPrompt?: PromptSelection,
   ): RecoveryContextProbe & RunPageContextProvider & {
     /** Child read boundary for a keyboard return, without claiming general
      * recovery freshness for a composition wrapper. */
@@ -10448,10 +10676,21 @@ export const bootstrapWebclient = async (
     /** Same-surface deep links can opt into an in-place transition. This is
      * used by Chat plan handoffs to preserve a same-thread composer draft. */
     navigateDeepLink?: (hash: string) => boolean;
+    /** Retain a reading return only after the shell's leave guards accepted. */
+    navigateDeepLinkAfterLeave?: (hash: string) => boolean;
     /** Chat-only in-memory rescue seam for a forced re-pair. */
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } => {
-    if (doc) trackSearchAssetRoute(doc, rpcConn, hashSource?.getHash() ?? '');
+    if (doc) {
+      trackSearchAssetRoute(doc, rpcConn, hashSource?.getHash() ?? '');
+      trackSearchChatRoute(doc, rpcConn, hashSource?.getHash() ?? '');
+      trackSearchNavigationRoute(doc, rpcConn, hashSource?.getHash() ?? '');
+      trackReaderPassageRoute(doc, rpcConn, hashSource?.getHash() ?? '');
+    }
+    const promptVisit = promptListMemory.value, currentPromptHash = hashSource?.getHash() ?? '';
+    if (promptVisit && currentPromptHash !== promptVisit.returnHash && currentPromptHash !== promptVisit.destinationHash) promptListMemory.value = undefined;
+    taskBlockerNavigation.route(hashSource?.getHash() ?? serializeShellRoute(route));
+    todayReminderNavigation.route(hashSource?.getHash() ?? serializeShellRoute(route));
     // A file upload return belongs to its current owner task, not later routes.
     if (route !== 'data') pendingYoursFileAttachment = undefined;
     // A re-pair draft belongs to this first return, not every later Chat mount.
@@ -10646,6 +10885,20 @@ export const bootstrapWebclient = async (
                 },
               },
             }
+          : {}),
+        ...(chainRulesCallers !== undefined
+          ? {
+              chainRules: {
+                ...chainRulesCallers,
+                accept: switchWorkTracker.track(chainRulesCallers.accept),
+                dismiss: switchWorkTracker.track(chainRulesCallers.dismiss),
+                revoke: switchWorkTracker.track(chainRulesCallers.revoke),
+              },
+            }
+          : {}),
+        ...(callerPreapprovalCallers !== undefined
+          ? { callerPreapprovals: { ...callerPreapprovalCallers,
+              stopAllowing: switchWorkTracker.track(callerPreapprovalCallers.stopAllowing) } }
           : {}),
         ...(scopedSuggestionsListCaller !== undefined
           && scopedSuggestionsAcceptCaller !== undefined
@@ -11078,6 +11331,14 @@ export const bootstrapWebclient = async (
               ),
               webhooksEnableCaller: switchWorkTracker.track(webhooksEnableCaller),
               webhooksDisableCaller: switchWorkTracker.track(webhooksDisableCaller),
+              // D-201 Slice 10AQ (10AM finding 26) — fenced, as the card's
+              // other actions are: a switch of server waits for it.
+              ...(webhooksStraysDismissCaller !== undefined
+                ? { webhooksStraysDismissCaller: switchWorkTracker.track(webhooksStraysDismissCaller) }
+                : {}),
+              ...(webhooksDoorSetCaller !== undefined
+                ? { webhooksDoorSetCaller: switchWorkTracker.track(webhooksDoorSetCaller) }
+                : {}),
               webhooksTestDeliveryCaller: switchWorkTracker.track(
                 webhooksTestDeliveryCaller,
               ),
@@ -11089,6 +11350,22 @@ export const bootstrapWebclient = async (
               webhooksRetentionPruneCaller: switchWorkTracker.track(
                 webhooksRetentionPruneCaller,
               ),
+              ...(webhooksUpdateCaller !== undefined
+                ? { webhooksUpdateCaller: switchWorkTracker.track(webhooksUpdateCaller) }
+                : {}),
+              ...(webhooksDeadLetterListCaller !== undefined
+                && webhooksDeadLetterRequeueCaller !== undefined
+                && webhooksDeadLetterResolveCaller !== undefined
+                ? {
+                    webhooksDeadLetterListCaller,
+                    webhooksDeadLetterRequeueCaller: switchWorkTracker.track(
+                      webhooksDeadLetterRequeueCaller,
+                    ),
+                    webhooksDeadLetterResolveCaller: switchWorkTracker.track(
+                      webhooksDeadLetterResolveCaller,
+                    ),
+                  }
+                : {}),
               // D-341 slice B2b — "What it may do without asking" on each webhook's card.
               webhooksTriggerPreapprovals: {
                 choices: (args) => rpcConn.call('collection.contract.triggerPreapprovalChoices', args),
@@ -11181,6 +11458,10 @@ export const bootstrapWebclient = async (
       // just forwards the same packs.* + cli.reachability + grant callers.
       return withTrackedServerSwitchWork(bootstrapPacksRoute({
         root: appShell.contentRoot,
+        // D-404 slice B2 — opened from a chat answer's install offer: the page offers the way back.
+        ...(initialPacksAddress?.kind === 'pack' && initialPacksAddress.returnToChat !== undefined
+          ? { returnToChat: initialPacksAddress.returnToChat }
+          : {}),
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(packsListCaller !== undefined ? { packsListCaller } : {}),
         ...(packsUnrunnableCaller !== undefined ? { packsUnrunnableCaller } : {}),
@@ -11470,6 +11751,13 @@ export const bootstrapWebclient = async (
       const recipeInstallIntent = recipeSegment === 'install'
         ? deepLinkSegment('recipes', 1)
         : undefined;
+      // D-404 slice B2 (D-323's P6) — `#recipes/install/<id>/return/chat/<session>/<message>`: a chat
+      // answer's install offer; the surface offers the way back to it.
+      const recipeInstallReturn = recipeInstallIntent !== undefined
+        && deepLinkSegment('recipes', 2) === 'return' && deepLinkSegment('recipes', 3) === 'chat'
+        && (deepLinkSegment('recipes', 4) ?? '').length > 0 && (deepLinkSegment('recipes', 5) ?? '').length > 0
+        ? { sessionId: deepLinkSegment('recipes', 4)!, messageId: deepLinkSegment('recipes', 5)! }
+        : undefined;
       const initialRecipeId = recipeSegment !== 'install'
         ? recipeSegment
         : undefined;
@@ -11541,6 +11829,11 @@ export const bootstrapWebclient = async (
           autoRunUpdateCaller: switchWorkTracker.track(
             automationAutoRunUpdateCaller,
           ),
+          // D-402 slice F4d — who runs the recipe without asking, on its page.
+          ...(callerPreapprovalCallers !== undefined
+            ? { callerPreapprovals: { ...callerPreapprovalCallers,
+                stopAllowing: switchWorkTracker.track(callerPreapprovalCallers.stopAllowing) } }
+            : {}),
           // D-319 — "Running as": switching a recipe on, a dish's switch and
           // Settings, Make this the main one, Remove, and what a new dish
           // starts from. Also the guided import's "remember these columns"
@@ -11555,6 +11848,7 @@ export const bootstrapWebclient = async (
           mailTemplateCallers: mailTemplateVariableCallers,
           // A setting naming a mailbox or calendar: the owner's, as a list.
           mailboxCallers: mailboxVariableCallers,
+          browserCallers: browserVariableCallers,
           fileRefSearchCaller,
           recordRefSearchCaller,
           // D-292 — the guided spreadsheet import's upload (see the Packs host).
@@ -11593,6 +11887,7 @@ export const bootstrapWebclient = async (
       let recipeDiscover: ReturnType<typeof mountRecipeDiscovery> | null = null;
       const library = mountDiscoverySurface({
         root: appShell.contentRoot,
+        ...(recipeInstallReturn !== undefined ? { backToChatHref: serializeChatAnswerAddress(recipeInstallReturn) } : {}),
         ...(options.document !== undefined ? { document: options.document } : {}),
         idPrefix: 'recued-recipes-library',
         tabListLabel: 'Recipe library sections',
@@ -11667,6 +11962,8 @@ export const bootstrapWebclient = async (
         ? null
         : parseDataEntityVerificationAddress(parsedDataRoute);
       return withTrackedServerSwitchWork(bootstrapSavedDataRoute({
+        taskBlockerNavigation,
+        todayReminderNavigation,
         // D-269 — the SERVER's zone for durable, server-evaluated stamps.
         serverTimeZone: getServerTimeZone,
         savedViews: {
@@ -11690,10 +11987,54 @@ export const bootstrapWebclient = async (
         ...(options.document !== undefined ? { document: options.document } : {}),
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
         workEntityListCaller: dataWorkEntityListCaller,
+        workEntityLinkedFromCaller: dataWorkEntityLinkedFromCaller,
         workEntitySearchCaller: dataWorkEntitySearchCaller,
         assetSearchCaller: input => rpcConn.call('yours.read', input),
+        chatSearchCaller: input => rpcConn.call('chat.messages.search', input),
         searchContinuityOwner: rpcConn,
-        projectItemsCaller: dataProjectItemsCaller,
+        recentSearches,
+        recentWorkRecords,
+        recentReferenceChoices,
+        pinnedRecords,
+        readerStates,
+        noteRecovery,
+        workRecovery,
+        calendarRecovery, calendarEditRecovery, reminderRecovery, promptRecovery,
+        promptSchedulesCaller: () => rpcConn.call('chat.schedules.list', {}),
+        promptBulkCaller: rpcConn.call as import('./automation/prompt-bulk-controls.js').PromptBulkClient,
+        ...(approvalListCaller && notificationAsksListCaller ? {
+          decisionSearchCallers: ((): PendingDecisionSearchCallers => ({
+            gates: approvalListCaller, asks: notificationAsksListCaller,
+            ...(pendingChatPlansStore ? { plans: async (refresh: boolean) => {
+              if (refresh || pendingChatPlansStore.state().phase !== 'ready') await pendingChatPlansStore.refresh();
+              else await pendingChatPlansStore.whenLoaded();
+              const state = pendingChatPlansStore.state(); if (state.error) throw state.error;
+              return pendingChatPlansStore.list();
+            } } : {}),
+            names: async () => {
+              const [recipes, devices] = await Promise.allSettled([recipeNamesCaller(), rpcConn.call('pair.list', undefined)]);
+              return { recipes: new Map(recipes.status === 'fulfilled' ? recipes.value.recipes.flatMap(row => row.name ? [[row.recipe_id, row.name] as const] : []) : []),
+                devices: new Map(devices.status === 'fulfilled' ? devices.value.devices.flatMap(row => row.display_name ? [[row.instance_id, row.display_name] as const] : []) : []) };
+            },
+            observe: changed => {
+              const offs = [subscriber.on('approval', () => changed()), subscriber.on('notification.ask', () => changed()),
+                subscriber.on('notification.ask_closed', () => changed()), reconnect(() => changed())];
+              if (onApprovalChanged) offs.push(onApprovalChanged(() => changed()));
+              if (pendingChatPlansStore) offs.push(pendingChatPlansStore.subscribe(() => changed('plan')));
+              return () => { for (const off of offs) off(); };
+            },
+          }))(),
+          openPendingDecision: (id: string) => navigateHash(decisionSearchHref(id)),
+        } : {}),
+        openPromptSchedule: openSavedPrompt,
+        openPromptDraft: entry => {
+          const here = parseShellRoute(hashSource?.getHash() ?? activeHash);
+          if (here.surface !== 'views' && (here.surface !== 'data' || here.segments[0] !== 'search')
+            || JSON.stringify(promptRecovery?.get(entry.id)) !== JSON.stringify(entry)) return false;
+          const hash = entry.original ? promptScheduleHref(entry.original.schedule_id) : '#automation/schedules';
+          pendingPromptRecovery = { hash, entry: structuredClone(entry) }; navigateHash(hash); return true;
+        },
+        projectItemsCaller: dataProjectItemsCaller, projectAttentionCaller: dataProjectAttentionCaller, projectViewMemory,
         workEntityGetCaller: dataWorkEntityGetCaller,
         onOwnerRecordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
         workEntityUpsertCaller: dataWorkEntityUpsertCaller,
@@ -11772,6 +12113,8 @@ export const bootstrapWebclient = async (
           respond: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.respond', args)),
           delete: switchWorkTracker.track(args => rpcConn.call('collection.calendar.event.delete', args)),
           checkDeletion: args => rpcConn.call('collection.calendar.event.checkDeletion', args),
+          // D-407 slice 5 — the Occasion tick, as the owner's Yours change.
+          occasion: switchWorkTracker.track(change => rpcConn.call('yours.change', change)),
         },
         calendarCreateCallers: {
           overlaps: args => rpcConn.call('collection.calendar.event.overlaps', args),
@@ -11785,6 +12128,7 @@ export const bootstrapWebclient = async (
           updateState: switchWorkTracker.track(args => rpcConn.call('collection.mail.message.updateState', args)),
         },
         mailCompose: {
+          recovery: mailRecovery,
           serverTimeZone: getServerTimeZone,
           drafts: mailDraftCallers,
           listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
@@ -11850,6 +12194,43 @@ export const bootstrapWebclient = async (
         onUseFileInChat: ({ file, sessionId }) => {
           const hash = sessionId === null ? serializeShellRoute('chat', 'new') : serializeShellRoute('chat', 'session', sessionId);
           pendingChatFile = { hash, file }; navigateHash(hash);
+        },
+        onAskContact: contactContext => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: 'What should I know about this contact?', protected: true, modelSourceId: null, contactContext } };
+          navigateHash(hash);
+        },
+        onAskCalendarEvent: (calendarContext, question) => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: question, protected: true, modelSourceId: null, calendarContext } };
+          navigateHash(hash);
+        },
+        onAskProject: record => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: 'What needs attention in this project, and what should I do next?', protected: true, modelSourceId: null, selectedRecords: [record] } };
+          navigateHash(hash);
+        },
+        onAskBooking: record => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: 'What should I know about this booking?', protected: true, modelSourceId: null, selectedRecords: [record] } };
+          navigateHash(hash);
+        },
+        onAskCommitment: record => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: 'What should I know about this commitment?', protected: true, modelSourceId: null, selectedRecords: [record] } };
+          navigateHash(hash);
+        },
+        // D-406 (Q5) — "Chat about this" on an email: a new chat with it added as a record, as "Add records" adds one,
+        // so the message the owner sends has it read before the first round (slice 2's `mail_refs`).
+        onAskMail: record => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: 'What should I know about this email?', protected: true, modelSourceId: null, selectedRecords: [record] } };
+          navigateHash(hash);
+        },
+        onAskSelection: (record, question) => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingChatHandoff = { hash, draft: { text: question, protected: true, modelSourceId: null, selectedRecords: [record] } };
+          navigateHash(hash);
         },
         fileUsageCaller: args => rpcConn.call('data.file.usage', args),
         fileRenameCaller: args => switchWorkTracker.track((input: typeof args) => rpcConn.call('data.file.rename', input))(args),
@@ -11923,7 +12304,7 @@ export const bootstrapWebclient = async (
         // Data changes tabs and opens/closes details without a hashchange. Keep
         // the router cache aligned with the visible hierarchical address.
         onHashSync: (hash) => {
-          if (doc) trackSearchAssetRoute(doc, rpcConn, hash);
+          if (doc) { trackSearchAssetRoute(doc, rpcConn, hash); trackSearchChatRoute(doc, rpcConn, hash); trackSearchNavigationRoute(doc, rpcConn, hash); trackReaderPassageRoute(doc, rpcConn, hash); }
           activeHash = hash;
         },
         subscribe: subscriber.on,
@@ -11937,6 +12318,18 @@ export const bootstrapWebclient = async (
         (args) => rpcConn.call('triggers.create', args);
       return withTrackedServerSwitchWork(bootstrapAutomationRoute({
         root: appShell.contentRoot,
+        reminderRecovery,
+        promptRecovery,
+        promptListMemory,
+        openPromptSchedule: row => { openSavedPrompt({ id: row.schedule_id, identity: promptScheduleIdentity(row) }); },
+        ...(savedPrompt ? { initialPromptSelection: savedPrompt } : {}),
+        ...(() => {
+          if (!doc) return {};
+          const visit = readSearchNavigationReturn(doc, rpcConn);
+          return (visit?.focus.action === SEARCH_OPEN_PROMPT || visit?.focus.action === SEARCH_OPEN_RECOVERY_DRAFT) && visit.destinationHash === (hashSource?.getHash() ?? activeHash)
+            ? { promptSearchReturnHash: visit.returnHash } : {};
+        })(),
+        ...(promptDraft ? { initialPromptDraft: promptDraft } : {}),
         rehearsalCall: rpcConn.call,
         beginRehearsalWork: () => switchWorkTracker.begin({ label: 'Updating automation rehearsal and configuration', returnHref: activeHash }),
         // A timer's window opens on the server's clock (D-269).
@@ -11990,6 +12383,7 @@ export const bootstrapWebclient = async (
         // D-319 — the settings form's pickers, as on the recipe page.
         mailTemplateCallers: mailTemplateVariableCallers,
         mailboxCallers: mailboxVariableCallers,
+        browserCallers: browserVariableCallers,
         recordRefSearchCaller,
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         autoRunListCaller: automationAutoRunListCaller,
@@ -12030,6 +12424,8 @@ export const bootstrapWebclient = async (
           if (!isAutomationSectionToken(seg)) return { initialRecipeFilter: seg };
           // `#automation/<section>/<id>` — segment 1 deep-links a detail.
           const detail = deepLinkSegment('automation', 1);
+          const promptId = deepLinkSegment('automation', 2);
+          if (seg === 'schedules' && detail === 'prompt' && promptId) return { initialSection: seg, initialPromptId: promptId };
           return {
             initialSection: seg,
             ...(detail !== undefined && detail.length > 0
@@ -12046,6 +12442,8 @@ export const bootstrapWebclient = async (
       return withTrackedServerSwitchWork(bootstrapYoursRoute({
         container: appShell.contentRoot,
         continuityOwner: rpcConn,
+        // D-407 slice 4 — the calendars an occasion's event can go in, for the choice made once.
+        calendarDestinations: () => rpcConn.call('collection.calendar.event.destinations', undefined),
         context: input => rpcConn.call('yours.context', input),
         writerSetup: {
           read: input => rpcConn.call('yours.writer.read', input),
@@ -12062,6 +12460,23 @@ export const bootstrapWebclient = async (
           pendingChatHandoff = { hash, draft: { text: 'What should I know about this asset?', protected: true, modelSourceId: null, assetContext } };
           navigateHash(hash);
         },
+        // D-339 slices 11 and 13 (§5.6) — "Ask with the numbers": the models Chat can use, the Body's own
+        // conversation, and the send, as an ordinary turn of the owner's chat (`yours/body-chat.ts`). The
+        // numbers go as the owner's own words, with no asset chip: its envelope tells the model to read the
+        // asset, and a Body's numbers are read only through a recipe that asks, for numbers just handed over.
+        bodyChat: createBodyChat({
+          call: rpcConn.call as unknown as BodyChatCall,
+          openChat: sessionId => navigateHash(serializeChatSessionAddress({ sessionId })),
+        }),
+        // D-339 slice 18 — a weight or height typed on a Body's page, saved in Records as typed by you by the
+        // Body signals pack's own recipe, run as the owner's own run, never written as the Body's reading.
+        bodyMeasure: createBodyMeasure({
+          execute: args => rpcConn.call('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }),
+        }),
+        // D-339 slice 21 — Connect Apple Health on a Body's page: the webhook, and whether the pack is installed.
+        appleHealth: createAppleHealthConnect({ call: (method, params) => rpcConn.call(method, params as never) as Promise<unknown> }),
+        // D-339 slice 12a — the owner's chats' switch for every Body's numbers, on a Body's page.
+        bodyNumbers: { set: chats => rpcConn.call('contract.grant.body_numbers.write', { chats }) },
         change: input => switchWorkTracker.track((args: typeof input) => rpcConn.call('yours.change', args))(input),
         closeCommitment: dataCommitmentCloseCaller,
         contacts: async () => (await dataContactListCaller({ limit: 200 })).contacts,
@@ -12087,9 +12502,12 @@ export const bootstrapWebclient = async (
       activeSettingsRoute = null;
       // D-340 slice 2 — `#today/stream`, reached from Today itself, opens the streams' settings in place.
       const todayRoute = bootstrapTodayRoute({
+        taskBlockerNavigation,
+        reminderNavigation: todayReminderNavigation,
         container: appShell.contentRoot,
         callers: {
           proactiveTodayCaller: input => rpcConn.call('yours.today', input),
+          reminderCallers: dataReminderCallers,
           spheres: { read: ref => rpcConn.call('yours.sphere', { ref }), readMany: async refs => (await rpcConn.call('yours.spheres', { refs })).placements,
             change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
           workEntitySourceListCaller: dataWorkEntitySourceListCaller,
@@ -12103,9 +12521,11 @@ export const bootstrapWebclient = async (
           openCreateOverlay: () => createSeatHandler?.(),
           situationChangeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
           occurrenceAcknowledgeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
+          // D-407 slice 2 — "When is the next one?" answered from Today.
+          occasionNextCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
           situationOpenedCaller: input => { void rpcConn.call('yours.change', input).catch(() => {}); },
-          // D-343 slice 4 (ruling 20) — a new conversation holding today's evening notice, opened
-          // with the reply already quoting it, as Reply on the notice's card would.
+          // D-343 slice 4 (ruling 20, amended 2026-11-15) — the "Your day" conversation, at today's
+          // evening notice, opened with the reply already quoting it, as Reply on the notice's card would.
           closeDayCaller: async () => {
             const { conversation } = await switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.open' }))();
             if (!conversation) throw new Error('Recued could not open the conversation. Refresh Today and try again.');
@@ -12127,7 +12547,9 @@ export const bootstrapWebclient = async (
             },
             channels: async () => streamChannelsOf((await rpcConn.call('notifications.describe', undefined)).rows),
             closeDay: { save: switchWorkTracker.track((settings: SituationCloseDaySettings) => rpcConn.call('yours.change', { action: 'close_day.update', settings })),
-              sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.send_now' })) },
+              sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.send_now' })),
+              retryReply: switchWorkTracker.track((id: string) => rpcConn.call('yours.change', { action: 'close_day.retry_reply', id })),
+              reviewReply: switchWorkTracker.track((id: string) => rpcConn.call('yours.change', { action: 'close_day.review_reply', id })) },
           },
         },
         subscribe: subscriber.on,
@@ -12140,6 +12562,39 @@ export const bootstrapWebclient = async (
         },
       }));
     }
+    if (route === 'setup') {
+      activeSettingsRoute = null;
+      // D-405 slice 4 — the Set up page. Each line read the way the surface that owns it reads it: mail,
+      // calendar and files as the chat's hints do, chat's model as the chat does, each pack's needs with
+      // the Packs page's own reads and rule, recipes as the first-run card does.
+      return withTrackedServerSwitchWork(bootstrapSetupRoute({
+        container: appShell.contentRoot,
+        ...(options.document !== undefined ? { document: options.document } : {}),
+        // D-405 slice 9 — the server's events: the page reads again what each can change while it is open.
+        subscribe: subscriber.on,
+        callers: {
+          features: () => rpcConn.call('chat.setup.features', undefined),
+          chatReady: async () => isAnyAiSourceConfigured((await rpcConn.call('server.getLLMConfig', undefined)).config),
+          anyRecipe: () => hasAnyRecipe((request) => rpcConn.call('recipe.list', request)),
+          ...(packsListCaller !== undefined
+            ? {
+                packs: {
+                  listInstalled: packsListCaller,
+                  ...(packsUnrunnableCaller !== undefined ? { listUnrunnable: packsUnrunnableCaller } : {}),
+                  listToolStatus: () => packProgramsCallers.status({}),
+                  ...(connectionsEnrollListCaller !== undefined ? { listConnections: connectionsEnrollListCaller } : {}),
+                  listSignIns: packConnectionsCallers.signins,
+                },
+              }
+            : {}),
+          hints: {
+            list: () => rpcConn.call('chat.hints.list', undefined),
+            restore: (key) => rpcConn.call('chat.hints.restore', { key }),
+          },
+        },
+      }));
+    }
+
     if (route === 'stats') {
       activeSettingsRoute = null;
       return withTrackedServerSwitchWork(bootstrapStatsRoute({
@@ -12176,7 +12631,7 @@ export const bootstrapWebclient = async (
         localUndo: {
           get: args => rpcConn.call('local_undo.get', args),
           review: args => rpcConn.call('local_undo.review', args),
-          decide: args => rpcConn.call('local_undo.decide', args),
+          decide: switchWorkTracker.track(args => rpcConn.call('local_undo.decide', args)),
         },
         activeCaller: runsActiveCaller,
         killCaller: runsKillCaller,
@@ -12185,6 +12640,10 @@ export const bootstrapWebclient = async (
         // D-186 Slice C — the Runs "Active passes" (session-grant) section.
         grantsListCaller: runsGrantsListCaller,
         grantsRevokeCaller: runsGrantsRevokeCaller,
+        // D-402 slice F5 — "Stop allowing" on a run an "Always" let through.
+        ...(callerPreapprovalCallers !== undefined
+          ? { stopAllowingCaller: switchWorkTracker.track(callerPreapprovalCallers.stopAllowing) }
+          : {}),
         // ★ ref-picker — backs the Recipe filter combobox.
         recipeNamesCaller,
         ...(logsSegment === 'active'
@@ -12228,7 +12687,10 @@ export const bootstrapWebclient = async (
             )
           : chatHomeAddress(),
         history: () => doc.defaultView?.history,
-        onCommit: (address) => { activeHash = address.hash; },
+        onCommit: (address) => {
+          if (doc) { trackSearchChatRoute(doc, rpcConn, address.hash); trackReaderPassageRoute(doc, rpcConn, address.hash); }
+          activeHash = address.hash;
+        },
       });
       const chatAnswerAddress = parsedChatRoute === null
         ? null
@@ -12239,6 +12701,35 @@ export const bootstrapWebclient = async (
       const chatSessionAddress = parsedChatRoute === null
         ? null
         : parseChatSessionAddress(parsedChatRoute);
+      // D-402 slice E4b — `#chat/carry-on/<run_id>`, a hand-off's notice link. The server answers the
+      // chat kept for that run and the message its composer starts with; this address hands over to
+      // that chat in place, so Back never lands here to open it again. ⛔ Nothing is sent: the owner
+      // reads the message, can say what to do, and sends it.
+      const chatCarryOn = parsedChatRoute === null
+        ? null
+        : parseChatCarryOnAddress(parsedChatRoute);
+      if (chatCarryOn !== null && hashSource !== null) {
+        const carryOnHash = hashSource.getHash();
+        // The owner may have gone elsewhere while the server answered; then nothing moves.
+        const stillHere = (): boolean => hashSource.getHash() === carryOnHash;
+        const cannot = (text: string): void => {
+          notifyToasts?.push({ title: 'Carry on in Chat', text, sticky: true });
+          navigateHashInPlace(serializeShellRoute('chat'));
+        };
+        void rpcConn.call('chat.execution.carry_on', { run_id: chatCarryOn.runId }).then((answer) => {
+          if (!stillHere()) return;
+          if (!answer.ok) {
+            cannot(answer.message);
+            return;
+          }
+          const hash = serializeChatSessionAddress({ sessionId: answer.session_id });
+          pendingChatHandoff = { hash, draft: { text: answer.draft, protected: true, modelSourceId: null } };
+          navigateHashInPlace(hash);
+        }, (error: unknown) => {
+          if (!stillHere()) return;
+          cannot(`Recued could not open the chat for this run: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
       const chatDeepLink = deepLinkSegment('chat');
       const chatSessionId = chatPlanAddress?.sessionId
         ?? chatAnswerAddress?.sessionId
@@ -12301,6 +12792,7 @@ export const bootstrapWebclient = async (
       // the chat route no longer wires the `execution.*` callers.
       const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
+        promptRecovery,
         conn: chatConn,
         // D-341 slice A — the switch beside Send: this conversation's browser actions run without
         // asking while it is on (owner-only `collection.contract.` methods).
@@ -12308,15 +12800,40 @@ export const bootstrapWebclient = async (
           get: args => rpcConn.call('collection.contract.getRequestPass', args),
           set: args => rpcConn.call('collection.contract.setRequestPass', args),
         },
+        // D-402 slice A4 — "Make a recipe" under an answer whose request worked in a web page: the
+        // server compiles the request into a draft kept in Kitchen, which opens if the owner is still
+        // in the chat. It waits as long as a recipe the owner's model drafts (slice E adds a model call).
+        requestRecipe: {
+          make: args => rpcConn.call('chat.execution.request_recipe', args, { timeout: LEARNING_DRAFT_RPC_TIMEOUT_MS }),
+          open: (draft_id, recipe_id) => {
+            if (hashSource?.setHash === undefined) return false;
+            const here = hashSource.getHash?.() ?? '';
+            const chat = serializeShellRoute('chat');
+            if (here !== chat && !here.startsWith(`${chat}/`)) return false;
+            // D-402 slice E4c — changes to a saved recipe continue on the recipe itself (D-333).
+            hashSource.setHash(requestRecipeOpenHash(draft_id, recipe_id));
+            return true;
+          },
+        },
         localUndo: {
           get: args => rpcConn.call('local_undo.get', args),
           review: args => rpcConn.call('local_undo.review', args),
-          decide: args => rpcConn.call('local_undo.decide', args),
+          decide: switchWorkTracker.track(args => rpcConn.call('local_undo.decide', args)),
         },
+        // D-402 slice F5 — "Stop allowing" on a call a standing permission of your chats ran.
+        ...(callerPreapprovalCallers !== undefined
+          ? { stopAllowing: switchWorkTracker.track(callerPreapprovalCallers.stopAllowing) }
+          : {}),
         filePreviewCallers: {
           preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
           convert: args => rpcConn.call('data.file.attachments.convert', args, { timeout: 150_000 }),
           read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
+        },
+        recordLinks: {
+          recent: recentWorkRecords, pinned: pinnedRecords,
+          search: { contacts: dataContactListCaller, work: dataWorkEntitySearchCaller, collections: dataCollectionSearchAllCaller },
+          readers: { contact: id => dataContactGetCaller({ email: id }), work: (kind, id) => dataWorkEntityGetCaller({ kind, id }), source: dataCollectionGetCaller },
+          shortcutReaders: { mail: args => rpcConn.call('collection.mail.message.get', args), calendar: args => rpcConn.call('collection.calendar.event.get', args) },
         },
         fileListCaller: args => rpcConn.call('data.file.attachments.list', args),
         cloudFileCallers: {
@@ -12363,6 +12880,7 @@ export const bootstrapWebclient = async (
         // one Source can send. No mailbox/read-only/error stays in Chat with a
         // direct Connections handoff rather than opening a dead dialog.
         mailCompose: {
+          recovery: mailRecovery,
           drafts: mailDraftCallers,
           listMailInstances: () =>
             rpcConn.call('collection.mail.list', undefined),
@@ -12382,6 +12900,11 @@ export const bootstrapWebclient = async (
         // D-267 — the composer's Find chip. Same entry as the Ctrl/Cmd+/ chord
         // and the drawer seat, so all three land the owner in one search.
         openUniversalSearch: () => { universalSearchShortcut?.open(); },
+        searchReturn: () => {
+          if (!doc) return undefined;
+          const saved = readSearchChatReturn(doc, rpcConn);
+          return saved && hashSource?.getHash() === serializeChatAnswerAddress(saved) ? saved.returnHash : undefined;
+        },
         // Bare Chat is the returning-user history landing. Typed setup/source
         // links and `#chat/new` remain deliberate draft experiences; a
         // session/answer/plan link opens its exact durable thread below.
@@ -12610,6 +13133,7 @@ export const bootstrapWebclient = async (
         ...(hashSource !== null
           ? {
               initialSectionId: deepLinkSegment('settings'),
+              initialSettingId: parseSettingsFinderHash(hashSource.getHash())?.id,
               initialServerTabId: deepLinkSegment('settings', 1),
               ...(deepLinkSegment('settings', 1) === 'setup'
                 ? { initialAiModelsView: 'chat-setup' as const }
@@ -12632,9 +13156,11 @@ export const bootstrapWebclient = async (
               // `#settings/ai-models/setup`): that state is passed at MOUNT
               // time, so an in-place write would leave the deep view on screen
               // under a shallower address. Navigate for real there and let the
-              // hash listener re-mount at the requested section.
+              // hash listener re-mount at the requested section. Finder links
+              // already revealed their exact panel and tabs in place; writing
+              // those links must retain the mounted route and its drafts.
               onAddressChange: (hash: string, mode: 'push' | 'replace') => {
-                if (parseShellRoute(activeHash).segments.length > 1) {
+                if (parseSettingsFinderHash(hash) === null && parseShellRoute(activeHash).segments.length > 1) {
                   navigateHash(hash);
                   return;
                 }
@@ -12751,7 +13277,9 @@ export const bootstrapWebclient = async (
         // D-343 slice 4 — Close the day reads the Agenda's status, which names it on a server that has it.
         closeDayDelivery: { read: () => rpcConn.call('yours.agenda', undefined),
           save: switchWorkTracker.track(settings => rpcConn.call('yours.change', { action: 'close_day.update', settings })),
-          sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.send_now' })) },
+          sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'close_day.send_now' })),
+          retryReply: switchWorkTracker.track((id: string) => rpcConn.call('yours.change', { action: 'close_day.retry_reply', id })),
+          reviewReply: switchWorkTracker.track((id: string) => rpcConn.call('yours.change', { action: 'close_day.review_reply', id })) },
         lastTime: { read: () => rpcConn.call('yours.learning', undefined),
           save: switchWorkTracker.track(last_time => rpcConn.call('yours.change', { action: 'settings.update', last_time })) },
         householdDelivery: { read: async () => {
@@ -13258,6 +13786,11 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
+        storageKindsCaller,
+        storagePurgePreviewCaller,
+        storagePurgeRunCaller: switchWorkTracker.track(storagePurgeRunCaller),
+        storageRecordsExportCaller,
+        storageRunsExportCaller,
         ...(housekeepingPanelDriftReadCaller !== undefined
           ? { housekeepingPanelDriftReadCaller }
           : {}),
@@ -13449,15 +13982,20 @@ export const bootstrapWebclient = async (
         ...settings,
         // Back/Forward between plain `#settings/<section>` addresses is the
         // rail switch in reverse — every section is already built, so the
-        // mounted route serves it in place. Anything deeper on either side
-        // (a Seller sub-page, a Server tab) is mount-time state: return false
-        // and take the shell's re-mount.
+        // mounted route serves it in place. Finder destinations can also reveal
+        // their panel and tabs without a re-mount. Other deeper state (a Seller
+        // sub-page or a direct Server tab link) still uses the shell's re-mount.
         navigateDeepLink: (hash: string): boolean => {
           const from = parseShellRoute(activeHash);
           const to = parseShellRoute(hash);
           if (to.surface !== 'settings') return false;
-          if (from.segments.length > 1 || to.segments.length > 1) return false;
-          if (!settings.navigateToSection(to.segments[0] ?? null)) return false;
+          const setting = parseSettingsFinderHash(hash);
+          if (setting !== null) {
+            if (!settings.navigateToSetting(setting.id, setting.section)) return false;
+          } else {
+            if ((from.segments.length > 1 && parseSettingsFinderHash(activeHash) === null) || to.segments.length > 1) return false;
+            if (!settings.navigateToSection(to.segments[0] ?? null)) return false;
+          }
           settingsHistory.adopt(settingsHierarchicalAddress(hash));
           return true;
         },
@@ -13465,7 +14003,8 @@ export const bootstrapWebclient = async (
     }
     if (route === 'approvals' && deepLinkSegment('approvals') === 'local-changes') {
       activeSettingsRoute = null;
-      return withTrackedServerSwitchWork(bootstrapLocalChangesRoute({ root: appShell.contentRoot,call: rpcConn.call,
+      return withTrackedServerSwitchWork(bootstrapLocalChangesRoute({ root: appShell.contentRoot,
+        call: trackSelectedRpcMethods<Conn<ServerRpcRegistry>>(new Set(['local_changes.decide', 'local_changes.prepare_undo'])),
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(deepLinkSegment('approvals',1) !== undefined ? { changeSetId: deepLinkSegment('approvals',1) } : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
@@ -13474,7 +14013,12 @@ export const bootstrapWebclient = async (
     if (route === 'approvals' && deepLinkSegment('approvals') === 'preapproval') {
       activeSettingsRoute = null;
       return withTrackedServerSwitchWork(bootstrapPreapprovalRoute({
-        root: appShell.contentRoot, call: rpcConn.call, serverTimeZone: getServerTimeZone,
+        root: appShell.contentRoot,
+        call: trackSelectedRpcMethods<Conn<ServerRpcRegistry>>(new Set([
+          'preapproval.select', 'preapproval.decide', 'preapproval.revoke', 'preapproval.reconcile',
+          'preapproval.continue', 'local_changes.prepare', 'local_undo.decide',
+        ])),
+        serverTimeZone: getServerTimeZone,
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(deepLinkSegment('approvals', 1) !== undefined ? { proposalId: deepLinkSegment('approvals', 1) } : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
@@ -13524,6 +14068,14 @@ export const bootstrapWebclient = async (
         ...(deepLinkSegment('approvals') !== undefined
           ? { initialFocusId: deepLinkSegment('approvals') }
           : {}),
+        ...(() => {
+          if (!doc) return {};
+          const visit = readSearchNavigationReturn(doc, rpcConn);
+          if (visit?.focus.action !== SEARCH_OPEN_DECISION || visit.destinationHash !== (hashSource?.getHash() ?? activeHash)) return {};
+          const selected = readDecisionSearchKey(visit.focus.id);
+          return selected && decisionSearchHref(selected.id) === visit.destinationHash
+            ? { searchReturnHash: visit.returnHash, initialDecisionKind: selected.kind } : {};
+        })(),
         ...(options.now !== undefined ? { now: options.now } : {}),
       }));
     }
@@ -13561,6 +14113,7 @@ export const bootstrapWebclient = async (
       // that resolves means the run was ACCEPTED, never that mail was sent.
       activeSettingsRoute = null;
       return bootstrapMailRoute({
+        recovery: mailRecovery,
         // D-269 — the SERVER's zone for durable, server-evaluated stamps.
         serverTimeZone: getServerTimeZone,
         root: appShell.contentRoot,
@@ -13652,6 +14205,13 @@ export const bootstrapWebclient = async (
                 initialDirty: true,
                 validateCaller: (args) => rpcConn.call('recipe.validate', args),
                 simulateCaller: switchWorkTracker.track(createRecipeSimulationCaller(rpcConn.call)),
+                // D-402 slice C — "Try it": a recipe not saved yet, run once for real, each change asked first.
+                tryCaller: switchWorkTracker.track(createRecipeTryCaller(rpcConn.call)),
+                // D-402 slice C5 — a held trial followed to its end, whether it is the recipe's saved test,
+                // and the owner's browsers and mailboxes for its settings.
+                followHeldRun: (held, deliver) => heldRunFollower.follow(held, deliver),
+                trialCapturesCaller: (args) => rpcConn.call('recipe.capture.list', args),
+                trialSettingsCallers: { browsers: browserVariableCallers, mailboxes: mailboxVariableCallers },
                 saveCaller: switchWorkTracker.track((args) => rpcConn.call('recipe.save', args)),
                 onChange: hooks.onChange,
                 packCopiesCaller: () => rpcConn.call('ingredient.copies.list', undefined),
@@ -13889,6 +14449,9 @@ export const bootstrapWebclient = async (
           webhookDisarmCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.webhook.disarm', args),
           ),
+          // D-201 Slice 10I — the save's "keep its webhook on?" says first
+          // what the version being saved could do.
+          webhookPreviewCaller: (args) => rpcConn.call('recipe.webhook.preview', args),
           mailFactTypesCaller: () => rpcConn.call('mail_fact.type.list', undefined),
           // D-315 §5.2 — a template setting brings one of the author's templates.
           mailTemplatesCaller: () => rpcConn.call('mail_fact.template.list', undefined),
@@ -13959,6 +14522,35 @@ export const bootstrapWebclient = async (
     }
     activeSettingsRoute = null;
     const receptionMutationMethods = new Set<string>([
+      'reception.accounts.save',
+      'reception.accounts.contact.set',
+      'reception.accounts.statement.draft',
+      'reception.accounts.payment.prepare',
+      'reception.accounts.payment.correction.prepare',
+      'reception.accounts.payment.receipt.draft',
+      'reception.accounts.payment.reminders.set',
+      'reception.accounts.payment.reminders.draft',
+      'reception.signoff.payment.correction.prepare',
+      'reception.signoff.payment.receipt.draft',
+      'reception.signoff.invoice.credit.prepare',
+      'reception.signoff.invoice.credit.correction.prepare',
+      'reception.signoff.refund.prepare',
+      'reception.signoff.refund.correction.prepare',
+      'reception.signoff.refund.receipt.draft',
+      'reception.signoff.prepare',
+      'reception.signoff.prepare_addition',
+      'reception.signoff.publish',
+      'reception.signoff.cancel',
+      'reception.signoff.completion.prepare',
+      'reception.signoff.completion.publish',
+      'reception.signoff.completion.cancel',
+      'reception.signoff.completion.reminders.set',
+      'reception.signoff.completion.reminders.draft',
+      'reception.signoff.payment.reminders.set',
+      'reception.signoff.payment.reminders.draft',
+      'reception.jobs.archive',
+      'reception.jobs.restore',
+      'reception.jobs.payment.statement.draft',
       'reception.signoff.reminders.set',
       'reception.signoff.reminders.draft',
       'reception.compose.propose',
@@ -13981,7 +14573,7 @@ export const bootstrapWebclient = async (
         serverTimeZone: getServerTimeZone,
       },
       signoffReminders: { mail: {
-        serverTimeZone: getServerTimeZone, drafts: mailDraftCallers,
+        serverTimeZone: getServerTimeZone, drafts: { ...mailDraftCallers,create: switchWorkTracker.track(mailDraftCallers.create) },
         listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
         runExecute: switchWorkTracker.track(recipeExecuteCaller),
       }, ...(options.now ? { now: options.now } : {}) },
@@ -14022,6 +14614,7 @@ export const bootstrapWebclient = async (
     inFlightWorkPrompt?: () => string | null;
     hasRouteInFlightWork?: () => boolean;
     navigateDeepLink?: (hash: string) => boolean;
+    navigateDeepLinkAfterLeave?: (hash: string) => boolean;
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } = mountRoute(activeRoute);
   let cancelRunReviewReturnFocus = (): void => {};
@@ -15609,6 +16202,10 @@ export const bootstrapWebclient = async (
         pendingChatHandoff = undefined;
         const workPrompt = pendingWorkPrompt?.hash === hash ? pendingWorkPrompt : undefined;
         pendingWorkPrompt = undefined;
+        const promptDraft = pendingPromptRecovery?.hash === hash ? pendingPromptRecovery.entry : undefined;
+        pendingPromptRecovery = undefined;
+        const savedPrompt = pendingSavedPrompt?.hash === hash ? pendingSavedPrompt.selection : undefined;
+        pendingSavedPrompt = undefined;
         if (
           hash !== activeHash
           && recoveryIntentContinuationPhase === 'checking'
@@ -15709,13 +16306,19 @@ export const bootstrapWebclient = async (
         // has a shell lifetime so it can guard/settle independently of Chat,
         // then closes after an accepted content transition.
         globalRunPalette?.close();
+        if (remountForDeepLink && mountedRouteHandle.navigateDeepLinkAfterLeave?.(hash) === true) {
+          activeHash = hash;
+          appShell.setActiveRoute(next, parseShellRoute(hash).segments);
+          finishPendingRecoveryReturnAction(hash);
+          return;
+        }
         const previousHash = activeHash;
         cancelRunReviewReturnFocus();
         mountedRouteHandle.dispose();
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next, parseShellRoute(hash).segments);
-        mountedRouteHandle = mountRoute(next, chatFile, workPrompt, handoffDraft);
+        mountedRouteHandle = mountRoute(next, chatFile, workPrompt, handoffDraft, promptDraft, savedPrompt);
         const arrivalHandle = mountedRouteHandle;
         cancelRunReviewReturnFocus = doc === undefined ? () => {} : focusRunReviewReturn({
           document: doc, root: appShell.contentRoot, fromHash: previousHash, toHash: hash,

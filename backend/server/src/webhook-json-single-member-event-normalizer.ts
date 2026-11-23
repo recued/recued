@@ -10,15 +10,38 @@
 import {
   createWebhookAsciiIdentifierParser,
 } from './webhook-ascii-identifier-parser.js';
+import {
+  createWebhookLowercaseIdentifierEventTypeParser,
+} from './webhook-lowercase-identifier-event-type-parser.js';
 
 export interface WebhookJsonSingleMemberEventNormalizerPreset {
   readonly kind: 'json_single_member_event.v1';
   readonly event_id_field: string;
   readonly event_id_grammar: 'positive_safe_integer.v1';
   readonly event_id_max_value: number;
-  readonly event_type_grammar: 'ascii_identifier.v1';
+  /** D-201 Slice 10G — an identifier grammar, as the profile's own; the
+   *  member-name one leaves out the names the JSON reader refuses as members.
+   *  All are ASCII only, so the bound is the name's length either way. */
+  readonly event_type_grammar:
+    | 'ascii_identifier.v1'
+    | 'lowercase_identifier_event_type.v1'
+    | 'lowercase_json_member_event_type.v1';
   readonly event_type_max_bytes: number;
 }
+
+/** The event-type parser preset a normalizer composes, as the grammar parity
+ *  check reads it against its profile's grammar. */
+export const jsonSingleMemberEventTypeParserPreset = (
+  preset: Pick<WebhookJsonSingleMemberEventNormalizerPreset, 'event_type_grammar' | 'event_type_max_bytes'>,
+):
+  | { kind: 'ascii_identifier.v1'; max_bytes: number }
+  | {
+      kind: 'lowercase_identifier_event_type.v1' | 'lowercase_json_member_event_type.v1';
+      max_characters: number;
+    } =>
+  preset.event_type_grammar === 'ascii_identifier.v1'
+    ? { kind: preset.event_type_grammar, max_bytes: preset.event_type_max_bytes }
+    : { kind: preset.event_type_grammar, max_characters: preset.event_type_max_bytes };
 
 export interface WebhookNormalizedJsonSingleMemberEvent {
   readonly event_id: string;
@@ -139,7 +162,9 @@ export const createWebhookJsonSingleMemberEventNormalizer = (
       fields.event_id_max_value,
       Number.MAX_SAFE_INTEGER,
     )
-    || fields.event_type_grammar !== 'ascii_identifier.v1'
+    || (fields.event_type_grammar !== 'ascii_identifier.v1'
+      && fields.event_type_grammar !== 'lowercase_identifier_event_type.v1'
+      && fields.event_type_grammar !== 'lowercase_json_member_event_type.v1')
     || !Number.isSafeInteger(fields.event_type_max_bytes)
     || (fields.event_type_max_bytes as number) < 1
     || (fields.event_type_max_bytes as number) > MAX_EVENT_TYPE_BYTES) {
@@ -155,10 +180,10 @@ export const createWebhookJsonSingleMemberEventNormalizer = (
     event_type_grammar: fields.event_type_grammar,
     event_type_max_bytes: fields.event_type_max_bytes as number,
   });
-  const eventTypeParser = createWebhookAsciiIdentifierParser({
-    kind: preset.event_type_grammar,
-    max_bytes: preset.event_type_max_bytes,
-  });
+  const eventTypeParserPreset = jsonSingleMemberEventTypeParserPreset(preset);
+  const eventTypeParser = eventTypeParserPreset.kind === 'ascii_identifier.v1'
+    ? createWebhookAsciiIdentifierParser(eventTypeParserPreset)
+    : createWebhookLowercaseIdentifierEventTypeParser(eventTypeParserPreset);
 
   return Object.freeze({
     preset,
@@ -180,6 +205,9 @@ export const createWebhookJsonSingleMemberEventNormalizer = (
         const eventType = eventEntry === undefined
           ? null
           : eventTypeParser.parse(eventEntry[0]);
+        // The JSON reader refuses these member names anywhere in a delivery, and
+        // a profile naming its event by a member uses a grammar that leaves
+        // them out (`lowercase_json_member_event_type.v1`, D-201 Slice 10G).
         if (eventEntry === undefined
           || PROTOTYPE_SENSITIVE_KEYS.has(eventEntry[0])
           || eventType === null

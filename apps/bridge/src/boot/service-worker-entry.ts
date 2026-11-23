@@ -35,6 +35,7 @@ import {
 } from '../picker/picker-injector.js';
 import { bootBridgeServiceWorker } from './service-worker-bootstrap.js';
 import { createSwMessageQueue } from './sw-message-queue.js';
+import { createSiteListMessageHandler } from '../site-list-mutations.js';
 import { wireToolbarIconToSidePanel } from './toolbar-icon.js';
 import { wireKeepSignedIn, type KeepSignedInChrome } from '../keep-signed-in.js';
 import { bridgeCommandActivity } from '../queue/dispatcher.js';
@@ -268,8 +269,21 @@ const buildChromePickerApi = (): PickerInjectorChromeApi => {
         url: typeof first.url === 'string' ? first.url : undefined,
       };
     },
-    async injectFile(tab_id, file) {
-      await c.scripting.executeScript({ target: { tabId: tab_id }, files: [file] });
+    async prepare(tab_id, launch) {
+      const results = await c.scripting.executeScript({
+        target: { tabId: tab_id },
+        func: (credential: { launch_id: string; expires_at: number }) => {
+          (globalThis as { __recuedElementPickerLaunch?: typeof credential }).__recuedElementPickerLaunch = credential;
+          return location.href;
+        },
+        args: [{ launch_id: launch.launch_id, expires_at: launch.expires_at }],
+      });
+      const result = results[0];
+      if (!result?.documentId || typeof result.result !== 'string') throw new Error('Picker document unavailable');
+      return { tab_id, document_id: result.documentId, page_url: result.result };
+    },
+    async injectFile(tab_id, file, document_id) {
+      await c.scripting.executeScript({ target: { tabId: tab_id, documentIds: [document_id] }, files: [file] });
     },
   };
 };
@@ -311,7 +325,10 @@ interface ChromeRuntimeBinding {
   alarms: {
     create(name: string, opts: { periodInMinutes: number }): void;
     clear(name: string): void;
-    onAlarm: { addListener(handler: (alarm: { name: string }) => void): void };
+    onAlarm: {
+      addListener(handler: (alarm: { name: string }) => void): void;
+      removeListener(handler: (alarm: { name: string }) => void): void;
+    };
   };
   tabs: {
     // `{url}` for a notification's link; `{url, active: false}` for a page a
@@ -321,9 +338,9 @@ interface ChromeRuntimeBinding {
     // background tab forward in its own window and then puts the owner's back.
     get(tabId: number): Promise<{ id?: number; status?: string; url?: string; windowId: number; active: boolean }>;
     remove(tabId: number): Promise<void>;
-    onUpdated?: { addListener(handler: (tabId: number, changeInfo: { url?: string }) => void): void };
-    onRemoved?: { addListener(handler: () => void): void };
-    onReplaced?: { addListener(handler: () => void): void };
+    onUpdated?: { addListener(handler: (tabId: number, changeInfo: { url?: string; status?: string }) => void): void };
+    onRemoved?: { addListener(handler: (tabId: number) => void): void };
+    onReplaced?: { addListener(handler: (addedTabId: number, removedTabId: number) => void): void };
     // `{url}` for the action executor's tab lookup; `{active, currentWindow}`
     // for the brick-3 picker injector's active-tab query; `{active, windowId,
     // url}` for the F1 matched-tab screenshot confirm. `url` also takes an
@@ -353,7 +370,7 @@ interface ChromeRuntimeBinding {
             func: (...args: any[]) => unknown;
             args: ReadonlyArray<unknown>;
           }
-        | { target: { tabId: number }; files: ReadonlyArray<string> },
+        | { target: { tabId: number; documentIds?: string[] }; files: ReadonlyArray<string> },
     ): Promise<Array<{ documentId?: string; result: unknown }>>;
   };
   // D-335 slice H — a minimized window draws nothing a screenshot could take.
@@ -417,6 +434,7 @@ const chromeAtModuleLoad = (globalThis as { chrome?: ChromeRuntimeBinding })
   .chrome;
 const swMessageQueueHandle = createSwMessageQueue({
   chromeRuntimeOnMessage: chromeAtModuleLoad?.runtime.onMessage,
+  immediateHandler: createSiteListMessageHandler(chromeAtModuleLoad?.storage?.local),
 });
 
 // The toolbar icon opens the side panel, the bridge's only page — the pair
@@ -528,6 +546,20 @@ const bridgeServiceWorkerMain = async (): Promise<void> => {
       ? {
           capabilityProfileSnapshot: async ({ granted_origins }) => ({
             software_version: BRIDGE_VERSION,
+            dom_readiness: true,
+            guarded_links: true,
+            wait_read: true,
+            structural_reads: true,
+            // D-402 slice G — the row checked again at the step, and a selector that names several refused.
+            row_checks: true,
+            // 2026-11-21 (D-402, task P) — and the card a step's element sits in, by the kind the step names.
+            card_rows: true,
+            // 2026-11-21 (D-402, task H) — a click or a sent form watched, and a page waited for to change, up to 30 s.
+            long_waits: true,
+            // 2026-11-20 — a read asked to settle waits for the page to stop changing (`page-settle.ts`).
+            settled_reads: true,
+            // 2026-11-20 — and one asked to wait for a change waits for the page to change, then settle.
+            settled_waits: true,
             chrome_version: detectChromeVersion(),
             offscreen_supported: offscreenSupported,
             alarms_supported: alarmsSupported,
@@ -569,11 +601,12 @@ const bridgeServiceWorkerMain = async (): Promise<void> => {
   // queried and re-injected for nothing several times per navigation. Removal
   // and replacement have their own events, so they still refresh unconditionally.
   const documentChanged = () => { void boot.capabilityMonitor?.pushNow(); };
-  c.tabs.onUpdated?.addListener((_tabId, changeInfo) => {
+  c.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+    if (changeInfo?.status === 'loading' || changeInfo?.url !== undefined) boot.retirePickerForTab(tabId);
     if (changeInfo?.url !== undefined) documentChanged();
   });
-  c.tabs.onRemoved?.addListener(documentChanged);
-  c.tabs.onReplaced?.addListener(documentChanged);
+  c.tabs.onRemoved?.addListener(tabId => { boot.retirePickerForTab(tabId); documentChanged(); });
+  c.tabs.onReplaced?.addListener((_addedTabId, removedTabId) => { boot.retirePickerForTab(removedTabId); documentChanged(); });
 
   // D-169 P1.5 Codex HIGH #4 fold — drain the cold-start message queue
   // AFTER bootBridgeServiceWorker resolves so the bootstrap's handle is

@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ActiveExecutionEntry,
+  ChainRuleRow,
   ChatToolCallRecord,
   ExecutionActiveRequest,
   ExecutionActiveResponse,
@@ -18,8 +19,11 @@ import type {
   SessionGrantView,
 } from '@recued/contracts';
 
+import { WEBCLIENT_DEFAULT_SUBSCRIPTIONS } from '../../realtime/subscriber.js';
 import {
   mountLiveControlBubble,
+  LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR,
+  LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR,
   LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
   LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR,
   LIVE_CONTROL_BUBBLE_HOST_ATTR,
@@ -33,6 +37,7 @@ import {
   type MountLiveControlBubbleOptions,
   type LiveControlActiveCaller,
   type LiveControlCancelCaller,
+  type LiveControlChainsRevokeCaller,
   type LiveControlGrantsListCaller,
   type LiveControlGrantsRevokeCaller,
   type LiveControlKillCaller,
@@ -247,9 +252,25 @@ const grantsSnapshot = (
   grants: SessionGrantView[],
 ): SessionGrantListResponse => ({ grants });
 
+const ruleRow = (overrides: Partial<ChainRuleRow> = {}): ChainRuleRow => ({
+  rule_id: 'cr_1',
+  key_hash: 'key_1',
+  words: 'Tell Ann the new time',
+  members: [],
+  deletes: [],
+  created_at: 1_000,
+  expires_at: 1_000 + 30 * 86_400_000,
+  max_uses: 100,
+  uses_remaining: 97,
+  ...overrides,
+});
+
 interface MountInit {
   active?: ExecutionActiveResponse;
   grants?: SessionGrantListResponse;
+  /** D-348 — the RULES section's rules; set ⇒ its callers are wired. */
+  chains?: ChainRuleRow[];
+  chainsRevokeCaller?: LiveControlChainsRevokeCaller;
   includeActiveCaller?: boolean;
   includeGrantsCaller?: boolean;
   /** Full override of the active caller (for soft-fail / per-call scripting). */
@@ -270,6 +291,9 @@ const mountBubble = (init: MountInit = {}) => {
 
   let activeCurrent: ExecutionActiveResponse = init.active ?? activeSnapshot([]);
   let grantsCurrent: SessionGrantListResponse = init.grants ?? grantsSnapshot([]);
+  let chainsCurrent: ChainRuleRow[] = init.chains ?? [];
+  const chainsListCaller = vi.fn(async () => ({ rules: chainsCurrent }));
+  const chainsRevokeCaller = init.chainsRevokeCaller ?? (vi.fn(async () => ({})) as LiveControlChainsRevokeCaller);
 
   const activeCaller: LiveControlActiveCaller =
     init.activeCaller ??
@@ -311,6 +335,7 @@ const mountBubble = (init: MountInit = {}) => {
     cancelCaller,
     promoteCaller,
     grantsRevokeCaller: revokeCaller,
+    ...(init.chains !== undefined ? { chainsListCaller, chainsRevokeCaller } : {}),
     activeRefreshDebounceMs: 0,
     ...(init.dismissToolCall ? { dismissToolCall: init.dismissToolCall } : {}),
     ...(init.reconnect ? { reconnect: init.reconnect } : {}),
@@ -321,13 +346,18 @@ const mountBubble = (init: MountInit = {}) => {
     doc,
     host,
     mount,
-    callers: { activeCaller, grantsListCaller, killCaller, cancelCaller, promoteCaller, revokeCaller },
+    callers: { activeCaller, grantsListCaller, killCaller, cancelCaller, promoteCaller, revokeCaller, chainsListCaller, chainsRevokeCaller },
     setActive: (entries: ActiveExecutionEntry[]) => {
       activeCurrent = activeSnapshot(entries);
     },
     setGrants: (grants: SessionGrantView[]) => {
       grantsCurrent = grantsSnapshot(grants);
     },
+    setChains: (rules: ChainRuleRow[]) => {
+      chainsCurrent = rules;
+    },
+    /** Every kind the bubble listens to now. */
+    subscribedKinds: (): string[] => [...listeners.entries()].filter(([, fns]) => fns.length > 0).map(([kind]) => kind),
     fire: (kind: string, event: Record<string, unknown> = {}) => {
       for (const fn of listeners.get(kind) ?? []) fn({ kind, ...event });
     },
@@ -380,6 +410,27 @@ describe('durable tool calls in the live bubble', () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
+  it('names each call in the chat\'s own words, and its buttons by that name, where it showed the tool\'s', async () => {
+    const snapshot: ExecutionActiveResponse = { entries: [runEntry()], lanes: [], tool_calls: [
+      { ...call, message_id: 'tool:digest', tool_name: 'recued-core/weekly-digest', recipe_name: 'Weekly digest' },
+      { ...call, message_id: 'tool:event', tool_name: 'calendar.update', run_id: 'run_2', state: 'interrupted' },
+      // An app's call, or one an older server recorded: nothing names it but its tool.
+      { ...call, message_id: 'tool:app', tool_name: 'recued_op_hubspot_deal_search', run_id: 'run_3', state: 'held' },
+    ] };
+    const h = mountBubble({ activeCaller: async () => snapshot, now: () => 10_000,
+      dismissToolCall: async () => ({ dismissed: true }) });
+    await h.mount.whenLoaded();
+    h.toggle()!.click();
+    const rows = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR);
+    expect(rows.map(row => row.children.find(child => child.className === 'lc-row-title')?.textContent))
+      .toEqual(['Run “Weekly digest”', 'Change a calendar event', 'recued_op_hubspot_deal_search']);
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR).map(button => button.getAttribute('aria-label')))
+      .toEqual(['Kill Run “Weekly digest” (run_1)']);
+    expect(collectByAttr(h.host, 'data-recued-tool-call-review').map(button => button.getAttribute('aria-label')))
+      .toEqual(['Mark as looked at Change a calendar event (tool:event)']);
+    h.mount.dispose();
+  });
+
   it('loads interrupted work on a fresh page and dismisses it only after an explicit review', async () => {
     let snapshot: ExecutionActiveResponse = { entries: [], lanes: [], tool_calls: [{ ...call, state: 'interrupted' }] };
     const dismiss = vi.fn(async () => {
@@ -413,7 +464,7 @@ describe('live-control bubble — ambient visibility + count', () => {
       `[${LIVE_CONTROL_BUBBLE_CLOSE_ATTR}] {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 36px;\n  height: 36px;`,
     );
     expect(styles).toContain(
-      `[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],\n[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}],\n[data-recued-tool-call-review],\n[data-recued-tool-call-link] {\n  min-width: 36px;\n  min-height: 36px;`,
+      `[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],\n[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}],\n[${LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR}],\n[data-recued-tool-call-review],\n[data-recued-tool-call-link] {\n  min-width: 36px;\n  min-height: 36px;`,
     );
     h.mount.dispose();
   });
@@ -510,6 +561,27 @@ describe('live-control bubble — RUNNING section', () => {
     kill!.click();
     await tick();
     expect(h.callers.killCaller).toHaveBeenCalledWith({ run_id: 'run_1' });
+  });
+
+  it('names each running recipe as the owner knows it, and its buttons so (owner, 2026-11-13)', async () => {
+    const h = mountBubble({ active: activeSnapshot([
+      runEntry({ recipe_name: 'Normalize documents', step_name: 'Convert to text' }),
+      // Passed in with its run: a one-off, by the name it came with, never an installed recipe's.
+      queuedEntry({ recipe_inline: true, intent: 'Transcode the clip' }),
+    ]) });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const rows = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR);
+    expect(rows.map(row => row.children.find(child => child.className === 'lc-row-title')?.textContent))
+      .toEqual(['Normalize documents · Convert to text', 'One-off recipe “Transcode the clip”']);
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR).map((control) => control.getAttribute('aria-label')))
+      .toEqual([
+        'Kill Normalize documents · Convert to text (run_1)',
+        'Promote One-off recipe “Transcode the clip” (qc_1)',
+        'Cancel One-off recipe “Transcode the clip” (qc_1)',
+      ]);
+    h.mount.dispose();
   });
 
   it('routes Promote and Cancel to the queued-call id', async () => {
@@ -679,6 +751,37 @@ describe('live-control bubble — GRANTS section', () => {
     revoke.click();
     await tick();
     expect(h.callers.revokeCaller).toHaveBeenCalledWith({ contract_id: 'sg_1' });
+  });
+
+  it('says what a pass lets through by the name the server gave it, never its id', async () => {
+    const h = mountBubble({
+      grants: grantsSnapshot([grantView({ display_name: 'Batched approval — Send mail (3 items)', permit_names: ['Send mail'] })]),
+    });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const [row] = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR);
+    const text = row!.children.map((child) => child.textContent).join(' ');
+    expect(text).toContain('Send mail via gmail');
+    expect(text).not.toContain('send-email');
+  });
+
+  it('D-177 N.15 — shows a kind pass by its words, not its internal op', async () => {
+    const h = mountBubble({
+      grants: grantsSnapshot([grantView({
+        display_name: 'Allowed in this chat — Add a task', grant_mode: 'kind',
+        permits: { ingredient_ids: ['recued:tier1'], operation_ids: ['work.create:task'] },
+        uses_remaining: 80, max_uses: 100, member_count: undefined,
+      })]),
+    });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const [row] = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR);
+    const [title, meta] = row!.children.map((child) => child.textContent);
+    expect(title).toBe('Allowed in this chat — Add a task');
+    // Its mode, then straight to its time: no op between them.
+    expect(meta).toMatch(/^one kind · (expires in \S+|expiring) · 80\/100 uses left$/);
   });
 
   it('keeps a pending revoke focused and guarded until its row retires', async () => {
@@ -912,5 +1015,129 @@ describe('live-control bubble — section gating + teardown', () => {
     h.fire('execution', { op: 'start' });
     await tick();
     expect((h.callers.activeCaller as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterDispose);
+  });
+});
+
+describe('live-control bubble — RULES section (D-348)', () => {
+  const NOW = 5_000;
+  const until = (rule: ChainRuleRow): string => new Date(rule.expires_at).toLocaleDateString();
+
+  it('lists each live rule by the words it is for, with its uses left and until when, and counts it', async () => {
+    const first = ruleRow();
+    const h = mountBubble({ chains: [first, ruleRow({ rule_id: 'cr_2', words: undefined, uses_remaining: 100 })], now: () => NOW });
+    await tick();
+    expect(h.toggle()!.textContent).toBe([DISC, '2'].join(' '));
+    h.toggle()!.click();
+    await tick();
+    const rows = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR);
+    expect(rows.map((row) => row.getAttribute(LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR))).toEqual(['cr_1', 'cr_2']);
+    expect(rows[0]!.children.map((child) => child.textContent).slice(0, 2)).toEqual([
+      '“Tell Ann the new time”', ['97 of 100 left', ['until', until(first)].join(' ')].join(' · '),
+    ]);
+    // Words that could not be opened read as what the rule is.
+    expect(rows[1]!.children[0]!.textContent).toBe('A request you repeat');
+    h.mount.dispose();
+  });
+
+  it('a rule that ran out, expired or ended is not live, and shows nothing', async () => {
+    const h = mountBubble({
+      chains: [ruleRow({ uses_remaining: 0 }), ruleRow({ rule_id: 'cr_2', expires_at: NOW }), ruleRow({ rule_id: 'cr_3', revoked_at: 4_000 })],
+      now: () => NOW,
+    });
+    await tick();
+    expect(h.toggle()).toBeNull();
+    h.mount.dispose();
+  });
+
+  it('End asks once more: Keep keeps it, End for good ends it, and its row drops', async () => {
+    let h!: ReturnType<typeof mountBubble>;
+    const chainsRevokeCaller = vi.fn(async () => {
+      h.setChains([]);
+      return {};
+    });
+    h = mountBubble({ chains: [ruleRow()], chainsRevokeCaller, now: () => NOW });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const controls = () => collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR);
+    expect(controls().map((c) => c.textContent)).toEqual(['End']);
+    controls()[0]!.click();
+    await tick();
+    expect(controls().map((c) => [c.getAttribute(LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR), c.textContent])).toEqual([
+      ['end-confirm', 'End for good'], ['keep', 'Keep'],
+    ]);
+    // Focus moves to what it asks, and back to End when kept.
+    expect(h.doc.activeElement).toBe(controls()[0]);
+    controls()[1]!.click();
+    await tick();
+    expect(controls().map((c) => c.textContent)).toEqual(['End']);
+    expect(h.doc.activeElement).toBe(controls()[0]);
+    expect(chainsRevokeCaller).not.toHaveBeenCalled();
+    controls()[0]!.click();
+    await tick();
+    controls()[0]!.click();
+    await tick(16);
+    expect(chainsRevokeCaller).toHaveBeenCalledTimes(1);
+    expect(chainsRevokeCaller).toHaveBeenCalledWith({ rule_id: 'cr_1' });
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR)).toHaveLength(0);
+    expect(h.toggle()).toBeNull();
+    h.mount.dispose();
+  });
+
+  it('an end that fails says so in its section, and the rule stays', async () => {
+    const h = mountBubble({
+      chains: [ruleRow()],
+      chainsRevokeCaller: vi.fn(async () => { throw new Error('rule not found'); }) as LiveControlChainsRevokeCaller,
+      now: () => NOW,
+    });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR)[0]!.click();
+    await tick();
+    collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR)[0]!.click();
+    await tick(16);
+    const notices = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_NOTICE_ATTR);
+    expect(notices.map((n) => [n.getAttribute(LIVE_CONTROL_BUBBLE_NOTICE_ATTR), n.textContent.includes('rule not found')]))
+      .toEqual([['chains', true]]);
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR)).toHaveLength(1);
+    h.mount.dispose();
+  });
+
+  it('re-lists off contract.chain_rule_changed: a use spent moves its uses left', async () => {
+    const h = mountBubble({ chains: [ruleRow({ uses_remaining: 99 })], now: () => NOW });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    h.setChains([ruleRow({ uses_remaining: 98 })]);
+    h.fire('contract.chain_rule_changed', { op: 'use', rule_id: 'cr_1' });
+    await tick();
+    const [row] = collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR);
+    expect(row!.children[1]!.textContent).toMatch(/^98 of 100 left · until /);
+    h.mount.dispose();
+  });
+
+  it('no RULES section, and no listener for its kind, without its caller', async () => {
+    const h = mountBubble({ grants: grantsSnapshot([grantView()]), now: () => NOW });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    expect(collectByAttr(h.host, LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR)).toHaveLength(0);
+    expect(h.listenerCount('contract.chain_rule_changed')).toBe(0);
+    h.mount.dispose();
+  });
+
+  // ⛔ DERIVED, NOT ENUMERATED: the server fans only the kinds a client names, so a kind the bubble
+  // listens to and the web app does not subscribe to never arrives (the subscriber ratchet's lesson).
+  it('every kind the bubble listens to, the web app subscribes to', async () => {
+    const h = mountBubble({ chains: [], now: () => NOW });
+    await tick();
+    const kinds = h.subscribedKinds();
+    // Guard the guard: the sections' kinds are all there to check.
+    expect(kinds).toEqual(expect.arrayContaining(['execution', 'contract.contract_definition_changed', 'contract.chain_rule_changed']));
+    for (const kind of kinds) {
+      expect(WEBCLIENT_DEFAULT_SUBSCRIPTIONS, `the bubble listens to '${kind}' but the web app never asks for it`).toContain(kind);
+    }
+    h.mount.dispose();
   });
 });

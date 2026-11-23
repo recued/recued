@@ -493,34 +493,38 @@ for (const width of [390]) {
 
 interface CertificateFileReadsFixture {
   pending: number;
-  release(index: number): Promise<void>;
+  release(index: number, fail?: boolean): Promise<void>;
 }
 declare global { interface Window { __certificateFileReads: CertificateFileReadsFixture } }
 // Hold the start of a real browser file read so every race is deterministic.
 const holdCertificateFiles = (page: Page) => page.evaluate(() => {
   const NativeReader = window.FileReader;
-  const reads: Array<(() => Promise<void>) | null> = [];
+  const reads: Array<((fail?: boolean) => Promise<void>) | null> = [];
   window.FileReader = class extends NativeReader {
     override readAsText(file: Blob, encoding?: string): void {
-      reads.push(() => new Promise<void>(resolve => {
+      reads.push(fail => new Promise<void>(resolve => {
         this.addEventListener('loadend', () => resolve(), { once: true });
-        super.readAsText(file, encoding);
+        if (fail) {
+          this.dispatchEvent(new ProgressEvent('error'));
+          this.dispatchEvent(new ProgressEvent('loadend'));
+        } else super.readAsText(file, encoding);
       }));
     }
   };
   window.__certificateFileReads = {
     get pending() { return reads.filter(read => read !== null).length; },
-    release: async index => {
+    release: async (index, fail = false) => {
       const read = reads[index];
       if (!read) throw new Error(`No held certificate read at ${index}`);
       reads[index] = null;
-      await read();
+      await read(fail);
     },
   };
 });
 const pickCertificateFile = (page: Page, field: Field, text: string, name = 'fixture.pem') =>
   picker(page, field).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(text) });
-const releaseCertificateFile = (page: Page, index: number) => page.evaluate(index => window.__certificateFileReads.release(index), index);
+const releaseCertificateFile = (page: Page, index: number, fail = false) =>
+  page.evaluate(args => window.__certificateFileReads.release(args.index, args.fail), { index, fail });
 
 for (const width of [390]) {
   for (const name of ['cert_pem', 'private_key_pem', 'chain_pem'] as const) {
@@ -600,6 +604,85 @@ for (const width of [390]) {
     const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
     await certNavLeave(page); await expect.poll(() => dialogs).toEqual([certDraftPrompt]);
     await picker(page, 'private_key_pem').setInputFiles([]); expect(await certNavUnload(page)).toBe(false);
+  });
+}
+
+for (const width of [390]) {
+  test(`Certificates file read failure reports unchanged text and permits paste or file retry at ${width}px`, async ({ page }) => {
+    await open(page, width); await holdCertificateFiles(page);
+    // Start with untouched editors so native Undo need not coalesce earlier
+    // programmatic fills in other fields (WebKit can undo those together).
+    await pickCertificateFile(page, 'cert_pem', 'UNREADABLE FIRST FILE', 'first-unreadable.pem');
+    await releaseCertificateFile(page, 0, true);
+    await expect(form(page).getByRole('alert')).toBeVisible();
+    const fresh = control(page, 'chain_pem');
+    await fresh.click(); await page.keyboard.type('abc'); await page.keyboard.press('ControlOrMeta+z');
+    await expect(fresh).toHaveValue(''); await expect(form(page).getByRole('alert')).toBeVisible();
+    await picker(page, 'cert_pem').setInputFiles([]);
+    await expect(form(page).getByRole('alert')).toHaveCount(0); expect(await certNavUnload(page)).toBe(false);
+    const input = control(page, 'cert_pem'), other = control(page, 'private_key_pem');
+    await input.fill('existing certificate text'); await other.fill('existing private key');
+    const original = await input.elementHandle();
+    await pickCertificateFile(page, 'cert_pem', 'UNREADABLE FIXTURE', 'unreadable.pem');
+    await other.focus(); await select(other, 2, 5);
+    await releaseCertificateFile(page, 1, true);
+    await expect(form(page).getByRole('alert')).toContainText('Could not read the file for Certificate (PEM)');
+    await expect(form(page).getByRole('alert')).toContainText('Existing text is unchanged.');
+    await expect(input).toHaveValue('existing certificate text'); await expect(other).toBeFocused();
+    expect(await selection(other)).toEqual({ start: 2, end: 5, direction: 'forward' });
+    expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await certNavUnload(page)).toBe(true);
+    await input.fill('pasted replacement'); await expect(form(page).getByRole('alert')).toHaveCount(0);
+    await pickCertificateFile(page, 'cert_pem', 'ANOTHER UNREADABLE FIXTURE', 'unreadable-again.pem');
+    await releaseCertificateFile(page, 2, true); await expect(form(page).getByRole('alert')).toBeVisible();
+    await pickCertificateFile(page, 'cert_pem', 'READABLE REPLACEMENT', 'replacement.pem');
+    await expect(form(page).getByRole('alert')).toHaveCount(0);
+    await releaseCertificateFile(page, 3); await expect(input).toHaveValue('READABLE REPLACEMENT');
+    expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+  });
+
+  test(`Certificates retired file failures leave newer choices and reopened editors alone at ${width}px`, async ({ page }) => {
+    await open(page, width); await holdCertificateFiles(page);
+    let index = 0;
+    for (const retire of ['edit', 'clear', 'replace', 'reopen'] as const) {
+      const input = control(page, 'private_key_pem'); await input.fill('current private key text');
+      await pickCertificateFile(page, 'private_key_pem', 'OLD UNREADABLE FILE', 'old.pem');
+      const old = index++;
+      if (retire === 'edit') await input.fill('newer private key text');
+      if (retire === 'clear') await picker(page, 'private_key_pem').setInputFiles([]);
+      let replacement: number | null = null;
+      if (retire === 'replace') {
+        await pickCertificateFile(page, 'private_key_pem', 'newer private key file', 'new.pem');
+        replacement = index++;
+      }
+      if (retire === 'reopen') {
+        await form(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+        await panel(page).getByRole('button', { name: 'Upload a certificate', exact: true }).click();
+        await input.fill('fresh private key text');
+      }
+      await input.focus(); await select(input, 2, 5);
+      const value = await input.inputValue(), current = await input.elementHandle();
+      await releaseCertificateFile(page, old, true);
+      await expect(form(page).getByRole('alert')).toHaveCount(0); await expect(input).toHaveValue(value);
+      await expect(input).toBeFocused(); expect(await selection(input)).toEqual({ start: 2, end: 5, direction: 'forward' });
+      expect(await current!.evaluate(node => node.isConnected)).toBe(true);
+      if (replacement !== null) { await releaseCertificateFile(page, replacement); await expect(input).toHaveValue('newer private key file'); }
+      await form(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+      await panel(page).getByRole('button', { name: 'Upload a certificate', exact: true }).click();
+    }
+  });
+
+  test(`Certificates newer file read failure survives an earlier upload acknowledgement at ${width}px`, async ({ page }) => {
+    await certNavOpen(page, width); await holdCertificateFiles(page); await certNavBeginUpload(page);
+    await pickCertificateFile(page, 'chain_pem', 'UNREADABLE NEWER CHAIN', 'newer-chain.pem');
+    await releaseCertificateFile(page, 0, true);
+    await expect(form(page).getByRole('alert')).toContainText('Could not read the file for Issuer chain');
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('tls_domain.upload'))).toBe(1);
+    await expect(certDraftStatus(page)).toContainText('Your newer edits still need uploading.');
+    await expect(form(page).getByRole('alert')).toContainText('Could not read the file for Issuer chain');
+    await expect(certNavLoading(page)).toHaveCount(0); expect(await certNavUnload(page)).toBe(true);
+    await picker(page, 'chain_pem').setInputFiles([]);
+    await expect(form(page).getByRole('alert')).toHaveCount(0);
   });
 }
 
@@ -717,4 +800,45 @@ for (const width of [390]) {
     await expect(key).toBeFocused(); expect(await original!.evaluate(node => node.isConnected)).toBe(true);
     expect(await page.evaluate(() => window.__certificateEditing.uploads)).toHaveLength(2);
   });
+}
+
+for (const kind of ['upload', 'remove'] as const) {
+  for (const outcome of ['success', 'error'] as const) {
+    for (const owner of ['progress', 'outside'] as const) {
+      test(`Certificates ${kind} ${outcome} retains ${owner} focus through pending work at 390px`, async ({ page }) => {
+        await certNavOpen(page, 390, true, kind === 'upload');
+        const method = kind === 'upload' ? 'tls_domain.upload' : 'tls_domain.remove';
+        if (kind === 'upload') await certNavBeginUpload(page, outcome === 'error');
+        else {
+          await panel(page).getByRole('button', { name: 'Remove', exact: true }).focus();
+          await page.keyboard.press('Enter');
+          await page.evaluate(fail => {
+            window.__certificateEditing.expectedRemovals++;
+            window.__certificateNavigation.failRemove = fail;
+            window.__app.holdRpcResponses?.('tls_domain.remove');
+          }, outcome === 'error');
+          await panel(page).getByRole('button', { name: 'Remove certificate', exact: true }).focus();
+          await page.keyboard.press('Enter');
+        }
+        const progress = panel(page).locator(`[data-recued-tls-certs-write-progress="${kind}"]`);
+        await expect(progress).toBeFocused(); await expect(progress).toHaveAttribute('role', 'status');
+        const outside = page.locator('[data-recued-settings-nav-item="account"]');
+        if (owner === 'outside') await outside.focus();
+        expect(await page.evaluate(method => window.__app.releaseRpcResponses?.(method), method)).toBe(1);
+        await expect(progress).not.toBeVisible();
+        const retry = panel(page).getByRole('button', { name: kind === 'upload' ? 'Upload certificate' : 'Remove certificate', exact: true });
+        if (owner === 'outside') await expect(outside).toBeFocused();
+        else if (outcome === 'error') {
+          await expect(retry).toBeFocused();
+          await page.evaluate(kind => {
+            if (kind === 'upload') { window.__certificateEditing.expectedUploads++; window.__certificateNavigation.failUpload = false; }
+            else { window.__certificateEditing.expectedRemovals++; window.__certificateNavigation.failRemove = false; }
+          }, kind);
+          await retry.press('Enter'); await expect(progress).toBeFocused();
+          expect(await page.evaluate(method => window.__app.releaseRpcResponses?.(method), method)).toBe(1);
+          await expect(panel(page).getByRole('heading', { name: 'Installed certificates', exact: true })).toBeFocused();
+        } else await expect(panel(page).getByRole('heading', { name: 'Installed certificates', exact: true })).toBeFocused();
+      });
+    }
+  }
 }

@@ -251,6 +251,10 @@ export const shouldBrief = (input: {
    *  not in a long conversation: the trigger would fire late by however much
    *  the tail had grown, which is precisely when a turn can least afford it. */
   readonly tailTokens: number;
+  /** 2026-11-20 (the owner: "go ahead", the brief's handoff) — est tokens of what earlier folds left in the packet:
+   *  the brief, its recall receipts, and the round each fold kept as it came. They ride in every later packet, so
+   *  they take room the results have not got; the fold's own call does not carry them, so its capacity is untouched. */
+  readonly heldTokens?: number;
   /** The brief this fold would inherit, if any.
    *
    *  ⛔ ITS SIZE IS MEASURED, NOT ASSUMED, BECAUSE THE MERGE MAKES IT GROW.
@@ -338,7 +342,7 @@ export const shouldBrief = (input: {
     };
   }
   const room = input.budgetTokens - input.catalogTokens - input.overheadTokens
-    - input.tailTokens;
+    - input.tailTokens - (input.heldTokens ?? 0);
   if (room <= 0) {
     return {
       brief: false, outcome: 'no_room',
@@ -348,7 +352,7 @@ export const shouldBrief = (input: {
   const accumulated = priorToolCallBytes(input.priorToolCalls) / 2;
   // The next result is likely to resemble the biggest one this turn already
   // produced; a fixed margin would under-reserve on a turn reading large things.
-  const largest = Math.max(
+  const largest = Math.max(0,
     ...input.priorToolCalls.map((c) => JSON.stringify(c).length / 2),
   );
   // ⛔ CAN THE BRIEF CALL STILL READ THIS? Checked BEFORE the trigger, because
@@ -784,6 +788,19 @@ export const stripAliasBearing = (
   return { brief: { intent, constraints, findings, pending, completed }, dropped };
 };
 
+/** Stored host state is not model output: keep validated completion records.
+ * The model parser deliberately discards `completed`, so it cannot mint effects. */
+export const parseStoredBrief = (raw: unknown): RollingBrief | null => {
+  const brief = parseBrief(raw);
+  if (!brief || raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const completed = value['completed'] ?? [];
+  if (!Array.isArray(completed) || completed.some(x => typeof x !== 'string')) return null;
+  // A note the retired Consolidated style saved reads as a Standard one (2026-11-19): its cited sources and its
+  // preserved Standard snapshot are not read.
+  return { ...brief, completed };
+};
+
 /** Per-call timeout for the brief's model call, in milliseconds.
  *
  *  ⛔⛔ THE ONLY CHAT CALL THAT EARNS A TIMER, AND THE POLICY IT OPTS OUT OF IS
@@ -1167,7 +1184,7 @@ export const briefAsPriorToolCall = (brief: RollingBrief): ChatPriorToolCall =>
     status: 'ok',
     result: {
       note:
-        'Your earlier tool results for this turn were compressed into this '
+        ('Your earlier tool results for this turn were compressed into this '
         + 'brief to fit the context window. They are gone; this is what you '
         + 'kept. Work from it — re-running those calls will produce results '
         + 'too large to keep and they will be compressed again. '
@@ -1178,7 +1195,7 @@ export const briefAsPriorToolCall = (brief: RollingBrief): ChatPriorToolCall =>
         //   `memory.write`, invented an identifier for it, and burned the turn.
         + '`completed` lists actions that ALREADY SUCCEEDED in this turn. Do '
         + 'not perform them again — treat any pending item they satisfy as '
-        + 'done.',
+        + 'done.'),
       ...brief,
     },
   }) as unknown as ChatPriorToolCall;
@@ -1294,13 +1311,56 @@ export const __clearSessionBriefs = (): void => { SESSION_BRIEFS.clear(); };
  *  the model's own words to a call would be the fuzzy matching this module
  *  refuses. A turn already running when the settlement lands writes its fold
  *  over this, which regenerates `pending` anyway. */
+/** The longest the arguments of a declined action run in the note, in characters. */
+const DECLINED_ARGS_CHARS = 240;
+
+/** How the note names a declined held action: its tool, the card's title when it has one, and its arguments. The
+ *  title alone ("Add a task") or the tool alone would cover every later action of the kind; the arguments make the
+ *  line this action's. A mail's body is cut at `DECLINED_ARGS_CHARS`. The note is encrypted at rest as the plan
+ *  is, and its text leaves the server aliased like the rest of the packet. */
+export const declinedActionWords = (tool: string, title: string | undefined, args: unknown): string => {
+  const listed = args !== null && typeof args === 'object' && !Array.isArray(args)
+    ? Object.entries(args as Record<string, unknown>)
+      .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value) ?? ''}`).join(', ')
+    : args === undefined ? '' : JSON.stringify(args) ?? '';
+  const shown = listed.replace(/\s+/g, ' ').trim();
+  const bounded = shown.length > DECLINED_ARGS_CHARS ? `${shown.slice(0, DECLINED_ARGS_CHARS - 1)}…` : shown;
+  return `${tool}${title !== undefined ? ` (${title})` : ''}${bounded.length > 0 ? ` with ${bounded}` : ''}`;
+};
+
+/** The owner declined a held action (2026-11-19; the owner's "4"). The host puts it in the stored note, as it clears
+ *  the note's `pending` after a wait (`clearPendingAfterWait`). Measured: after a declined rename, a turn that said
+ *  "Continue." read the note's unchanged intent as a request and proposed the rename again (1 of 2 runs); the run
+ *  whose fold had happened to write a constraint about the held plan asked instead. A later fold unions it with the
+ *  model's own constraints. `null` when there is no readable note, or it already says so: the conversation's records
+ *  list the cancelled plan either way. ⚠ Like the tidy after a wait, it is a read and a write: a closing fold still
+ *  running when the owner answers saves the note it read before, without this line. `action` comes from
+ *  `declinedActionWords`. */
+export const withDeclinedAction = (stored_json: string, action: string): string | null => {
+  let stored: unknown;
+  try { stored = JSON.parse(stored_json); } catch { return null; }
+  const parsed = parseStoredBrief(stored);
+  if (parsed === null) return null;
+  const line = `The owner declined ${action}; it does not run unless the owner asks for it again.`;
+  if (parsed.constraints.includes(line)) return null;
+  const { active_context: _sources, legacy_standard_note: _snapshot, ...kept } = stored as Record<string, unknown>;
+  return JSON.stringify({ ...kept, ...parsed, constraints: [...parsed.constraints, line] });
+};
+
+/** A brief with its `pending` cleared and only the findings `keepFinding` keeps. */
+const withoutPending = (brief: RollingBrief, keepFinding: (finding: string) => boolean = () => true): RollingBrief =>
+  ({ ...brief, pending: [], findings: brief.findings.filter(keepFinding) });
+
 export const clearPendingAfterWait = (stored_json: string): string | null => {
   let stored: unknown;
   try { stored = JSON.parse(stored_json); } catch { return null; }
-  if (parseBrief(stored) === null) return null;
+  const parsed = parseStoredBrief(stored);
+  if (parsed === null) return null;
   const pending = (stored as { pending?: unknown }).pending;
   if (!Array.isArray(pending) || pending.length === 0) return null;
-  return JSON.stringify({ ...(stored as Record<string, unknown>), pending: [] });
+  // The retired Consolidated style's own fields are not written back (2026-11-19).
+  const { active_context: _sources, legacy_standard_note: _snapshot, ...kept } = stored as Record<string, unknown>;
+  return JSON.stringify({ ...kept, ...withoutPending(parsed) });
 };
 
 /** A finding that says something waits for approval. A held call's result never reaches the fold
@@ -1322,7 +1382,7 @@ export const briefAfterWait = (brief: RollingBrief): RollingBrief => {
   const findings = brief.findings.filter((finding) => !WAITS_FOR_APPROVAL.test(finding));
   return brief.pending.length === 0 && findings.length === brief.findings.length
     ? brief
-    : { ...brief, pending: [], findings };
+    : withoutPending(brief, (finding) => !WAITS_FOR_APPROVAL.test(finding));
 };
 
 /** ⛔⛔ USER STATEMENTS FROM TURNS THAT NEVER GOT A FOLD.

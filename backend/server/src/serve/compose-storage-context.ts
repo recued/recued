@@ -42,6 +42,8 @@ import {
   type SettledRunResults,
 } from '../settled-run-results.js';
 import { createWriteRuleStore, type WriteRuleStore } from '../storage/write-rule-store.js';
+import { createChainEvidenceStore, type ChainEvidenceStore } from '../storage/chain-evidence-store.js';
+import { createChainRuleStore, type ChainRuleStore } from '../storage/chain-rule-store.js';
 import { createBrowserPassStore, type BrowserPassStore } from '../storage/browser-pass-store.js';
 import { createTriggerPreapprovalStore, type TriggerPreapprovalStore } from '../storage/trigger-preapproval-store.js';
 import { createBrowserLoginStore, type BrowserLoginStore } from '../storage/browser-login-store.js';
@@ -107,6 +109,9 @@ import { createDdnsUpdateClient } from '../ddns/update-client.js';
 import type { DdnsHandlerDeps } from '../ddns-handler.js';
 import { createManifestRegistry, type ManifestRegistry } from '../manifest-loader.js';
 import { createContractStore } from '../storage/contract-store.js';
+import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import { createHeldReadStore } from '../storage/held-read-store.js';
+import { createBodyNumbersSetting, type BodyNumbersSetting } from '../body-numbers-setting.js';
 import { createTrustStateStore } from '@recued/approvals';
 import {
   createLocalManifestStore,
@@ -191,6 +196,10 @@ export interface ComposeStorageContextOptions {
    *  the Master DEK (no plaintext `server_dek`) and its boot-time load is
    *  locked-tolerant — persisted creds load on the post-unlock re-init. */
   getVaultKey?: () => Uint8Array | null;
+  /** D-348 — lazy chat key provider (`keys.keyProvider('chat')`), for the owner's words and the
+   *  values a chain pins, sealed as the chat's own messages are. Absent ⇒ base64 only, the
+   *  dbless-harness discipline the chat store keeps. */
+  getChatKey?: () => Uint8Array | null;
   /** The serve boot reconciles any interrupted restore immediately before
    *  storage composition. This explicit handoff lets the database chokepoint
    *  open when only an unresolved CAS park deliberately keeps the marker. */
@@ -276,10 +285,16 @@ export interface StorageContext {
   gatedActionStore: GatedActionStore;
   /** D-329 §3.4 — the write rules an AI's approvals teach. */
   writeRuleStore: WriteRuleStore;
+  /** D-348 — the evidence chains are learned from. */
+  chainEvidenceStore: ChainEvidenceStore;
+  /** D-348 slice 2 — what it teaches: suggestions, and the rules the owner accepted. */
+  chainRuleStore: ChainRuleStore;
   /** D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach. */
   browserPassStore: BrowserPassStore;
   /** D-341 slice B1 — the owner's standing pre-approvals on triggers. */
   triggerPreapprovalStore: TriggerPreapprovalStore;
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers: Off · Ask · Allow. */
+  bodyNumbers: BodyNumbersSetting;
   /** D-335 slice Z — the logins the owner remembered for browser steps, sealed under the vault key. */
   browserLoginStore: BrowserLoginStore;
   /** What an owner's page-started run answered once its approval let it
@@ -348,7 +363,7 @@ const readCloudBaseUrl = (
 export const composeStorageContext = async (
   options: ComposeStorageContextOptions,
 ): Promise<StorageContext> => {
-  const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
+  const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey, getChatKey } = options;
   bootTrace.mark('storage-open-start');
 
   const db = await openApplicationDatabase({
@@ -846,8 +861,14 @@ export const composeStorageContext = async (
   );
   const settledRunResults = createSettledRunResults();
   const writeRuleStore = createWriteRuleStore(db);
+  const chainEvidenceStore = createChainEvidenceStore(db, getChatKey);
+  const chainRuleStore = createChainRuleStore(db, chainEvidenceStore);
   const browserPassStore = createBrowserPassStore(db);
   const triggerPreapprovalStore = createTriggerPreapprovalStore(db);
+  // D-339 slice 12a — Off and on are the read's recipe's switch in the owner's contract (a stateless
+  // store over this db, as `app.contractStoreRef` is); Allow is the held-read store's.
+  const bodyNumbers = createBodyNumbersSetting({ grants: createContractGrantEntryStore(createContractStore(db)),
+    heldReads: createHeldReadStore(db) });
   const browserLoginStore = createBrowserLoginStore(db, { key: () => getVaultKey?.() ?? null });
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
@@ -1059,8 +1080,11 @@ export const composeStorageContext = async (
     mcpActionStore,
     gatedActionStore,
     writeRuleStore,
+    chainEvidenceStore,
+    chainRuleStore,
     browserPassStore,
     triggerPreapprovalStore,
+    bodyNumbers,
     browserLoginStore,
     settledRunResults,
     workEntityStoreRef,

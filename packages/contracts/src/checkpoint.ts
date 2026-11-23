@@ -31,6 +31,7 @@ import {
   type OperationApproval,
 } from './ingredient-catalog.js';
 import type { PiiLedgerStoreSnapshot } from './pii-alias.js';
+import { readRunQuestionHold, type RunQuestionHold } from './run-question.js';
 import type { PreflightOverrideOffer } from './preflight-signal.js';
 import { isOperationSpecHash } from './owner-operation-override.js';
 import type { GatedActionSettlementMode } from './gated-action.js';
@@ -174,6 +175,13 @@ export interface PreflightCheckpointContext {
    *  the ask offers that answer; the answer grants exactly this. Read defensively, like
    *  `browser_pass` (`readTriggerPreapprovalOffer`). */
   trigger_preapproval?: import('./trigger-preapproval.js').TriggerPreapprovalOffer;
+  /** D-177 N.15 — what this hold's "Allow in this chat" would grant: the conversation, the op
+   *  (a chat's own write: its D-329 rule key; a catalog op: its declared id; a single-op
+   *  ingredient: its slug), its connection, the stored recipe that made it, and its name, as the
+   *  hold read them. Present only on a held write the owner's own attended conversation made
+   *  that the answer could cover, and then the ask offers it in place of "Allow this session"; the
+   *  answer grants exactly this. Read defensively (`readKindGrantOffer`). */
+  kind_grant?: import('./kind-session-grant.js').KindGrantOffer;
 }
 
 /** D-335 slice B — see `PreflightCheckpointContext.browser_target`. `site` is the page's
@@ -356,6 +364,10 @@ export interface RawOpCheckpoint {
  *
  *  Spec: D-157 § A.2 / N.3. */
 export interface Checkpoint {
+  /** D-402 slice F3 — a run held before its first step, to ask the owner one question about the whole
+   *  run (`run-question.ts`). Its answer grants what it names and starts the run afresh, under the same
+   *  `run_id`: never a resume of `gated_step_id`, which only names where the run begins. */
+  run_question?: RunQuestionHold;
   /** UUID — the checkpoint's stable identity, engine-minted when the
    *  preflight gate fires. The gateway's preflight `notification.ask`
    *  handler payload is `{ checkpoint_id }`; the boot sweep + the
@@ -454,6 +466,12 @@ export interface Checkpoint {
    * segment in the same foreach step. This lets boot recovery recreate the
    * new receipt without renewing the already-dispatched segment. */
   gated_action_predecessor_ref?: string;
+  /** D-201 Slice 10AB (10AA finding 13) — this ask is for an approved step the
+   *  owner's try again asks for again, because its earlier run was in doubt: a
+   *  restart caught it running, so Recued cannot tell whether it went through.
+   *  A refusal says so (the earlier run is not undone by it). Absent on every
+   *  other ask. */
+  asked_again_in_doubt?: true;
   /** § 7 follow-on (pii-ledger-in-checkpoint) — the run's serialized
    *  `PiiLedgerStore` at the moment the gate fired. Present ONLY when the
    *  run had minted pii-protect ledgers (authored or auto-synthesized
@@ -518,6 +536,9 @@ export interface Checkpoint {
   /** The actual host entry tool, retained across a hold. This is provenance,
    * never a grant supplied by a recipe or by a resume request. */
   entry_tool_name?: string;
+  /** D-402 slice C — the held run is a trial of a draft (`recipe.try`): its resume asks about every
+   *  change too. Written by the host at the hold, never by a resume request. */
+  trial?: true;
   /** D-202 Slice 1b — the QUALITY-relevance marker, captured at pause off the
    *  commit Gateway's `quality_not_delegated` three-conjunct verdict (threaded
    *  through `PreflightRequiredSignal` → `awaiting_approval`). `true` iff the
@@ -632,6 +653,10 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
       || !Number.isSafeInteger(poll.qualifying_sequence) || (poll.qualifying_sequence as number) < 0) return false;
   }
   if (v.entry_tool_name !== undefined && !nonEmpty(v.entry_tool_name)) return false;
+  // D-402 slice F3 — a run held before step 1: its hold must read back whole, or the checkpoint is
+  // none. ⛔ Never read as an ordinary hold of its first step, whose approval would let that step's
+  // call past its own ask.
+  if (v.run_question !== undefined && (v.raw_op !== undefined || readRunQuestionHold(v.run_question) === undefined)) return false;
   // D-182 §8 — partition on the `raw_op` discriminant. A raw-op checkpoint is
   // recipe-LESS: `recipe_id` / `gated_step_id` MUST be absent and the `raw_op`
   // block MUST be well-formed. A recipe-bound checkpoint MUST carry both ids

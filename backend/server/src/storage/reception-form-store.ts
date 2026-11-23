@@ -207,11 +207,12 @@ export interface FormSubmissionInsertInput {
 /** D-210 A.8 slice 4b — result of the atomic per-day-cap guard. */
 export type FormSubmissionInsertResult =
   | { readonly row: FormSubmissionSummary }
-  | { readonly conflict: 'day_cap' };
+  | { readonly conflict: 'day_cap' | 'not_authorized' };
 
 /** Result of the atomic per-source rolling-window guard used by intake forms. */
 export type FormSubmissionSourceInsertResult =
   | { readonly row: FormSubmissionSummary }
+  | { readonly conflict: 'not_authorized' }
   | {
       readonly conflict: 'source_rate_limit';
       /** First instant at which the oldest counted row leaves this window. */
@@ -234,7 +235,9 @@ export interface FormSubmissionStore {
    *  so two concurrent visitors can both pass it and then both insert (the
    *  `await` yields the event loop). Re-checking inside the insert transaction
    *  closes that TOCTOU: better-sqlite3 is synchronous, so check+insert cannot
-   *  interleave. `max_bookings_per_day === 0` ⇒ uncapped.
+   *  interleave. `max_bookings_per_day === 0` ⇒ uncapped. Public callers supply
+   *  `authorize`, which must return true under the write lock before any quota
+   *  read or insertion; a refusal persists nothing.
    *
    *  ⚠ Guards VOLUME, not capacity — it does NOT refuse a booking overlapping an
    *  existing one. Concurrent bookings at one time are legitimate (a 100-table
@@ -252,7 +255,7 @@ export interface FormSubmissionStore {
     readonly max_bookings_per_day: number;
     readonly day_window_start_at: number;
     readonly now: number;
-  }): FormSubmissionInsertResult;
+  }, authorize?: () => boolean): FormSubmissionInsertResult;
 
   /** Atomically enforce an intake form's per-source rolling-window cap.
    *
@@ -260,13 +263,14 @@ export interface FormSubmissionStore {
    *  read cannot be authoritative: encryption yields to the event loop, so two
    *  requests from one source can both observe the same remaining slot. This
    *  synchronous transaction re-checks the endpoint-scoped source hash and
-   *  inserts without an interleaving point. */
+   *  inserts without an interleaving point. Public callers supply `authorize`
+   *  to recheck live endpoint authority under that same write lock. */
   insertIfSourceAvailable(input: FormSubmissionInsertInput & {
     readonly source_ip_hash: string;
     readonly max_submissions_per_window: number;
     readonly window_start_at: number;
     readonly now: number;
-  }): FormSubmissionSourceInsertResult;
+  }, authorize?: () => boolean): FormSubmissionSourceInsertResult;
 
   findById(submission_id: string): FormSubmissionSummary | null;
   /** Stable pending page. `after` is an exclusive `(submitted_at,
@@ -757,9 +761,9 @@ export const createReceptionFormSubmissionStore = (
       return submissionRowToSummary(row);
   };
 
-  // db.transaction wraps the body in BEGIN/COMMIT and runs it synchronously —
-  // no event-loop yield, so a concurrent request cannot interleave between the
-  // re-check and the insert.
+  // Acquire the write lock before live authorization so a registry writer on
+  // another connection cannot revoke/rotate between the check and insertion.
+  // Trusted internal fixture writers may omit the guard; public POSTs supply it.
   const insertIfAvailableTxn = db.transaction(
     (
       input: FormSubmissionInsertInput & {
@@ -767,7 +771,9 @@ export const createReceptionFormSubmissionStore = (
         day_window_start_at: number;
         now: number;
       },
+      authorize?: () => boolean,
     ): FormSubmissionInsertResult => {
+      if (authorize !== undefined && authorize() !== true) return { conflict: 'not_authorized' };
       if (input.max_bookings_per_day > 0) {
         const { n } = countWindowStmt.get({
           endpoint_id: input.endpoint_id,
@@ -787,7 +793,9 @@ export const createReceptionFormSubmissionStore = (
         window_start_at: number;
         now: number;
       },
+      authorize?: () => boolean,
     ): FormSubmissionSourceInsertResult => {
+      if (authorize !== undefined && authorize() !== true) return { conflict: 'not_authorized' };
       if (input.max_submissions_per_window > 0) {
         const usage = readSourceWindowStmt.get({
           endpoint_id: input.endpoint_id,
@@ -813,12 +821,12 @@ export const createReceptionFormSubmissionStore = (
       return runInsert(input);
     },
 
-    insertIfAvailable(input) {
-      return insertIfAvailableTxn(input);
+    insertIfAvailable(input, authorize) {
+      return insertIfAvailableTxn.exclusive(input, authorize);
     },
 
-    insertIfSourceAvailable(input) {
-      return insertIfSourceAvailableTxn(input);
+    insertIfSourceAvailable(input, authorize) {
+      return insertIfSourceAvailableTxn.exclusive(input, authorize);
     },
 
     findById(submission_id) {

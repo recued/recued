@@ -1,4 +1,4 @@
-import { WORK_ENTITY_SEARCH_KINDS, type WorkEntity, type WorkEntitySearchKind, type WorkEntitySearchRpcRequest,
+import { WORK_ENTITY_SEARCH_KINDS, selectSearchPassage, type WorkEntity, type WorkEntitySearchKind, type WorkEntitySearchRpcRequest,
   type WorkEntitySearchRpcResponse, type WorkEntityUpsertRpcRequest } from '@recued/contracts';
 import type { BootstrapDataRouteOptions } from '../../src/data/bootstrap-data-route.js';
 
@@ -10,14 +10,17 @@ const base = (kind: WorkEntitySearchKind, id: string) => ({ id, source_id: `recu
  * index and registered-client gate are qualified by the handler tests. */
 export const createWorkSearchFixture = (request: <T>(kind: 'work' | 'work-page', query: string, result: () => T) => Promise<T>) => {
   let entities: WorkEntity[] = [
-    { ...base('task', 'shared-id'), _kind: 'task', title: 'Kestrel task', body: 'Prepare the task.', done: false, blocks_task_ids: [] },
-    { ...base('note', 'shared-id'), _kind: 'note', title: 'Kestrel note', body: '\n  Kestrel saved text 🧾\n<img src=x onerror="throw Error(\'unsafe\')">  \n',
+    { ...base('task', 'shared-id'), _kind: 'task', title: 'Kestrel task',
+      body: 'Opening task background. '.repeat(20) + 'Prepare the Kestrel task.', done: false, blocks_task_ids: [] },
+    { ...base('note', 'shared-id'), _kind: 'note', title: 'Kestrel note',
+      body: 'Opening note background. '.repeat(20) + '\n  Kestrel saved text 🧾\n<img src=x onerror="throw Error(\'unsafe\')">  \n',
       last_user_action_at: NOW, related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [], related_project_ids: [] },
     ...Array.from({ length: 10 }, (_, index): Extract<WorkEntity, { _kind: 'note' }> => ({ ...base('note', `note-${index}`), _kind: 'note',
       title: `Kestrel note ${index}`, body: `Kestrel complete note ${index}.`, last_user_action_at: NOW,
       ...(index === 0 ? { sync_state: 'stale_unreachable' } : {}),
       related_contact_ids: [], related_calendar_event_ids: [], related_mail_thread_ids: [], related_project_ids: [] })),
-    { ...base('project', 'project-one'), _kind: 'project', title: 'Kestrel project', description: 'The project brief.',
+    { ...base('project', 'project-one'), _kind: 'project', title: 'Kestrel project',
+      description: 'Opening project background. '.repeat(20) + 'The Kestrel project brief.',
       state: 'active', last_activity_at: NOW, related_contact_ids: [] },
     { ...base('commitment', 'promise-one'), _kind: 'commitment', statement: 'Kestrel promise', direction: 'outbound',
       promised_at: NOW, lifecycle_state: 'pending', due_status: 'no_deadline', expiry_policy: 'escalate_overdue',
@@ -36,12 +39,17 @@ export const createWorkSearchFixture = (request: <T>(kind: 'work' | 'work-page',
           : entity._kind === 'project' ? `${entity.title} ${entity.description ?? ''}` : entity._kind === 'commitment' ? entity.statement : '';
         return args.query.toLowerCase().split(/\s+/).every(word => text.toLowerCase().includes(word));
       });
-      return { kind, offset, more: rows.length > offset + limit, matches: rows.slice(offset, offset + limit).map(entity => ({
-        id: entity.id, title: entity._kind === 'commitment' ? entity.statement : entity._kind === 'asset' ? entity.name : entity.title ?? 'Note',
-        excerpt: entity._kind === 'task' || entity._kind === 'note' ? entity.body ?? '' : '',
-        source_id: entity.source_id, source_label: 'Recued', updated_at: entity.updated_at,
-        stale: entity.sync_state === 'stale_unreachable', pending_write: entity.pending_write !== undefined,
-      })) };
+      return { kind, offset, more: rows.length > offset + limit, matches: rows.slice(offset, offset + limit).map(entity => {
+        const body = entity._kind === 'task' || entity._kind === 'note' ? entity.body ?? ''
+          : entity._kind === 'project' ? entity.description ?? '' : '';
+        const passage = selectSearchPassage(body, args.query, 180);
+        return {
+          id: entity.id, title: entity._kind === 'commitment' ? entity.statement : entity._kind === 'asset' ? entity.name : entity.title ?? 'Note',
+          excerpt: `${passage.start > 0 ? '…' : ''}${passage.text.slice(passage.start, passage.end)}${passage.end < passage.text.length ? '…' : ''}`,
+          source_id: entity.source_id, source_label: 'Recued', updated_at: entity.updated_at,
+          stale: entity.sync_state === 'stale_unreachable', pending_write: entity.pending_write !== undefined,
+        };
+      }) };
     }),
   });
   const callers: Partial<BootstrapDataRouteOptions> = {

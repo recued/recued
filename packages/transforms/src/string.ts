@@ -83,6 +83,15 @@ export const decode_base64: TransformFn = (p) => {
   }
 };
 
+/** D-402 slice D3 — a value encoded for a web address (`encodeURIComponent`): a setting put into an
+ *  address's query, so a space, `&`, `#`, `?` or `/` in it stays part of the value instead of ending
+ *  it. `null` for no value or an object, as `encode_base64`. */
+export const url_encode: TransformFn = (p) => {
+  const v = p.input;
+  if (v == null || typeof v === 'object') return null;
+  return encodeURIComponent(String(v));
+};
+
 export const encode_base64: TransformFn = (p) => {
   const v = p.input;
   if (v == null) return null;

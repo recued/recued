@@ -129,6 +129,7 @@ const mount = (over: {
   keypair?: Ed25519Keypair;
   fetch?: typeof globalThis.fetch;
   retarget?: RetargetFn;
+  listProfiles?: () => Promise<ReadonlyArray<WebclientServerProfile>>;
 } = {}) => {
   const keypair = over.keypair ?? realKeypair();
   const host = makeEl('div');
@@ -136,7 +137,7 @@ const mount = (over: {
   const panel = mountServerAddressPanel({
     host: host as never,
     document: makeDoc(),
-    listProfiles: async () => [profile(keypair)],
+    listProfiles: over.listProfiles ?? (async () => [profile(keypair)]),
     deps: {
       tokenStore: { wrap: async () => { throw new Error('unused'); }, unwrap: async () => 'b' },
       retarget,
@@ -148,6 +149,54 @@ const mount = (over: {
 type RetargetFn = (id: string, url: string, token: unknown) => Promise<string | null>;
 
 describe('Settings → Account & Servers — changing a server address', () => {
+  it('coalesces mounting and refresh into one roster read and handles a synchronous failure', async () => {
+    const keypair = realKeypair();
+    let finish!: (profiles: WebclientServerProfile[]) => void;
+    const listProfiles = vi.fn(() => new Promise<WebclientServerProfile[]>(resolve => { finish = resolve; }));
+    const { panel, host, retarget } = mount({ keypair, listProfiles });
+    const first = panel.refresh(), second = panel.refresh();
+    await vi.waitFor(() => expect(listProfiles).toHaveBeenCalledOnce());
+    expect(host.children[0]!.getAttribute('data-server-address-roster-state')).toBe('loading');
+    finish([profile(keypair)]); await Promise.all([first, second]);
+    expect(panel.rowState('p1')).toBe('idle');
+    listProfiles.mockImplementationOnce(() => { throw new Error('private store details'); });
+    await expect(panel.refresh()).resolves.toBeUndefined();
+    expect(findIn(host, 'data-server-address-roster-status')?.textContent).toContain('could not read');
+    expect(findIn(host, 'data-server-address-roster-status')?.textContent).not.toContain('private');
+    listProfiles.mockResolvedValueOnce([]); findIn(host, 'data-server-address-roster-retry')!.click(); await panel.refresh();
+    expect(findIn(host, 'data-server-address-roster-status')?.textContent).toBe('No saved servers in this browser.');
+    expect(retarget).not.toHaveBeenCalled();
+  });
+
+  it('keeps a verified address draft through a failed roster read and an explicit retry', async () => {
+    const keypair = realKeypair(), listProfiles = vi.fn(async () => [profile(keypair)]);
+    const { panel, host, retarget } = mount({ keypair, listProfiles });
+    await panel.refresh(); panel.clickEdit('p1'); panel.typeAddress('p1', NEW); await panel.clickCheck('p1');
+    expect(panel.rowState('p1')).toBe('verified');
+    listProfiles.mockRejectedValueOnce(new Error('private storage issue'));
+    await panel.refresh();
+    expect(panel.rowState('p1')).toBe('verified');
+    expect(findIn(host, SERVER_ADDRESS_INPUT_ATTR)?.value).toBe(NEW);
+    expect(findIn(host, SERVER_ADDRESS_SAVE_BTN_ATTR)).toBeDefined();
+    findIn(host, 'data-server-address-roster-retry')!.click(); await panel.refresh();
+    expect(panel.rowState('p1')).toBe('verified');
+    expect(findIn(host, SERVER_ADDRESS_INPUT_ATTR)?.value).toBe(NEW);
+    expect(retarget).not.toHaveBeenCalled();
+  });
+
+  it('does not repaint after a held roster read finishes following disposal', async () => {
+    let finish!: (profiles: WebclientServerProfile[]) => void;
+    const keypair = realKeypair(), listProfiles = vi.fn(() => new Promise<WebclientServerProfile[]>(resolve => { finish = resolve; }));
+    const { panel, host } = mount({ keypair, listProfiles }); const reading = panel.refresh();
+    await vi.waitFor(() => expect(listProfiles).toHaveBeenCalledOnce());
+    const wrapper = host.children[0]!, before = findIn(wrapper, 'data-server-address-roster-status')!.textContent;
+    panel.dispose();
+    finish([profile(keypair)]); await reading;
+    expect(host.children).toEqual([]); expect(findIn(wrapper, SERVER_ADDRESS_ROW_ATTR)).toBeUndefined();
+    expect(findIn(wrapper, 'data-server-address-roster-status')!.textContent).toBe(before);
+    await panel.refresh(); expect(listProfiles).toHaveBeenCalledOnce();
+  });
+
   it('renders each server with a Change address button and writes nothing on mount', async () => {
     const { panel, host, retarget } = mount();
     await panel.refresh();
@@ -296,6 +345,7 @@ describe('Settings → Account & Servers — changing a server address', () => {
     activeId?: string | null;
     converge?: () => 'reloading' | 'deferred';
     activeThrows?: boolean;
+    readActive?: () => Promise<string | null>;
   } = {}) => {
     const keypair = realKeypair();
     const host = makeEl('div');
@@ -309,10 +359,10 @@ describe('Settings → Account & Servers — changing a server address', () => {
         retarget: async (_id: string, url: string) => url,
         fetch: signingServer(keypair),
       },
-      activeProfileId: async () => {
+      activeProfileId: over.readActive ?? (async () => {
         if (over.activeThrows) throw new Error('idb unavailable');
         return over.activeId === undefined ? 'p1' : over.activeId;
-      },
+      }),
       onActiveAddressChanged: converge,
     });
     return { panel, converge };
@@ -340,6 +390,8 @@ describe('Settings → Account & Servers — changing a server address', () => {
     await saveP1(panel);
     expect(converge).not.toHaveBeenCalled();
     expect(panel.rowState('p1')).toBe('saved');
+    expect(panel.statusText('p1')).toContain('next time you connect to this server');
+    expect(panel.statusText('p1')).not.toContain('Reload');
   });
 
   it('⚠ a DEFERRED reload says the tab is still on the old address', async () => {
@@ -351,6 +403,20 @@ describe('Settings → Account & Servers — changing a server address', () => {
     expect(panel.rowState('p1')).toBe('saved');
     expect(panel.statusText('p1')).toContain('still using the old address');
     expect(panel.statusText('p1')).toContain(NEW);
+  });
+
+  it('keeps a newer address edit when an inactive-profile lookup settles after the save', async () => {
+    let finish!: (id: string | null) => void;
+    const readActive = vi.fn(() => new Promise<string | null>(resolve => { finish = resolve; }));
+    const { panel, converge } = mountWithConverge({ readActive });
+    await panel.refresh(); panel.clickEdit('p1'); panel.typeAddress('p1', NEW); await panel.clickCheck('p1');
+    const saving = panel.clickSave('p1');
+    await vi.waitFor(() => expect(readActive).toHaveBeenCalledOnce());
+    expect(panel.rowState('p1')).toBe('saved');
+    panel.clickEdit('p1'); panel.typeAddress('p1', 'wss://next.example/ws');
+    finish('p2'); await saving;
+    expect(panel.rowState('p1')).toBe('editing'); expect(panel.statusText('p1')).toBe('');
+    expect(converge).not.toHaveBeenCalled();
   });
 
   it('⚠ never yanks the tab when it cannot PROVE which profile is active', async () => {

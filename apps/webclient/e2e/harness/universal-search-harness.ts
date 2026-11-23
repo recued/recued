@@ -10,6 +10,10 @@ type Kind = 'records' | 'recipes' | 'packs' | 'marketplace' | 'instances' | 'lis
 /** `unsupported` answers as a server before the method existed does. */
 type Outcome = 'empty' | 'match' | 'error' | 'unsupported';
 const platformParameter = new URLSearchParams(location.search).get('navigation');
+const excerptBody = new URLSearchParams(location.search).has('excerpts')
+  ? 'Routine account background. '.repeat(20) + 'The renewal deadline is 30 November. <img src=x onerror=alert(1)> '
+    + 'Closing account background. '.repeat(20)
+  : undefined;
 const navigationPlatform: CollectionPlatform | null =
   platformParameter === 'mail' || platformParameter === 'calendar' || platformParameter === 'file' ? platformParameter : null;
 const instance = (platform: CollectionPlatform, slug: string): CollectionInstanceRow => ({
@@ -23,12 +27,12 @@ const record = (slug: string, recordId = `${slug}-1`): CollectionRecord => ({
   record_id: recordId, received_at: 1_700_000_000_000, modified_at: 1_700_000_000_000,
   hot_fields: { subject: `${slug} record`, summary: `${slug} record`, path: `${slug}-file.txt`,
     start_at: Date.parse('2026-10-28T16:00:00Z'), end_at: Date.parse('2026-10-28T17:00:00Z'), is_all_day: false },
-  size_bytes: 0, source_id: recordId, body_inline: `Body from ${slug}`,
+  size_bytes: 0, source_id: recordId, body_inline: excerptBody ?? `Body from ${slug}`,
 });
 const navigationGroups: CollectionSearchGroup[] = instances.map(source => ({
   platform: source.platform, slug: source.slug, more: true,
   source_freshness: { stale: false, last_success_at: 1_700_000_000_000, age_ms: 0, degraded: false, pending: 0 },
-  matches: [{ record_id: `${source.slug}-1`, hot_fields: { subject: `Search ${source.slug}` }, body: 'Source navigation fixture.', rank: -1 }],
+  matches: [{ record_id: `${source.slug}-1`, hot_fields: { subject: `Search ${source.slug}` }, body: excerptBody ?? 'Source navigation fixture.', rank: -1 }],
 }));
 const calls: Array<{ kind: Kind; query: string }> = [];
 const pending: Array<{ kind: Kind; finish(outcome: Outcome): void }> = [];

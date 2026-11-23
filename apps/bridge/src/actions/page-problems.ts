@@ -3,7 +3,7 @@
  *  check, and quotes it. The owner: "is it a good idea to have some FAILED_AT,SUCCESS_WHEN
  *  conditions so any step results maybe be caught sooner if applied?"
  *
- *  Before a click or a send, {@link prepareStepChecks} notes each message the page shows; after
+ *  Before a click or a send, `describePageElement` notes each message the page shows; after
  *  it, {@link pageProblem} names one that appeared or changed since. The note lives in the
  *  Bridge's isolated world, beside the ref map, never in the page. A page the step loaded has no
  *  note, so there only a message in a form's answer counts: an alert, a flash or notice box, or
@@ -18,8 +18,8 @@
  *  by its error message or its name. Nothing named a success counts, so a "Signed in" flash does
  *  not stop a sequence. English words only; a page in another language is caught by its classes.
  *
- *  ⛔ INJECTED, SO SELF-CONTAINED: each function declares everything it uses. The two read a
- *  message the same way (`shown`, `seen`), written out in each. */
+ *  ⛔ INJECTED, SO SELF-CONTAINED. The prepare branch in `describePageElement` and this reader
+ *  read a message the same way (`shown`, `seen`), written out in each. */
 
 /** What counts as a message, passed into both functions as their argument, so the two never
  *  disagree about it. Patterns are the source of case-insensitive regular expressions. */
@@ -47,53 +47,12 @@ export const PAGE_MESSAGE_RULES = {
 
 export type PageMessageRules = typeof PAGE_MESSAGE_RULES;
 
-/** Before a click or a send: notes what each message the page shows says now (and that a hidden
- *  one is hidden), and answers whether the element is a form's send button, so a click on it
- *  sends the form. A send button on a form the browser will not send (a required field empty, a
- *  value in the wrong format) answers why instead (`unsent`): the click shows the browser's own
- *  bubble, which is no part of the page, and sends nothing. `ref`, when given, names the element
- *  instead of `selector`. Chrome passes arguments as JSON, so an absent one can arrive as null. */
-export const prepareStepChecks = (selector: string, ref: string | null | undefined, rules: PageMessageRules):
-  { sends: boolean; unsent?: string } => {
-  if (document.documentElement.hasAttribute('data-recued-owner-surface')) return { sends: false };
-  // ⛔ The same as pageProblem's.
-  const shown = (element: Element) => element.getAttribute('aria-hidden') !== 'true'
-    && (element.checkVisibility({ checkVisibilityCSS: true }) || getComputedStyle(element).display === 'contents');
-  const seen = (element: Element) => `${shown(element)
-    ? ((element as HTMLElement).innerText ?? element.textContent ?? '').replace(/\s+/g, ' ').trim() : '∅'}`
-    + `|${element.getAttribute('aria-invalid') ?? ''}`;
-  const notes = new Map<Element, string>();
-  for (const element of document.querySelectorAll(rules.candidates)) notes.set(element, seen(element));
-  (globalThis as typeof globalThis & { recuedMessageNotes?: Map<Element, string> }).recuedMessageNotes = notes;
-
-  const marked = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
-  let element: Element | null = null;
-  try {
-    element = ref == null ? document.querySelector(selector) : marked?.byRef.get(ref) ?? null;
-  } catch {
-    element = null;
-  }
-  const SEND_BUTTON = 'button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]';
-  const form = element === null ? null : (element as HTMLButtonElement).form ?? element.closest('form');
-  const sends = element !== null && element.isConnected && form !== null && element.matches(SEND_BUTTON)
-    && !element.matches(':disabled');
-  // Read through `:invalid`, which runs no check of the page's own: `checkValidity` would.
-  if (sends && element !== null && form !== null && !form.noValidate && !element.hasAttribute('formnovalidate')) {
-    const invalid = [...form.elements].find((item) => item.matches(':invalid')) as HTMLInputElement | undefined;
-    if (invalid !== undefined) {
-      const named = invalid.getAttribute('aria-label') || invalid.getAttribute('name') || invalid.id || 'a field';
-      return { sends: false, unsent: `The form was not sent: ${named}: ${invalid.validationMessage || 'is not valid'}` };
-    }
-  }
-  return { sends };
-};
-
 /** The error message a step led to, quoted, or null: one shown that the page did not show, or
- *  said differently, when {@link prepareStepChecks} noted it; on a page with no note (one the step
+ *  said differently, when `describePageElement` noted it; on a page with no note (one the step
  *  loaded), one in a form's answer. The first in the page's order, innermost. */
 export const pageProblem = (rules: PageMessageRules): string | null => {
   if (document.documentElement.hasAttribute('data-recued-owner-surface')) return null;
-  // ⛔ The same as prepareStepChecks'.
+  // ⛔ The same as describePageElement's prepare branch.
   const shown = (element: Element) => element.getAttribute('aria-hidden') !== 'true'
     && (element.checkVisibility({ checkVisibilityCSS: true }) || getComputedStyle(element).display === 'contents');
   const seen = (element: Element) => `${shown(element)

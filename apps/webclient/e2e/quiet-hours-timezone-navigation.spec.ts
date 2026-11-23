@@ -69,7 +69,7 @@ for (const width of [390, 1280]) {
       await expect(page.getByRole('tab', { name: 'Connect a device', exact: true })).toHaveAttribute('aria-selected', 'false');
       const timezone = page.locator('[data-recued-server-timezone-panel]');
       await expect(timezone).toBeVisible();
-      await expect(timezone.getByRole('textbox', { name: 'Server timezone', exact: true })).toHaveValue('Europe/London');
+      await expect(timezone.getByRole('combobox', { name: 'Server timezone', exact: true })).toHaveValue('Europe/London');
       await expect(page.locator('[data-recued-connect-device-panel]')).toBeHidden();
       if (scenario === 'blocked') await page.screenshot({ path: info.outputPath('timezone-destination.png') });
     });

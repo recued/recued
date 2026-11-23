@@ -193,6 +193,20 @@ const context = (overrides: Partial<PreflightAskContext> = {}): PreflightAskCont
   ...overrides,
 });
 
+describe('D-402 slice H4d — the ask says a pass for a recipe that names its browsers is that browser\'s', () => {
+  it('both answers are for the browser it runs in alone, by its name when the hold had it', () => {
+    const inHome = { ...OFFER, key: { ...OFFER.key, browser: 'inst-home' }, browser_name: 'Home' };
+    const built = buildPreflightAsk({ checkpoint: checkpoint({ browser_pass: inHome }), context: context() });
+    expect(built.message.text).toContain('stops asking about them in all your chats, until you end it under Contracts. '
+      + 'Both are for “Home” alone: in another browser, each still asks.');
+    const { browser_name: _name, ...unnamed } = inHome;
+    expect(buildPreflightAsk({ checkpoint: checkpoint({ browser_pass: unnamed }), context: context() }).message.text)
+      .toContain('Both are for the browser it runs in alone: in another browser, each still asks.');
+    // A key that names no browser says nothing of one.
+    expect(buildPreflightAsk({ checkpoint: checkpoint(), context: context() }).message.text).not.toContain('Both are for');
+  });
+});
+
 describe('D-335 slice F — the ask offers the pass, in place of "Allow this session"', () => {
   it('offers both site answers between approve and deny, and says what each allows', () => {
     const built = buildPreflightAsk({ checkpoint: checkpoint(), context: context() });
@@ -211,6 +225,7 @@ describe('D-335 slice F — the ask offers the pass, in place of "Allow this ses
       + '8 hours.\n\nApprove?');
     expect(built.message.text).not.toContain("'Allow this session'");
     expect(built.handler.payload.session_grant).toBeUndefined();
+    expect(built.handler.payload.browser_pass_decision_version).toBe(1);
   });
 
   it('an AI app\'s pass is for that app, and its ask offers no switch of the owner\'s chat', () => {
@@ -246,21 +261,33 @@ describe('D-335 slice F — an answer resumes with the pass it chose', () => {
   const store = (cp: Checkpoint | null) => ({
     get: vi.fn(async () => cp), delete: vi.fn(async () => undefined),
   }) as unknown as CheckpointStore;
-  const run = async (option: string, cp: Checkpoint | null = checkpoint()) => {
-    const resumer = { resumeRun: vi.fn(async () => undefined), denyRun: vi.fn(async () => undefined) } as
-      PreflightResumer & { resumeRun: ReturnType<typeof vi.fn>; denyRun: ReturnType<typeof vi.fn> };
+  const run = async (option: string, cp: Checkpoint | null = checkpoint(), legacy = false) => {
+    const resumer = { resumeRun: vi.fn<PreflightResumer['resumeRun']>(async () => undefined),
+      denyRun: vi.fn<PreflightResumer['denyRun']>(async () => undefined) };
     const handler = createPreflightAnswerHandler({ checkpointStore: store(cp), resumer });
-    await handler(buildPreflightAsk({ checkpoint: cp ?? checkpoint(), context: context() }).handler.payload, answer(option));
+    const payload = buildPreflightAsk({ checkpoint: cp ?? checkpoint(), context: context() }).handler.payload;
+    if (legacy) delete payload.browser_pass_decision_version;
+    await handler(payload, answer(option));
     return resumer;
   };
 
   it('each site answer approves, with its pass; a plain approve carries none', async () => {
-    expect((await run('allow_site_session')).resumeRun.mock.calls[0]![1]).toMatchObject({ browser_pass_kind: 'session' });
-    expect((await run('allow_site_always')).resumeRun.mock.calls[0]![1]).toMatchObject({ browser_pass_kind: 'always' });
+    expect((await run('allow_site_session')).resumeRun.mock.calls[0]![1]).toMatchObject({
+      browser_pass_kind: 'session', browser_pass_decision_version: 1 });
+    expect((await run('allow_site_always')).resumeRun.mock.calls[0]![1]).toMatchObject({
+      browser_pass_kind: 'always', browser_pass_decision_version: 1 });
+    expect((await run('allow_request')).resumeRun.mock.calls[0]![1]).toMatchObject({
+      browser_pass_kind: 'request', browser_pass_decision_version: 1 });
     expect((await run('approve')).resumeRun.mock.calls[0]![1].browser_pass_kind).toBeUndefined();
     const denied = await run('deny');
     expect(denied.resumeRun).not.toHaveBeenCalled();
     expect(denied.denyRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unversioned saved choice approves its action without authorizing a new pass', async () => {
+    const resumer = await run('allow_site_always', checkpoint(), true);
+    expect(resumer.resumeRun).toHaveBeenCalledTimes(1);
+    expect(resumer.resumeRun.mock.calls[0]![1].browser_pass_decision_version).toBeUndefined();
   });
 
   it('a site answer on a hold whose offer no longer reads is a plain approve', async () => {

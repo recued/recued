@@ -200,7 +200,8 @@ const submitAndDrain = async (
 
   const postRes = fakeRes();
   await createIntakeFormSubmitHandler({
-    getStore: () => registryView as never,
+    getStore: () => world.registry,
+    getPepper: () => PEPPER,
     getSubmissionStore: () => world.submissionStore,
     getFormNonceStore: () => nonceStore,
     getFormSubmissionPiiKey: () => PII_KEY,

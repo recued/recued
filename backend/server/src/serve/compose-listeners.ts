@@ -4,7 +4,9 @@ import { installedPackInstalledAt } from '../pack-inventory.js';
 import { mailAccountCapabilities } from '@recued/contracts';
 import { handleExecute, buildRpcUserExecutionSource } from '../execute-handler.js';
 import { createAutomationRehearsalHost } from '../automation-rehearsal-host.js';
+import { browserPassBrowserFrom } from '../browser-pass-rpc.js';
 import { createCalendarEventCreationStore } from '../storage/calendar-event-creations.js';
+import { readCalendarMailLinks } from '../collections/calendar/linked-mail-reader.js';
 import { createAutomationRehearsalStore } from '../storage/automation-rehearsal-store.js';
 import { connectionViewFromRow } from '@recued/contracts';
 import { randomBytes } from 'node:crypto';
@@ -41,6 +43,10 @@ import { createPackUpdateStore } from '../storage/pack-update-store.js';
 import { assertRecipeAuthoringGates } from '../recipe-save-handler.js';
 import { createPreapprovalCodec } from '../storage/preapproval-codec.js';
 import { composeInboundEmailAnswer, emailAnswerAccountsOf } from '../composition/bin/wire-inbound-email-answer.js';
+import { createEmailCloseDay, emailQuotedLines } from '../email-close-day.js';
+import { repliedClosingTitle } from '../chat-closing-day.js';
+import { emailReplyText } from '@recued/notification';
+import { normalizeRfcMessageId } from '../collections/mail/provider.js';
 import { createOwnerEmailConnection, createOwnerNotificationConnection } from '../composition/bin/owner-email-connection.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
 import { composeMailChatTurns } from '../mail-chat-door/turns.js';
@@ -50,6 +56,7 @@ import { closeMailSendOutcomeAsk, raiseMailSendOutcomeAsk } from '../mail-send-o
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { linkMailFactRuns, mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
 import { createMailWorkService, MAIL_WORK_MANIFEST } from '../mail-work-service.js';
+import { createOwnerStorage } from '../owner-storage.js';
 import { mailFactAiCallThrough } from '../mail-facts/ai-pass.js';
 import { wireRecipeMailTemplates } from '../mail-facts/recipe-templates-wiring.js';
 import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
@@ -62,18 +69,16 @@ import type { MailCollection } from '../collections/mail/mail-collection.js';
 import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
 import { createAskLandingDetailResolver } from '../ask-landing-held-op-details.js';
 import { createAskActionNamer } from '../ask-card-action-name.js';
+import { chainCallName, chainCallPinLabels } from '../chain-call-name.js';
 import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
 import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
 import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
-import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
+import { createAskLandingInboxApproval } from '../ask-landing-inbox-approval.js';
 import { createAuthenticationRepairSnapshot } from '../authentication-repair-worklist.js';
 import { createAuthenticationAccessVerification } from '../authentication-access-verification.js';
 import { createAuthenticationAccessChecks } from '../authentication-access-checks.js';
 import { createInstanceStore } from '../collections/instance-store.js';
-import {
-  findReceptionHoldItem,
-  handleReceptionInboxApprove,
-} from '../reception-inbox-handler.js';
+import { findReceptionHoldItem } from '../reception-inbox-handler.js';
 import {
   buildPacksSurfaceLink,
   buildUpdatesSurfaceLink,
@@ -91,13 +96,16 @@ import {
 } from '../webhook-clock-health.js';
 import { createWebhookTestDeliveryService } from '../webhook-test-delivery.js';
 import { createWebhookManagedRegistrationService } from '../webhook-registration-reconciler.js';
+import { createWebhookUnsettledCreateSweepRuntime } from '../webhook-unsettled-create-sweep.js';
+import { setRefusedSecretsAgain } from '../webhook-refusal-run.js';
 import {
   createBuiltinWebhookRegistrationProfileRegistry,
 } from '../webhook-registration-profile-presets.js';
-import { createWebhookOutboxRuntime } from '../webhook-outbox-dispatcher.js';
+import { createWebhookRecipeDeliveryRuntime } from '../webhook-recipe-dispatch-worker.js';
+import { webhookProfileRuntimeCapability } from '../webhook-profile-capability.js';
+import { createWebhookDeadLetterService } from '../webhook-dead-letter-service.js';
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
-import { createWebhookRecipeOutboxSink } from '../webhook-recipe-consumer.js';
 import {
   createOperationBoundWebhookFixtureAdapters,
   createWebhookCallbackBindingRuntimeRegistry,
@@ -105,6 +113,8 @@ import {
 } from '../webhook-operation-binding.js';
 import {
   createExecuteWebhookRecipeRunner,
+  ownerClosedTheDoorNow,
+  heldRunReconcileOptions,
   reconcileWebhookAwaitingApprovalDispatches,
 } from '../webhook-recipe-runner.js';
 import {
@@ -117,8 +127,13 @@ import {
 import {
   followMainDishWebhookDoors,
   rederiveWebhookDoorsAtBoot,
+  webhookDoorState,
   type WebhookDoorEnrollDeps,
 } from '../webhook-door-enroll.js';
+import { finishWebhookReplacementsAtStart } from '../webhook-replacement-finish.js';
+import { createWebhookIngressDoors } from '../webhook-ingress-doors.js';
+import { heldDeadLetterStep, releaseUnkeptRun } from '../preflight-resumer.js';
+import { createHeldRunPass, sweepHeldApprovalRuns } from '../storage/approval-restart-continuation-store.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../records/non-owner-exposure.js';
 import { readRootProjections, readRootProjectionsBatch, toTimelineRollup } from '../records/root-projection.js';
 import type { DishWebhookDoorChange, TimelineRollup } from '@recued/contracts';
@@ -246,7 +261,7 @@ import {
   type WatchSourceStatusEntry,
   type WebclientBundleFile,
   webhookProfile,
-  webhookProfileRequiresPairedConnection,
+  type WebhookPairedConnectionKind,
   getMessengerVendorDeclaration,
   listMessengerVendors,
   GENERATED_PACK_PUBLISHER,
@@ -255,6 +270,8 @@ import {
   type RootApexMode,
   readOwnerOperationOverride,
 } from '@recued/contracts';
+// D-201 Slice 10AW (10AS finding 8) — a paired connection, under its profile's kind.
+import { pairedConnectionStands } from '../webhook-paired-connection.js';
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
 import { currentGeneratedPackChoices } from '../pack-update-carry-over.js';
@@ -283,7 +300,7 @@ import type { McpPackFirstMintDeps } from '../housekeeping/tasks/mcp-pack-first-
 import { removePackOwnerRulings } from '../pack-inventory.js';
 import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
 import { executeLLM } from '@recued/llm';
-import { createHeldPlanAskAnswerer, createHoldExpiredReader } from '../chat-held-writes.js';
+import { createDayRecordReplacer, createHeldPlanAskAnswerer, createHeldWriteWithdrawal, createHoldExpiredReader } from '../chat-held-writes.js';
 import { createHeldPlanEditor } from '../chat-plan-edits.js';
 import { createChatSavesReader } from '../memory-save-count.js';
 import { ownerClaimRecords } from '../memory-claim.js';
@@ -402,6 +419,8 @@ export interface ComposeListenersOptions {
     | 'db'
     | 'checkpointStore'
     | 'eventBus'
+    // D-403 — the gates' use, for the copies' sizes in the owner's storage view.
+    | 'gateRegistry'
     // D-210 step 2a / A.8 slice 4c — the record read surface
     // (`reception.record.list`) reads ONE table now: bookings and intakes are
     // both `reception_form_submission` rows, so the booking-store ref that used
@@ -415,11 +434,14 @@ export interface ComposeListenersOptions {
     | 'ipBlockStoreRef'
     // D-329 §3.4 — the owner's write-rule rpc.
     | 'writeRuleStore'
+    | 'chainRuleStore'
     | 'browserPassStore'
     // D-335 slice Z — the owner's rpc over the logins remembered for browser steps.
     | 'browserLoginStore'
     // D-341 slice B1 — the owner's rpc over triggers' standing pre-approvals.
     | 'triggerPreapprovalStore'
+    // D-339 slice 12a — the owner's chats' switch for a Body's numbers.
+    | 'bodyNumbers'
   >;
   app: Pick<
     AppContext,
@@ -482,6 +504,7 @@ export interface ComposeListenersOptions {
     | 'contractGrantStoreRef'
     | 'connectionCatalogBindingStoreRef'
     | 'contractStoreRef'
+    | 'internalRegistryRef'
     | 'sellerStoreRef'
     | 'sellerOrderStoreRef'
     | 'webhookIngressStoreRef'
@@ -510,6 +533,9 @@ export interface ComposeListenersOptions {
     // D-160 A.8 step 6 — the messenger turn wiring drives
     // `runMessengerTurn` + shares the orchestrator's session store.
     | 'chatOrchestratorRef'
+    // D-343 — a reply to the day's email closes it in a conversation of its own, as Today's
+    // "Close the day" opens one.
+    | 'openNoticeConversationRef'
     // D-318 step 5 — the email door reads the answers it sends from it, and
     // hears of a run that settles after its turn.
     | 'chatStoreRef'
@@ -518,6 +544,8 @@ export interface ComposeListenersOptions {
     | 'onChatHeldResultTurnEnded'
     // D-188 — master pause flag closes the inbound webhook listeners.
     | 'serverState'
+    // D-343 — wrapped here so a day's record held replaces the earlier one of that day.
+    | 'tier1HeldRef'
   >;
   collection: Pick<
     CollectionContext,
@@ -528,6 +556,8 @@ export interface ComposeListenersOptions {
     | 'collectionAuthentication'
     | 'collectionOAuthAppSwitch'
     | 'yours'
+    // D-407 slice 5 — the Occasion tick on a calendar event.
+    | 'occasionEventAdoption'
     // D-315 §6.3 — the one fact writer, for a backfill.
     | 'mailFactWriter'
     | 'mailFactTriggerRoom'
@@ -580,6 +610,12 @@ export interface ComposeListenersOptions {
     | 'getBatch'
     // D-210 Phase C — the decorated resumer, for the inbox's no-ask release.
     | 'preflightResumer'
+    // D-201 Slice 10W — the owner's try again of a held approved webhook run.
+    | 'continueHeldRun'
+    // D-201 Slice 10AB — and the settle of one the process went during.
+    | 'settleDiedTryAgain'
+    // D-201 Slice 10AP — the answers' resumes still under way, for the reconcile.
+    | 'isResumingRun'
     | 'messengerChannels'
     | 'executorConfig'
     | 'connectionOperationProfileStore'
@@ -826,6 +862,19 @@ export const composeListeners = async (
     emitAutomationRule(storage.eventBus, 'watch'),
   );
 
+  // D-348 — a rule for a request the owner repeats was made, ended or used: every paired client's
+  // Live control re-lists the live ones with their uses left.
+  storage.chainRuleStore.onChange(({ op, rule_id }) => {
+    storage.eventBus.emit({ kind: 'contract.chain_rule_changed', op, rule_id });
+  });
+
+  // D-402 slice F5 (§7.10) — a pre-approval was granted, used or ended: every paired client's pages
+  // that list them (Contracts, an AI app's page, a recipe's page, a trigger's page) read again.
+  // Guarded: a composition without the store (a db-less boot, a test's) fans nothing.
+  storage.triggerPreapprovalStore?.onChange(({ change, id, holder }) => {
+    storage.eventBus.emit({ kind: 'contract.preapproval_changed', change, id, holder });
+  });
+
   // The public-reachability switch for every inbound webhook surface: the
   // runtime key `collection.webhook.public_reachable` or the older
   // `RECUED_PUBLIC_REACHABLE`. One thunk, shared with D-201's intake below.
@@ -929,6 +978,8 @@ export const composeListeners = async (
     ? composeSessionGrantPasses({
         contractStore: app.contractStoreRef,
         broadcast: (event) => rpc.observabilityBundle.eventsDeps.bus.emit(event),
+        // `/recued passes` names what a pass lets through as the webclient does ("Send mail").
+        getManifest: (slug: string) => execution.executorConfig.manifests.get(slug) ?? null,
       })
     : undefined;
   const messengerLiveControl = composeMessengerLiveControl({
@@ -963,6 +1014,9 @@ export const composeListeners = async (
     slackPressReply: composeSlackPressReply(),
     ...(messengerTurnIngest ? { messengerTurnIngest } : {}),
     ...(messengerLiveControl ? { messengerLiveControl } : {}),
+    // D-335 slice Z — a sign-in code a browser step waits for, typed in a chat app the ask reached:
+    // taken before the turn and the message event, so it is kept nowhere.
+    typedSecrets: browserSecrets,
     // WatchSource messenger push source — verified non-callback user
     // messages emit `data.messenger.<vendor>.message.created`.
     warehouseBus: app.warehouseBus,
@@ -1044,6 +1098,27 @@ export const composeListeners = async (
   };
   // A plain ask went through the owner's email connection, so its reply is checked against it.
   const ownerEmailConnection = emailReplyConnStore && storage.db ? createOwnerEmailConnection(storage.db, emailReplyConnStore) : undefined;
+  const emailCloseDay = storage.db && app.chatOrchestratorRef?.turnQueue && app.openNoticeConversationRef ? createEmailCloseDay({
+    db: storage.db,
+    openNoticeConversation: () => app.openNoticeConversationRef,
+    queue: () => app.chatOrchestratorRef?.turnQueue,
+    ...(app.keys ? { getKey: app.keys.keyProvider('chat') } : {}),
+    canRun: () => app.isVaultUnlocked() && !(app.serverState?.isPaused() ?? false),
+    ...(app.vaultStateBus ? { subscribeVault: listener => app.vaultStateBus.subscribe(listener) } : {}),
+    readReply: async (source, rfc_message_id) => {
+      const mailbox = collection.collectionRegistry.get('mail', source.slug) as MailCollection | undefined;
+      const record = mailbox?.get(source.record_id);
+      if (!record || record.hot_fields.rfc_message_id !== normalizeRfcMessageId(rfc_message_id)) return null;
+      const title = typeof record.hot_fields.subject === 'string' ? repliedClosingTitle(record.hot_fields.subject) : undefined;
+      if (!title) return null;
+      const body = app.cacheBlobs ? await materializeMailBody(record, app.cacheBlobs) : record.body_inline ?? null;
+      if (body === null) return null;
+      const text = emailReplyText(body).trim();
+      return text ? { title, text, quoted: emailQuotedLines(body) } : null;
+    },
+    log: (level, msg, data) => (level === 'warn' ? console.warn : console.log)(`[email-reply] ${msg}`, data ?? ''),
+  }) : undefined;
+  if (emailCloseDay) collection.yours?.bindEmailCloseDay(emailCloseDay);
   const inboundEmailAnswer = composeInboundEmailAnswer({
     ...(execution.notificationBlock ? { block: execution.notificationBlock } : {}),
     ...(emailReplyConnStore
@@ -1064,6 +1139,9 @@ export const composeListeners = async (
           },
         }
       : {}),
+    // D-343 — a reply to the day's email that answers no reminder closes the day: a conversation
+    // in the app, the owner's own turn, the records asked for as the app asks for them.
+    ...(emailCloseDay ? { closeDay: emailCloseDay } : {}),
     log: (level, msg, data) => {
       const fn = level === 'warn' ? console.warn : console.log;
       fn(`[email-reply] ${msg}`, data ?? '');
@@ -1219,6 +1297,23 @@ export const composeListeners = async (
         plans,
       });
     }
+    // D-343 (the owner, 2026-11-14) — a day's record held while an earlier one of the same day
+    // waits in that conversation replaces it: the earlier ask closes everywhere ("Replaced by a
+    // newer version."), with nothing run and no one's no. After the hold's own handler.
+    if (execution.executeDeps.checkpointStore !== undefined && execution.executeDeps.gatedActionStore !== undefined
+      && plans !== undefined) {
+      const replaceDayRecords = createDayRecordReplacer({ plans, withdraw: createHeldWriteWithdrawal({
+        block: execution.notificationBlock,
+        checkpointStore: execution.executeDeps.checkpointStore,
+        gatedActionStore: execution.executeDeps.gatedActionStore,
+        plans,
+        emit: (event) => rpc.observabilityBundle.eventsDeps.bus.emit(event as never),
+      }) });
+      const held = app.tier1HeldRef;
+      app.tier1HeldRef = async (call) => {
+        try { await held?.(call); } finally { await replaceDayRecords(call); }
+      };
+    }
   }
 
   // WatchSource messenger push-source provider — one governance row per
@@ -1276,6 +1371,9 @@ export const composeListeners = async (
       ? { calendarEnroll: collection.calendarStack.enrollDeps }
       : {}),
     ...(collection.calendarStack && storage.db ? { calendarEventCreations: createCalendarEventCreationStore(storage.db) } : {}),
+    // D-407 slice 5 — an event's Occasion tick, beside the event's own read.
+    ...(collection.occasionEventAdoption ? { calendarEventOccasion: (slug: string, source_id: string) =>
+      collection.occasionEventAdoption!.block(slug, source_id) } : {}),
     ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
     ...(app.cacheBlobs ? { mailBodyBlobs: app.cacheBlobs } : {}),
     ...(app.annotationStoreRef ? { mailAttachmentLinks: app.annotationStoreRef } : {}),
@@ -1896,6 +1994,8 @@ export const composeListeners = async (
       : {}),
     ...(execution.notificationBlock
       ? {
+          submitPreparedAnswer: (ask_id, option, prepare) =>
+            execution.notificationBlock!.submitAnswer({ ask_id, option, via: 'ui' }, { prepare }),
           submitAnswer: async (ask_id: string, option_id: string, note?: string) => {
             await execution.notificationBlock!.submitAnswer({
               ask_id,
@@ -2002,7 +2102,7 @@ export const composeListeners = async (
     NonNullable<ServerConfig['askLandingPortDeps']>,
     'resolveDetails' | 'submitEditedApproval'
   > =
-    receptionInboxBundle !== undefined
+    receptionInboxBundle !== undefined && execution.notificationBlock !== undefined
       ? {
           resolveDetails: createAskLandingDetailResolver({
             findHoldItem: (hold_id: string) =>
@@ -2019,23 +2119,9 @@ export const composeListeners = async (
               : {}),
             editable: true,
           }),
-          submitEditedApproval: createAskLandingEditApproval({
-            findHoldItem: (hold_id: string) =>
-              findReceptionHoldItem(receptionInboxBundle.receptionInboxDeps, hold_id),
-            approve: async ({ hold_id, edits, ask_id }) => {
-              // The ask capability is the authority — NOT a synthesised
-              // instance_id. `resolveApprover` takes this arm and the audit
-              // detail names it.
-              const out = await handleReceptionInboxApprove(
-                receptionInboxBundle.receptionInboxDeps,
-                { hold_id, edits },
-                { ask_landing: { ask_id } },
-              );
-              return {
-                released: out.released,
-                ...(out.reason !== undefined ? { reason: out.reason } : {}),
-              };
-            },
+          submitEditedApproval: createAskLandingInboxApproval({
+            inbox: receptionInboxBundle.receptionInboxDeps,
+            submitAnswer: (reply, options) => execution.notificationBlock!.submitAnswer(reply, options),
           }),
         }
       : {};
@@ -2963,6 +3049,47 @@ export const composeListeners = async (
     };
   }
 
+  // D-201 Slice 10U (10Q finding 9) — what a process left between a webhook
+  // replacement and its finalize is finished first, as its save, delete or
+  // install would have finished it: given back when the save never committed,
+  // else its door made and the rows re-homed onto it. BEFORE the outbox, the
+  // worker and the dead-letter sweep below, and synchronously, so no save
+  // interleaves. 10P finished these on the worker's first poll, with no door:
+  // every re-homed row was then cancelled unseen.
+  if (app.webhookConsumerStoreRef) {
+    const finished = finishWebhookReplacementsAtStart({
+      consumerStore: app.webhookConsumerStoreRef,
+      recipes: execution.executeDeps.recipeStore,
+      ...(webhookDoorDeps ? { door: webhookDoorDeps } : {}),
+    });
+    for (const replacement of finished) {
+      const subject = `${replacement.consumer_kind} '${replacement.consumer_id}'`;
+      if (replacement.outcome === 'set_aside') {
+        console.warn(`[webhook] unfinished replacement of ${subject} set aside at the start: ${replacement.reason}`);
+      } else if (replacement.outcome === 'left') {
+        console.warn(`[webhook] unfinished replacement of ${subject} left for the next start: ${replacement.reason}`);
+      } else {
+        console.info(`[webhook] unfinished replacement of ${subject} ${replacement.outcome} at the start`);
+      }
+    }
+  }
+
+  // D-201 Slice 10W — a run held for the owner's try again goes once its dead
+  // letter does (the owner closed it; the review limit or a retirement did),
+  // with its temp files and "Yes, this time" pre-approvals. Never throws.
+  if (app.webhookConsumerStoreRef && execution.executeDeps.approvalRestartContinuations) {
+    const consumerStore = app.webhookConsumerStoreRef;
+    const executeDeps = execution.executeDeps;
+    const released = sweepHeldApprovalRuns({
+      continuations: executeDeps.approvalRestartContinuations!,
+      stillHeld: (runId) => consumerStore.isRunStillOpen(runId),
+      release: (runId) => releaseUnkeptRun(executeDeps, runId),
+    });
+    if (released > 0) {
+      console.info(`[webhook] released ${released} approved run(s) whose dead letter is gone`);
+    }
+  }
+
   // ⛔ 2026-10-10 — a door minted before this release grants its ops in a spelling the
   // gate never reads; re-derive each such door now, BEFORE the outbox below starts, so
   // no delivery is claimed against one (`rederiveWebhookDoorsAtBoot`). Same door deps
@@ -2986,12 +3113,59 @@ export const composeListeners = async (
     && app.webhookDeliveryStoreRef !== undefined
     && app.webhookConsumerStoreRef !== undefined
     && storage.auditLog !== undefined;
+  // D-201 Slice 10B — the owner's review of dead letters across both stores:
+  // Settings lists, tries again and closes them; the worker's poll keeps the
+  // unresolved ones within the review limit. A dead letter tried again wakes
+  // the worker (a target's) or waits for the outbox's next poll (an event's).
+  // D-201 Slice 10AB — the runs a restart kept or held, for the outbox's
+  // passes: a kept run waits for the start's replay (10AA finding 6), and a
+  // held run whose dead letter is closed goes within a pass (10AA finding 14).
+  const webhookHeldRunPass = createHeldRunPass({
+    continuations: execution.executeDeps.approvalRestartContinuations,
+    stillHeld: (runId) => app.webhookConsumerStoreRef?.isRunStillOpen(runId) ?? true,
+    release: (runId) => releaseUnkeptRun(execution.executeDeps, runId),
+  });
+  const webhookDeadLetters = app.webhookDeliveryStoreRef && app.webhookConsumerStoreRef
+    ? createWebhookDeadLetterService({
+        deliveryStore: app.webhookDeliveryStoreRef,
+        consumerStore: app.webhookConsumerStoreRef,
+        onRequeue: () => { webhookOutboxRuntime?.worker.kick(); },
+        // D-201 Slice 10U (10Q finding 9) — a target dead letter is tried
+        // again only through a live door, read from the store the runner reads.
+        ...(execution.contractDefinitionStore !== undefined
+          ? {
+              doorState: (contractId: string | null) =>
+                webhookDoorState(execution.contractDefinitionStore!, contractId, Date.now()),
+            }
+          : {}),
+        // D-201 Slice 10W — a held run's dead letter names its step in doubt.
+        // D-201 Slice 10AB — and says what its try again does (10AA finding 4),
+        // its held copy going with it when it is closed (10AA finding 14).
+        ...(execution.executeDeps.approvalRestartContinuations !== undefined
+          ? {
+              heldStepOf: (runId: string) => heldDeadLetterStep(execution.executeDeps, runId),
+              onClosed: () => { webhookHeldRunPass.sweep(); },
+            }
+          : {}),
+        // D-201 Slice 10F — the first poll closes dead letters a stop left
+        // open on a retired webhook (its retire closes them as it commits).
+        ...(app.webhookIngressStoreRef !== undefined
+          ? {
+              isIngressRetired: (ingressId: string) =>
+                app.webhookIngressStoreRef!.get(ingressId)?.intake_state === 'retired',
+            }
+          : {}),
+      })
+    : undefined;
+  // D-201 Slice 10A — the event outbox hands each event off to its recipe
+  // targets, and the recipe-dispatch worker runs them under its own lease: a
+  // long recipe no longer runs inside the outbox's 10-second timeout.
   const webhookOutboxRuntime = webhookRuntimeComposable
-    ? createWebhookOutboxRuntime(
-        app.webhookDeliveryStoreRef!,
-        createWebhookRecipeOutboxSink(
-          app.webhookConsumerStoreRef!,
-          createExecuteWebhookRecipeRunner({
+    ? createWebhookRecipeDeliveryRuntime(
+        {
+          deliveryStore: app.webhookDeliveryStoreRef!,
+          consumerStore: app.webhookConsumerStoreRef!,
+          runner: createExecuteWebhookRecipeRunner({
             executeDeps: execution.executeDeps,
             auditLog: storage.auditLog!,
             // D-179 — the runner must pass the install config explicitly
@@ -3009,18 +3183,53 @@ export const composeListeners = async (
             // DEAD (empty allowlist → denies) — fail-closed, never fail-open.
             definitionStore:
               execution.contractDefinitionStore ?? { get: () => null },
+            // D-201 Slice 10AV (10AS finding 18) — the owner's closing of the
+            // door its delivery goes through now, read as the reconcile reads it.
+            closedByItsOwnerNow: ownerClosedTheDoorNow(
+              app.webhookConsumerStoreRef!,
+              execution.contractDefinitionStore ?? { get: () => null },
+            ),
+            // D-201 Slice 10W (10V finding 1) — a try again goes on from the
+            // step in doubt, what went through standing in.
+            ...(execution.continueHeldRun !== undefined
+              ? { continueHeldRun: execution.continueHeldRun }
+              : {}),
+            // D-201 Slice 10AB (10AA finding 1) — a try again the process went
+            // during is the dead letter again, never a hold with no ask.
+            ...(execution.settleDiedTryAgain !== undefined
+              ? { settleDiedTryAgain: execution.settleDiedTryAgain }
+              : {}),
           }),
-        ),
+        },
         {
           reconcileWaitingDispatches: async () => {
             await reconcileWebhookAwaitingApprovalDispatches(
               app.webhookConsumerStoreRef!,
               storage.auditLog!,
+              // D-201 Slice 10AK (10AI finding 6) — with the owner's refusal,
+              // read as the runner reads it, from the door store it reads.
+              // D-201 Slice 10AP — the owner's closing of the door the delivery
+              // goes through now (finding 3), and a resume still under way
+              // waiting (findings 5 and 18).
+              heldRunReconcileOptions(webhookHeldRunPass, execution.contractDefinitionStore ?? { get: () => null }, {
+                consumerStore: app.webhookConsumerStoreRef!,
+                ...(execution.isResumingRun !== undefined ? { isResuming: execution.isResumingRun } : {}),
+              }),
             );
+            webhookHeldRunPass.sweep();
           },
           canDispatch: () => app.isVaultUnlocked()
             && !(app.serverState?.isPaused() ?? false),
           isStopping: () => execution.executeDeps.isDraining?.() === true,
+          // D-201 Slice 10J — a held delivery whose run is going is one the
+          // owner approved, resuming outside the worker: the server's stop
+          // marks it, so its drain's stop becomes a dead letter, never a
+          // silent cancel.
+          isRunActive: (runId: string) =>
+            execution.executeDeps.inFlightRegistry?.isActive(runId) === true,
+          ...(webhookDeadLetters
+            ? { onPoll: () => { webhookDeadLetters.enforceReviewLimit(); } }
+            : {}),
           log: (level, message, metadata) => {
             const sink = level === 'error' ? console.error : console.warn;
             sink(`[webhook-outbox] ${message}`, metadata);
@@ -3067,6 +3276,15 @@ export const composeListeners = async (
     const endpoint = `${base}/v1/webhooks/${publicId}`;
     return Buffer.byteLength(endpoint, 'utf8') <= 4_096 ? endpoint : null;
   };
+  // D-201 Slice 10BY (10BX finding 2) — every address this server takes a
+  // webhook's messages at: the listener answers its path on every name the
+  // server serves, and a name the owner moved the webhooks address from stays
+  // the server's own (`ownBaseUrls`).
+  const webhookOwnEndpointUrls = (publicId: string): string[] =>
+    storage.publicAddress.ownBaseUrls()
+      .map(webhookBaseFrom)
+      .filter((base): base is string => base !== null)
+      .map((base) => `${base}/v1/webhooks/${publicId}`);
   // D-201 Slice 6B3 — operation-bound provider calls resolve the same durable
   // owner binding as inbound dispatch, then inject the callback only inside the
   // final trusted catalog dispatch. The reserved first-party fixture adapter
@@ -3172,16 +3390,12 @@ export const composeListeners = async (
         clockReady = false;
       }
     }
-    const pairedConnectionRequired = webhookProfileRequiresPairedConnection(
-      profile,
-      ingress.registration_mode,
-    );
     return {
       endpoint_url: endpointUrl,
       profile_runtime_available: webhookProfiles.get(profile.profile_id) !== null,
-      paired_connection_available: !pairedConnectionRequired
-        || (ingress.paired_connection_id !== null
-          && (app.connectionStoreRef?.get('api', ingress.paired_connection_id) ?? null) !== null),
+      // D-201 Slice 10AW (10AS finding 8) — under the kind its registration
+      // reads it: a bot's connection is a notification connection.
+      paired_connection_available: pairedConnectionStands(app.connectionStoreRef, ingress, profile),
       listener_available: webhookProfileListener !== undefined
         && (webhookOutboxRuntime?.isStarted() ?? false)
         && publicListenerBound,
@@ -3216,6 +3430,35 @@ export const composeListeners = async (
         profilePolicies: BUILTIN_WEBHOOK_PROFILE_POLICIES,
         resolveCanonicalEndpoint: (ingress) =>
           webhookEndpointUrl(ingress.public_id),
+        ownEndpointUrls: (ingress) => webhookOwnEndpointUrls(ingress.public_id),
+      })
+    : undefined;
+  // D-201 Slice 10Z (10V findings 8 and 9) — a create that may still land is
+  // looked for until it no longer could, and a stray endpoint it leaves is
+  // removed when it lands, whatever the owner did meanwhile.
+  const webhookUnsettledCreateSweep = webhookManagedRegistration
+    ? createWebhookUnsettledCreateSweepRuntime({
+        service: webhookManagedRegistration,
+        canRun: () => app.isVaultUnlocked()
+          && !(app.serverState?.isPaused() ?? false)
+          && execution.executeDeps.isDraining?.() !== true,
+        log: (message, error) => { console.warn(`[webhook-registration] ${message}`, error); },
+        // D-201 Slice 10AN (the owner's call, 2026-11-20) — and a webhook whose
+        // secret Recued sets, its messages refused, is set again with it.
+        ...(app.webhookDeliveryStoreRef !== undefined
+          ? {
+              // D-201 Slice 10AR (10AM finding 29) — `canRun` read before each
+              // webhook, as the sweep is.
+              afterSweep: ({ isStopping, canRun }) => setRefusedSecretsAgain({
+                ingresses: app.webhookIngressStoreRef!,
+                deliveries: app.webhookDeliveryStoreRef!,
+                service: webhookManagedRegistration,
+                isStopping,
+                canRun,
+                log: (message, error) => { console.warn(`[webhook-registration] ${message}`, error); },
+              }),
+            }
+          : {}),
       })
     : undefined;
   const webhookProfileCapabilities = Object.freeze(webhookProfiles.list().map((adapter) => {
@@ -3223,17 +3466,12 @@ export const composeListeners = async (
     if (!descriptor) {
       throw new Error(`webhook profile capability: unknown profile '${adapter.profile_id}'`);
     }
-    return Object.freeze({
-      profile_id: adapter.profile_id,
-      registration_modes: Object.freeze(descriptor.registration_modes.filter((mode) =>
-        mode !== 'managed_endpoint'
-          || (webhookRegistrationRuntime !== null
-            && webhookRegistrationRuntime.get(adapter.profile_id) !== null))),
-      deduplication: Object.freeze({
-        ...descriptor.deduplication,
-        identity: Object.freeze({ ...descriptor.deduplication.identity }),
-      }),
-    });
+    // D-201 Slice 10C — the projection carries the event catalog too.
+    return webhookProfileRuntimeCapability(
+      descriptor,
+      webhookRegistrationRuntime !== null
+        && webhookRegistrationRuntime.get(adapter.profile_id) !== null,
+    );
   }));
 
   // D-152 § A.16 — load the webclient bundle from disk (the production wiring
@@ -3394,6 +3632,13 @@ export const composeListeners = async (
               : {},
           ),
           dispatchers: collection.workEntityDispatchers,
+          sourceRecords: {
+            get: (platform: 'mail' | 'calendar', slug: string, id: string) => collection.collectionRegistry.get(platform, slug)?.get(id) ?? null,
+            getIncarnation: (platform: 'mail' | 'calendar', slug: string) =>
+              (platform === 'mail' ? collection.mailStack?.instances : collection.calendarStack?.instances)?.getIncarnation?.(platform, slug) ?? null,
+            ...(collection.calendarStack ? { linkedCalendar: (target: import('@recued/contracts').SavedWorkAddress, limit: number, offset: number) =>
+              readCalendarMailLinks(collection.calendarStack!, target, limit, offset) } : {}),
+          },
           // D-192 P5 — `get` responses carry the row's work-graph
           // edges; contact edges forward-resolve to the survivor's
           // display identity at read time.
@@ -3633,6 +3878,7 @@ export const composeListeners = async (
             ...(app.webhookDeliveryStoreRef
               ? { deliveryStore: app.webhookDeliveryStoreRef }
               : {}),
+            ...(webhookDeadLetters ? { deadLetters: webhookDeadLetters } : {}),
             ...(app.webhookConsumerStoreRef
               ? {
                   countConsumerBindings: (ingressId: string): number =>
@@ -3641,13 +3887,25 @@ export const composeListeners = async (
                 }
               : {}),
             ...(webhookTestDelivery ? { testDelivery: webhookTestDelivery } : {}),
+            // D-201 Slice 10X — each webhook's recipes and their doors for its
+            // card, and its switch making them (the owner's control).
+            ...(webhookDoorDeps && app.webhookConsumerStoreRef
+              ? {
+                  recipeDoors: createWebhookIngressDoors({
+                    consumerStore: app.webhookConsumerStoreRef,
+                    recipeOf: (recipeId: string) => execution.executeDeps.recipeStore.get(recipeId),
+                    door: webhookDoorDeps,
+                  }),
+                }
+              : {}),
             ...(webhookManagedRegistration
               ? { managedRegistration: webhookManagedRegistration }
               : {}),
             ...(app.connectionStoreRef
               ? {
-                  pairedConnectionAvailable: (pairedConnectionId: string): boolean =>
-                    app.connectionStoreRef!.get('api', pairedConnectionId) !== null,
+                  // D-201 Slice 10AW (10AS finding 8) — of the kind the profile pairs with.
+                  pairedConnectionAvailable: (pairedConnectionId: string, kind: WebhookPairedConnectionKind): boolean =>
+                    app.connectionStoreRef!.get(kind, pairedConnectionId) !== null,
                 }
               : {}),
             runtimeReadiness: webhookRuntimeReadiness,
@@ -4018,14 +4276,29 @@ export const composeListeners = async (
             store: app.contractStoreRef,
             // D-329 §3.4 — the write rules an AI's approvals teach.
             writeRules: storage.writeRuleStore,
+            // D-348 — the chains the owner's approvals teach, each call named as its approval names it.
+            chainRules: storage.chainRuleStore,
+            nameChainCall: (signature) => chainCallName(signature, (slug) => execution.executorConfig.manifests.get(slug)),
+            // ... and the values it names as its approval card does, on the owner's clock.
+            labelChainCall: (signature) => chainCallPinLabels(signature, app.internalRegistryRef,
+              resolveServerTimeZone(storage.serverTimeZoneStore?.read(), Intl.DateTimeFormat().resolvedOptions().timeZone)),
             // D-335 slice F — passes for Browser Toolkit writes.
             browserPasses: storage.browserPassStore,
             // D-341 slices B1/B2 — triggers' standing pre-approvals, through the granter the
             // resumer grants an ask's answer with.
             triggerPreapprovals: storage.triggerPreapprovalStore,
             triggerPreapprovalGranter,
+            // D-402 slice F4 — callers' pre-approvals listed by their recipe's name and the AI app's.
+            triggerPreapprovalRecipes: execution.executeDeps.recipeStore,
+            ...(app.chatInboundTokenStoreRef !== undefined && app.chatInboundTokenStoreRef !== null ? { aiAppNameOf: (contract_id: string) =>
+              app.chatInboundTokenStoreRef!.listTokens().find((token) => token.contract_id === contract_id && token.revoked_at === null)?.label } : {}),
             // D-335 slice Z — the logins remembered for browser steps.
             browserLogins: storage.browserLoginStore,
+            // D-402 slice H5 — each by the browser it was saved in, named as its owner named it.
+            browserNameOf: (browser_id: string) => execution.executeDeps.executorConfig.bridgeDispatcherRef?.()?.listBrowsers?.()
+              .find((browser) => browser.browser_id === browser_id)?.name,
+            // D-402 slice H4d — each pass by the browser it was granted in, one no longer paired said to be.
+            browserPassBrowserOf: browserPassBrowserFrom(() => execution.executeDeps.executorConfig.bridgeDispatcherRef?.()),
             // D-247 D11 — the recipe roster for the op row's STATIC half. Without
             // it `could` is empty everywhere and the row silently degrades to the
             // usage half alone, which is the shape that cannot tell "no recipe
@@ -4541,6 +4814,9 @@ export const composeListeners = async (
       ? {
           contractGrantDeps: {
             store: createContractGrantEntryStore(app.contractStoreRef),
+            // D-339 slice 12a — `contract.grant.body_numbers.*`, from a Body's page.
+            bodyNumbers: storage.bodyNumbers,
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
             // D-327 — see `ContractGrantRpcDeps.checkKeyGrant`. Read at call time:
             // the chat deps that own the check are composed after this block.
             checkKeyGrant: (contract_id: string, entry_key: string) =>
@@ -4684,6 +4960,14 @@ export const composeListeners = async (
       // reads. Only when the publisher matches: two packs may share a slug (D-221 full refs).
       packName: (owner) => bundledPackName(owner, rpc.packInstallDeps?.packDir),
     },
+    // D-403 — what takes space, by kind, and the purge the owner runs. Only with a database.
+    ...(storage.db ? { ownerStorageRpcDeps: { storage: createOwnerStorage({
+      db: storage.db,
+      records: storage.recordsStore,
+      packName: (owner) => bundledPackName(owner, rpc.packInstallDeps?.packDir),
+      gates: () => storage.gateRegistry?.all().map((gate) => { const info = gate.info(); return { surface: info.surface, used: info.used }; }) ?? [],
+      ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+    }) } } : {}),
     ...(storage.mailWorkStore && app.cacheBlobs ? { mailWorkService: createMailWorkService({
       store: storage.mailWorkStore,
       registry: collection.collectionRegistry,
@@ -5438,13 +5722,18 @@ export const composeListeners = async (
   // ask's email and an approved run reach the mailboxes and calendars
   // `startCollectionAdapters` registers after the boot's recovery step.
   let holdNotificationSweep: (() => void) | undefined = execution.notificationBlock
-    ? recoverPendingAsksOnceRunning({ block: execution.notificationBlock, ...(lifecycle ? { lifecycle } : {}) })
+    ? recoverPendingAsksOnceRunning({ block: execution.notificationBlock, ...(lifecycle ? { lifecycle } : {}),
+      ...(receptionInboxBundle?.recoverPendingRejections
+        ? { recoverInboxRejections: receptionInboxBundle.recoverPendingRejections } : {}),
+    })
     : undefined;
   webhookOutboxRuntime?.start();
+  webhookUnsettledCreateSweep?.start();
   savedDataViewAlerts?.start();
   authenticationAlerts?.start();
   promptScheduleAlerts?.start();
   promptScheduleDone?.start();
+  emailCloseDay?.start();
 
   // ⛔ What would otherwise START work during a restart is told to stop the
   // moment the server begins stopping, before any drain step waits on anything:
@@ -5473,6 +5762,18 @@ export const composeListeners = async (
     });
   }
 
+  // D-201 Slice 10E — the webhook worker marks the runs it has going as soon as
+  // the server begins to stop, before the drain stops what outlives its grace:
+  // a run the restart ends then runs again at the next start, instead of
+  // reading as the owner's Stop. Marking first also covers a process that
+  // exits before the worker hears how the run ended.
+  if (lifecycle && webhookOutboxRuntime) {
+    const webhookWorker = webhookOutboxRuntime.worker;
+    lifecycle.machine.onStateChange((_prev, next) => {
+      if (next === 'draining') webhookWorker.noteServerStopping();
+    });
+  }
+
   const turnQueue = app.chatOrchestratorRef?.turnQueue;
   const answers = execution.notificationBlock;
   if (lifecycle && (turnQueue || answers || promptScheduleAlerts || promptScheduleDone)) {
@@ -5482,6 +5783,7 @@ export const composeListeners = async (
       answers?.beginStopping();
       void promptScheduleAlerts?.stop();
       void promptScheduleDone?.stop();
+      void emailCloseDay?.stop();
     });
   }
 
@@ -5504,10 +5806,12 @@ export const composeListeners = async (
       ...(promptScheduleAlerts ? [begin(() => promptScheduleAlerts.stop())] : []),
       ...(promptScheduleDone ? [begin(() => promptScheduleDone.stop())] : []),
       ...(webhookOutboxRuntime ? [begin(() => webhookOutboxRuntime.stop())] : []),
+      ...(webhookUnsettledCreateSweep ? [begin(() => webhookUnsettledCreateSweep.stop())] : []),
       ...(messengerIngressSupervisor
         ? [begin(() => messengerIngressSupervisor.stop())]
         : []),
       begin(() => inboundEmailAnswer.dispose()),
+      ...(emailCloseDay ? [begin(() => emailCloseDay.stop())] : []),
       ...(mailChatProof !== undefined ? [begin(() => mailChatProof.dispose())] : []),
       ...(mailChatAnswers !== undefined ? [begin(() => mailChatAnswers!.dispose())] : []),
       ...(stopMailChatSettled !== undefined ? [begin(() => stopMailChatSettled!())] : []),

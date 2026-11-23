@@ -337,6 +337,7 @@ export const TLS_CERTS_UPLOAD_DRAFT_STATUS_ATTR = 'data-recued-tls-certs-upload-
 /** One node per validator issue, attr value = the closed-list issue code. */
 export const TLS_CERTS_ISSUE_ATTR = 'data-recued-tls-certs-issue';
 export const TLS_CERTS_RESULT_ATTR = 'data-recued-tls-certs-result';
+export const TLS_CERTS_WRITE_PROGRESS_ATTR = 'data-recued-tls-certs-write-progress';
 export const TLS_CERTS_REMOVE_OPEN_BTN_ATTR = 'data-recued-tls-certs-remove-open';
 export const TLS_CERTS_REMOVE_CONFIRM_BTN_ATTR = 'data-recued-tls-certs-remove-confirm';
 export const TLS_CERTS_REMOVE_CANCEL_BTN_ATTR = 'data-recued-tls-certs-remove-cancel';
@@ -485,7 +486,10 @@ export const mountTlsCertificatesPanel = (
   const uploadReplaceButtons = new Map<string, HTMLButtonElement>();
   const removeOpenButtons = new Map<string, HTMLButtonElement>();
   let removeCancelButton: HTMLButtonElement | null = null;
+  let removeConfirmButton: HTMLButtonElement | null = null;
+  let removeProgress: HTMLElement | null = null;
   let uploadSubmitButton: HTMLButtonElement | null = null;
+  let uploadProgress: HTMLElement | null = null;
   let uploadCancelButton: HTMLButtonElement | null = null;
   let uploadForm: HTMLElement | null = null;
   let uploadFeedback: HTMLElement | null = null;
@@ -525,6 +529,7 @@ export const mountTlsCertificatesPanel = (
   const uploadFiles = new Map<keyof TlsCertificatesUploadFormValues, HTMLInputElement>();
   const uploadFieldHosts = new Map<keyof TlsCertificatesUploadFormValues, HTMLElement>();
   const pendingFileReads = new Map<keyof TlsCertificatesUploadFormValues, FileReader>();
+  const fileReadErrors = new Map<keyof TlsCertificatesUploadFormValues, HTMLElement>();
   const uploadValidationId = `tls-certs-upload-validation-${++nextTlsUploadValidationId}`;
   // Only the local gates identify a field; server refusals use shared feedback.
   let localUploadErrorField: keyof TlsCertificatesUploadFormValues | null = null;
@@ -566,6 +571,11 @@ export const mountTlsCertificatesPanel = (
     }
   };
 
+  const clearFileReadError = (field: keyof TlsCertificatesUploadFormValues): void => {
+    fileReadErrors.get(field)?.remove();
+    fileReadErrors.delete(field);
+  };
+
   const clearChildren = (el: HTMLElement): void => {
     while (el.firstChild) el.removeChild(el.firstChild);
   };
@@ -581,8 +591,10 @@ export const mountTlsCertificatesPanel = (
     uploadFiles.clear();
     uploadFieldHosts.clear();
     pendingFileReads.clear();
+    fileReadErrors.clear();
     uploadSubmitButton = null;
     uploadCancelButton = null;
+    uploadProgress = null;
   };
 
   const makeButton = (
@@ -657,6 +669,15 @@ export const mountTlsCertificatesPanel = (
     parent.appendChild(cell);
   };
 
+  const makeWriteProgress = (kind: 'upload' | 'remove', text: string): HTMLElement => {
+    const progress = makeNote(text, 'tls-certs-muted tls-certs-write-progress', TLS_CERTS_WRITE_PROGRESS_ATTR);
+    progress.setAttribute(TLS_CERTS_WRITE_PROGRESS_ATTR, kind);
+    progress.setAttribute('role', 'status');
+    progress.setAttribute('aria-atomic', 'true');
+    progress.setAttribute('tabindex', '-1');
+    return progress;
+  };
+
   /** Textarea + a file picker that fills it.
    *
    *  The TEXTAREA is the load-bearing control, not the file input: a PEM is
@@ -706,6 +727,7 @@ export const mountTlsCertificatesPanel = (
       if (disposed || !state.upload.open || uploadFiles.get(field) !== file) return;
       uploadFileRevision++;
       pendingFileReads.delete(field);
+      clearFileReadError(field);
       updateUploadResultMessage();
       const picked = (file as { files?: { length: number; [i: number]: unknown } | null }).files;
       const first = picked && picked.length > 0 ? picked[0] : null;
@@ -728,6 +750,17 @@ export const mountTlsCertificatesPanel = (
       });
       reader.addEventListener('loadend', () => {
         if (pendingFileReads.get(field) === reader) pendingFileReads.delete(field);
+      });
+      reader.addEventListener('error', () => {
+        if (disposed || !state.upload.open || uploadFiles.get(field) !== file
+          || pendingFileReads.get(field) !== reader) return;
+        pendingFileReads.delete(field);
+        const message = makeNote(
+          `Could not read the file for ${labelText}. Choose it again or paste its PEM text. Existing text is unchanged.`,
+          'tls-certs-error', TLS_CERTS_ERROR_ATTR,
+        );
+        fileReadErrors.set(field, message);
+        wrap.appendChild(message);
       });
       reader.readAsText(first as Blob);
     });
@@ -827,6 +860,10 @@ export const mountTlsCertificatesPanel = (
             makeNote(state.remove.error, 'tls-certs-error', TLS_CERTS_ERROR_ATTR),
           );
         }
+        if (state.remove.saving) {
+          removeProgress = makeWriteProgress('remove', 'Removing certificate…');
+          confirm.appendChild(removeProgress);
+        }
         const confirmActions = doc.createElement('div');
         confirmActions.className = 'tls-certs-actions';
         const cancel = makeButton('Cancel', 'close', TLS_CERTS_REMOVE_CANCEL_BTN_ATTR, 'secondary', () => {
@@ -836,8 +873,7 @@ export const mountTlsCertificatesPanel = (
         }, state.remove.saving);
         removeCancelButton = cancel;
         confirmActions.appendChild(cancel);
-        confirmActions.appendChild(
-          makeButton(
+        removeConfirmButton = makeButton(
             state.remove.saving ? 'Removing…' : 'Remove certificate',
             'delete',
             TLS_CERTS_REMOVE_CONFIRM_BTN_ATTR,
@@ -846,8 +882,8 @@ export const mountTlsCertificatesPanel = (
               void handle.confirmRemove();
             },
             state.remove.saving,
-          ),
-        );
+          );
+        confirmActions.appendChild(removeConfirmButton);
         confirm.appendChild(confirmActions);
         el.appendChild(confirm);
       }
@@ -898,6 +934,9 @@ export const mountTlsCertificatesPanel = (
       if (uploadSubmitButton.textContent !== label) uploadSubmitButton.innerHTML = renderActionLabel('upload', label);
     }
     if (uploadCancelButton) uploadCancelButton.disabled = state.upload.saving;
+    if (uploadProgress && uploadProgress.hidden !== !state.upload.saving) {
+      uploadProgress.hidden = !state.upload.saving;
+    }
   };
 
   const renderUploadForm = (): void => {
@@ -974,6 +1013,8 @@ export const mountTlsCertificatesPanel = (
       ),
     );
 
+    uploadProgress = makeWriteProgress('upload', 'Uploading certificate…');
+    form.appendChild(uploadProgress);
     const actions = doc.createElement('div');
     actions.className = 'tls-certs-actions';
     uploadCancelButton = makeButton('Cancel', 'close', TLS_CERTS_UPLOAD_CANCEL_BTN_ATTR, 'secondary', () => {
@@ -1010,6 +1051,8 @@ export const mountTlsCertificatesPanel = (
     uploadReplaceButtons.clear();
     removeOpenButtons.clear();
     removeCancelButton = null;
+    removeConfirmButton = null;
+    removeProgress = null;
     clearChildren(inventory);
 
     const heading = doc.createElement('h3');
@@ -1059,6 +1102,10 @@ export const mountTlsCertificatesPanel = (
   const render = (): void => {
     if (disposed) return;
     const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
+    const keepUploadFocus = (uploadProgress !== null && doc.activeElement === uploadProgress)
+      || (state.upload.saving && uploadSubmitButton !== null && doc.activeElement === uploadSubmitButton);
+    const keepRemoveFocus = (removeProgress !== null && doc.activeElement === removeProgress)
+      || (state.remove.saving && removeConfirmButton !== null && doc.activeElement === removeConfirmButton);
     uploadOpenButton = null;
     // Keep the native form connected through validation and write feedback:
     // rebuilding it would discard selected files and their draft guard.
@@ -1114,6 +1161,14 @@ export const mountTlsCertificatesPanel = (
       uploadActions.appendChild(actions);
     }
     if (keepReadFocus) focusReadTarget();
+    if (keepUploadFocus) {
+      if (state.upload.saving) uploadProgress?.focus?.();
+      else if (state.upload.result !== null || !focusButton(uploadSubmitButton)) focusReadTarget();
+    }
+    if (keepRemoveFocus) {
+      if (state.remove.saving) removeProgress?.focus?.();
+      else if (!focusButton(removeConfirmButton)) focusReadTarget();
+    }
   };
 
   const load = (): Promise<void> => {
@@ -1208,6 +1263,7 @@ export const mountTlsCertificatesPanel = (
     setUploadField: (field, value) => {
       if (disposed) return;
       pendingFileReads.delete(field);
+      clearFileReadError(field);
       localUploadErrorField = null;
       earlierUploadFailureDomain = null;
       state = {

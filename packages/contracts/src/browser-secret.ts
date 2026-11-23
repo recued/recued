@@ -35,10 +35,18 @@ export interface BrowserSecretPrompt {
   readonly field: string;
   readonly remember: boolean;
   readonly expires_at: number;
+  /** D-402 slice H5 (ruling 3) — the browser it is typed in, by the owner's name, when Recued knows it: a
+   *  remembered secret is kept for that browser alone. */
+  readonly browser?: string;
 }
 
 /** A login the owner chose to remember, as the owner's list shows it: never the secret. */
 export interface BrowserLoginRow {
+  /** D-402 slice H5 (ruling 3) — the browser it was saved in, by its lasting id, and only that one: two
+   *  accounts on one site in two browsers each keep their own. */
+  readonly browser: string;
+  /** The browser's name as its owner gave it, when the list could name it. */
+  readonly browser_name?: string;
   /** The origin the secret is typed on, and only there: `https://login.live.com`. */
   readonly origin: string;
   readonly site: string;
@@ -57,5 +65,7 @@ export const readBrowserSecretPrompt = (payload: unknown): BrowserSecretPrompt |
   const p = payload as Record<string, unknown>;
   if ((p.kind !== 'password' && p.kind !== 'PIN' && p.kind !== 'sign-in code') || typeof p.site !== 'string'
     || typeof p.field !== 'string' || typeof p.remember !== 'boolean' || typeof p.expires_at !== 'number') return undefined;
-  return { kind: p.kind, site: p.site, field: p.field, remember: p.remember, expires_at: p.expires_at };
+  return { kind: p.kind, site: p.site, field: p.field, remember: p.remember, expires_at: p.expires_at,
+    // D-402 slice H5 — the browser it is typed in, by the owner's name, when the ask named one.
+    ...(typeof p.browser === 'string' && p.browser !== '' ? { browser: p.browser } : {}) };
 };

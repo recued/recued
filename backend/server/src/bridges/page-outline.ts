@@ -22,8 +22,28 @@
  *  tags, a closed list of attributes, every text and value escaped, every element closed, even on
  *  a page it cut), and a parser for exactly that grammar needs no dependency. */
 
+import { createHash } from 'node:crypto';
+import type { BrowserControlEvidence } from '@recued/contracts';
+import { browserControlScope } from './browser-control-scope.js';
+import { browserDataEntries, type BrowserEntrySnapshot } from './browser-data-entries.js';
+import { browserReadRanges, type BrowserReadRange } from './browser-entry-view.js';
+import { browserTableHeaders } from './browser-table-headers.js';
+
 /** How much of a line's text the outline shows before cutting it. */
 export const PAGE_OUTLINE_LINE_CHARS = 100;
+/** 2026-11-22 (the owner: "build the 'show the blocker' version") — how the outline's first line ends when what is on top
+ *  of the page is something the page marks hidden and that is no dialog (`data-recued-cover`): an ad's full-screen layer,
+ *  one with a countdown before its Close button shows. ⚠ Model-facing — see `chat-prompt-optimization-log.md`. */
+export const PAGE_COVER_NOTE_TAIL = 'Nothing behind it can be read or used until it goes: close it if it shows how, or wait if '
+  + 'it says when.';
+/** How that first line starts, for a later answer to tell that the model was shown it. */
+export const PAGE_COVER_NOTE_START = '(Something covers this page';
+/** Whether a page's address shows a Google vignette ad over it (`PAGE_COVERED_BY_AD_NOTE`, dom-adapter.ts). Its cover is
+ *  then named by that note, which says how to close it, and not by the outline's (2026-11-22, the owner: "do the two
+ *  followups"): two notes with different advice cost turns on bench task ZV. */
+export const pageCoveredByAd = (url: string): boolean => {
+  try { return new URL(url).hash === '#google_vignette'; } catch { return false; }
+};
 /** D-335 slice AU — of a cut line, the share its start keeps; its end keeps the rest. The owner, on a
  *  quote's author cut from its line: "Cut in the middle". The end of a line is where its author, its
  *  price, its date or its last link stands, and a line cut at its end lost exactly that: task G with
@@ -47,9 +67,7 @@ export const PAGE_TEXT_PART_CHARS = 16_000;
  *  web page sends a part to a separate model, which can take more than a model reading a page
  *  round by round should carry in its context. */
 export const PAGE_PART_MAX_CHARS = 60_000;
-/** D-335 slice Q — a heading `find` matches comes with the lines of its section after it, up to
- *  this many, for the first few headings found: a search for "See also" answers the list. */
-export const PAGE_FIND_SECTION_LINES = 8;
+/** A heading search includes its whole section within one ordinary outline part. */
 export const PAGE_FIND_SECTIONS = 3;
 
 export interface OutlineElement {
@@ -57,6 +75,10 @@ export interface OutlineElement {
   tag: string;
   attrs: Record<string, string | true>;
   children: OutlineNode[];
+  /** An empty sibling retained only for positional collection, never page evidence. */
+  structuralOnly?: true;
+  /** This branch's rendered children differ from its original DOM structure. */
+  structuralIncomplete?: true;
 }
 export interface OutlineText {
   kind: 'text';
@@ -65,7 +87,7 @@ export interface OutlineText {
 export type OutlineNode = OutlineElement | OutlineText;
 
 /** The elements the Bridge writes without a closing tag (`page-inspect.ts` `VOID`). */
-const VOID = new Set(['area', 'br', 'col', 'embed', 'hr', 'img', 'input', 'source', 'track', 'wbr']);
+const VOID = new Set(['area', 'br', 'col', 'embed', 'hr', 'img', 'input', 'source', 'track', 'wbr', 'link', 'meta', 'base']);
 const TAG = /<(\/?)([A-Za-z][\w.:-]*)((?:\s+[\w:.-]+(?:="[^"]*")?)*)\s*\/?>/y;
 const ATTRIBUTE = /\s+([\w:.-]+)(?:="([^"]*)")?/g;
 
@@ -75,7 +97,7 @@ const unescape = (text: string): string =>
 
 /** The Bridge's cleaned HTML as a tree. Tolerant of what the grammar never writes: a `<` that
  *  opens no tag is text, and a closing tag closes whatever it names, or nothing. */
-export const parseInspectHtml = (html: string): OutlineElement => {
+export const parseInspectHtml = (html: string, preserveStructure = false): OutlineElement => {
   const root: OutlineElement = { kind: 'element', tag: '#root', attrs: {}, children: [] };
   const open: OutlineElement[] = [root];
   const top = () => open[open.length - 1]!;
@@ -86,7 +108,7 @@ export const parseInspectHtml = (html: string): OutlineElement => {
     if (last?.kind === 'text') last.text += unescape(raw);
     else children.push({ kind: 'text', text: unescape(raw) });
   };
-  let at = 0;
+  let at = 0, hasStructural = false;
   while (at < html.length) {
     const lt = html.indexOf('<', at);
     if (lt === -1) {
@@ -112,9 +134,27 @@ export const parseInspectHtml = (html: string): OutlineElement => {
     }
     const attrs: Record<string, string | true> = {};
     for (const [, key, value] of attributes!.matchAll(ATTRIBUTE)) attrs[key!.toLowerCase()] = value === undefined ? true : unescape(value);
-    const element: OutlineElement = { kind: 'element', tag, attrs, children: [] };
+    if (Object.hasOwn(attrs, 'data-recued-structural-only')) hasStructural = true;
+    const incomplete = Object.hasOwn(attrs, 'data-recued-structure-incomplete');
+    delete attrs['data-recued-structure-incomplete'];
+    const element: OutlineElement = { kind: 'element', tag, attrs, children: [],
+      ...(preserveStructure && incomplete ? { structuralIncomplete: true } : {}) };
     top().children.push(element);
     if (!VOID.has(tag)) open.push(element);
+  }
+  // Parse closing tags normally first, so dropping a placeholder cannot close
+  // its same-tag parent or expose anything inside a malformed placeholder.
+  const pending = hasStructural ? [root] : [];
+  while (pending.length) {
+    const parent = pending.pop()!;
+    parent.children = parent.children.filter(child => {
+      if (child.kind !== 'element') return true;
+      if (Object.hasOwn(child.attrs, 'data-recued-structural-only')) {
+        child.attrs = {}; child.children = []; child.structuralOnly = true;
+        return preserveStructure;
+      }
+      pending.push(child); return true;
+    });
   }
   return root;
 };
@@ -147,6 +187,26 @@ const attr = (element: OutlineElement, name: string): string | undefined => {
   return typeof value === 'string' && value.trim() !== '' ? squash(value).trim() : undefined;
 };
 
+/** 2026-11-21 (D-402, task P) — the kind of card an element is, as `within.card` names it and the Bridge's
+ *  `closest()` finds it: its tag with its test id, else with its readable classes (at most three, as a read
+ *  keeps them). Undefined for an element with neither, or a name the Act contract does not take. */
+export const cardKindOf = (element: OutlineElement): string | undefined => {
+  if (!/^[a-z][a-z0-9-]{0,20}$/u.test(element.tag)) return undefined;
+  const testid = attr(element, 'data-testid');
+  if (testid !== undefined && /^[\w:.-]{1,100}$/u.test(testid)) return `${element.tag}[data-testid="${testid}"]`;
+  const classes = (attr(element, 'class') ?? '').split(/\s+/u)
+    .filter((name) => /^[A-Za-z][\w-]{1,40}$/u.test(name) && !/\d{4,}|^(ember|react|ng-|__|:r|mui|css-|sc-|jsx-)/iu.test(name)).slice(0, 3);
+  return classes.length > 0 ? `${element.tag}.${classes.join('.')}` : undefined;
+};
+/** Whether an element is of a card kind, as `closest()` matches it: the tag, and the test id, or every class. */
+export const isOfCardKind = (element: OutlineElement, kind: string): boolean => {
+  const parsed = /^([a-z][a-z0-9-]*)(?:\[data-testid="([^"]+)"\]|((?:\.[\w-]+)+))$/u.exec(kind);
+  if (parsed === null || element.tag !== parsed[1]) return false;
+  if (parsed[2] !== undefined) return attr(element, 'data-testid') === parsed[2];
+  const has = new Set((attr(element, 'class') ?? '').split(/\s+/u));
+  return parsed[3]!.slice(1).split('.').every((name) => has.has(name));
+};
+
 /** A piece of a line: text, or something a person can act on, kept whole when a line is cut. A gap
  *  is an element that arrived empty where the page showed a space: the Bridge drops text that is
  *  only white space, a no-break space among it, and Wikipedia writes each `&nbsp;` in a `span` of
@@ -156,7 +216,9 @@ type Piece =
   | { text: string; ref?: undefined; gap?: true; whole?: string }
   /** `whole`: the label with every picture's description in full. `plain`: what the page's text
    *  shows of it (slice Q): a link's words, and nothing for a field, a button or another control. */
-  | { text: string; ref: string; anchor?: string; whole?: string; plain?: string };
+  | { text: string; ref: string; anchor?: string; whole?: string; plain?: string;
+      /** Display annotations do not consume the page-content clipping budget. */
+      typeLabel?: string };
 
 /** Each gap as the space it held ("b. 1894", "1881 – 1953"), but none at a line's edge, after an
  *  opening bracket or before a closing mark ("Did you know..."). A link shows as `[label](eN)`. */
@@ -216,18 +278,36 @@ export interface OutlineLine {
  *  own words, its label, `aria-label`, placeholder, title, a picture's description, a button's
  *  value), for a step that names an element by its text. */
 export interface OutlineControl {
+  /** D-402 slice G (§4.1) — what the row it sits in shows (the nearest list item, table row or row by
+   *  its role above it, as the Bridge's own check finds it), for a step naming the item it acts in. */
+  item?: string;
+  /** 2026-11-21 (D-402, task P) — for a control no row holds, what each card above it shows, by the kind of
+   *  card (`cardKindOf`, of a kind the page shows more than once): the nearest of each kind, as the Bridge's
+   *  `closest()` finds it, for a step naming the card it acts in (`within.card`). */
+  cards?: Readonly<Record<string, string>>;
   ref: string;
   kind: string;
   names: string[];
+  tag?: string;
+  type?: string;
+  label?: string;
+  /** Observed semantic landmark, used only to order recovery choices. */
+  landmark?: 'dialog' | 'main' | 'navigation';
+  /** Readable background control, excluded from name lookup while a modal is open. */
+  blocked?: true;
   /** D-345 slice E — a link's address (http or https, made whole against the page), so a step that
    *  saves the file it links to can have the server fetch it first. */
   href?: string;
   /** Slice Z — how a field is found again on a later visit, for a secret kept for it: its `name`,
    *  else its `id` (`name:passwd`, `id:i0118`). Absent for one with neither. */
   field?: string;
+  /** Internal loading-field comparison, derived from the observed field and
+   * Bridge form context. Never authorizes a click/submission or leaves the store. */
+  field_identity?: string;
 }
 
 export interface PageOutline {
+  entries?: BrowserEntrySnapshot;
   /** The outline: one line per block, cut lines ending `…(bN)`. */
   text: string;
   /** The same lines one by one, as the outline shows them: what an answer's part is made of. */
@@ -307,18 +387,90 @@ export const outlinePage = (html: string,
   };
   index(root);
 
+  // D-402 slice G (§4.1) — the row each element sits in: the nearest list item, table row, article or
+  // row by its role above it (`li, tr, [role="row"], [role="listitem"], [role="option"],
+  // [role="article"], article`, the Bridge's own list, `page-fields.ts`), and what that row shows.
+  const rowAbove = new WeakMap<OutlineElement, OutlineElement>();
+  const rowsOf = (node: OutlineNode, row: OutlineElement | undefined): void => {
+    if (node.kind !== 'element') return;
+    if (row !== undefined) rowAbove.set(node, row);
+    const isRow = ['li', 'tr', 'article'].includes(node.tag) || ['row', 'listitem', 'option', 'article'].includes(attr(node, 'role') ?? '');
+    for (const child of node.children) rowsOf(child, isRow ? node : row);
+  };
+  rowsOf(root, undefined);
+  const rowShows = new WeakMap<OutlineElement, string>();
+  const itemOf = (element: OutlineElement): string | undefined => {
+    const row = rowAbove.get(element);
+    if (row === undefined) return undefined;
+    let shows = rowShows.get(row);
+    if (shows === undefined) { shows = words(textInside(row)).slice(0, 500); rowShows.set(row, shows); }
+    return shows === '' ? undefined : shows;
+  };
+
   // The page's main content: its `main` (or `role="main"`), else its one `article`.
   const elements = (node: OutlineNode): OutlineElement[] => node.kind !== 'element' ? []
     : [node, ...node.children.flatMap(elements)];
   const all = elements(root);
+  // 2026-11-21 (D-402, task P) — the cards a control no row holds sits in: for each kind of card above it that
+  // the page shows more than once, the nearest element of that kind (as `closest()` finds it) and what it shows.
+  const parentOf = new WeakMap<OutlineElement, OutlineElement>();
+  for (const element of all) for (const child of element.children) if (child.kind === 'element') parentOf.set(child, element);
+  // Each kind counted among the elements that carry its test id or its first class, indexed once, as a long
+  // page has thousands of elements and an outline is made for every read.
+  let carrying: Map<string, OutlineElement[]> | undefined;
+  const kindCounts = new Map<string, number>();
+  const kindCount = (kind: string): number => {
+    let count = kindCounts.get(kind);
+    if (count !== undefined) return count;
+    if (carrying === undefined) {
+      carrying = new Map();
+      for (const element of all) {
+        const keys = [...(attr(element, 'class') ?? '').split(/\s+/u).filter(Boolean).map((name) => `.${name}`),
+          ...(attr(element, 'data-testid') !== undefined ? [`[${attr(element, 'data-testid')!}]`] : [])];
+        for (const key of keys) { const list = carrying.get(key) ?? []; list.push(element); carrying.set(key, list); }
+      }
+    }
+    const testid = /\[data-testid="([^"]+)"\]$/u.exec(kind)?.[1];
+    const key = testid !== undefined ? `[${testid}]` : `.${kind.split('.')[1] ?? ''}`;
+    count = (carrying.get(key) ?? []).filter((element) => isOfCardKind(element, kind)).length;
+    kindCounts.set(kind, count);
+    return count;
+  };
+  const cardsOf = (element: OutlineElement): Record<string, string> | undefined => {
+    if (rowAbove.get(element) !== undefined) return undefined;
+    const above: OutlineElement[] = [];
+    for (let up = parentOf.get(element); up !== undefined; up = parentOf.get(up)) above.push(up);
+    const cards: Record<string, string> = {};
+    for (const kind of new Set(above.map(cardKindOf).filter((one): one is string => one !== undefined))) {
+      if (kindCount(kind) < 2) continue;
+      const card = above.find((up) => isOfCardKind(up, kind))!;
+      let shows = rowShows.get(card);
+      if (shows === undefined) { shows = words(textInside(card)).slice(0, 500); rowShows.set(card, shows); }
+      if (shows !== '') cards[kind] = shows;
+    }
+    return Object.keys(cards).length > 0 ? cards : undefined;
+  };
+  const controlScope = browserControlScope(root);
   const articles = all.filter((element) => element.tag === 'article');
   const mainElement = all.find((element) => element.tag === 'main' || attr(element, 'role') === 'main')
     ?? (articles.length === 1 ? articles[0] : undefined);
+  const landmarks = new WeakMap<OutlineElement, NonNullable<OutlineControl['landmark']>>();
+  for (const node of controlScope.nodes) {
+    const parent = controlScope.parents.get(node);
+    const inherited = parent ? landmarks.get(parent) : undefined;
+    const role = attr(node, 'role')?.split(/\s+/)[0];
+    const landmark = node === controlScope.modal || inherited === 'dialog' ? 'dialog'
+      : ['nav', 'header', 'footer', 'aside'].includes(node.tag)
+        || ['navigation', 'banner', 'contentinfo', 'complementary'].includes(role ?? '') ? 'navigation'
+        : node === mainElement ? 'main' : inherited;
+    if (landmark) landmarks.set(node, landmark);
+  }
   let inMain = mainElement === undefined;
 
   const out: PageOutline = { text: '', shown: [], blocks: new Map(), lines: [], hasMain: mainElement !== undefined, controls: [],
     headings: new Map() };
   const rendered: string[] = [];
+  let tableSummaries = 0;
   let heading: string | undefined;
   /** The line each heading's ids start, for a contents link to name: `#History` → 68. */
   const headingLines = new Map<string, number>();
@@ -326,14 +478,20 @@ export const outlinePage = (html: string,
   // outline's first line says it is open and where, since a model reading from the top would
   // otherwise try what is behind it. The line is kept first, so every number after it holds, and
   // written once the walk has reached the dialog. A read of one part leaves it to the whole page's.
-  const modal = firstLine === 1 ? all.find((element) => element.attrs.modal !== undefined || attr(element, 'aria-modal') === 'true')
+  // 2026-11-22 — or what the Bridge found covering the page though the page marks it hidden (`data-recued-cover`).
+  const modal = firstLine === 1 ? controlScope.modal ?? all.find((element) => element.attrs.modal !== undefined || attr(element, 'aria-modal') === 'true'
+    || Object.hasOwn(element.attrs, 'data-recued-cover'))
     : undefined;
+  // Under Google's vignette ad, its own note names the cover (`pageCoveredByAd`): no line for it here.
+  const noted = modal !== undefined && !(Object.hasOwn(modal.attrs, 'data-recued-cover') && pageCoveredByAd(options.url ?? ''));
   let modalAt: number | undefined;
-  if (modal !== undefined) {
+  if (noted) {
     rendered.push('');
     out.lines.push({ text: '', plain: '', heading: undefined, block: undefined, main: true });
   }
+  const sourceLines = new WeakMap<OutlineElement, number>();
   const reached = (element: OutlineElement) => {
+    if (!sourceLines.has(element)) sourceLines.set(element, firstLine + out.lines.length);
     if (element === modal && modalAt === undefined) modalAt = firstLine + out.lines.length;
   };
 
@@ -352,29 +510,49 @@ export const outlinePage = (html: string,
     const own = words(joinTexts(inner.filter((piece) => piece.ref === undefined).map((piece) => piece.text)));
     // The same with each picture's description whole, for the line in full and the page's text.
     const ownWhole = words(joinTexts(inner.filter((piece) => piece.ref === undefined).map((piece) => piece.whole ?? piece.text)));
+    // Put the interaction kind beside the label the model selects. Keep the
+    // same raw names below for lookup and the same plain text for page reads.
+    const kind = tag === 'input' ? FIELD_WORDS[(attr(element, 'type') ?? 'text').toLowerCase()] ?? 'text field'
+      : tag === 'select' ? 'list' : tag === 'textarea' ? 'text area'
+        : Object.hasOwn(element.attrs, 'contenteditable') && attr(element, 'contenteditable') !== 'false' ? 'text editor'
+          : role !== undefined && role !== 'button' && role !== 'link' && ROLE_WORDS[role] !== undefined ? ROLE_WORDS[role]!
+            : tag === 'a' || role === 'link' ? 'link' : tag === 'button' || role === 'button' ? 'button' : tag;
     let label: string;
+    const literal = (key: string): string | undefined => typeof element.attrs[key] === 'string' ? element.attrs[key]
+      : element.attrs[key] === true ? '' : undefined;
+    const attributes = [['type', tag === 'input' || tag === 'button' ? literal('type') : undefined],
+      ['role', literal('role')], ['contenteditable', literal('contenteditable')]] as const;
+    const typeLabel = (tag === 'a' && literal('role') === undefined && literal('contenteditable') === undefined ? 'link' : tag)
+      + attributes.filter(([, value]) => value !== undefined).map(([key, value]) => ` ${key}=${JSON.stringify(value)}`).join('')
+      + (tag === 'select' && Object.hasOwn(element.attrs, 'multiple') ? ' multiple' : '');
     if (tag === 'input') {
-      const type = attr(element, 'type') ?? 'text';
+      const type = (attr(element, 'type') ?? 'text').toLowerCase();
       const kind = FIELD_WORDS[type] ?? 'text field';
       const value = attr(element, 'value');
       const name = named ?? (kind === 'button' ? value : undefined) ?? attr(element, 'name') ?? '';
-      const shown = kind !== 'button' && kind !== 'checkbox' && kind !== 'radio button' && value !== undefined ? ` = "${value}"` : '';
-      label = `${kind}${name ? ` "${name}"` : ''}${shown}${flags}`;
+      // A fallback name equal to the copyable #id adds no identity. Keep human
+      // labels and every lookup name, and never invent a missing type attribute.
+      const displayName = named === undefined && kind !== 'button' && name === attr(element, 'id') && /^[A-Za-z][\w-]*$/.test(name) ? '' : name;
+      const shown = kind !== 'button' && kind !== 'checkbox' && kind !== 'radio button' && value !== undefined ? `${displayName ? ' = ' : ''}${JSON.stringify(value)}` : '';
+      label = `${displayName}${shown}${flags}`.trim();
     } else if (tag === 'select') {
-      const options = element.children.filter((child): child is OutlineElement => child.kind === 'element' && child.tag === 'option');
-      const chosen = options.find((option) => option.attrs.selected === true);
+      const options = element.children.flatMap(child => child.kind !== 'element' ? [] : child.tag === 'option' ? [child]
+        : child.tag === 'optgroup' ? child.children.filter((part): part is OutlineElement => part.kind === 'element' && part.tag === 'option') : []);
+      const chosen = options.filter(option => option.attrs.selected === true).map(option => words(textInside(option)));
       // Every option: a long list is cut with its line, and its block names them all.
       const listed = options.map((option) => words(textInside(option))).join(' | ');
-      label = `list${named ? ` "${named}"` : ''}${chosen ? ` = "${words(textInside(chosen))}"` : ''}${flags}: ${listed}`;
+      const selection = chosen.length ? ` = ${JSON.stringify(Object.hasOwn(element.attrs, 'multiple') ? chosen : chosen[0])}` : '';
+      label = `${named ?? ''}${selection}${flags}`.trim();
+      if (listed) label += `${label ? ': ' : ''}${listed}`;
     } else if (tag === 'textarea') {
-      label = `text area${named ? ` "${named}"` : ''}${own ? ` = "${own}"` : ''}${flags}`;
-    } else if (attr(element, 'contenteditable') !== undefined && attr(element, 'contenteditable') !== 'false') {
-      label = `text editor${named ? ` "${named}"` : ''}${own ? ` = "${own}"` : ''}${flags}`;
+      label = `${named ?? ''}${own ? `${named ? ' = ' : ''}${JSON.stringify(own)}` : ''}${flags}`.trim();
+    } else if (literal('contenteditable') !== undefined && literal('contenteditable') !== 'false') {
+      label = `${named ?? ''}${own ? `${named ? ' = ' : ''}${JSON.stringify(own)}` : ''}${flags}`.trim();
     } else {
-      const kind = role !== undefined && role !== 'button' && role !== 'link' ? ROLE_WORDS[role] : undefined;
       const text = own || named || attr(element, 'alt') || nameInside(element)
-        || (tag === 'button' ? 'button' : tag === 'a' ? 'link' : tag);
-      label = `${kind ? `${kind} ` : ''}${text}${flags}`;
+        || (kind === 'button' || kind === 'link' ? '' : tag);
+      label = named && own && named !== own ? `${named}: ${own}` : text;
+      label += flags;
     }
     // A link to a part of this same page (a contents list) names that part's id, which Read part
     // of a web page takes as a selector; the Bridge writes links as it reads them, so absolute. A
@@ -385,14 +563,9 @@ export const outlinePage = (html: string,
       : FIELD_TAGS.has(tag) && id !== undefined && /^[A-Za-z][\w-]*$/.test(id) ? `#${id}` : undefined;
     // In the page's text a link is its words; a field, a button or another control is not text.
     const control = FIELD_TAGS.has(tag) || (role !== undefined && CONTROL_ROLES.has(role))
-      || (attr(element, 'contenteditable') !== undefined && attr(element, 'contenteditable') !== 'false');
+      || (Object.hasOwn(element.attrs, 'contenteditable') && attr(element, 'contenteditable') !== 'false');
     const whole = own === ownWhole ? undefined : label.replace(own, () => ownWhole);
     // Slice Y — the control, its kind and every name the page gives it, for a step naming it by text.
-    const kind = tag === 'input' ? FIELD_WORDS[attr(element, 'type') ?? 'text'] ?? 'text field'
-      : tag === 'select' ? 'list' : tag === 'textarea' ? 'text area'
-        : attr(element, 'contenteditable') !== undefined && attr(element, 'contenteditable') !== 'false' ? 'text editor'
-          : role !== undefined && role !== 'button' && role !== 'link' && ROLE_WORDS[role] !== undefined ? ROLE_WORDS[role]!
-            : tag === 'a' || role === 'link' ? 'link' : tag === 'button' || role === 'button' ? 'button' : tag;
     // Every name the outline shows it by (a field's `name` when it has no other) and the words of a
     // label around it, which the outline shows as a line of their own.
     // What a list, a text area or an editor holds (its options, its text) is no name of it.
@@ -416,11 +589,25 @@ export const outlinePage = (html: string,
         return undefined;
       }
     })();
-    out.controls.push({ ref, kind, names: [...new Set(names.map((name) => words(name)))],
+    const landmark = controlScope.modal && controlScope.allowed.has(element) ? 'dialog' : landmarks.get(element);
+    const fieldContext = attr(element, 'data-recued-field-context');
+    const fieldIdentity = fieldContext !== undefined && fieldContext.length <= 4_000 && !fieldContext.endsWith('…')
+      ? createHash('sha256').update(JSON.stringify([element, fieldContext, landmark, controlScope.allowed.has(element)])).digest('hex') : undefined;
+    const item = itemOf(element);
+    const cards = item === undefined ? cardsOf(element) : undefined;
+    out.controls.push({ ref, kind, names: [...new Set(names.map((name) => words(name)))], tag,
+      ...(item !== undefined ? { item } : {}),
+      ...(cards !== undefined ? { cards } : {}),
+      ...(['input', 'button'].includes(tag) && attr(element, 'type') ? { type: attr(element, 'type')!.toLowerCase() } : {}),
+      ...(['a', 'button'].includes(tag) ? { label: words(named ?? ownWhole).slice(0, 160) } : {}),
+      ...(fieldIdentity ? { field_identity: fieldIdentity } : {}),
+      ...(landmark ? { landmark } : {}),
+      ...(!controlScope.allowed.has(element) ? { blocked: true as const } : {}),
       ...(fieldName !== undefined && fieldName.trim() !== '' ? { field: `name:${fieldName.trim()}` }
         : id !== undefined && id.trim() !== '' ? { field: `id:${id.trim()}` } : {}),
       ...(href !== undefined ? { href } : {}) });
-    pieces.push({ text: label, ref, ...(anchor !== undefined ? { anchor } : {}), ...(whole !== undefined ? { whole } : {}),
+    pieces.push({ text: label, ref, typeLabel,
+      ...(anchor !== undefined ? { anchor } : {}), ...(whole !== undefined ? { whole } : {}),
       plain: control ? '' : ownWhole || named || attr(element, 'alt') || nameInside(element) || '' });
     // What can be acted on inside it (a link in a card that is itself a button) follows it.
     for (const piece of inner) if (piece.ref !== undefined) pieces.push(piece);
@@ -433,6 +620,7 @@ export const outlinePage = (html: string,
       pieces.push({ text: node.text });
       return;
     }
+    reached(node);
     if (attr(node, 'ref') !== undefined) {
       actionable(node, pieces);
       return;
@@ -466,8 +654,12 @@ export const outlinePage = (html: string,
   /** Write one line: its pieces, cut at `lineChars` of text, the whole line kept when cut. */
   const line = (prefix: string, gapped: Piece[], preformatted = false) => {
     const pieces = closeGaps(gapped);
-    const show = (piece: Piece, text = piece.text) => piece.ref === undefined ? text
-      : `[${words(text)}](${piece.ref}${piece.anchor ? ` ${piece.anchor}` : ''})`;
+    const show = (piece: Piece, text = piece.text) => {
+      if (piece.ref === undefined) return text;
+      const name = words(text);
+      const label = piece.typeLabel ? `${piece.typeLabel}${name ? `: ${name}` : ''}` : name;
+      return `[${label}](${piece.ref}${piece.anchor ? ` ${piece.anchor}` : ''})`;
+    };
     // The Bridge drops text that is only white space, so a link arrives touching the word or link
     // beside it: it gets the space the page shows, but not after "(" or before ")" or ",".
     const join = (shown: Array<{ text: string; ref: boolean }>) => shown.reduce((all, next, i) => {
@@ -645,6 +837,11 @@ export const outlinePage = (html: string,
       }
       return;
     }
+    if ((tag === 'table' || ['table', 'grid', 'treegrid'].includes(attr(element, 'role') ?? '')) && tableSummaries < 3) {
+      const summary = browserTableHeaders(element, false);
+      const headers = summary.columns ?? summary.headers;
+      if (headers?.length) { line('', [{ text: `[table ${summary.columns ? 'columns' : 'header cells'}] ${headers.join(' | ')}` }]); tableSummaries++; }
+    }
     if (tag === 'tr') {
       const cells = flatRow(element);
       if (cells) {
@@ -670,14 +867,14 @@ export const outlinePage = (html: string,
   };
 
   container(root, '', 0);
-  if (modal !== undefined) {
+  if (noted && modal !== undefined) {
     const heading = elements(modal).find((element) => /^h[1-6]$/.test(element.tag));
     const shown = modalAt !== undefined && modalAt <= out.lines.length ? out.lines[modalAt - 1]!.plain : '';
     const label = words(attr(modal, 'aria-label') ?? (heading !== undefined ? textInside(heading) : shown));
     const named = label !== '' ? `: “${label.length > 60 ? `${label.slice(0, 60).trimEnd()}…` : label}”` : '';
-    const note = modalAt !== undefined && modalAt <= out.lines.length
-      ? `(A dialog is open at line ${String(modalAt)}${named}. Answer it or close it first: what is behind it cannot be used until then.)`
-      : `(A dialog is open${named}. Answer it or close it first: what is behind it cannot be used until then.)`;
+    const at = modalAt !== undefined && modalAt <= out.lines.length ? ` at line ${String(modalAt)}` : '';
+    const note = Object.hasOwn(modal.attrs, 'data-recued-cover') ? `${PAGE_COVER_NOTE_START}${at}${named}. ${PAGE_COVER_NOTE_TAIL})`
+      : `(A dialog is open${at}${named}. Answer it or close it first: what is behind it cannot be used until then.)`;
     rendered[0] = note;
     out.lines[0] = { ...out.lines[0]!, text: note, plain: note };
   }
@@ -699,11 +896,15 @@ export const outlinePage = (html: string,
   out.shown = rendered;
   out.text = rendered.join('\n');
   out.headings = headingLines;
+  out.entries = browserDataEntries(mainElement ?? root, node => sourceLines.get(node));
   return out;
 };
 
 /** A page's latest read, kept for `block`, `find` and `from`. */
 interface PageRead {
+  entries?: BrowserEntrySnapshot;
+  control_evidence?: BrowserControlEvidence;
+  identity?: string;
   url: string;
   title: string;
   truncated: boolean;
@@ -720,6 +921,9 @@ interface PageRead {
   readAt: number;
   /** An action on the page may have changed it since (slice Q). */
   acted: boolean;
+  loading?: boolean;
+  /** Positive document readiness evidence, independent of action eligibility. */
+  reportedLoading?: boolean;
   used: number;
   whole: boolean;
   /** Slice Y — the controls it names. */
@@ -733,6 +937,7 @@ export type PageForm = 'outline' | 'text';
 
 /** D-335 slice P — a run of a kept read's lines, as the outline shows them, or as the page's text. */
 export interface OutlinePart {
+  control_evidence?: BrowserControlEvidence;
   url: string;
   title: string;
   text: string;
@@ -749,23 +954,37 @@ export interface OutlinePart {
 }
 
 export interface PageReadStore {
+  /** Full cleaned, visible source lines, independently of response paging. */
+  dataSnapshot(page: string): { url: string; title: string; truncated: boolean; loading: boolean;
+    lines: Array<{ line: number; text: string; heading: string; level: number }>; entries?: BrowserEntrySnapshot } | undefined;
+  /** A fresh element view has its own line space and data capture. Register its refs/blocks
+   *  without appending region lines to, or renewing, an existing whole-page capture. */
+  region(page: string, read: { url: string; title: string; html: string; truncated: boolean; loading?: boolean;
+    control_evidence?: BrowserControlEvidence }, options: { from?: number; form: PageForm; chars?: number }):
+    { part: OutlinePart; snapshot: PageReadSnapshot };
   /** Outline a read of `page` and keep it; a read of the whole page replaces the last one, a read
    *  of one part adds its lines. `start` is the kept line this read's first line became: 1 for a
    *  whole page. */
-  outline(page: string, read: { url: string; title: string; html: string; truncated: boolean; whole: boolean }): PageOutline & { start: number };
+  outline(page: string, read: { url: string; title: string; html: string; truncated: boolean; whole: boolean; loading?: boolean; control_evidence?: BrowserControlEvidence }): PageOutline & { start: number };
   /** Slice Q — a new read of the whole page set beside the kept one. The same lines keep the kept
    *  read, its numbers and blocks, and only renew its time; others replace it, and `previous` holds
    *  the lines it had, for a part to go on after the line read last. */
-  refresh(page: string, read: { url: string; title: string; html: string; truncated: boolean }): { changed: boolean; previous?: OutlineLine[] };
+  refresh(page: string, read: { url: string; title: string; html: string; truncated: boolean; loading?: boolean; control_evidence?: BrowserControlEvidence }): { changed: boolean; previous?: OutlineLine[] };
   /** Slice Q — how long ago the Bridge read the whole page, `Infinity` once an action may have changed
    *  it, `undefined` when no read of the whole page is kept (a read of one part alone is not one). */
   age(page: string): number | undefined;
   /** Slice Q — an action on the page changed it, or may have: `find` and `from` read it again. */
   markChanged(page: string): void;
+  markLoading(page: string, loading: boolean): void;
+  loading(page: string): boolean;
+  loadingEvidence(page: string): boolean | undefined;
   /** Slice Y — the controls the kept read of `page` names, whether it is of the whole page or of
    *  parts (`whole`), and whether the page's read stopped before its end (`truncated`); undefined
    *  when none is kept or an action may have changed the page since. */
   controls(page: string): { controls: OutlineControl[]; whole: boolean; truncated: boolean } | undefined;
+  /** Comparison only: a loading snapshot must not directly authorize an action. */
+  pendingControls(page: string): { controls: OutlineControl[]; whole: boolean; truncated: boolean; url: string } | undefined;
+  readIdentity(page: string): string | undefined;
   /** Slice Z — the control a ref names in the kept read of `page`, even after an action on the page:
    *  a ref names one element for as long as its page lasts. */
   controlOf(page: string, ref: string): OutlineControl | undefined;
@@ -790,7 +1009,8 @@ export interface PageReadStore {
   /** Every kept line of the page that holds `text`, ignoring case, each after its line number; a
    *  heading with the lines of its section after it. `undefined` when no read of the whole page is
    *  kept. */
-  find(page: string, text: string): { url: string; title: string; truncated: boolean; matches: number; lines: string } | undefined;
+  find(page: string, text: string): { url: string; title: string; truncated: boolean; matches: number; lines: string;
+    read_ranges: BrowserReadRange[]; complete: boolean; next?: number } | undefined;
   /** Slice AJ — the page's text under the headings that hold `text`, ignoring case: each section
    *  whole, from its heading to the next heading of its rank or above, its subsections in it, for
    *  the first {@link PAGE_FIND_SECTIONS} such headings, up to `chars` characters (a part of the text
@@ -804,12 +1024,13 @@ export interface PageReadStore {
 }
 
 /** D-335 slice AJ — what a text `find` answers: the page's text under the headings that hold it,
- *  each section whole, where the outline's `find` answers lines cut to {@link PAGE_FIND_LINE_CHARS}
- *  and {@link PAGE_FIND_SECTION_LINES} of a section. */
+ *  each section whole. The outline's `find` preserves actionable refs and uses its own part budget. */
 export interface PageSections {
+  read_ranges: BrowserReadRange[];
   url: string;
   title: string;
   truncated: boolean;
+  complete: boolean;
   /** How many of the page's lines hold the text, headings or not. */
   matches: number;
   /** How many sections whose heading holds it are answered: 0 when no heading does, and the
@@ -828,6 +1049,35 @@ export interface PageChanges {
   added: Array<{ number: number; shown: string }>;
   gone: string[];
 }
+
+export type PageReadSnapshot = NonNullable<ReturnType<PageReadStore['dataSnapshot']>>;
+
+const dataSnapshotOf = (read: Pick<PageRead, 'url' | 'title' | 'truncated' | 'loading' | 'entries' | 'lines' | 'blocks'>): PageReadSnapshot => ({
+  url: read.url, title: read.title, truncated: read.truncated, loading: read.loading === true,
+  ...(read.entries ? { entries: structuredClone(read.entries) } : {}),
+  lines: read.lines.map((line, index) => ({ line: index + 1,
+    text: line.plain || (line.block ? read.blocks.get(line.block) : undefined) || line.text,
+    heading: line.heading ?? '', level: headingRank(line.text) ?? 0 })),
+});
+
+const outlinePart = (read: Pick<PageRead, 'url' | 'title' | 'shown' | 'lines' | 'hasMain' | 'truncated' | 'acted' | 'loading' | 'control_evidence'>,
+  from: number, form: PageForm, chars?: number): OutlinePart => {
+  const budget = chars ?? (form === 'text' ? PAGE_TEXT_PART_CHARS : PAGE_OUTLINE_PART_CHARS);
+  const taken: string[] = [];
+  let size = 0, first = -1, last = -1, more = false;
+  for (let at = Math.max(0, from - 1); at < read.lines.length; at += 1) {
+    const line = read.lines[at]!;
+    const text = form === 'outline' ? read.shown[at] : line.plain !== '' && (line.main || !read.hasMain) ? line.plain : undefined;
+    if (text === undefined) continue;
+    if (taken.length > 0 && size + text.length + 1 > budget) { more = true; break; }
+    taken.push(text); size += text.length + 1;
+    if (first < 0) first = at;
+    last = at;
+  }
+  return { url: read.url, title: read.title, text: taken.join('\n'), from: first < 0 ? from : first + 1,
+    to: first < 0 ? from - 1 : last + 1, total: read.lines.length, more, truncated: read.truncated, hasMain: read.hasMain,
+    ...(!read.acted && !read.loading && read.control_evidence ? { control_evidence: read.control_evidence } : {}) };
+};
 
 /** A line as `find` shows it: a long one around the text, or from its start. */
 const clipLine = (line: OutlineLine, needle?: string): string => {
@@ -862,14 +1112,42 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
     reads.set(page, read);
     return read;
   };
-  const keepWhole = (page: string, read: { url: string; title: string; truncated: boolean }, outline: PageOutline, next: number, firstBlock: number) => {
+  const identityOf = (read: { url: string; html: string; truncated: boolean }) =>
+    createHash('sha256').update(JSON.stringify([read.url, read.truncated, read.html])).digest('hex');
+  const keepWhole = (page: string, read: { url: string; title: string; html: string; truncated: boolean; loading?: boolean; control_evidence?: BrowserControlEvidence }, outline: PageOutline, next: number, firstBlock: number) => {
     reads.delete(page);
-    reads.set(page, { url: read.url, title: read.title, truncated: read.truncated, lines: outline.lines, shown: outline.shown,
+    reads.set(page, { identity: identityOf(read), url: read.url, title: read.title, truncated: read.truncated, lines: outline.lines, shown: outline.shown,
       blocks: outline.blocks, hasMain: outline.hasMain, next, firstBlock, readAt: now(), acted: false, used: now(), whole: true,
-      controls: outline.controls, headings: outline.headings });
+      controls: outline.controls, headings: outline.headings, control_evidence: read.control_evidence, entries: outline.entries,
+      reportedLoading: read.loading });
     sweep();
   };
   return {
+    dataSnapshot(page) {
+      const read = touch(page);
+      if (!read?.whole) return undefined;
+      return dataSnapshotOf(read);
+    },
+    region(page, read, options) {
+      const kept = touch(page);
+      let next = kept?.next ?? 0;
+      const firstBlock = next + 1;
+      const outline = outlinePage(read.html, { nextBlock: () => `b${String(++next)}`, url: read.url });
+      if (!kept) {
+        keepWhole(page, read, outline, next, firstBlock);
+        reads.get(page)!.whole = false;
+      } else {
+        kept.next = next;
+        for (const [block, text] of outline.blocks) kept.blocks.set(block, text);
+        const controls = new Map(kept.controls.map(control => [control.ref, control]));
+        for (const control of outline.controls) controls.set(control.ref, control);
+        kept.controls = [...controls.values()];
+        // A region never establishes that the rest of a loading/changed page settled.
+        if (read.loading === true) kept.loading = true;
+      }
+      const local = { ...outline, ...read, loading: read.loading === true, acted: false };
+      return { part: outlinePart(local, options.from ?? 1, options.form, options.chars), snapshot: dataSnapshotOf(local) };
+    },
     outline(page, read) {
       const kept = touch(page);
       let next = kept?.next ?? 0;
@@ -883,10 +1161,10 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
         return { ...outline, start: 1 };
       }
       reads.delete(page);
-      reads.set(page, { ...kept, lines: [...kept.lines, ...outline.lines], shown: [...kept.shown, ...outline.shown],
+      reads.set(page, { ...kept, identity: undefined, lines: [...kept.lines, ...outline.lines], shown: [...kept.shown, ...outline.shown],
         blocks: new Map([...kept.blocks, ...outline.blocks]), hasMain: kept.hasMain || outline.hasMain, next, used: now(),
         controls: [...kept.controls, ...outline.controls.filter((control) => !kept.controls.some((k) => k.ref === control.ref))],
-        headings: new Map([...kept.headings, ...outline.headings]) });
+        headings: new Map([...kept.headings, ...outline.headings]), control_evidence: read.control_evidence });
       sweep();
       return { ...outline, start: kept.lines.length + 1 };
     },
@@ -898,8 +1176,15 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
       const same = kept !== undefined && kept.truncated === read.truncated && kept.lines.length === outline.lines.length
         && kept.lines.every((line, i) => line.text === outline.lines[i]!.text);
       if (same) {
+        kept.identity = identityOf(read);
+        kept.controls = outline.controls;
+        // Semantic entry boundaries can change without changing visible text.
+        kept.entries = outline.entries;
+        kept.control_evidence = read.control_evidence;
         kept.readAt = now();
         kept.acted = false;
+        kept.loading = false;
+        kept.reportedLoading = read.loading;
         kept.whole = true;
         return { changed: false };
       }
@@ -909,16 +1194,25 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
     },
     age(page) {
       const read = reads.get(page);
-      return read === undefined || !read.whole ? undefined : read.acted ? Infinity : now() - read.readAt;
+      return read === undefined || !read.whole ? undefined : read.acted || read.loading ? Infinity : now() - read.readAt;
     },
     markChanged(page) {
       const read = reads.get(page);
       if (read) read.acted = true;
     },
+    markLoading(page, loading) { const read = reads.get(page); if (read) read.loading = loading; },
+    loading(page) { return reads.get(page)?.loading === true; },
+    loadingEvidence(page) { return reads.get(page)?.reportedLoading; },
     controls(page) {
       const read = reads.get(page);
-      return read === undefined || read.acted ? undefined : { controls: read.controls, whole: read.whole, truncated: read.truncated };
+      return read === undefined || read.acted || read.loading ? undefined : { controls: read.controls, whole: read.whole, truncated: read.truncated };
     },
+    pendingControls(page) {
+      const read = reads.get(page);
+      return !read || read.acted || !read.loading ? undefined
+        : { controls: read.controls, whole: read.whole, truncated: read.truncated, url: read.url };
+    },
+    readIdentity(page) { const read = reads.get(page); return read?.whole && !read.acted ? read.identity : undefined; },
     controlOf(page, ref) {
       return reads.get(page)?.controls.find((control) => control.ref === ref);
     },
@@ -947,33 +1241,7 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
     part(page, from, form = 'outline', chars) {
       const read = touch(page);
       if (!read) return undefined;
-      const budget = chars ?? (form === 'text' ? PAGE_TEXT_PART_CHARS : PAGE_OUTLINE_PART_CHARS);
-      // The text leaves out a line of controls alone and, on a page that marks it, what is not
-      // its main content.
-      const showAt = (at: number): string | undefined => {
-        if (form === 'outline') return read.shown[at];
-        const line = read.lines[at]!;
-        return line.plain !== '' && (line.main || !read.hasMain) ? line.plain : undefined;
-      };
-      const taken: string[] = [];
-      let size = 0;
-      let first = -1;
-      let last = -1;
-      let more = false;
-      for (let at = Math.max(0, from - 1); at < read.lines.length; at += 1) {
-        const text = showAt(at);
-        if (text === undefined) continue;
-        if (taken.length > 0 && size + text.length + 1 > (budget)) {
-          more = true;
-          break;
-        }
-        taken.push(text);
-        size += text.length + 1;
-        if (first < 0) first = at;
-        last = at;
-      }
-      return { url: read.url, title: read.title, text: taken.join('\n'), from: first < 0 ? from : first + 1,
-        to: first < 0 ? from - 1 : last + 1, total: read.lines.length, more, truncated: read.truncated, hasMain: read.hasMain };
+      return outlinePart(read, from, form, chars);
     },
     changes(page, previous) {
       const read = touch(page);
@@ -1009,27 +1277,52 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
       const needle = needles[0] ?? text.toLowerCase();
       // Each line with its number, which `from` reads on at.
       const found = read.lines.flatMap((line, at) => holds(line) !== undefined ? [{ line, number: at + 1 }] : []);
-      let sections = 0;
-      const shown = found.slice(0, PAGE_FIND_MAX_LINES).map(({ line, number }) => {
-        const body = clipLine(line, holds(line) ?? needle);
-        let entry = `line ${String(number)}: ${line.heading && !body.startsWith('#') ? `${body}   (under "${line.heading}")` : body}`;
-        // Slice Q — a heading comes with the start of its section, up to the next heading of its rank.
-        const rank = headingRank(line.text);
-        if (rank !== undefined && sections < PAGE_FIND_SECTIONS) {
-          sections += 1;
-          const after: string[] = [];
-          for (let at = number; at < read.lines.length && after.length < PAGE_FIND_SECTION_LINES; at += 1) {
-            const next = read.lines[at]!;
-            const nextRank = headingRank(next.text);
-            if (nextRank !== undefined && nextRank <= rank) break;
-            after.push(`  line ${String(at + 1)}: ${clipLine(next)}`);
+      const shown: string[] = [];
+      const included = new Set<number>();
+      let sections = 0, size = 0;
+      let next: number | undefined;
+      const omit = (number: number) => { next = Math.min(next ?? number, number); };
+      const append = (at: number, section: boolean, nested = false): boolean => {
+        if (included.has(at)) return true;
+        const line = read.lines[at]!;
+        const body = section ? line.text : clipLine(line, holds(line) ?? needle);
+        const entry = `${nested ? '  ' : ''}line ${String(at + 1)}: `
+          + (!section && line.heading && !body.startsWith('#') ? `${body}   (under "${line.heading}")` : body);
+        if (size + entry.length + (shown.length ? 1 : 0) > PAGE_OUTLINE_PART_CHARS) {
+          // A very long line keeps its existing block handle instead of cutting refs.
+          if (shown.length === 0) {
+            shown.push(`line ${String(at + 1)}: ${clipLine(line, holds(line) ?? needle)}`);
+            included.add(at);
           }
-          if (after.length > 0) entry += `\n${after.join('\n')}`;
+          omit(at + 1);
+          return false;
         }
-        return entry;
-      });
-      const more = found.length > shown.length ? `\n…and ${String(found.length - shown.length)} more lines` : '';
-      return { url: read.url, title: read.title, truncated: read.truncated, matches: found.length, lines: shown.join('\n') + more };
+        shown.push(entry); included.add(at); size += entry.length + (shown.length > 1 ? 1 : 0);
+        if (body !== line.text) omit(at + 1);
+        return true;
+      };
+      for (const { line, number } of found.slice(0, PAGE_FIND_MAX_LINES)) {
+        if (included.has(number - 1)) continue;
+        const rank = headingRank(line.text);
+        if (!append(number - 1, rank !== undefined)) break;
+        if (rank === undefined) continue;
+        if (sections === PAGE_FIND_SECTIONS) { omit(number); continue; }
+        sections += 1;
+        let cut = false;
+        for (let at = number; at < read.lines.length; at += 1) {
+          const nextRank = headingRank(read.lines[at]!.text);
+          if (nextRank !== undefined && nextRank <= rank) break;
+          if (!append(at, true, true)) { cut = true; break; }
+        }
+        if (cut) break;
+      }
+      const missing = found.filter(({ number }) => !included.has(number - 1));
+      if (missing.length) omit(missing[0]!.number);
+      const more = missing.length ? `\n…and ${String(missing.length)} more lines` : '';
+      return { url: read.url, title: read.title, truncated: read.truncated, matches: found.length,
+        read_ranges: browserReadRanges([...included].map(at => at + 1)),
+        lines: shown.join('\n') + more, complete: next === undefined && !read.truncated && !read.loading,
+        ...(next !== undefined ? { next } : {}) };
     },
     sections(page, text, chars) {
       const read = touch(page);
@@ -1044,10 +1337,12 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
       // A section runs from its heading to the next heading of its rank or above; a heading inside one
       // already taken is part of it.
       const runs: Array<{ from: number; to: number; section: boolean }> = [];
+      const omitted = new Set<number>();
       const inside = (at: number) => runs.some((run) => at >= run.from && at < run.to);
       const sectionAt = (at: number) => {
         const rank = headingRank(read.lines[at]!.text);
-        if (rank === undefined || runs.filter((run) => run.section).length === PAGE_FIND_SECTIONS || inside(at)) return;
+        if (rank === undefined || inside(at)) return;
+        if (runs.filter((run) => run.section).length === PAGE_FIND_SECTIONS) { omitted.add(at); return; }
         let to = at + 1;
         for (; to < read.lines.length; to += 1) {
           const next = headingRank(read.lines[to]!.text);
@@ -1078,8 +1373,10 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
       for (const run of runs) if (kept.length === 0 || run.from >= kept.at(-1)!.to) kept.push(run);
       const sections = kept.filter((run) => run.section).length;
       const taken: string[] = [];
+      const included: number[] = [];
       let size = 0;
-      let next: number | undefined;
+      let next: number | undefined = [...omitted].filter(at => !kept.some(run => at >= run.from && at < run.to))
+        .map(at => at + 1).sort((a, b) => a - b)[0];
       let under: string | undefined;
       fill: for (const run of kept) {
         for (let at = run.from; at < run.to; at += 1) {
@@ -1089,15 +1386,18 @@ export const createPageReadStore = (options: { now?: () => number; ttlMs?: numbe
           if (!run.section && heading !== undefined && heading !== under) piece = `(under "${heading}") ${piece}`;
           under = heading;
           if (taken.length > 0 && size + piece.length + 1 > budget) {
-            next = at + 1;
+            next = Math.min(next ?? at + 1, at + 1);
             break fill;
           }
           taken.push(piece);
+          included.push(at + 1);
           size += piece.length + 1;
         }
       }
       return { url: read.url, title: read.title, truncated: read.truncated, matches: holding, sections,
-        text: taken.join('\n'), ...(next !== undefined ? { next } : {}) };
+        read_ranges: browserReadRanges(included),
+        text: taken.join('\n'), complete: next === undefined && !read.truncated && !read.loading,
+        ...(next !== undefined ? { next } : {}) };
     },
     headingLine(page, id) {
       const wanted = id.replace(/^#/, '').toLowerCase();
@@ -1133,8 +1433,8 @@ export type ControlPosition = { readonly at: number; readonly of: number };
 /** The controls of the kinds `role` names, every one with no role, in page order. */
 const ofRole = (controls: readonly OutlineControl[], role?: string): OutlineControl[] => {
   const kinds = role === undefined ? undefined : ROLE_KINDS[nameKey(role)] ?? [nameKey(role)];
-  return controls.filter((control) => kinds === undefined || kinds.some((kind) => control.kind === kind
-    || (ROLE_KINDS[nameKey(role!)] === undefined && control.kind.includes(kind))));
+  return controls.filter((control) => !control.blocked && (kinds === undefined || kinds.some((kind) => control.kind === kind
+    || (ROLE_KINDS[nameKey(role!)] === undefined && control.kind.includes(kind)))));
 };
 /** Those of `pool` one of whose names is `text` ({@link nameKey}), in page order. */
 const namedExactly = (pool: readonly OutlineControl[], text: string): OutlineControl[] =>

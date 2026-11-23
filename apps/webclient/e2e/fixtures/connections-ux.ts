@@ -7,7 +7,7 @@ export const installConnectionsUxFixture = () => {
   const scope = 'https://www.googleapis.com/auth/gmail.readonly';
   const sheetsScope = 'https://www.googleapis.com/auth/spreadsheets';
   const localFiles = [{ platform: 'file', slug: 'documents', adapter_type: 'fs', auth_state: 'healthy', last_synced_at: 1_700_000_000_000, caps: {} }];
-  let imapHealthy = false; let caldavHealthy = false;
+  let imapHealthy = false; let caldavHealthy = false; let migrationReads = 0;
   const apiRows: Array<Record<string, unknown>> = [
     { kind: 'api', name: 'sheets-work', display_name: 'Work spreadsheets', base_url: 'https://sheets.googleapis.com', vendor: 'google',
       auth_type: 'oauth2_refresh', updated_at: 1, granted_scopes: [sheetsScope], health: { status: 'unknown' } },
@@ -56,12 +56,32 @@ export const installConnectionsUxFixture = () => {
     if (method === 'packs.list') return { result: { packs: [] } };
     if (method === 'packs.reconnect_later') return { result: { action: 'list', groups: [], unresolved_packs: [] } };
     if (method === 'collection.connection.managedOAuth') {
+      if (args.action === 'migration_candidates' || args.action === 'migration_status') {
+        const candidates = ['north', 'south', 'archive'].map(id => ({ name: 'reporting-' + id,
+          display_name: id === 'north' ? 'Customer reporting for North America' : id === 'south' ? 'Monthly reporting for the southern region' : 'Archived financial reporting',
+          authentication: 'broker', updated_at: 1, vendor: 'google', base_url: 'https://sheets.googleapis.com/v4',
+          required_scopes: [sheetsScope], verification_url: `https://sheets.googleapis.com/v4/spreadsheets/${id}?fields=spreadsheetId` }));
+        if (args.action === 'migration_candidates') {
+          const names = Array.isArray(args.names) ? args.names : undefined;
+          return { result: { action: args.action, candidates: names ? candidates.filter(row => names.includes(row.name)) : candidates } };
+        }
+        const target = { authentication: 'direct_oauth', identity: { status: 'known', account_id: 'reporting-team', email: 'reporting@example.test' } };
+        const state = new URLSearchParams(location.search).get('result_state') ?? 'completed';
+        const rowStates = state === 'applying' ? ['applying', 'pending', 'migrated'] : state === 'completed' ? ['migrated', 'failed', 'skipped'] : ['verified', 'failed', 'skipped'];
+        return { result: { action: args.action, migrations: [{ id: 'fixture-migration-review', created_at: 1_700_000_000_000, expires_at: Date.now() + 600_000,
+          state, fingerprint: 'a'.repeat(64), target, requested_scopes: [sheetsScope], rows: candidates.map((connection, index) => ({ connection, state: rowStates[index],
+            ...(['verified', 'applying', 'migrated'].includes(rowStates[index]!) ? { impact: { fingerprint: 'b'.repeat(64), phase: 'before_save', mode: 'switch', consent: 'reuse', target,
+              connections: [{ name: connection.name, display_name: connection.display_name, effect: 'selected_connection', uses: [], usage_available: true }], warnings: [] } } : {}),
+            ...(rowStates[index] === 'failed' ? { reason: 'access_failed', http_status: 403 } : rowStates[index] === 'skipped' ? { reason: 'changed' } : {}),
+          })), warnings: ['Read checks do not prove write access.', `Fixture observation ${++migrationReads}`] }] } };
+      }
       if (args.action === 'authentication_worklist') return { result: { action: args.action, worklist: { observed_at: Date.now(),
         groups: [{ platform: 'mail', slug: 'work-imap', healthy: imapHealthy }, { platform: 'calendar', slug: 'work-caldav', healthy: caldavHealthy }]
           .filter(row => !row.healthy).map(row => ({ id: (row.platform === 'mail' ? '1' : '2').repeat(64), kind: 'account', label: row.slug, authentication: 'other', connection_names: [],
             issues: [{ id: (row.platform === 'mail' ? '3' : '4').repeat(64), code: 'credential_rejected', message: 'The saved login needs attention.' }], uses: [], usage_available: true,
             targets: [{ kind: 'collection', platform: row.platform, slug: row.slug }] })), unavailable: [] } } };
       if (args.action === 'profiles') return { result: { action: args.action, profiles: [{ id: 'nango-work', label: 'Nango work', broker: 'nango', base_url: 'https://api.nango.dev', revision: 1 }] } };
+      if (args.action === 'providers') return { result: { action: args.action, providers: [{ id: 'google-mail', label: 'Google Mail' }], selected_id: 'google-mail' } };
       if (args.action === 'integrations') return { result: { action: args.action, integrations: [{ id: 'google-mail', label: 'Google Mail', provider: 'google-mail', default_scopes: [scope], scope_metadata: 'available' }] } };
       if (args.action === 'remote_connections') return { result: { action: args.action, connections: [{ id: 'existing-google-account', label: 'Existing Google account', auth_error: false }], page: 0, has_more: false } };
       if (args.action === 'preview') return { result: { action: args.action, preview: { fingerprint: 'b'.repeat(64), decision: 'authorize', scope_metadata: 'available',

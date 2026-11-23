@@ -400,6 +400,42 @@ describe('D-149 follow-on — reception page shell: per-endpoint detail', () => 
     expect(detail?.share_cards.length).toBeGreaterThan(0);
   });
 
+  it('a fresh share updates an open detail even when further reads fail', async () => {
+    const { shell, fakeConn } = buildShell();
+    fakeConn.setResponse('reception.endpoints.list', { endpoints: [buildEndpointSummary()] });
+    await shell.loadPage(); await shell.openDetail('ep-1');
+    fakeConn.setResponse('reception.endpoint.access_log', new Error('offline'));
+    const before = fakeConn.calls.length;
+    shell.setEndpointShare('ep-1', { share_url: 'https://fixture.test/reception/ep-1?t=rotated-once', title: 'Fresh link', description: 'Customer consultation' });
+    expect(fakeConn.calls).toHaveLength(before);
+    expect(shell.getState().detail?.share_cards.some(card => card.snippet.includes('rotated-once'))).toBe(true);
+  });
+
+  it('detail lifecycle controls use the latest summary and reuse an already read log', async () => {
+    const { shell, fakeConn } = buildShell();
+    fakeConn.setResponse('reception.endpoints.list', { endpoints: [buildEndpointSummary()] });
+    await shell.loadPage();
+    let release!: (value: unknown) => void;
+    fakeConn.setResponse('reception.endpoint.access_log', new Promise(resolve => { release = resolve; }));
+    shell.setEndpointShare('ep-1', { share_url: 'https://fixture.test/reception/ep-1?t=once', title: 'Link', description: 'Review' });
+    const pending = shell.openDetail('ep-1');
+    fakeConn.setResponse('reception.endpoints.list', { endpoints: [buildEndpointSummary({ enabled: false })] });
+    await shell.disableEndpoint('ep-1');
+    release({ entries: [{ id: 'access-1', endpoint_id: 'ep-1', accessed_at: NOW, source_ip_hash: 'a'.repeat(64),
+      user_agent_hash: null, action_taken: 'view', outcome: 'ok', url_path_redacted: '/reception/ep-1?t=[redacted]', metadata: {} }] });
+    await pending;
+    expect(shell.getState().detail?.row.status).toBe('disabled');
+    expect(shell.getState().detail?.access_log_rows).toHaveLength(1);
+    const cards = shell.getState().detail?.share_cards;
+    fakeConn.setResponse('reception.endpoint.access_log', new Error('offline'));
+    fakeConn.setResponse('reception.endpoints.list', { endpoints: [buildEndpointSummary({ enabled: true })] });
+    await shell.enableEndpoint('ep-1');
+    expect(shell.getState().detail?.row.status).toBe('active');
+    expect(shell.getState().detail?.access_log_rows).toHaveLength(1);
+    expect(shell.getState().detail?.share_cards).toEqual(cards);
+    expect(fakeConn.calls.filter(c => c.method === 'reception.endpoint.access_log')).toHaveLength(1);
+  });
+
   it('closeDetail() clears the open detail', async () => {
     const { shell, fakeConn } = buildShell();
     fakeConn.setResponse('reception.endpoints.list', {
@@ -464,7 +500,7 @@ describe('D-149 follow-on — reception page shell: per-endpoint detail', () => 
 });
 
 describe('D-149 follow-on — reception page shell: authoring + page upsert', () => {
-  it('runPreview() fires preview_draft, projects the View-As-Visitor panel, returns the result', async () => {
+  it('runPreview() returns the authoring result without replacing the inventory view', async () => {
     const { shell, fakeConn } = buildShell();
     const dispatch = buildEndpointPreviewDispatch({
       kind: 'scheduling_link',
@@ -477,7 +513,9 @@ describe('D-149 follow-on — reception page shell: authoring + page upsert', ()
     const result = await shell.runPreview(dispatch);
     expect(fakeConn.calls[0]?.method).toBe('reception.endpoint.preview_draft');
     expect(result.preview_hash).toBe('hash-scheduling_link');
-    expect(shell.getState().view_as_visitor).not.toBeNull();
+    // Authoring owns this result; it must not replace the endpoint detail
+    // and its never-re-readable share cards after a successful create.
+    expect(shell.getState().view_as_visitor).toBeNull();
   });
 
   it('createEndpoint() fires reception.endpoint.create, returns the result, refetches', async () => {
@@ -514,17 +552,10 @@ describe('D-149 follow-on — reception page shell: authoring + page upsert', ()
   });
 
   it('closeViewAsVisitor() clears the panel', async () => {
-    const { shell } = buildShell();
-    await shell.runPreview(
-      buildEndpointPreviewDispatch({
-        kind: 'scheduling_link',
-        packet_declaration: {
-          packet_kind: 'scheduling_link_packet',
-          source_query_ref: { kind: 'data.calendar.combined' },
-        },
-        metadata: {},
-      }),
-    );
+    const { shell, fakeConn } = buildShell();
+    fakeConn.setResponse('reception.endpoints.list', { endpoints: [buildEndpointSummary()] });
+    await shell.loadPage();
+    await shell.previewEndpointAsVisitor('ep-1');
     expect(shell.getState().view_as_visitor).not.toBeNull();
     shell.closeViewAsVisitor();
     expect(shell.getState().view_as_visitor).toBeNull();

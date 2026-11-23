@@ -122,6 +122,8 @@ import type {
   ReceptionPageShellState,
 } from './page-shell.js';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
+import { RECEPTION_ENDPOINT_WORKSPACE_STYLES } from './endpoint-workspace-styles.js';
 
 // ════════════════════════════════════════════════════════════════
 // Hash-link affordance
@@ -823,7 +825,7 @@ const renderDetailView = (detail: ReceptionEndpointDetailModel, now: number): st
     <div class="reception-detail">
       <div class="reception-detail-head">
         ${button({ label: '← Back to Reception', size: 'xs', action: 'reception-close-detail' })}
-        <span class="reception-detail-title">${e(row.is_singleton ? 'Reception page' : row.endpoint_id)}</span>
+        <h3 class="reception-detail-title" tabindex="-1">${e(row.is_singleton ? 'Reception page' : row.endpoint_id)}</h3>
         ${badge({ label: statusLabel(row.status), tone: statusBadgeTone(row.status) })}
       </div>
       ${renderSafetyLabels(row)}
@@ -879,7 +881,7 @@ const renderDetailView = (detail: ReceptionEndpointDetailModel, now: number): st
       </div>
       <div class="reception-detail-section">
         <h4 class="reception-subhead">Access log</h4>
-        ${accessTable}
+        ${accessRows.length > 0 ? `<div class="reception-access-log-scroll" role="region" aria-label="Endpoint access log" tabindex="0">${accessTable}</div>` : accessTable}
       </div>
     </div>
   `;
@@ -933,7 +935,7 @@ const renderViewAsVisitorPanel = (panelModel: ViewAsVisitorPanelModel): string =
   `;
 };
 
-const renderViewAsVisitorView = (vav: ViewAsVisitorModel): string => {
+export const renderViewAsVisitorView = (vav: ViewAsVisitorModel, closeAction = 'reception-close-view-as-visitor', closeLabel = '← Back to Reception'): string => {
   // The server-rendered visitor page is anonymous-visitor markup (the
   // spec's TR-8 custom-content-XSS surface) — it goes into a fully
   // locked iframe (`sandbox=""` ⇒ no scripts, no same-origin, no
@@ -944,9 +946,9 @@ const renderViewAsVisitorView = (vav: ViewAsVisitorModel): string => {
     <div class="reception-vav">
       <div class="reception-vav-head">
         ${button({
-          label: '← Back to Reception',
+          label: closeLabel,
           size: 'xs',
-          action: 'reception-close-view-as-visitor',
+          action: closeAction,
         })}
         <span class="reception-vav-title">View as visitor</span>
         <span class="reception-vav-synthetic">synthetic preview — no access-log entry</span>
@@ -1146,6 +1148,12 @@ export const mountReceptionPage = (
   const { host, shell } = opts;
   let disposed = false;
   let lastHtml = '';
+  const doc = host.ownerDocument;
+  const focusOwner = doc ? trackCustomerWorkspaceFocus(doc) : null;
+  let detailFocus: { id: string; current: () => boolean } | null = null;
+  const findAction = (action: string, endpointId?: string): HTMLElement | undefined =>
+    Array.from(host.querySelectorAll?.<HTMLElement>('[data-action]') ?? []).find(el =>
+      el.dataset.action === action && el.dataset.endpointId === endpointId && !el.matches(':disabled'));
 
   const render = (): void => {
     if (disposed) return;
@@ -1154,8 +1162,23 @@ export const mountReceptionPage = (
       pendingAsksCount: resolvePendingAsksCount(),
     });
     if (html === lastHtml) return;
+    const active = doc?.activeElement as HTMLElement | null;
+    const previous = active && host.contains(active) ? { action: active.dataset.action, id: active.dataset.endpointId } : null;
+    const focusedDetail = active && host.contains(active) && active.matches('.reception-detail-title') ? active.textContent : null;
     host.innerHTML = html;
     lastHtml = html;
+    if (shell.getState().loading) {
+      for (const control of host.querySelectorAll?.<HTMLButtonElement>('button[data-action]') ?? []) {
+        if (['reception-refresh', 'reception-enable', 'reception-disable'].includes(control.dataset.action ?? '')) control.disabled = true;
+      }
+    }
+    if (previous?.action && !detailFocus) findAction(previous.action, previous.id)?.focus({ preventScroll: true });
+    const heading = host.querySelector?.<HTMLElement>('.reception-detail-title');
+    if (focusedDetail !== null && heading?.textContent === focusedDetail) heading.focus({ preventScroll: true });
+    if (detailFocus && shell.getState().detail?.row.endpoint_id === detailFocus.id) {
+      const requested = detailFocus; detailFocus = null;
+      if (requested.current()) host.querySelector<HTMLElement>('.reception-detail-title')?.focus({ preventScroll: true });
+    }
   };
 
   // The native handlers fire-and-forget against the shell — the shell
@@ -1164,14 +1187,26 @@ export const mountReceptionPage = (
   const swallow = (p: Promise<unknown>): void => {
     void p.catch(() => {});
   };
+  const runAction = (work: () => Promise<unknown>, action: string, endpointId?: string, counterpart?: string): void => {
+    if (shell.getState().loading) return;
+    const current = focusOwner?.capture();
+    swallow(work().finally(() => {
+      if (!disposed && current?.()) (findAction(action, endpointId) ?? findAction(counterpart ?? 'reception-refresh', endpointId) ?? findAction('reception-refresh'))?.focus({ preventScroll: true });
+    }));
+  };
   const forward = (action: ReceptionPageAction) => (dataset: DOMStringMap): void => {
     opts.onUnhandledAction?.(action, dataset);
   };
 
   const handlers = {
-    'reception-refresh': () => swallow(shell.loadPage()),
+    'reception-refresh': () => runAction(() => {
+      const state = shell.getState();
+      const id = state.detail_endpoint_id ?? state.detail?.row.endpoint_id;
+      return id ? shell.openDetail(id) : shell.loadPage();
+    }, 'reception-refresh'),
     'reception-open-detail': (d: DOMStringMap) => {
       if (!d.endpointId) return;
+      detailFocus = { id: d.endpointId, current: focusOwner?.capture() ?? (() => false) };
       // R19 Slice 4 — routed detail: navigate to the deep link (a durable,
       // shareable URL); the re-mounted spine reconciles the detail open from
       // it. Falls back to the in-place open when no navigator is wired.
@@ -1182,19 +1217,23 @@ export const mountReceptionPage = (
       swallow(shell.openDetail(d.endpointId));
     },
     'reception-close-detail': () => {
+      const id = shell.getState().detail?.row.endpoint_id;
+      detailFocus = null;
       // R19 Slice 4 — routed detail: navigate back to the endpoints list.
       // Falls back to the in-place close when no navigator is wired.
       if (opts.onExitDetail !== undefined) {
         opts.onExitDetail();
+        findAction('reception-open-detail', id)?.focus({ preventScroll: true });
         return;
       }
       shell.closeDetail();
+      findAction('reception-open-detail', id)?.focus({ preventScroll: true });
     },
     'reception-enable': (d: DOMStringMap) => {
-      if (d.endpointId) swallow(shell.enableEndpoint(d.endpointId));
+      if (d.endpointId) runAction(() => shell.enableEndpoint(d.endpointId!), 'reception-enable', d.endpointId, 'reception-disable');
     },
     'reception-disable': (d: DOMStringMap) => {
-      if (d.endpointId) swallow(shell.disableEndpoint(d.endpointId));
+      if (d.endpointId) runAction(() => shell.disableEndpoint(d.endpointId!), 'reception-disable', d.endpointId, 'reception-enable');
     },
     'reception-preview-as-visitor': (d: DOMStringMap) => {
       if (d.endpointId) swallow(shell.previewEndpointAsVisitor(d.endpointId));
@@ -1231,6 +1270,7 @@ export const mountReceptionPage = (
       if (disposed) return;
       disposed = true;
       unsubscribe();
+      focusOwner?.dispose();
       detachDispatcher();
       host.innerHTML = '';
     },
@@ -1741,4 +1781,5 @@ export const RECEPTION_PAGE_STYLES = `
     transition-duration: 0.01ms !important;
   }
 }
+${RECEPTION_ENDPOINT_WORKSPACE_STYLES}
 `;

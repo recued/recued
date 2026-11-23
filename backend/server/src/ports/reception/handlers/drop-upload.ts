@@ -13,6 +13,7 @@
  *  fallback):
  *
  *    POST   /reception/drop/<endpoint_id>/uploads                    create
+ *    GET    /reception/drop/<endpoint_id>/uploads                    fresh form nonce
  *    GET    /reception/drop/<endpoint_id>/uploads/<upload_id>        probe (resume)
  *    POST   /reception/drop/<endpoint_id>/uploads/<upload_id>        chunk
  *    POST   /reception/drop/<endpoint_id>/uploads/<upload_id>/finalize  finalize
@@ -26,6 +27,8 @@
  *  Spec: internal design notes. */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoint-registry-store.js';
+import { readLiveReceptionEndpoint } from '../endpoint-authority.js';
 
 import type { DropLinkProcessingOutcome } from '@recued/contracts';
 
@@ -37,19 +40,20 @@ import type {
 } from '../../../upload/reception-upload-service.js';
 import type { ReceptionEndpointContext } from '../redacted-packet.js';
 import { verifyReceptionSameOrigin } from './same-origin.js';
+import type { DropLinkNonceStore } from './drop-link.js';
 
 /** Max bytes of a control-plane JSON body (create / finalize). The shapes are a
  *  handful of small fields; anything larger is malformed / hostile. */
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 
-/** The five resumable verbs, classified by the dispatcher from the method +
+/** The resumable verbs, classified by the dispatcher from the method +
  *  the upload sub-path. */
-export type ReceptionUploadOp = 'create' | 'probe' | 'chunk' | 'finalize' | 'delete';
+export type ReceptionUploadOp = 'nonce' | 'create' | 'probe' | 'chunk' | 'finalize' | 'delete';
 
 export interface DropUploadDispatchInput {
   readonly endpoint: ReceptionEndpointContext;
   readonly op: ReceptionUploadOp;
-  /** The `<upload_id>` path segment — `null` only for `create`. */
+  /** The `<upload_id>` path segment — `null` for nonce refresh and create. */
   readonly upload_id: string | null;
   /** Endpoint-scoped source-IP hash (persisted onto the session for forensics). */
   readonly source_ip_hash: string | null;
@@ -60,6 +64,10 @@ export interface DropUploadDispatchInput {
 
 export interface DropUploadHandlerDeps {
   readonly getService: () => ReceptionUploadService;
+  readonly getStore: () => PublicEndpointRegistryStore;
+  readonly getPepper: () => Buffer;
+  readonly now: () => number;
+  readonly getDropLinkNonceStore?: () => DropLinkNonceStore;
   /** Trust `X-Forwarded-Proto` for the same-origin scheme check — true only
    *  behind a trusted proxy (the dispatcher's `trustForwardedFor` toggle). */
   readonly trustForwardedProto?: boolean;
@@ -211,14 +219,35 @@ export const createDropUploadHandler = (
       writeJson(res, 503, { error: { code: 'not_configured' } });
       return;
     }
-    const service = deps.getService();
-
-    // CSRF defense-in-depth — same-origin on every state-changing verb (probe
-    // is a read-only GET).
-    if (input.op !== 'probe' && !verifyReceptionSameOrigin(req, trustForwardedProto)) {
+    // A same-origin GET under the form's no-referrer policy has neither
+    // Origin nor Referer. Like the original form GET, nonce reads rely on the
+    // bearer + browser same-origin read policy; reject an explicit foreign
+    // origin. Every upload mutation still requires the full origin check.
+    const nonceReadWithoutOrigin = input.op === 'nonce' &&
+      req.headers.origin === undefined && req.headers.referer === undefined;
+    if (input.op !== 'probe' && !nonceReadWithoutOrigin && !verifyReceptionSameOrigin(req, trustForwardedProto)) {
       writeJson(res, 403, { error: { code: 'forbidden_origin' } });
       return;
     }
+
+    if (input.op === 'nonce') {
+      // Retry without a page reload. Never mint against a stale dispatcher
+      // cache after revocation, rotation, disable, or expiry.
+      res.setHeader('Cache-Control', 'no-store');
+      if (!readLiveReceptionEndpoint(req, endpoint_id, 'drop_link', deps)) {
+        writeJson(res, 410, { error: { code: 'not_authorized' } });
+        return;
+      }
+      if (!deps.getDropLinkNonceStore) {
+        writeJson(res, 503, { error: { code: 'not_configured' } });
+        return;
+      }
+      writeJson(res, 200, {
+        form_nonce: deps.getDropLinkNonceStore().issue(endpoint_id, deps.now()),
+      });
+      return;
+    }
+    const service = deps.getService();
 
     // upload_id is required for every verb except create.
     if (input.op !== 'create' && (!input.upload_id || input.upload_id.length === 0)) {
@@ -354,7 +383,12 @@ export const createDropUploadHandler = (
           ? { visitor_description: body.visitor_description }
           : {}),
       };
-      const r = await service.finalize({ endpoint_id, upload_id, visitor_fields });
+      const authorize = () => readLiveReceptionEndpoint(req, endpoint_id, 'drop_link', deps) !== null;
+      if (!authorize()) {
+        writeJson(res, 410, { error: { code: 'not_authorized' } });
+        return;
+      }
+      const r = await service.finalize({ endpoint_id, upload_id, visitor_fields, authorize });
       if (r.status === 'finalized') {
         if (r.outcome === 'pending') {
           // Accepted — ring the verified-mutation doorbell ONCE (the drain
@@ -366,6 +400,11 @@ export const createDropUploadHandler = (
         // Persisted but rejected (magic-byte / size / filename / domain) — the
         // row stays for the Abuse Inbox; surface the matching 4xx.
         writeJson(res, rejectedOutcomeStatus(r.outcome), { error: { code: r.outcome } });
+        return;
+      }
+      if (r.status === 'rejected') {
+        if (r.reason === 'day_cap') res.setHeader('Retry-After', '3600');
+        writeJson(res, r.reason === 'day_cap' ? 429 : 410, { error: { code: r.reason } });
         return;
       }
       if (r.status === 'pending') {

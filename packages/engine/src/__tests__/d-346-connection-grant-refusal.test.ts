@@ -126,7 +126,9 @@ describe('an action a rule never allows names the rule', () => {
   });
 
   it('without the rule the same call runs', async () => {
-    const ctx = admitted({ channel: 'chat', actor: 'user_self' } as ExecutionSource, 'user_self', 'nobody');
+    // From the app: in the owner's chat the write would be held for approval (D-177 §N.15.6–7),
+    // which is not a refusal either, but this contrast is with a run.
+    const ctx = admitted({ channel: 'user', actor: 'user_self' } as ExecutionSource, 'user_self', 'nobody');
     await expect(runCatalogOperation(
       ctx, manifest(), SLUG, { operation: 'deal.update', args: {} }, 'crm', undefined, undefined, undefined,
     )).resolves.toEqual({ ok: true });

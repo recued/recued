@@ -85,23 +85,53 @@ const testFilesUnder = (dir: string): string[] =>
 /** A path as a glob that matches only itself. */
 const literalGlob = (path: string): string => path.split(sep).join('/').replace(/[*?[\]{}()!+@]/g, '\\$&');
 
-/** Read at config load, not kept as a list: a test that starts mocking tomorrow is
- *  isolated tomorrow, and there is no list for anyone to forget to update.
- *  ⚠ `extends: true` (in `projects`) evaluates this file once per project — five times per
+/** ⛔⛔ A TEST FILE THAT STARTS CHROME RUNS AFTER EVERY OTHER FILE, IN A GROUP OF ITS OWN
+ *  (`real-chrome`, in `projects` below, with a higher `sequence.groupOrder`).
+ *
+ *  Each such file launches Chrome with the Bridge extension (`createReviewedBrowserFixture`, in
+ *  `d-261-browser-fixture.ts`), and Chrome starts the extension's service worker only when it gets
+ *  the CPU. Beside the rest of the suite, that start has taken up to 415 s (D-269 REV 31). The
+ *  fixture waits for it once per launch, for at most 180 s, so a starved start fails under its own
+ *  name. In the sweeps of 2026-11-18, the toolkit's file took 203–386 s and the two-browser file
+ *  10–141 s, so the start was often close to that bound. The sweep of `282cc1f6c` passed it: both
+ *  files failed at launch, with none of their 116 tests run, while every test that ran passed.
+ *
+ *  The suite's own load is the cause, so this removes it: a group with a higher `groupOrder` starts
+ *  only once every file of the lower groups has finished (vitest 4), and Chrome starts on a machine
+ *  the rest of the suite has left. Within the group the files still run side by side, up to the run's
+ *  workers. Alone on an idle machine, five of them together took 127 s.
+ *  ⚠ Load from outside the suite (the sweep Mac's own desktop) is still the machine's. */
+const LAUNCHES_CHROME = /\bcreateReviewedBrowserFixture\s*\(/;
+
+interface ScannedRoot {
+  /** Files that touch process-wide state (`SHARES_PROCESS_STATE`): never in a shared worker. */
+  readonly isolated: string[];
+  /** Files that start Chrome (`LAUNCHES_CHROME`): run last, in `real-chrome`. */
+  readonly realChrome: string[];
+}
+
+/** Read at config load, not kept as a list: a test that starts mocking (or starts Chrome)
+ *  tomorrow is placed for it tomorrow, and there is no list for anyone to forget to update.
+ *  ⚠ `extends: true` (in `projects`) evaluates this file once per project — six times per
  *  vitest start — so each root's scan (~75 ms for `packages/`) is remembered on the process
- *  instead of repeated. */
-const keptIsolatedUnder = (root: string): string[] => testFilesUnder(resolve(__dirname, root))
-  .filter((file) => {
+ *  instead of repeated. Each file is read once, for both questions. */
+const scanTestFilesUnder = (root: string): ScannedRoot => {
+  const isolated: string[] = [];
+  const realChrome: string[] = [];
+  for (const file of testFilesUnder(resolve(__dirname, root))) {
     const source = readFileSync(file, 'utf8');
-    return SHARES_PROCESS_STATE.some((pattern) => pattern.test(source));
-  })
-  .map((file) => literalGlob(relative(__dirname, file)));
-const memo = globalThis as {
-  __recuedPackagesKeptIsolated?: string[]; __recuedBackendKeptIsolated?: string[]; __recuedAppsKeptIsolated?: string[];
+    const glob = literalGlob(relative(__dirname, file));
+    if (SHARES_PROCESS_STATE.some((pattern) => pattern.test(source))) isolated.push(glob);
+    if (LAUNCHES_CHROME.test(source)) realChrome.push(glob);
+  }
+  return { isolated, realChrome };
 };
-const PACKAGES_KEPT_ISOLATED = memo.__recuedPackagesKeptIsolated ??= keptIsolatedUnder('packages');
-const BACKEND_KEPT_ISOLATED = memo.__recuedBackendKeptIsolated ??= keptIsolatedUnder('backend');
-const APPS_KEPT_ISOLATED = memo.__recuedAppsKeptIsolated ??= keptIsolatedUnder('apps');
+const memo = globalThis as { __recuedTestFileScans?: Record<string, ScannedRoot> };
+const scanned = (root: string): ScannedRoot => (memo.__recuedTestFileScans ??= {})[root] ??= scanTestFilesUnder(root);
+const PACKAGES_KEPT_ISOLATED = scanned('packages').isolated;
+const BACKEND_KEPT_ISOLATED = scanned('backend').isolated;
+const APPS_KEPT_ISOLATED = scanned('apps').isolated;
+const REAL_CHROME = ['packages', 'backend', 'apps'].flatMap((root) => scanned(root).realChrome);
 
 /** ⛔ THE LIVE DRIVES RUN ONLY WHEN ASKED FOR: `npm run test:live-drives`.
  *
@@ -124,7 +154,11 @@ const APPS_KEPT_ISOLATED = memo.__recuedAppsKeptIsolated ??= keptIsolatedUnder('
  *  all of them: `RECUED_LIVE_DRIVES=1 npx vitest run live-drive` (the script is not in the
  *  public tree's package.json, which is generated).
  *
- *  ⚠ NAMED LISTS: a new drive of either kind runs in the full suite until it is added to one,
+ *    - THE PUBLIC-SITE DRIVES (D-402, 2026-11-17 to 2026-11-22): the benchmark's runs replayed
+ *      against the live public sites they name and made into recipes. Both are in
+ *      `STANDALONE_DRIVES` now, below, and `PUBLIC_SITE_LIVE_DRIVES` is gone.
+ *
+ *  ⚠ NAMED LISTS: a new drive of any kind runs in the full suite until it is added to one,
  *  which is the safe way round. */
 const AGENT_CLI_LIVE_DRIVES = [
   'backend/server/src/__tests__/opencode-pack-live-drive.test.ts',
@@ -140,6 +174,23 @@ const LOCAL_TOOL_LIVE_DRIVES = [
   'backend/server/src/__tests__/photo-attribution-live-drive.test.ts',
 ];
 const LIVE_DRIVES_ASKED_FOR = process.env.RECUED_LIVE_DRIVES === '1';
+
+/** ⛔ STANDALONE DRIVES: out of every run, the live drives' collection included (`npm run test:live-drives`
+ *  never runs them: none has `live-drive` in its name), and never named by the commit hook
+ *  (`scripts/live-drive-reminder.mjs` reads the two lists above). Each runs alone, by its own command and
+ *  its own variable. D-402's prompt-to-recipe drives, the owner, 2026-11-22: "the prompt->recipe is more of a
+ *  snapshot thing that we use to prove of work, those recipes aren't meant to be reused alone for later bench
+ *  or release gated live drive", then, for the second, "yes do move". Their calls name the elements of the
+ *  pages they were recorded on, so they prove the work on the day they run and gate nothing; a site that
+ *  redeploys turns them red with no commit (practice.expandtesting.com, 2026-11-22: J and M).
+ *    - The replay of the benchmark's tasks made into recipes (slice B4): `npm run test:d402-replay`.
+ *    - The conversion rate, a measurement, not a test: `npm run measure:d402-conversion`. */
+const STANDALONE_DRIVES: Readonly<Record<string, string>> = {
+  'backend/server/src/__tests__/d-402-benchmark-replay-standalone.test.ts': 'RECUED_D402_REPLAY',
+  'backend/server/src/__tests__/d-402-conversion-rate-standalone.test.ts': 'D402_MEASURE',
+};
+const STANDALONE_LEFT_OUT = Object.entries(STANDALONE_DRIVES)
+  .filter(([, variable]) => process.env[variable] !== '1').map(([file]) => file);
 
 export default defineConfig({
   resolve: {
@@ -239,6 +290,8 @@ export default defineConfig({
       '**/.cache/**',
       // Unless asked for — see `AGENT_CLI_LIVE_DRIVES`.
       ...(LIVE_DRIVES_ASKED_FOR ? [] : [...AGENT_CLI_LIVE_DRIVES, ...LOCAL_TOOL_LIVE_DRIVES]),
+      // Unless asked for by its own variable — see `STANDALONE_DRIVES`.
+      ...STANDALONE_LEFT_OUT,
     ],
     // ⛔⛔⛔ FORKS, AND THIS IS NOT A PREFERENCE. The threads pool DIES on the
     // backend suite: SIGSEGV (exit 139) with zero test failures, reproducible
@@ -273,7 +326,8 @@ export default defineConfig({
     // `isolate`, `sequence`, `bail`, `retry`, …; `resolveProjects`). `--hookTimeout` is not
     // one and has no fallback, so `hookTimeout` above wins over the flag.
     /** ⛔ FOUR PROJECTS: most of `packages/`, `backend/` and `apps/` share worker processes; the
-     *  rest is isolated.
+     *  rest is isolated. A fifth, `real-chrome`, runs the files that start Chrome after all four
+     *  (`LAUNCHES_CHROME`, above).
      *
      *  Isolation (vitest's default) starts every test file in a fresh process that reloads its
      *  whole module graph. Measured 2026-10-08: loading `@recued/contracts` alone costs ~0.5 s
@@ -320,6 +374,8 @@ export default defineConfig({
             'test/**/*.test.ts',
             'scripts/**/*.test.ts',
           ],
+          // A file that starts Chrome runs last, in `real-chrome` (`LAUNCHES_CHROME`), in every project.
+          exclude: REAL_CHROME,
         },
       },
       {
@@ -327,7 +383,7 @@ export default defineConfig({
         test: {
           name: 'no-isolate',
           include: ['packages/**/*.test.ts'],
-          exclude: PACKAGES_KEPT_ISOLATED,
+          exclude: [...PACKAGES_KEPT_ISOLATED, ...REAL_CHROME],
           isolate: false,
         },
       },
@@ -336,7 +392,7 @@ export default defineConfig({
         test: {
           name: 'backend-shared',
           include: ['backend/**/*.test.ts'],
-          exclude: BACKEND_KEPT_ISOLATED,
+          exclude: [...BACKEND_KEPT_ISOLATED, ...REAL_CHROME],
           isolate: false,
           setupFiles: ['backend/server/src/__tests__/helpers/shared-worker-reset.ts'],
         },
@@ -346,10 +402,21 @@ export default defineConfig({
         test: {
           name: 'apps-shared',
           include: ['apps/**/*.test.ts'],
-          exclude: APPS_KEPT_ISOLATED,
+          exclude: [...APPS_KEPT_ISOLATED, ...REAL_CHROME],
           isolate: false,
         },
       },
+      // After every file above has finished (`LAUNCHES_CHROME`). Isolated, as a file that launches a
+      // browser is. ⚠ Only when there is one: an empty `include` would fall back to vitest's default
+      // and collect everything a second time.
+      ...(REAL_CHROME.length === 0 ? [] : [{
+        extends: true as const,
+        test: {
+          name: 'real-chrome',
+          include: REAL_CHROME,
+          sequence: { groupOrder: 1 },
+        },
+      }]),
     ],
   },
 });

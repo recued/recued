@@ -18,7 +18,8 @@ import { withQueuedChatTurns } from '../chat-turn-queue.js';
 import { handleSend } from '../chat-handler.js';
 import { createChatMessengerBridge } from '../chat-messenger-bridge.js';
 import { conversationHoldsNotices, createChatNotices, createNoticeConversationOpener } from '../chat-notices.js';
-import { CLOSING_ITEMS_MAX, closingDayLine, closingDayNote, quotedClosingDay } from '../chat-closing-day.js';
+import { createEmailCloseDay } from '../email-close-day.js';
+import { CLOSING_ITEMS_MAX, closingDayLine, closingDayNote, closingFollowUpNote, createOpenClosings, quotedClosingDay } from '../chat-closing-day.js';
 import { createSituationQuery } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
 import { createScheduledSituations } from '../situations/scheduled-situations.js';
@@ -29,6 +30,76 @@ import { autoRegisterRecuedBuiltinSources } from '../work-entity-source-boot.js'
 
 const quoting = (text: string, role = 'notice', after = ''): string =>
   `${JSON.stringify({ reply_to: { message_id: 'notice:1', role, text }, message: 'Did the run, skipped Spanish.' })}${after}`;
+
+describe('D-343 (the owner, 2026-11-14) — ask about what was left out first, then one record', () => {
+  const items = [{ title: 'Spanish lesson', ref: { collection: 'task', id: 't1' } }, { title: 'Learn guitar', ref: { collection: 'asset', id: 'a1' } }];
+  const itemsOf = async () => items;
+  const evening = quoting('Close the day · Sat 7 Nov\nDue · Spanish lesson\n\nPursuit: Learn guitar\n\nReply to this with what you did.');
+  it('asks first and changes nothing, then the plain answer carries the day and its items again', async () => {
+    let at = 0; const open = createOpenClosings(() => at);
+    const first = await open.begin('s1', evening, '2026-11-07', itemsOf);
+    expect(first.line).toContain('first ask about each one they left out');
+    expect(first.line).toContain('That call also ticks off each task recorded as done: do not call work.update for it.');
+    open.end('s1', first.closing, []);
+    // Their answer quotes nothing: it gets the notice and its refs again.
+    at = 60_000; const answer = await open.begin('s1', 'Leave the guitar out.', '2026-11-07', itemsOf);
+    expect(answer.line).toBe(closingFollowUpNote(first.closing!.quote, items));
+    expect(answer.line).toContain('- Learn guitar {"collection":"asset","id":"a1"}');
+    // The record proposed: the closing is over, and the next message carries nothing.
+    open.end('s1', answer.closing, ['episode.record']);
+    expect((await open.begin('s1', 'Thanks!', '2026-11-07', itemsOf)).line).toBe('');
+  });
+  it('while its record waits, a change carries the items and replaces it; once settled, nothing', async () => {
+    let waits = true; const open = createOpenClosings(() => 0, async () => waits);
+    const first = await open.begin('s1', evening, '2026-11-07', itemsOf);
+    open.end('s1', first.closing, ['episode.record']);
+    const change = await open.begin('s1', 'Oh, and I went for a walk too.', '2026-11-07', itemsOf);
+    expect(change.line).toContain('waits for their approval. If this changes what to record, propose the whole day again');
+    expect(change.line).toContain('it replaces the one waiting');
+    expect(change.line).toContain('- Learn guitar {"collection":"asset","id":"a1"}');
+    open.end('s1', change.closing, ['episode.record']);
+    // Approved (or refused): nothing waits, so a thank-you carries nothing.
+    waits = false;
+    expect((await open.begin('s1', 'Thanks!', '2026-11-07', itemsOf)).line).toBe('');
+  });
+  it('takes a reply to today\'s morning notice as a plan, not a close, until a record is proposed', async () => {
+    // D-343 (the owner's app day, 2026-11-15) — moving the plumber call from the morning's "Your day"
+    // left the chat asking at 9:00 whether the plumber call had happened.
+    const morning = quoting('Your day · Sat 7 Nov\nAgenda\nDue · Call the plumber\nDue · Spanish lesson');
+    const open = createOpenClosings(() => 0, async () => true);
+    const plan = await open.begin('s', morning, '2026-11-07', itemsOf);
+    expect(plan.line).toContain('If the message tells you how that day went, close it');
+    open.end('s', plan.closing, ['work.update']);
+    expect((await open.begin('s', 'What do I still have left today?', '2026-11-07', itemsOf)).line).toBe('');
+    // Its day reported from it, a record proposed: it is a close, carried on as one.
+    const report = await open.begin('s', morning, '2026-11-07', itemsOf);
+    open.end('s', report.closing, ['episode.record']);
+    expect((await open.begin('s', 'Oh, and a walk too.', '2026-11-07', itemsOf)).line).not.toBe('');
+    // A morning notice about a day already past is a late close, as before.
+    const late = createOpenClosings(() => 0);
+    const past = await late.begin('s', morning, '2026-11-09', itemsOf);
+    late.end('s', past.closing, []);
+    expect((await late.begin('s', 'Leave the guitar out.', '2026-11-09', itemsOf)).line).not.toBe('');
+  });
+  it('ends on a reply that quotes something else, after two answers, or after a day', async () => {
+    let at = 0; const open = createOpenClosings(() => at);
+    const asked = async () => { const first = await open.begin('s', evening, '2026-11-07', itemsOf); open.end('s', first.closing, []); };
+    await asked();
+    expect((await open.begin('s', quoting('Due today\nRenew passport'), '2026-11-07', itemsOf)).line).toBe('');
+    expect((await open.begin('s', 'Leave it out.', '2026-11-07', itemsOf)).line).toBe('');
+    await asked();
+    for (const n of [1, 2]) {
+      const turn = await open.begin('s', `Answer ${String(n)}`, '2026-11-07', itemsOf);
+      expect(turn.line).not.toBe(''); open.end('s', turn.closing, []);
+    }
+    expect((await open.begin('s', 'Answer 3', '2026-11-07', itemsOf)).line).toBe('');
+    await asked(); at += 24 * 3_600_000 + 1;
+    expect((await open.begin('s', 'Much later', '2026-11-07', itemsOf)).line).toBe('');
+    // Another conversation never sees it.
+    at = 0; await asked();
+    expect((await open.begin('other', 'Leave it out.', '2026-11-07', itemsOf)).line).toBe('');
+  });
+});
 
 describe('D-343 slice 3 — the day a quoted notice closes', () => {
   it('reads the Agenda’s or the evening notice’s day on the turn’s clock', () => {
@@ -62,14 +133,15 @@ describe('D-343 slice 3 — the day a quoted notice closes', () => {
     expect(closingDayNote({ title: 'Agenda · Sat 7 Nov', from: '2026-11-07', to: '2026-11-07' })).toBe(
       '\n[This replies to their notice “Agenda · Sat 7 Nov”, about 2026-11-07. If the message tells you how that day went, close it:\n'
       + '1. Read the day with situation.query (time 2026-11-07) for each item\'s ref.\n'
-      + '2. Record it in one episode.record call with day 2026-11-07, before any other change: each item they mention, done or skipped, in their words, '
-      + 'with its ref; anything else they did, with no item.\n'
-      + '3. Tick off with work.update a task they did, after the record (one change is asked at a time).\n'
-      + '4. Ask about each item on the notice they did not mention: leave it out, or record it as skipped?\n'
+      + '2. If they did not mention every item on the notice, first ask about each one they left out (did they do it, skip it, or should it be left out?) '
+      + 'and change nothing until they answer.\n'
+      + '3. Then record the day in one episode.record call with day 2026-11-07: each item done or skipped, in their words without "did" or "didn\'t" (the outcome says it), with its ref; '
+      + 'anything else they did, with no item; nothing for an item they said to leave out.\n'
+      + '4. That call also ticks off each task recorded as done: do not call work.update for it.\n'
       + '5. Say what you recorded.]');
     const several = closingDayNote({ title: 'Agenda · Fri 6 Nov to Sun 8 Nov', from: '2026-11-06', to: '2026-11-08' });
     expect(several).toContain('about 2026-11-06 to 2026-11-08. If the message tells you how those days went, close each:');
-    expect(several).toContain('2. Record it in one episode.record call per day (ask which day if they do not say), before any other change');
+    expect(several).toContain('3. Then record each day in one episode.record call per day (ask which day if they do not say)');
   });
   it('lists the day’s items with their refs when the host can read them, and the model reads none itself', async () => {
     const quote = { title: 'Agenda · Sat 7 Nov', from: '2026-11-07', to: '2026-11-07' };
@@ -79,10 +151,11 @@ describe('D-343 slice 3 — the day a quoted notice closes', () => {
       '\n[This replies to their notice “Agenda · Sat 7 Nov”, about 2026-11-07. Its items, each with its ref:\n'
       + '- Run 5 km {"collection":"task","id":"t1"}\n- Reminder in Yours {"collection":"asset","id":"a1","field":"rules.renew"}\n'
       + 'If the message tells you how that day went, close it:\n'
-      + '1. Record it in one episode.record call with day 2026-11-07, before any other change: each item they mention, done or skipped, in their words, '
-      + 'with its ref above; anything else they did, with no item.\n'
-      + '2. Tick off with work.update a task they did, after the record (one change is asked at a time).\n'
-      + '3. Ask about each item above they did not mention: leave it out, or record it as skipped?\n'
+      + '1. If they did not mention every item above, first ask about each one they left out (did they do it, skip it, or should it be left out?) '
+      + 'and change nothing until they answer.\n'
+      + '2. Then record the day in one episode.record call with day 2026-11-07: each item done or skipped, in their words without "did" or "didn\'t" (the outcome says it), with its ref above; '
+      + 'anything else they did, with no item; nothing for an item they said to leave out.\n'
+      + '3. That call also ticks off each task recorded as done: do not call work.update for it.\n'
       + '4. Say what you recorded.]');
     const message = quoting('Agenda · Sat 7 Nov\n07:00 Run 5 km');
     expect(await closingDayLine(message, '2026-11-07', async () => items)).toBe(closingDayNote(quote, items));
@@ -186,10 +259,27 @@ const fixture = (situation?: { read: (raw: unknown, source: unknown) => Promise<
   const notes = (n: number): string => (JSON.parse(calls[n]!) as { user_message: string }).user_message;
   /** D-343 slice 4 — Today's "Close the day": a conversation in the app holding the evening notice. */
   const openClosing = createNoticeConversationOpener({ chatStore: store, signature });
-  return { raw, bridge, notify, send, settled, notes, openClosing };
+  return { db, store, orchestrator, raw, bridge, notify, send, settled, notes, openClosing, callCount: () => calls.length };
 };
 
 describe('D-343 slice 3 — a reply to the Agenda carries how to close its day', () => {
+  it('an admitted email runs as an ordinary owner chat turn with the quoted day\'s closing instructions, once', async () => {
+    const f = fixture();
+    const emails = createEmailCloseDay({ db: f.db, getKey: () => new Uint8Array(32).fill(53),
+      openNoticeConversation: () => f.openClosing, queue: () => f.orchestrator.turnQueue, readReply: async () => null });
+    cleanups.push(() => emails.stop());
+    const reply = { title: 'Agenda · Fri 6 Nov', quoted: 'Agenda · Fri 6 Nov\n07:00 Run 5 km', text: 'Did the run.',
+      rfc_message_id: '<closing@example.test>', source: { slug: 'alerts', record_id: 'alerts:1' } };
+    expect(await emails(reply)).toBe('opened');
+    const receipt = f.db.prepare('SELECT session_id FROM email_close_day_replies').get() as { session_id: string };
+    await f.settled(1, receipt.session_id);
+    expect(f.notes(0)).toContain(closingDayNote({ title: 'Agenda · Fri 6 Nov', from: '2026-11-06', to: '2026-11-06' }));
+    await emails.recover(true);
+    expect(await emails(reply)).toBe('seen');
+    expect(f.callCount()).toBe(1);
+    expect((await f.store.listMessages(receipt.session_id)).filter(message => message.role === 'user')).toHaveLength(1);
+  });
+
   it('adds the closing instructions to the turn that quotes it, and to no other', async () => {
     const f = fixture();
     const agenda = await f.notify({ title: 'Agenda · Fri 6 Nov', text: '07:00 Run 5 km\nAll day · Spanish lesson' });

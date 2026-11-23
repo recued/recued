@@ -1,6 +1,8 @@
 import { BACKUP_WORKSPACE_STYLES } from './backup-workspace-styles.js';
 import { SERVERS_WORKSPACE_STYLES } from './servers-workspace-styles.js';
 import { NOTIFICATIONS_WORKSPACE_STYLES } from './notifications-workspace-styles.js';
+import { mountSettingsFinder } from './settings-finder.js';
+import { settingsFinderHash } from './settings-finder-targets.js';
 /** D-148 § A.4 — Settings route bootstrap (NEXT-#2 advance, slices 110 + 111 + D-156 P5).
  *
  *  Mounts the Settings surface as a sibling of the Reception route
@@ -76,6 +78,7 @@ import { NOTIFICATIONS_WORKSPACE_STYLES } from './notifications-workspace-styles
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { PRIVACY_WORKSPACE_STYLES } from './privacy-workspace-styles.js';
 import { MAINTENANCE_WORKSPACE_STYLES } from './maintenance-workspace-styles.js';
+import { mountStorageSpacePanel, STORAGE_SPACE_PANEL_STYLES, type MountStorageSpacePanelOptions, type StorageSpacePanelMount } from './storage-space-panel-mount.js';
 import type {
   DiagnosticResponse,
   RotationResult,
@@ -472,6 +475,8 @@ export interface BootstrapSettingsRouteOptions {
    *  `data-recued-settings-section`, the route scrolls that section into view
    *  once after mount. Unknown / absent ids are a safe no-op. */
   initialSectionId?: string | null;
+  /** Exact finder destination from `#settings/<section>/find/<setting>`. */
+  initialSettingId?: string | null;
   /** Address seam for in-page rail navigation. The rail used to switch
    *  sections with a pure attribute flip, so the URL kept naming whichever
    *  settings hash the user arrived on — Seller's own `#settings/seller/<sub>`
@@ -931,6 +936,15 @@ export interface BootstrapSettingsRouteOptions {
    *  Optional; omitted → the storage rows render read-only. */
   maintenanceReclaimCaller?: (args: { surface: string; force?: boolean }) =>
     Promise<{ ran: boolean; bytes_freed: number }>;
+  /** D-403 — Server ▸ Storage: what takes space, by kind (`storage.kinds.read`), and the owner's purge
+   *  (`storage.purge.preview` / `storage.purge.run`). All three present ⇒ the tab mounts. */
+  storageKindsCaller?: MountStorageSpacePanelOptions['readKinds'];
+  storagePurgePreviewCaller?: MountStorageSpacePanelOptions['preview'];
+  storagePurgeRunCaller?: MountStorageSpacePanelOptions['run'];
+  /** D-403 — "Export them first": a Records kind as CSV (`records.export`), run history as JSON lines
+   *  (`audit.export.page`). Absent ⇒ no export offered for that kind. */
+  storageRecordsExportCaller?: MountStorageSpacePanelOptions['exportRecords'];
+  storageRunsExportCaller?: MountStorageSpacePanelOptions['exportRuns'];
   housekeepingPanelTrustWriteCaller?: HousekeepingTrustWriteCaller;
   /** D-132/D-133/D-136 Commit 2 — promotion banner Don't-ask-again
    *  (`housekeeping.trust.dismiss_promotion`), coverage panel
@@ -1076,6 +1090,8 @@ export interface SettingsRoute {
    *  Sections only: a hash carrying deeper state (a Seller sub-page, a Server
    *  tab) is passed at MOUNT time, so the shell must re-mount for those. */
   navigateToSection(sectionId: string | null): boolean;
+  /** Reveal an existing panel without disposing any Settings drafts. */
+  navigateToSetting(settingId: string, sectionId?: string): boolean;
   /** Opts user-started Settings writes into the shell's in-flight leave
    * guard without misclassifying them as unsaved drafts. */
   inFlightWorkPrompt(): string | null;
@@ -1461,6 +1477,7 @@ export const SERVER_SUBTAB_LABELS = {
   timezone: 'Timezone',
   'key-health': 'Key Health',
   maintenance: 'Maintenance',
+  storage: 'Storage',
 } as const;
 
 export const bootstrapSettingsRoute = (
@@ -1597,6 +1614,7 @@ export const bootstrapSettingsRoute = (
       HOUSEKEEPING_PANEL_STYLES,
       PRIVACY_WORKSPACE_STYLES,
       MAINTENANCE_WORKSPACE_STYLES,
+      STORAGE_SPACE_PANEL_STYLES,
       NOTIFICATIONS_WORKSPACE_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
@@ -1612,6 +1630,8 @@ export const bootstrapSettingsRoute = (
   const heading = doc.createElement('h1');
   heading.textContent = 'Settings';
   routeRoot.appendChild(heading);
+  const finderHost = doc.createElement('div');
+  routeRoot.appendChild(finderHost);
 
   // ── Subview shell: a sticky rail + the section host ───────────────
   // Sections register into `subviews` as they mount (each gated on its
@@ -2799,6 +2819,7 @@ export const bootstrapSettingsRoute = (
   let customDomains: CustomDomainsPanelMount | null = null;
   let exposure: ExposurePanelMount | null = null;
   let maintenance: MaintenancePanelMount | null = null;
+  let storageSpace: StorageSpacePanelMount | null = null;
   // R26.2 Delta 1 — the Exposure grid needs the read + all three mutators.
   // A read-only mount renders toggles that can't dispatch; a mutator-only
   // mount has no initial state to render.
@@ -2832,6 +2853,8 @@ export const bootstrapSettingsRoute = (
   // when the run-now caller is also wired.
   const canMountMaintenance =
     opts.housekeepingPanelStatusReadCaller !== undefined;
+  const canMountStorageSpace = opts.storageKindsCaller !== undefined
+    && opts.storagePurgePreviewCaller !== undefined && opts.storagePurgeRunCaller !== undefined;
   const wantsServerSection =
     opts.tlsRenewCaller !== undefined
     || opts.certPinWatcher !== undefined
@@ -2839,7 +2862,8 @@ export const bootstrapSettingsRoute = (
     || canMountReachability
     || canMountKeyHealth
     || canMountExposure
-    || canMountMaintenance;
+    || canMountMaintenance
+    || canMountStorageSpace;
   if (wantsServerSection) {
     const serverSection = doc.createElement('section');
     serverSection.setAttribute(SETTINGS_ROUTE_SECTION_ATTR, 'server');
@@ -2898,6 +2922,10 @@ export const bootstrapSettingsRoute = (
           : []),
         ...(canMountMaintenance
           ? [{ id: 'maintenance', label: SERVER_SUBTAB_LABELS['maintenance'] }]
+          : []),
+        // D-403 — what takes space, by kind, and the purge the owner runs.
+        ...(canMountStorageSpace
+          ? [{ id: 'storage', label: SERVER_SUBTAB_LABELS.storage }]
           : []),
       ],
       'Server sections',
@@ -3396,6 +3424,18 @@ export const bootstrapSettingsRoute = (
       });
     }
 
+    if (canMountStorageSpace) {
+      storageSpace = mountStorageSpacePanel({
+        host: serverHosts['storage']!,
+        readKinds: opts.storageKindsCaller!,
+        preview: opts.storagePurgePreviewCaller!,
+        run: opts.storagePurgeRunCaller!,
+        ...(opts.storageRecordsExportCaller !== undefined ? { exportRecords: opts.storageRecordsExportCaller } : {}),
+        ...(opts.storageRunsExportCaller !== undefined ? { exportRuns: opts.storageRunsExportCaller } : {}),
+        ...(opts.now !== undefined ? { now: opts.now } : {}),
+      });
+    }
+
     registerSubview('server', 'Server', serverSection);
   }
 
@@ -3490,6 +3530,7 @@ export const bootstrapSettingsRoute = (
       navBadges.set(sv.id, badge);
     }
     item.addEventListener('click', () => {
+      finder.cancelReveal();
       activateSubview(sv.id, { scroll: false });
       // The rail is real navigation, so it owes the address bar a history
       // entry — otherwise Back from a section's own deep link (a Seller
@@ -3513,6 +3554,12 @@ export const bootstrapSettingsRoute = (
     activateSubview(initialSubviewId, { scroll: deepLinked });
   }
 
+  const finder = mountSettingsFinder({ host: finderHost, content: viewsHost, document: doc,
+    activateSection: section => activateSubview(section, { scroll: false }),
+    onOpen: entry => opts.onAddressChange?.(settingsFinderHash(entry), 'push'),
+  });
+  if (opts.initialSettingId) finder.restore(opts.initialSettingId, opts.initialSectionId ?? undefined);
+
   doc.defaultView?.addEventListener?.('resize', scheduleNavigationReveal);
   return {
     update: () => {
@@ -3527,7 +3574,13 @@ export const bootstrapSettingsRoute = (
       if (agendaDelivery?.hasInFlightWork() === true) return true;
       if (closeDayDelivery?.hasInFlightWork() === true) return true;
       if (householdDelivery?.hasInFlightWork() === true) return true;
+      if (mailChatDoor?.hasInFlightWork() === true) return true;
+      if (connectDevice?.hasInFlightWork() === true) return true;
+      if (exposure?.hasInFlightWork() === true) return true;
       if (serverTimeZone?.isSaving() === true) return true;
+      if (keyHealth?.getState() === 'busy') return true;
+      if (storageSpace?.hasInFlightWork() === true) return true;
+      if (maintenance?.getState().runNow.running === true || maintenance?.getState().reclaiming != null) return true;
       if (tlsCertificates?.hasInFlightWork() === true) return true;
       if (customDomains?.hasInFlightWork() === true) return true;
       if (hostnames?.hasInFlightWork() === true) return true;
@@ -3553,10 +3606,13 @@ export const bootstrapSettingsRoute = (
         || agendaDelivery?.hasUnsavedChanges() === true
         || closeDayDelivery?.hasUnsavedChanges() === true
         || householdDelivery?.hasUnsavedChanges() === true
+        || mailChatDoor?.hasUnsavedChanges() === true
+        || exposure?.hasUnsavedChanges() === true
         || serverTimeZone?.hasUnsavedChanges() === true
         || tlsCertificates?.hasUnsavedChanges() === true
         || customDomains?.hasUnsavedChanges() === true
         || hostnames?.hasUnsavedChanges() === true
+        || storageSpace?.hasUnsavedChanges() === true
         || learningPanel?.hasUnsavedChanges() === true;
     },
     unsavedChangesPrompt: () => {
@@ -3569,10 +3625,13 @@ export const bootstrapSettingsRoute = (
       if (agendaDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved agenda settings?';
       if (closeDayDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved Close the day settings?';
       if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household delivery settings?';
+      if (mailChatDoor?.hasUnsavedChanges() === true) return 'Discard the unsaved Email chat settings?';
+      if (exposure?.hasUnsavedChanges() === true) return 'Discard the unfinished Exposure confirmation?';
       if (serverTimeZone?.hasUnsavedChanges() === true) return 'Discard the unsaved server timezone?';
       if (tlsCertificates?.hasUnsavedChanges() === true) return 'Discard the unsaved certificate upload?';
       if (customDomains?.hasUnsavedChanges() === true) return 'Discard the unsaved custom domain?';
       if (hostnames?.hasUnsavedChanges() === true) return 'Discard the unsaved hostname changes?';
+      if (storageSpace?.hasUnsavedChanges() === true) return 'Discard the unfinished Storage deletion choices?';
       return learningPanel?.hasUnsavedChanges() === true
         ? 'Discard the finished recipe draft?'
         : null;
@@ -3587,8 +3646,15 @@ export const bootstrapSettingsRoute = (
       if (agendaDelivery?.hasInFlightWork() === true) return 'An agenda action is still in progress. Leave Settings anyway?';
       if (closeDayDelivery?.hasInFlightWork() === true) return 'A Close the day action is still in progress. Leave Settings anyway?';
       if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
+      if (mailChatDoor?.hasInFlightWork() === true) return 'An Email chat change is still in progress. Leave Settings anyway?';
+      if (connectDevice?.hasInFlightWork() === true) return 'A router setting is still updating. Leave Settings anyway?';
+      if (exposure?.hasInFlightWork() === true) return 'An Exposure setting is still updating. Leave Settings anyway?';
       if (serverTimeZone?.isSaving() === true) return 'The server timezone is still updating. Leave Settings anyway?';
+      if (keyHealth?.getState() === 'busy') return 'A server key rotation is still in progress. Leave Settings anyway?';
+      if (storageSpace?.hasInFlightWork() === true) return 'A Storage export or deletion is still in progress. Leave Settings anyway?';
+      if (maintenance?.getState().runNow.running === true || maintenance?.getState().reclaiming != null) return 'A maintenance action is still in progress. Leave Settings anyway?';
       if (tlsCertificates?.hasInFlightWork() === true) return 'A certificate change is still in progress. Leave Settings anyway?';
+      if (tlsRenew?.getState() === 'busy') return 'A certificate renewal is still in progress. Leave Settings anyway?';
       if (customDomains?.hasInFlightWork() === true) return 'A custom domain is still being added. Leave Settings anyway?';
       if (hostnames?.hasInFlightWork() === true) return 'A hostname change is still in progress. Leave Settings anyway?';
       if (aiModels?.hasInFlightWork() === true) {
@@ -3598,7 +3664,9 @@ export const bootstrapSettingsRoute = (
         return 'An account setting is still updating. Leave Settings anyway?';
       }
       if (devicesPage?.hasInFlightWork() === true) {
-        return 'Recued is still revoking a device. Leave Settings anyway?';
+        return devicesPage.pendingOperation() === 'rename'
+          ? 'Recued is still renaming a device. Leave Settings anyway?'
+          : 'Recued is still revoking a device. Leave Settings anyway?';
       }
       if (updatesPage?.hasInFlightWork() === true) {
         return 'A server update change is still in progress. Leave Settings anyway?';
@@ -3612,6 +3680,7 @@ export const bootstrapSettingsRoute = (
     },
     navigateToSection: (sectionId: string | null): boolean => {
       if (disposed) return false;
+      finder.cancelReveal();
       const target = sectionId === null || sectionId.trim().length === 0
         ? subviews[0]?.id ?? null
         : subviews.find((sv) => sv.id === sectionId)?.id ?? null;
@@ -3619,9 +3688,11 @@ export const bootstrapSettingsRoute = (
       activateSubview(target, { scroll: false });
       return true;
     },
+    navigateToSetting: (settingId, sectionId) => !disposed && finder.reveal(settingId, sectionId),
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      finder.dispose();
       doc.defaultView?.removeEventListener?.('resize', scheduleNavigationReveal);
       if (navigationRevealFrame !== null) {
         doc.defaultView?.cancelAnimationFrame?.(navigationRevealFrame);
@@ -3641,6 +3712,7 @@ export const bootstrapSettingsRoute = (
       // subscription before the section node is removed.
       if (exposure !== null) exposure.dispose();
       if (maintenance !== null) maintenance.dispose();
+      if (storageSpace !== null) storageSpace.dispose();
       if (housekeepingPanel !== null) housekeepingPanel.dispose();
       // Permissions and Connections now live on top-level routes; their legacy
       // Settings accessors remain null, so there is no Settings child mount to

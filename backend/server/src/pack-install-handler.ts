@@ -1,5 +1,6 @@
 import { buildPackVendorPermissionReview, preparePackVendorPermissionReview } from './pack-vendor-permissions.js';
 import { createPackReconnectWorklist } from './pack-reconnect-worklist.js';
+import { closedByOwner } from './mint-door-contract.js';
 /** D-145 PA10 follow-on — `packs.install` rpc handler.
  *
  *  Bulk-pack install over the Settings → Packs UI flow. Accepts a raw
@@ -61,6 +62,8 @@ import {
   type InstallAccessTier,
   type InstallGrantSelection,
   type MailTemplateInstallChoice,
+  type PackWebhookDoorChoice,
+  type PackWebhookPublisherChange,
   type MailTemplateInstallOutcome,
   type PackContentRef,
   type PackDependencyInstallScope,
@@ -438,6 +441,11 @@ type PacksInstallArgs = {
    *  same mail as one already on (`packs.install_preview` `mail_templates`).
    *  Absent ⇒ the recipe's. Travels down to the packs an install brings in. */
   mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice>;
+  /** D-201 Slice 10AF (10AE finding 17; the owner's ruling of 2026-11-20) —
+   *  the owner's answer to each `packs.install_preview`
+   *  `webhook_publisher_changes`: its door open or closed. Absent ⇒ the state
+   *  the owner left it in. Travels down to the packs an install brings in. */
+  webhook_door_choices?: ReadonlyArray<PackWebhookDoorChoice>;
 };
 
 type InternalInstallOutcome = {
@@ -521,6 +529,79 @@ const sharedAlsoConnections = async (
   if (asked.length === 0 || args.chosen_connection === undefined || deps.sharedSignInConnections === undefined) return [];
   const shared = new Set((await deps.sharedSignInConnections(manifest)).map((c) => c.connection_name));
   return [...new Set(asked)].filter((name) => name !== args.chosen_connection && shared.has(name));
+};
+
+/** D-201 Slice 10AF — a present-but-malformed `webhook_door_choices` is a
+ *  client bug: refused, not read as "as it was left", which would keep a door
+ *  open the owner answered to close. */
+export const assertWebhookDoorChoices = (method: string, value: unknown): void => {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new RpcError('bad_request', `${method}: webhook_door_choices must be an array`);
+  const seen = new Set<string>();
+  value.forEach((entry: unknown, index) => {
+    const choice = entry as { pack_slug?: unknown; recipe_id?: unknown; door?: unknown } | null;
+    if (choice === null
+      || typeof choice !== 'object'
+      || Object.keys(choice).sort().join(',') !== 'door,pack_slug,recipe_id'
+      || typeof choice.pack_slug !== 'string' || choice.pack_slug.length === 0
+      || typeof choice.recipe_id !== 'string' || choice.recipe_id.length === 0
+      || (choice.door !== 'open' && choice.door !== 'closed')) {
+      throw new RpcError('bad_request', `${method}: webhook_door_choices[${index}] is invalid`);
+    }
+    const key = JSON.stringify([choice.pack_slug, choice.recipe_id]);
+    if (seen.has(key)) {
+      throw new RpcError('bad_request', `${method}: webhook_door_choices names ${choice.pack_slug} ${choice.recipe_id} twice`);
+    }
+    seen.add(key);
+  });
+};
+
+/** D-201 Slice 10AF (10AE finding 17; the owner's ruling of 2026-11-20) — the
+ *  recipes an install brings from another publisher whose webhook door was
+ *  made before, each with the state its owner left it in (`closed` when its
+ *  owner closed it), for the dialog to raise its switch. Read as the door step
+ *  reads it (`newestRecipeDoor`). Says nothing when it cannot tell, as the
+ *  preview's other parts do. */
+const webhookPublisherChangesFor = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<PackWebhookPublisherChange[]> => {
+  const store = deps.webhookConsumerStore;
+  const definitions = deps.webhookDoor?.definitionStore;
+  if (store === undefined || definitions === undefined) return [];
+  const changes: PackWebhookPublisherChange[] = [];
+  try {
+    for (const touched of installTouchedManifests(deps, manifest) ?? [manifest]) {
+      for (const entry of await resolvePackRecipeBodies(normalizeBulkPackInstallPlan(touched), touched.publisher, deps)) {
+        if (entry.recipe === null) continue;
+        const recipe = entry.recipe.recipe;
+        if ((recipe.webhook_triggers?.length ?? 0) === 0) continue;
+        const found = store.newestRecipeDoor('pack_install', touched.slug, recipe.recipe_id);
+        if (found === null || found.publisher_id === entry.recipe.publisher_id) continue;
+        const stored = definitions.get(found.contract_id);
+        if (stored === null) continue;
+        const name = recipe.metadata?.name?.trim();
+        // D-201 Slice 10AJ (10AI finding 1) — an answer the owner already gave,
+        // kept until its door is made, is what it shows.
+        // D-201 Slice 10AO (10AM finding 1) — the state the card shows: an
+        // answer, or the owner's switch, kept for a door not made yet, whatever
+        // its publisher, else the newest door. A stale answer showed in place
+        // of the door the owner had closed since, and the install opened it;
+        // none outlives a stamp, an undo or the owner's switch now.
+        const answered = store.doorAnswerFor('pack_install', touched.slug, recipe.recipe_id);
+        changes.push({
+          pack_slug: touched.slug,
+          recipe_id: recipe.recipe_id,
+          ...(name ? { name } : {}),
+          from_publisher: found.publisher_id,
+          door: answered ?? (closedByOwner(stored) ? 'closed' : 'open'),
+        });
+      }
+    }
+  } catch {
+    return [];
+  }
+  return changes;
 };
 
 /** D-315 §5.2 — a present-but-malformed `mail_template_choices` is a client bug:
@@ -956,6 +1037,7 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
   assertVendorPermissionConsent('packs.install', args.vendor_permission_consent);
   assertDependencyInstallScopes('packs.install', args.dependency_install_scopes);
   assertMailTemplateChoices('packs.install', args.mail_template_choices);
+  assertWebhookDoorChoices('packs.install', args.webhook_door_choices);
   if (args.expected_manifest_hash !== undefined
     && !/^[0-9a-f]{64}$/.test(args.expected_manifest_hash)) {
     throw new RpcError(
@@ -1796,6 +1878,14 @@ const installSinglePack = async (
         ? { webhookConsumerStore: deps.webhookConsumerStore }
         : {}),
       ...(deps.webhookDoor ? { webhookDoor: deps.webhookDoor } : {}),
+      // D-201 Slice 10AF — this pack's answers to the switches its preview raised.
+      ...((args.webhook_door_choices ?? []).some((choice) => choice.pack_slug === manifest.slug)
+        ? {
+            webhookDoorChoices: new Map((args.webhook_door_choices ?? [])
+              .filter((choice) => choice.pack_slug === manifest.slug)
+              .map((choice) => [choice.recipe_id, choice.door] as const)),
+          }
+        : {}),
       ...(deps.mcpBodyVisibilityStore
         ? { mcpBodyVisibilityStore: deps.mcpBodyVisibilityStore }
         : {}),
@@ -2329,6 +2419,9 @@ const handlePacksInstallInternal = async (
           : {}),
         ...(args.mail_template_choices !== undefined
           ? { mail_template_choices: args.mail_template_choices }
+          : {}),
+        ...(args.webhook_door_choices !== undefined
+          ? { webhook_door_choices: args.webhook_door_choices }
           : {}),
       },
       context,
@@ -2941,6 +3034,8 @@ type PacksInstallBySlugArgs = {
   dependency_install_scopes?: PacksInstallArgs['dependency_install_scopes'];
   /** D-315 §5.2 — forwarded verbatim to the by-value install. */
   mail_template_choices?: PacksInstallArgs['mail_template_choices'];
+  /** D-201 Slice 10AF — forwarded verbatim to the by-value install. */
+  webhook_door_choices?: PacksInstallArgs['webhook_door_choices'];
 };
 
 const marketplaceManifestReviewHash = (
@@ -3430,6 +3525,7 @@ export const installPackBySlug = async (
   }
   assertDependencyInstallScopes('packs.installBySlug', args.dependency_install_scopes);
   assertMailTemplateChoices('packs.installBySlug', args.mail_template_choices);
+  assertWebhookDoorChoices('packs.installBySlug', args.webhook_door_choices);
 
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
@@ -3587,6 +3683,9 @@ export const installPackBySlug = async (
           : {}),
         ...(args.mail_template_choices !== undefined
           ? { mail_template_choices: args.mail_template_choices }
+          : {}),
+        ...(args.webhook_door_choices !== undefined
+          ? { webhook_door_choices: args.webhook_door_choices }
           : {}),
       },
       manifest.publisher,
@@ -4199,6 +4298,10 @@ export const makePackInstallHandlers = (
         const switchedOff = triggerPreview === undefined
           ? []
           : triggersSwitchedOff({ preview: triggerPreview, recipes: incoming });
+        // D-201 Slice 10AF (10AE finding 17) — a recipe this update brings from
+        // another publisher whose webhook door was made before: its switch,
+        // raised with the state the owner left it in.
+        const publisherChanges = await webhookPublisherChangesFor(previewDeps, manifest);
         // D-299 — a Reception form or link this update stops taking submissions.
         const receptionsOff = receptionPairs === undefined
           ? []
@@ -4237,6 +4340,7 @@ export const makePackInstallHandlers = (
           ...(missingPacks !== undefined ? { missing_packs: missingPacks } : {}),
           ...(installRefusal !== undefined ? { install_refusal: installRefusal } : {}),
           ...(switchedOff.length > 0 ? { triggers_switched_off: switchedOff } : {}),
+          ...(publisherChanges.length > 0 ? { webhook_publisher_changes: publisherChanges } : {}),
           ...(receptionsOff.length > 0 ? { receptions_switched_off: receptionsOff } : {}),
           ...(settingsDropped.length > 0 ? { settings_no_longer_used: settingsDropped } : {}),
           ...(mailTemplates.length > 0 ? { mail_templates: mailTemplates } : {}),

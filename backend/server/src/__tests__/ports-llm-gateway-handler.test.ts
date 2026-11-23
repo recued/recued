@@ -1963,6 +1963,59 @@ describe('createLlmGatewayPortHandler', () => {
 });
 
 describe('createLlmGatewayDirectCompletionProvider', () => {
+  /** It calls the provider itself, so it keeps the source's last call as the executor does on every
+   *  other path (Settings → AI / Models shows it beside the source). */
+  it('keeps the source\'s last call: answered, by another model, or how it failed', async () => {
+    const config = baseConfig();
+    const resolved = resolveLlmGatewayRoute(config);
+    if (!resolved.ok) throw new Error(resolved.message);
+    const quota = createQuotaTracker();
+    let answer: () => unknown = () => ({ text: 'ok', finish_reason: 'stop' as const,
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2, answered_model: 'some-other-model' } });
+    const provider = createLlmGatewayDirectCompletionProvider({
+      adapters: () => ({ provider: 'openai', complete: vi.fn(async () => answer()) as never }),
+      quota,
+    });
+    const call = () => provider.complete({
+      route: resolved.route, system_prompt: 'p', system_prompt_direct: 'p', system_role: 'system',
+      emit_caller_application_instructions: true, messages: [{ role: 'user', content: 'hi' }],
+      requested_model: 'ignored', model_alias: 'seller-primary', config, now: NOW, system_tools_allowed: false,
+      token: makeToken(), contract_id: CONTRACT_ID, allowed_tool_names: [], input_token_budget: 100_000,
+      resolve_contract_snapshot: () => null,
+    }).catch(() => undefined);
+    const id = resolved.route.source_id;
+
+    await call();
+    expect(quota.lastCall!(id)).toMatchObject({ model: resolved.route.slot.model, result: 'answered', answered_by: 'some-other-model' });
+    answer = () => { throw classifyProviderError(404, '{"error":{"message":"The model `x` does not exist"}}', null); };
+    await call();
+    expect(quota.lastCall!(id)?.result).toBe('model_missing');
+  });
+
+  /** A reply that stopped at its limit before any answer was still billed: it counts against the
+   *  source's day like an answer's, as on the executor's path. */
+  it('counts what a reply that ran out of room before answering used', async () => {
+    const config = baseConfig();
+    const resolved = resolveLlmGatewayRoute(config);
+    if (!resolved.ok) throw new Error(resolved.message);
+    const quota = createQuotaTracker();
+    const provider = createLlmGatewayDirectCompletionProvider({
+      adapters: () => ({ provider: 'openai', complete: vi.fn(async () => {
+        throw new LLMError('AI_RESPONSE_PARSE_FAILED', 'OpenAI response had no answer',
+          { finish_reason: 'length', usage: { input_tokens: 100, output_tokens: 4_800, total_tokens: 4_900 } });
+      }) as never }),
+      quota,
+    });
+    await expect(provider.complete({
+      route: resolved.route, system_prompt: 'p', system_prompt_direct: 'p', system_role: 'system',
+      emit_caller_application_instructions: true, messages: [{ role: 'user', content: 'hi' }],
+      requested_model: 'ignored', model_alias: 'seller-primary', config, now: NOW, system_tools_allowed: false,
+      token: makeToken(), contract_id: CONTRACT_ID, allowed_tool_names: [], input_token_budget: 100_000,
+      resolve_contract_snapshot: () => null,
+    })).rejects.toThrow();
+    expect(quota.tokensToday(resolved.route.source_id, NOW)).toBe(4_900);
+  });
+
   it('propagates the adapter finish reason', async () => {
     const config = baseConfig();
     const resolved = resolveLlmGatewayRoute(config);

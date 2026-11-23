@@ -203,6 +203,8 @@ export interface ComingUpEntry {
   /** A recipe's name or a saved prompt's title. */
   readonly recipe_name: string;
   readonly href: string;
+  /** A prompt has separate destinations for its saved schedule and its chat. */
+  readonly prompt?: { readonly id: string; readonly conversationHref: string };
   /** Its dish's name, when the recipe has more than one. */
   readonly dish_name: string | null;
   /** What it is: "Weekdays at 9:00 AM", "Every 15 minutes". */
@@ -218,7 +220,10 @@ export const renderComingUp = (entries: readonly ComingUpEntry[], emptyText = 'N
   return `<ol class="automation-coming-up" ${AUTOMATION_COMING_UP_ATTR}>
     ${sorted.map((entry) => `<li>
       <time datetime="${e(new Date(entry.at).toISOString())}">${e(formatClientDateTime(entry.at, { includeSeconds: false }))}</time>
-      <a href="${e(entry.href)}">${e(entry.recipe_name)}</a>${entry.dish_name !== null ? ` · ${e(entry.dish_name)}` : ''}
+      ${entry.prompt ? `<span class="automation-coming-up-prompt"><strong class="automation-coming-up-name">${e(entry.recipe_name)}</strong>
+        <span class="automation-coming-up-actions"><a href="${e(entry.href)}" data-coming-up-prompt="${e(entry.prompt.id)}" aria-label="Schedule details for ${e(entry.recipe_name)}">Schedule details</a>
+        <a href="${e(entry.prompt.conversationHref)}" data-coming-up-conversation="${e(entry.prompt.id)}" aria-label="Open conversation for ${e(entry.recipe_name)}">Open conversation</a></span></span>`
+        : `<a class="automation-coming-up-name" href="${e(entry.href)}">${e(entry.recipe_name)}</a>`}${entry.dish_name !== null ? ` · ${e(entry.dish_name)}` : ''}
       <span class="automation-coming-up-what">${e(entry.what)}</span>
     </li>`).join('')}
   </ol>`;
@@ -262,8 +267,12 @@ export const BY_RECIPE_STYLES = `
 .automation-coming-up li { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; font-size: 13px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .automation-coming-up time { font-variant-numeric: tabular-nums; min-width: 11em; }
 .automation-coming-up li>a { min-width: 0; overflow-wrap: anywhere; }
+.automation-coming-up-prompt { min-width: 0; display: grid; gap: 6px; overflow-wrap: anywhere; }
+.automation-coming-up-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.automation-coming-up-actions a { display: inline-flex; align-items: center; min-height: 36px; }
 .automation-coming-up-what { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
+  .automation-coming-up-actions a { min-height: 44px; }
   .automation-recipe { padding: 16px; }
   .automation-dish-actions { width: 100%; margin-left: 0; }
   .automation-dish-rows { margin-left: 0; }

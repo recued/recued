@@ -209,9 +209,9 @@ const renderColumnRow = (
       optional ? '<span class="var-optional">optional</span>' : ''}</label>
     <select id="${e(id)}" class="sheet-import-select" ${SHEET_IMPORT_COLUMN_ATTR}="${e(variable)}"${
       problem === undefined ? '' : ` aria-invalid="true" aria-describedby="${e(id)}-problem"`}>${options}</select>
-    ${sampleLine}${sourceNote}${problem === undefined
+    <div class="sheet-import-map-notes">${sampleLine}${sourceNote}${problem === undefined
       ? ''
-      : `<p class="sheet-import-problem" id="${e(id)}-problem" role="alert">${e(problem)}</p>`}
+      : `<p class="sheet-import-problem" id="${e(id)}-problem" role="alert">${e(problem)}</p>`}</div>
   </div>`;
 };
 
@@ -409,22 +409,24 @@ export const SHEET_IMPORT_STYLES = `
 }
 .sheet-import-panel {
   box-sizing: border-box;
+  container: sheet-import / inline-size;
   width: min(820px, 100%);
   max-height: calc(100vh - 56px);
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface);
   color: var(--fg);
   box-shadow: 0 24px 48px rgba(24, 33, 36, .18);
-  padding: 16px;
+  padding: 20px;
   display: grid;
-  gap: 12px;
+  gap: 16px;
   min-width: 0;
 }
-.sheet-import-header { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.sheet-import-header { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+.sheet-import-header > .sheet-import-button { flex: 0 0 auto; }
 .sheet-import-heading { min-width: 0; flex: 1 1 auto; }
-.sheet-import-title { margin: 0; font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
+.sheet-import-title { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.2; overflow-wrap: anywhere; }
 .sheet-import-steps {
   display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0 0 10px;
   list-style: none; border-bottom: 1px solid var(--border);
@@ -437,10 +439,10 @@ export const SHEET_IMPORT_STYLES = `
 }
 .sheet-import-step[data-state="current"] .sheet-import-step-n { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .sheet-import-step[data-state="done"] .sheet-import-step-n { border-color: var(--accent); color: var(--accent); }
-.sheet-import-body { display: grid; gap: 12px; min-width: 0; }
+.sheet-import-body { display: grid; gap: 16px; min-width: 0; }
 .sheet-import-lead { margin: 0; font-size: 13px; line-height: 1.45; }
 .sheet-import-meta { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
-.sheet-import-copy { font-size: 12px; font-weight: 600; }
+.sheet-import-copy { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted); }
 .sheet-import-alert, .sheet-import-warn, .sheet-import-status {
   margin: 0; border-radius: 6px; padding: 8px 10px; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere;
 }
@@ -474,30 +476,32 @@ export const SHEET_IMPORT_STYLES = `
 .sheet-import-header-list code { font: 11px/1.6 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); margin-right: 4px; }
 .sheet-import-progress { height: 6px; border-radius: 3px; background: var(--surface-subtle); border: 1px solid var(--border); overflow: hidden; }
 .sheet-import-progress > span { display: block; height: 100%; background: var(--accent); }
-.sheet-import-delimiter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.sheet-import-map { display: grid; gap: 10px; }
+.sheet-import-delimiter { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 14rem); align-items: center; gap: 6px 12px; min-width: 0; }
+.sheet-import-delimiter > .sheet-import-meta { grid-column: 2; }
+.sheet-import-map { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .sheet-import-map-row {
-  display: grid; gap: 4px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; min-width: 0;
+  display: grid; grid-row: span 3; grid-template-rows: subgrid; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); min-width: 0;
 }
+.sheet-import-map-notes { display: grid; align-content: start; gap: 4px; min-width: 0; }
 .sheet-import-map-row[data-problem="true"] { border-color: var(--warn); }
-.sheet-import-map-label { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.sheet-import-map-label { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
 .sheet-import-select {
-  box-sizing: border-box; width: 100%; max-width: 100%; min-height: 36px; border: 1px solid var(--border);
-  border-radius: 6px; padding: 6px 9px; background: var(--surface); color: var(--fg); font: inherit;
+  box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--wc-radius, 9px); padding: 0 10px; background: var(--surface); color: var(--fg); font: inherit; font-size: 13px;
 }
-.sheet-import-select--inline { width: auto; }
-.sheet-import-sample, .sheet-import-note, .sheet-import-problem { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.sheet-import-select--inline { width: 100%; }
+.sheet-import-sample, .sheet-import-note, .sheet-import-problem { margin: 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .sheet-import-sample { color: var(--muted); }
 .sheet-import-sample span { color: var(--fg); font-variant-numeric: tabular-nums; }
 .sheet-import-note { color: var(--muted); font-style: italic; }
 .sheet-import-problem { color: var(--warn); }
-.sheet-import-settings { display: grid; gap: 10px; margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; }
-.sheet-import-settings > legend { padding: 0 4px; font-size: 12px; font-weight: 650; }
-.sheet-import-remember { display: flex; align-items: center; gap: 7px; min-height: 36px; font-size: 13px; }
-.sheet-import-more { justify-self: start; min-height: 36px; padding: 0 2px; border: 0; background: none; color: var(--accent, inherit); font: inherit; font-size: 13px; cursor: pointer; }
+.sheet-import-settings { display: grid; gap: 12px; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); min-width: 0; }
+.sheet-import-settings > legend { padding: 0 4px; font-size: 12px; font-weight: 600; }
+.sheet-import-remember { display: flex; align-items: center; gap: 8px; min-height: var(--wc-control-h, 44px); font-size: 13px; line-height: 1.5; }
+.sheet-import-more { justify-self: start; min-height: var(--wc-control-h, 44px); padding: 0 2px; border: 0; background: none; color: var(--accent, inherit); font: inherit; font-size: 13px; cursor: pointer; }
 .sheet-import-more::before { content: '▸ '; }
 .sheet-import-more[aria-expanded="true"]::before { content: '▾ '; }
-.sheet-import-formats { display: grid; gap: 10px; min-width: 0; }
+.sheet-import-formats { display: grid; gap: 12px; min-width: 0; }
 .sheet-import-formats[hidden] { display: none; }
 .sheet-import-conflicts { display: grid; gap: 6px; margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; min-width: 0; background: var(--surface-subtle); }
 .sheet-import-conflicts > legend { padding: 0 4px; font-size: 12px; font-weight: 650; }
@@ -508,21 +512,21 @@ export const SHEET_IMPORT_STYLES = `
    on a phone the last columns — "What would happen" — are cut off, unreachable. */
 .sheet-import-result > * { min-width: 0; }
 .sheet-import-footer {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border);
+  display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border);
 }
 .sheet-import-spacer { flex: 1 1 auto; }
 .sheet-import-button {
-  box-sizing: border-box; appearance: none; min-width: 36px; min-height: 36px; padding: 6px 12px;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg);
-  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  box-sizing: border-box; appearance: none; min-width: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); color: var(--fg);
+  font: inherit; font-size: 13px; font-weight: 600; line-height: 1.3; cursor: pointer;
 }
 .sheet-import-button[aria-disabled="true"] { cursor: not-allowed; opacity: .55; }
 .sheet-import-button--primary { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .sheet-import-button:focus-visible, .sheet-import-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.sheet-import-panel .var-row { display: grid; gap: 4px; }
+.sheet-import-panel .var-row { display: grid; gap: 6px; min-width: 0; }
 .sheet-import-panel .var-row-inline { display: block; }
-.sheet-import-panel .var-row > label { font-size: 12px; font-weight: 600; }
-.sheet-import-panel .var-row-inline > label { display: flex; align-items: center; min-height: 36px; gap: 7px; font-weight: 500; }
+.sheet-import-panel .var-row > label { font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--muted); }
+.sheet-import-panel .var-row-inline > label { display: flex; align-items: center; min-height: var(--wc-control-h, 44px); gap: 8px; font-weight: 500; }
 .sheet-import-panel .var-help { margin: 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .sheet-import-panel .var-optional {
   margin-left: 6px; font-size: 10px; font-weight: 500; color: var(--fg-subtle, var(--muted));
@@ -532,14 +536,23 @@ export const SHEET_IMPORT_STYLES = `
 .sheet-import-panel .var-row input[type="number"],
 .sheet-import-panel .var-row input[type="password"],
 .sheet-import-panel .var-row select {
-  box-sizing: border-box; width: 100%; min-height: 36px; border: 1px solid var(--border); border-radius: 6px;
-  padding: 7px 9px; background: var(--surface); color: var(--fg); font: inherit;
+  box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; height: var(--wc-control-h, 44px); min-height: var(--wc-control-h, 44px); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--wc-radius, 9px);
+  padding: 0 10px; background: var(--surface); color: var(--fg); font: inherit; font-size: 13px;
 }
-.sheet-import-panel .ref-picker-input { min-height: 36px; padding-right: 40px; }
+.sheet-import-panel .ref-picker-input { box-sizing: border-box; width: 100%; min-width: 0; min-height: var(--wc-control-h, 44px); padding: 0 40px 0 10px; border-radius: var(--wc-radius, 9px); font-size: 13px; }
+@container sheet-import (max-width: 34rem) {
+  .sheet-import-map, .sheet-import-delimiter { grid-template-columns: minmax(0, 1fr); }
+  .sheet-import-delimiter > .sheet-import-meta { grid-column: 1; }
+  .sheet-import-footer .sheet-import-button { flex: 1 1 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .sheet-import-spacer { display: none; }
+}
+@container sheet-import (max-width: 24rem) {
+  .sheet-import-footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sheet-import-footer .sheet-import-button { width: 100%; }
+  .sheet-import-footer:has(> .sheet-import-button:nth-of-type(3)) > .sheet-import-button--primary { grid-column: 1 / -1; }
+}
 @media (max-width: 520px) {
   [${SHEET_IMPORT_ATTR}] { padding: 12px 8px 8px; }
   .sheet-import-panel { padding: 12px; max-height: calc(100vh - 20px); }
-  .sheet-import-footer .sheet-import-button { flex: 1 1 auto; }
-  .sheet-import-spacer { display: none; }
 }
 `;

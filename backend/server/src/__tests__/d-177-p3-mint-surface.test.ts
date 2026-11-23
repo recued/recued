@@ -390,6 +390,7 @@ const fakeSessionGrantResolver = (): SessionGrantResolver => ({
   claimBatchMember: vi.fn(() => false),
   mintBatch: vi.fn(() => undefined),
   mintRawOp: vi.fn(() => undefined),
+  mintKind: vi.fn(() => undefined),
   mint: vi.fn(),
 });
 
@@ -662,9 +663,16 @@ describe('PreflightResumer D-177 P3 session_grant threading', () => {
       recipe_id: 'recipe-1',
       gated_step_id: STEP_ID,
       session_grant: offer,
+      session_grant_decision_version: 1,
     });
 
     expect(call.resumeFrom?.session_grant).toBe(offer);
+  });
+
+  it('an unversioned recipe instruction retains action approval without minting a session grant', async () => {
+    const call = await runResume({ recipe_id: 'recipe-1', gated_step_id: STEP_ID,
+      session_grant: { ttl_ms: 3_600_000, max_uses: 5, risk_tier: 'write' } });
+    expect(call.resumeFrom?.session_grant).toBeUndefined();
   });
 
   it('omits session_grant for plain approve resumes', async () => {

@@ -18,9 +18,14 @@ export type PageFileAddress =
 
 /** What `fetchFile` answers. */
 export type FetchedFile =
+  | { blocked: true }
   | { failed: string }
   | { too_large: number; at_least?: true }
   | { address: string; filename: string; mime_type: string; size: number; data: string };
+
+/** A final destination can be listed even when the requested address was allowed. */
+export const BLOCKED_DOWNLOAD_MESSAGE =
+  'The file came from a site the owner listed as one Recued must never use, so it was not accepted.';
 
 /** The address of the file the element `ref` or `selector` names links to, or `address`, made whole
  *  against the page; refused on the owner's own Recued page. */
@@ -48,15 +53,36 @@ export const pageFileAddress = (selector: string | null, ref: string | null, add
   return { address: url.href, cross_origin: url.origin !== location.origin, url: location.href, title: document.title };
 };
 
-/** The file at `address`, at most `maxBytes`, in base64, with the name and type its site gives it. */
-export const fetchFile = async (address: string, maxBytes: number): Promise<FetchedFile> => {
+/** The file at `address`, at most `maxBytes`, in base64, with the name and type its site gives it.
+ *  `blocked` holds normalized hosts, as readBlockedSites returns them. Direct worker calls can
+ *  supply a cancellation signal; injected page calls omit it so their arguments stay serializable. */
+export const fetchFile = async (address: string, maxBytes: number, blocked: readonly string[] = [],
+  signal?: AbortSignal): Promise<FetchedFile> => {
+  if (signal?.aborted) return { failed: 'The file request was cancelled.' };
   let response: Response;
   try {
-    response = await fetch(address, { credentials: 'include', redirect: 'follow' });
+    response = await fetch(address, { credentials: 'include', redirect: 'follow', ...(signal ? { signal } : {}) });
   } catch (error) {
     return { failed: error instanceof Error ? error.message : String(error) };
   }
-  if (!response.ok) return { failed: `the site answered ${String(response.status)}${response.statusText ? ` ${response.statusText}` : ''}` };
+  if (signal?.aborted) {
+    void response.body?.cancel().catch(() => undefined);
+    return { failed: 'The file request was cancelled.' };
+  }
+  const finalAddress = response.url || address;
+  // Fetch has already followed redirects. Check the response destination before
+  // consuming content, using isOnBlockedSite's exact-host/subdomain rule. This
+  // function is injected, so the small host check must be self-contained.
+  let host = '';
+  try { host = new URL(finalAddress).hostname.toLowerCase().replace(/\.$/, ''); } catch { /* no web host */ }
+  if (host !== '' && blocked.some(site => host === site || host.endsWith(`.${site}`))) {
+    void response.body?.cancel().catch(() => undefined);
+    return { blocked: true };
+  }
+  if (!response.ok) {
+    void response.body?.cancel().catch(() => undefined);
+    return { failed: `the site answered ${String(response.status)}${response.statusText ? ` ${response.statusText}` : ''}` };
+  }
   const declared = Number(response.headers.get('content-length') ?? Number.NaN);
   if (Number.isFinite(declared) && declared > maxBytes) {
     void response.body?.cancel().catch(() => undefined);
@@ -65,18 +91,30 @@ export const fetchFile = async (address: string, maxBytes: number): Promise<Fetc
   // Read in parts, stopping once past `maxBytes`: a site that does not say the size is not read whole.
   const parts: Uint8Array[] = [];
   let size = 0;
-  const reader = response.body?.getReader();
-  if (reader !== undefined) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.length;
-      if (size > maxBytes) {
-        void reader.cancel().catch(() => undefined);
-        return { too_large: size, at_least: true };
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    reader = response.body?.getReader();
+    if (reader !== undefined) {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (signal?.aborted) {
+          void reader.cancel().catch(() => undefined);
+          return { failed: 'The file request was cancelled.' };
+        }
+        if (done) break;
+        size += value.length;
+        if (size > maxBytes) {
+          void reader.cancel().catch(() => undefined);
+          return { too_large: size, at_least: true };
+        }
+        parts.push(value);
       }
-      parts.push(value);
     }
+  } catch (error) {
+    void reader?.cancel().catch(() => undefined);
+    return { failed: error instanceof Error ? error.message : String(error) };
+  } finally {
+    reader?.releaseLock();
   }
   const bytes = new Uint8Array(size);
   let at = 0;
@@ -99,14 +137,14 @@ export const fetchFile = async (address: string, maxBytes: number): Promise<Fetc
   const quoted = /filename\s*=\s*"([^"]*)"/i.exec(disposition)?.[1] ?? /filename\s*=\s*([^;"]+)/i.exec(disposition)?.[1];
   let last = '';
   try {
-    last = new URL(response.url || address).pathname.split('/').filter((part) => part !== '').pop() ?? '';
+    last = new URL(finalAddress).pathname.split('/').filter((part) => part !== '').pop() ?? '';
   } catch {
     last = '';
   }
   const filename = (encoded !== undefined ? decoded(encoded.trim()) : quoted !== undefined ? quoted.trim() : decoded(last))
     .replace(/[\\/\u0000-\u001f\u007f]/g, '_').trim();
   const type = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
-  return { address: response.url || address, filename: filename === '' ? 'download' : filename,
+  return { address: finalAddress, filename: filename === '' ? 'download' : filename,
     mime_type: type === '' ? 'application/octet-stream' : type, size, data: btoa(binary) };
 };
 
@@ -122,25 +160,55 @@ export const NO_FILE_ADDRESS = 'That element links to no file: name the link to 
 
 /** D-335 slice AQ — what `attachPageFile` answers. */
 export type AttachedFile =
-  | { blocked: true } | { missing: true } | { stale: true } | { not_file_field: string }
+  | { blocked: true } | { missing: true } | { stale: true } | { not_file_field: string } | { not_applied: string }
   | { attached: string; url: string; title: string };
 
 /** D-335 slice AQ (2026-11-07) — puts a file into the file field the element `ref` or `selector` names, as
  *  choosing it in the field's dialog would: the field itself, the one a label names, or the one inside
  *  what was named (a button or a drop zone wrapping it). Then the field's `input` and `change`, which a
- *  page's own uploader listens for. Refused on the owner's own Recued page. */
+ *  page's own uploader listens for. Refused on the owner's own Recued page or
+ *  when it no longer has the observed URL. Field eligibility is checked before
+ *  decoding bytes or changing the file selection. Selectors must name one
+ *  element, and containers one file input; hidden inputs count too. */
 export const attachPageFile = (selector: string | null, ref: string | null, filename: string, mimeType: string,
-  data: string): AttachedFile => {
-  if (document.documentElement.hasAttribute('data-recued-owner-surface')) return { blocked: true };
+  data: string, expectedUrl?: string | null): AttachedFile => {
+  if (document.documentElement.hasAttribute('data-recued-owner-surface')
+    || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
   const marked = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
-  const found = ref === null ? (selector === null ? null : document.querySelector(selector)) : marked?.byRef.get(ref) ?? null;
+  const matches = ref === null && selector !== null ? document.querySelectorAll(selector) : null;
+  if (matches && matches.length > 1) {
+    return { not_applied: `The upload selector names ${String(matches.length)} elements, so no file was attached. Name one of them.` };
+  }
+  const found = ref === null ? matches?.[0] ?? null : marked?.byRef.get(ref) ?? null;
   if (ref !== null && !found?.isConnected) return { stale: true };
   if (!found) return { missing: true };
-  const field = found instanceof HTMLInputElement ? found
-    : found instanceof HTMLLabelElement ? found.control
-      : found.querySelector('input[type="file"]');
+  const fields = found instanceof HTMLInputElement ? [found]
+    : found instanceof HTMLLabelElement ? [found.control]
+      : found.querySelectorAll('input[type="file"]');
+  if (fields.length > 1) {
+    return { not_applied: `The upload target contains ${String(fields.length)} file fields, so no file was attached. Name one field.` };
+  }
+  const field = fields[0] ?? null;
   if (!(field instanceof HTMLInputElement) || field.type !== 'file' || field.disabled) {
     return { not_file_field: found.tagName.toLowerCase() };
+  }
+  if (field.matches(':disabled') || field.getAttribute('aria-disabled') === 'true') {
+    return { not_applied: 'This field is disabled.' };
+  }
+  // Check the resolved input, including one named by a label or wrapper. As
+  // with ordinary fill, composed ancestry permits a dialog's shadow children.
+  const within = (parent: Element, child: Element): boolean => {
+    for (let at: Element | null = child; at;) {
+      if (at === parent) return true;
+      const root = at.getRootNode();
+      at = at.parentElement ?? (root as ShadowRoot).host ?? null;
+    }
+    return false;
+  };
+  for (const modal of document.querySelectorAll('dialog:modal, [aria-modal="true"]')) {
+    if (modal.checkVisibility({ checkVisibilityCSS: true }) && !within(modal, field)) {
+      return { not_applied: 'An open dialog blocks this field. Use the control inside the active dialog.' };
+    }
   }
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);

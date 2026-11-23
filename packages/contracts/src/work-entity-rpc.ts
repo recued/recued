@@ -47,10 +47,10 @@ import type { WorkEntityEdgeView } from './work-entity-edges.js';
 import type { TaskListFilter } from './task-data-view.js';
 import type { CommitmentViewFilters } from './commitment-data-view.js';
 
-export const WORK_ENTITY_SEARCH_KINDS = ['task', 'note', 'project', 'commitment'] as const;
+export const WORK_ENTITY_SEARCH_KINDS = ['task', 'note', 'project', 'commitment', 'booking'] as const;
 export type WorkEntitySearchKind = typeof WORK_ENTITY_SEARCH_KINDS[number];
 
-/** Owner-only, local indexed search. Omitting kind searches all four kinds.
+/** Owner-only, local indexed search. Omitting kind searches all five kinds.
  *  A single kind may be paged; visibility is applied before limit/offset. */
 export interface WorkEntitySearchRpcRequest {
   query: string;
@@ -84,17 +84,93 @@ export interface WorkEntitySearchRpcResponse {
   groups: WorkEntitySearchGroup[];
 }
 
+/** Incoming links in saved Notes and task notes, scoped to one webclient URL. */
+export interface WorkEntityLinkedFromRpcRequest {
+  url: string; limit?: number; offset?: number;
+  /** Independently paged saved calendar events explicitly linking this email. */
+  calendar_offset?: number;
+  /** Refuse a Contact page whose identity changed while it was open. */
+  contact_identity?: { id: string; created_at: number };
+  /** Bind a source reader to the current account and stored record. */
+  source_identity?: { source_id: string; received_at: number; incarnation: string | null };
+}
+export interface WorkEntityLinkedFromItem extends WorkEntitySearchMatch {
+  kind: 'task' | 'note';
+  created_at: number;
+  source_record_id?: string;
+}
+export interface LinkedCalendarEvent {
+  slug: string; record_id: string; source_id: string; received_at: number; incarnation: string;
+  calendar_id: string; calendar_name: string; title: string; start_at: number; end_at: number;
+  timezone: string; is_all_day: boolean; status: 'confirmed' | 'tentative' | 'cancelled'; updated_at: number;
+  stale: boolean;
+}
+export interface LinkedCalendarPage {
+  items: LinkedCalendarEvent[]; offset: number; more: boolean; unavailable_sources: string[];
+}
+export interface WorkEntityLinkedFromRpcResponse {
+  /** Current contact group, resolved without rewriting saved link text. */
+  contact_target?: { id: string; created_at: number; reference_ids: string[] };
+  source_target?: NonNullable<WorkEntityLinkedFromRpcRequest['source_identity']>;
+  items: WorkEntityLinkedFromItem[];
+  offset: number;
+  more: boolean;
+  /** These sources retain no saved bodies locally and cannot be indexed. */
+  provider_only_sources?: string[];
+  /** Present only when saved calendar-link discovery is supported for Mail. */
+  calendar?: LinkedCalendarPage;
+}
+
 export type ProjectWorkKind = 'task' | 'note' | 'commitment';
+export type ProjectAttentionScope = 'overdue_tasks' | 'due_soon_tasks' | 'blocking_commitments';
+export interface WorkEntityProjectAttentionRpcRequest {
+  project_id: string;
+  time_zone: string;
+  project_identity?: { source_id: string; source_record_id?: string | null; created_at: number };
+  scope?: ProjectAttentionScope;
+  limit?: number;
+  offset?: number;
+  /** Reuse the returned window while paging. Expires after fifteen minutes. */
+  as_of?: number;
+}
+export interface ProjectAttentionIssue {
+  kind: 'project' | 'task' | 'commitment';
+  source_label: string;
+  reason: 'provider_only' | 'stale' | 'incomplete' | 'pending_project';
+}
+export interface WorkEntityProjectAttentionRpcResponse {
+  project: Extract<WorkEntity, { _kind: 'project' }>;
+  as_of: number;
+  checked_at: number;
+  time_zone: string;
+  upcoming_before: number;
+  counts: { open_tasks: number; completed_tasks: number; overdue_tasks: number; due_soon_tasks: number; blocking_commitments: number };
+  coverage: { issues: ProjectAttentionIssue[]; omitted: number };
+  scope?: ProjectAttentionScope;
+  items: WorkEntityProjectItem[];
+  offset: number;
+  total: number;
+  more: boolean;
+}
+
 export interface WorkEntityProjectItemsRpcRequest {
   project_id: string;
   kind: ProjectWorkKind;
+  /** Literal text in linked titles, note/task bodies or commitment statements;
+   * trimmed, at most 200 characters, applied before paging and counts. */
+  query?: string;
   limit?: number;
   offset?: number;
   /** Commitment-only; defaults to outstanding promises. */
   commitment_status?: 'open' | 'all';
+  /** Task-only; defaults to all for existing clients. Applied before paging. */
+  task_completion?: 'all' | 'open' | 'completed';
 }
 /** A display preview; opening an item still reads its current canonical row. */
 export interface WorkEntityProjectItem extends WorkEntitySearchMatch {
+  /** Task identity for guarded inline completion; absent on older servers. */
+  created_at?: number;
+  source_record_id?: string;
   done?: boolean;
   due_at?: number;
   commitment?: Pick<Commitment, 'direction' | 'lifecycle_state' | 'due_status' | 'promised_for_at'> & {
@@ -107,8 +183,14 @@ export interface WorkEntityProjectItemsRpcResponse {
   items: WorkEntityProjectItem[];
   total: number;
   offset: number;
-  /** Present only for tasks, on the same visibility and project scope. */
+  /** Echoes the applied text, including empty text. Absent on older servers. */
+  query?: string;
+  /** Present only for tasks; counts visible project tasks matching the query,
+   * before the completion filter. Empty query counts the complete project. */
   open_tasks?: number;
+  total_tasks?: number;
+  /** Echoes the applied task scope; absent on servers without task filtering. */
+  task_completion?: 'all' | 'open' | 'completed';
   /** Echoes the applied commitment scope so mixed or older replies cannot masquerade as a filtered page. */
   commitment_status?: 'open' | 'all';
   /** Provider-only sources do not contribute local rows or counts. */
@@ -165,6 +247,8 @@ export interface WorkEntityGetRpcRequest {
 export interface WorkEntityGetRpcResponse {
   counterparty_labels?: Record<string, string>;
   entity: WorkEntity | null;
+  /** Present for stored notes when conditional edits are supported. */
+  note_edit_revision?: string;
   /** D-192 read resolution — the entity's own Source freshness (absent
    *  when `entity` is null or the sync substrate isn't wired). A
    *  `stale` / `degraded` / `never_synced` verdict means the row is a

@@ -19,18 +19,17 @@
  *      contract) → the contract's trust, derived from the snapshot's
  *      `approval_required` (defaults LOW so an AI's writes surface for approval).
  *    - `admitByOpRisk(...)` — the single entry: base → ceiling RELAX → the review
- *      LIFTS (outbound-send, commitment-proposal) → `AdmissionDecision`. The
- *      chokepoints map `verdict`/`detail` onto their own control flow exactly as
- *      they did for `admitWithPolicyMatrix`.
- *    - the outbound-send approval LIFT — relocated here from the (now-deleted)
- *      matrix-coupled `escalateOutboundSend` (`policy-matrix-dispatch.ts`). It is
- *      DELIBERATELY actor-scoped, not folded into the send op's `risk_tier`: at the
- *      same `admin` ceiling a send must RELAX for unattended automation (`system`)
- *      yet ASK for the attended owner (`user_self`) — an asymmetry no single
- *      risk-tier / `approval` tag can express (a `destructive` retag would prompt on
- *      every scheduled digest; an `admin` retag would relax silently at the `admin`
- *      ceiling). So the closed `OUTBOUND_SEND_INGREDIENT_SLUGS` set + the user_self
- *      scoping survive verbatim, just decoupled from the matrix.
+ *      LIFT (commitment-proposal) → `AdmissionDecision`. The chokepoints map
+ *      `verdict`/`detail` onto their own control flow exactly as they did for
+ *      `admitWithPolicyMatrix`.
+ *    - ⛔ the outbound-send LIFT IS GONE (D-177 §N.15.6; the owner, 2026-11-10:
+ *      *"(mail-send, mail-post, slack-post) should join the risk & approval setting so
+ *      that it is uniformed"*). It asked, by NAME, for a fixed list of sends and browser
+ *      actions whenever a person drove, because the owner's chat took the `admin`
+ *      ceiling, where their `ask` relaxed. The owner's chat now takes the `read` ceiling
+ *      ({@link OWNER_CHAT_TRUST_CEILING}), so a send or a browser action asks there by its
+ *      own approval, as every op does, and what the owner runs from the app relaxes, as
+ *      every op does. No op is classified by its name to decide whether it asks.
  *
  *  APPROVAL (Layer 2) only. ACCESS (`contract × op → boolean`, Layer 1) stays the
  *  separate op-admission gate (`backend/server/src/op-admission-gate.ts`), layered on
@@ -58,14 +57,12 @@ import { operationSpecHash } from './owner-operation-override.js';
 // ════════════════════════════════════════════════════════════════
 
 /** The kernel ingredients that deliver a message OUTSIDE the user's trust boundary
- *  to a third party — irreversible outbound communications. All `risk_tier: 'write'`,
- *  so at the contract-less owner ceiling (`admin`) `applyTrustCeiling` would RELAX
- *  them to admit silently — yet "an AI emailed / Slacked someone on my behalf" is
- *  exactly the action the control-plane "every action is granted, gated, audited, and
- *  reversible" promise must surface for confirmation. The outbound-send LIFT
- *  (`liftOutboundSend`) re-raises an otherwise-admit verdict to `ask` at the attended
- *  `user_self` cells, routing the send through the D-157 preflight gate (the user
- *  reviews the REAL recipient, restored via D-167 P2, before it leaves).
+ *  to a third party — irreversible outbound communications. All `risk_tier: 'write'`.
+ *  ⛔ Since D-177 §N.15.6 (2026-11-10) this set DECIDES NO APPROVAL: a send asks by its
+ *  own approval like every op (in the owner's chat at the `read` ceiling, for the owner's
+ *  automation at the same). It still names Recued's sends for the words a hold's Reason
+ *  line uses and for `mail-send`'s attachment check. What follows is its history: it was
+ *  the list the outbound-send lift re-raised to `ask` for a person driving.
  *
  *  A closed slug set rather than a manifest flag is deliberate (the policy decision
  *  sees only slug + risk_tier; a closed list mirrors the codebase idiom). Internal
@@ -140,15 +137,11 @@ export const isOutboundSendSlug = (slug: string): boolean =>
   OUTBOUND_SEND_INGREDIENT_SLUGS.has(stripCorePrefix(slug));
 
 /** D-335 slice B — the kernel ingredients that type or click on a web page in
- *  the owner's browser, signed in as them. Like a send, each acts outside
- *  Recued under the owner's identity, and a click can send, post, pay or
- *  delete. So the owner's own attended runs (their chat, the app, a messenger),
- *  which the owner ceiling would otherwise admit, ask for each one as they do
- *  for a send; a contracted AI app already asks through its low ceiling, and a
- *  scheduled run is left to its channel's ceiling, as a send's is.
- *
- *  It reports `review_send`: the closed `lift_reason` list does not grow for
- *  it, as it did not for `peer-ask`, and `ingredient_slug` tells it apart. */
+ *  the owner's browser, signed in as them. They name what a site pass covers
+ *  ("Allow on <site>…", the chat's "Don't ask about browser actions") and the words
+ *  a hold's Reason line uses. ⛔ Since D-177 §N.15.6 (2026-11-10) they decide no
+ *  approval: each asks by its own approval, as every op does (it was lifted to `ask` by
+ *  name for a person driving, reporting `review_send`, until then). */
 export const BROWSER_ACTION_INGREDIENT_SLUGS: ReadonlySet<string> = new Set([
   'dom-write',
   'dom-click',
@@ -192,6 +185,27 @@ export const CONTRACT_LESS_TRUST_CEILING: TrustCeiling = 'admin';
  *  resolveTrustCeiling}. Every other door takes this LOW default, and no row can
  *  raise it. */
 export const CONTRACTED_DEFAULT_TRUST_CEILING: TrustCeiling = 'read';
+
+/** D-177 §N.15.6 — the ceiling of the owner's OWN chat or messenger chat (`user_self`, no
+ *  contract): the same LOW ceiling as the owner's automation. Every op the chat's AI runs there,
+ *  itself or through a recipe it starts, follows its own approval: a `never` op runs, an `ask` op
+ *  asks until the owner allows it for the conversation or a learned rule covers it, an `always` op
+ *  asks every time. Only what the owner runs from the app relaxes (`CONTRACT_LESS_TRUST_CEILING`).
+ *
+ *  The owner, 2026-11-10, of a write set to ask: *"a write set to ask is an ask until it was
+ *  allowed/learnt"*, then *"that lays the foundation of the approval system unformly, and
+ *  automation/learner+grant/pre-approval function on top of this foundation"*. Until then the
+ *  chat took the owner's `admin` ceiling and every `ask` there relaxed; sends and browser actions
+ *  asked only because a by-name lift raised them back. */
+export const OWNER_CHAT_TRUST_CEILING: TrustCeiling = 'read';
+
+/** D-177 §N.15.7 — whether a dispatch is the owner's own chat or messenger chat, where an
+ *  operation its AUTHOR set to `never` runs as authored although the risk floor raised it to `ask`
+ *  (the owner, 2026-11-10: *"Their author's never"*). Elsewhere the floor holds it: a door, an AI
+ *  app, the owner's unattended automation. Passed to the catalog and cli resolvers as
+ *  `honor_authored_never` by the dispatches that hold the source. */
+export const honorsAuthoredNever = (source: ExecutionSource): boolean =>
+  (source.channel === 'chat' || source.channel === 'messenger') && !executionSourceHasContract(source);
 
 /** D-209 #1 — the per-door AUTHORED ceiling, honored ONLY when the snapshot is the
  *  SOURCE'S OWN door (contract_id match): a snapshot resolved for some other contract
@@ -239,8 +253,8 @@ const authoredWebhookDoorCeiling = (
  *  mean "an unauthenticated third party". The `(reception, anonymous)` source carries no
  *  `contract_id` FIELD at all (`commits.ts`), so `executionSourceHasContract` returned
  *  false for it and a public visitor's dispatch took the OWNER `admin` ceiling — where a
- *  `write` op RELAXES to `admit`, and `liftOutboundSend` (the "every external send
- *  surfaces" backstop) does not fire because it is scoped to `user_self`. The premise this
+ *  `write` op RELAXES to `admit`, and the outbound-send lift (the "every external send
+ *  surfaces" backstop, removed 2026-11-10) did not fire because it was scoped to `user_self`. The premise this
  *  comment used to carry — "every other channel's `contract_id` is always real" — was
  *  false for exactly this actor. An `anonymous` actor is therefore pinned to the CONTRACTED
  *  LOW ceiling by the ACTOR, independently of whether a door contract has been resolved
@@ -308,8 +322,13 @@ export const resolveTrustCeiling = (
   // DESIGN. An authored ceiling would have been the set-and-forget way around exactly
   // that ruling.
   if (contracted) return CONTRACTED_DEFAULT_TRUST_CEILING;
-  // D-209 §1.4 — a CONTRACT-FREE dispatch. The owner acting DIRECTLY (`user_self` HID /
-  // chat) takes the `admin` ceiling (present, full-permission → a write relaxes silent).
+  // D-177 §N.15.6 — the owner's OWN chat or messenger chat. Everything that runs there, the
+  // AI started: a call it makes itself, a recipe it runs, a browser action. So it follows each
+  // op's own approval with nothing relaxed for the owner's presence, as the owner's automation
+  // does, and grants, pre-approvals and the learner stand in on top.
+  if (source.channel === 'chat' || source.channel === 'messenger') return OWNER_CHAT_TRUST_CEILING;
+  // D-209 §1.4 — a CONTRACT-FREE dispatch. The owner acting DIRECTLY from the app (`user_self`
+  // HID) takes the `admin` ceiling (present, full-permission → a write relaxes silent).
   if (source.actor !== 'system') return CONTRACT_LESS_TRUST_CEILING;
   // A contract-free `system` BACKGROUND dispatch, resolved by channel:
   //   - `housekeeping` — the server's own maintenance, outside the user-approval model →
@@ -372,42 +391,6 @@ export const admitContractToolAccess = (
 };
 
 // ════════════════════════════════════════════════════════════════
-// Outbound-send LIFT (relocated escalateOutboundSend, op-risk world)
-// ════════════════════════════════════════════════════════════════
-
-/** Lift an outbound-send op-risk `admit` to `ask` at the attended `user_self` cells.
- *  The op-risk replacement for the matrix-coupled `escalateOutboundSend`, with the
- *  SAME deliberately-narrow scope:
- *    - only an `admit` resolution lifts (a `deny` / already-`ask` is returned
- *      untouched — a pure tightening, never a relaxation);
- *    - only `actor === 'user_self'` lifts — the cells where a human is driving and
- *      reachable to approve. `'system'` (schedule / reactive / housekeeping) is EXEMPT
- *      (a scheduled "daily digest" send must not prompt on every unattended run);
- *      `'contracted_user'` is EXEMPT (already gated by its contract's LOW trust
- *      ceiling — a write send asks via the ceiling, never double-gated here);
- *    - only the closed outbound-send slug set lifts.
- *  Sets `verdict: 'ask'` + `approval: 'ask'`; `effective_risk_tier` is preserved for
- *  audit (the send is still a `write`, not reclassified). Pure; never mutates `res`. */
-const liftOutboundSend = (
-  res: CatalogOperationResolution,
-  slug: string,
-  source: ExecutionSource,
-): CatalogOperationResolution => {
-  if (res.verdict !== 'admit') return res;
-  if (source.actor !== 'user_self') return res;
-  if (!isOutboundSendSlug(slug) && !isBrowserActionSlug(slug)) return res;
-  return {
-    ...res,
-    verdict: 'ask',
-    approval: 'ask',
-    authorization_provenance: {
-      ...res.authorization_provenance,
-      lift_reason: 'review_send',
-    },
-  };
-};
-
-// ════════════════════════════════════════════════════════════════
 // Commitment-proposal LIFT (D-192 F1 invariant 3)
 // ════════════════════════════════════════════════════════════════
 
@@ -426,8 +409,8 @@ export const isCommitmentProposalSlug = (slug: string): boolean =>
   COMMITMENT_PROPOSAL_INGREDIENT_SLUGS.has(stripCorePrefix(slug));
 
 /** Lift a commitment-PROPOSAL op-risk `admit` to `ask` for EVERY actor —
- *  the deliberately-enumerated asymmetry vs `liftOutboundSend`'s
- *  `user_self` scoping (D-192 F1 invariant 3: "approval-gated, never
+ *  unlike the removed outbound-send lift, which was `user_self`-scoped
+ *  (D-192 F1 invariant 3: "approval-gated, never
  *  auto-from-AI — this holds even for DETERMINISTIC captures; the owner
  *  ratifies every one"):
  *    - `'system'` is NOT exempt: the unattended reactive fire IS the
@@ -483,8 +466,8 @@ const liftCommitmentProposal = (
 
 /** D-177 with D-192 F1 — a review the owner gives each time: a proposed commitment, a quote's release
  *  or completion, a job a customer accepted, a customer payment. No session grant stands in for one:
- *  none is offered on its ask, minted from its answer, or matched against it. A send's review
- *  (`review_send`) is the owner's own chat's, which a session may relax.
+ *  none is offered on its ask, minted from its answer, or matched against it. A hold stored before
+ *  2026-11-10 may carry `review_send` (the removed send lift), which a session may relax.
  *  ⛔ The proposal was missing (found 2026-11-09): the other three were excluded by name at the gate,
  *  so a held proposal offered "Allow this session", and its grant admitted the next identical
  *  proposal unseen. */
@@ -501,8 +484,8 @@ const HELD_FOR_REVIEW: CatalogOperationResolution = {
 /** D-341 — whether the gate holds every call of this op for a review of its own, whoever runs it
  *  and under any ceiling: a proposed commitment, a quote's release or completion, a workflow a
  *  customer accepted, a customer payment. No standing pre-approval stands in for a review, so the
- *  trigger's page lists such a write without offering one. A send's review is only for a person
- *  driving (`liftOutboundSend`), so an unattended send may be pre-approved. */
+ *  trigger's page lists such a write without offering one. A send has no review of its own (its
+ *  approval decides, D-177 §N.15.6), so an unattended send may be pre-approved. */
 export const opAlwaysReviewed = (slug: string): boolean =>
   liftCommitmentProposal(HELD_FOR_REVIEW, slug).authorization_provenance.lift_reason !== undefined;
 
@@ -707,10 +690,9 @@ const mapResolutionToAdmission = (
 
 /** D-187 slice 4 — the single op-risk × stage-trust APPROVAL entry the four matrix
  *  chokepoints call. Composes: simple-form op-risk base (`resolveSimpleFormOperationPolicy`)
- *  → stage-trust RELAX (`applyTrustCeiling`) → the review LIFTS (`liftOutboundSend`,
- *  `liftCommitmentProposal`) → `AdmissionDecision`. `ceiling` is the dispatch's
- *  applicable trust (`resolveTrustCeiling`); `source` drives ONLY the user_self-scoped
- *  outbound-send lift. APPROVAL (Layer 2) only — the host layers the op-admission
+ *  → stage-trust RELAX (`applyTrustCeiling`) → the review LIFT (`liftCommitmentProposal`)
+ *  → `AdmissionDecision`. `ceiling` is the dispatch's applicable trust
+ *  (`resolveTrustCeiling`); `source` names who a hold's Reason line speaks of. APPROVAL (Layer 2) only — the host layers the op-admission
  *  ACCESS gate (Layer 1) on top of the returned decision. Pure: no I/O, no clock.
  *
  *  ⚠ D-234 § 234.4o CARRIED A THIRD, ARGS-KEYED LIFT HERE FOR ONE COMMIT and it is
@@ -729,8 +711,8 @@ export const admitByOpRisk = (args: {
 }): AdmissionDecision => {
   // D-209 Slice B — the stage-trust ceiling is applied INSIDE the resolver now
   // (one relax code path for every op shape); this path no longer re-applies
-  // `applyTrustCeiling` (the double-apply the spec removes). The outbound-send /
-  // commitment-proposal review lifts still compose OVER the relaxed resolution.
+  // `applyTrustCeiling` (the double-apply the spec removes). The commitment-proposal
+  // review lift still composes OVER the relaxed resolution.
   const resolveAndLift = (
     ownerOverride: OwnerOverridePolicy | undefined,
   ): CatalogOperationResolution => {
@@ -740,10 +722,7 @@ export const admitByOpRisk = (args: {
       ceiling: args.ceiling,
       ...(ownerOverride !== undefined ? { owner_override: ownerOverride } : {}),
     });
-    return liftCommitmentProposal(
-      liftOutboundSend(relaxed, args.slug, args.source),
-      args.slug,
-    );
+    return liftCommitmentProposal(relaxed, args.slug);
   };
   const lifted = resolveAndLift(args.owner_override);
   let ownerOverrideOffer: PreflightOverrideOffer | undefined;
@@ -778,10 +757,13 @@ export const admitByOpRisk = (args: {
   );
 };
 
-/** D-202 task 4a — the op-risk verdict BEFORE the quality-review lifts:
+/** D-202 task 4a — the op-risk verdict BEFORE the quality-review lift:
  *  simple-form op-risk base (`resolveSimpleFormOperationPolicy`) → stage-trust
- *  RELAX (`applyTrustCeiling`) → `AdmissionDecision`, with the outbound-send /
- *  commitment-proposal lifts DELIBERATELY OMITTED. This is the
+ *  RELAX (`applyTrustCeiling`) → `AdmissionDecision`, with the commitment-proposal
+ *  lift DELIBERATELY OMITTED. (The outbound-send lift it also omitted is gone, D-177
+ *  §N.15.6: a send in the owner's chat now asks by its approval at the `read` ceiling, which
+ *  this recompute keeps, so a quality delegation no longer skips an ask there; it would have
+ *  to stand on a grant, as everything on the foundation does.) This is the
  *  AUTHORIZATION conjunct the D-202 three-conjunct gate composes against
  *  ({@link resolveQualityGateDecision}).
  *

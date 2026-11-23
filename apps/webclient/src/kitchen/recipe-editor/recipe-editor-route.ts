@@ -3,6 +3,8 @@
  * and persistence. Owner webhook controls remain separate from document history. */
 
 import type {
+  LocalRecipeWebhookDoorPreview,
+  LocalRecipeWebhookDoorStatus,
   LocalRecipeWebhookStatus,
   RecipeDefinition,
   RecipeEventTrigger,
@@ -14,6 +16,8 @@ import type {
   MailFactTypeSpec,
   MailTemplate,
   MailTemplateDefinition,
+  RecipeRunCaptureSummary,
+  ServerExecuteResponse,
   VariableDefault,
   WebhookIngressBindingSelection,
   WebhookIngressView,
@@ -24,8 +28,11 @@ import {
   mailFactOn,
   parseCondition,
   parseTriggerOn,
+  recipeBrowserSettings,
   recipeEventTriggerNotes,
+  recipeMailboxSettings,
   repointRecipePack,
+  RECIPE_RUN_CAPTURE_LIMITS,
   UNARY_OPS,
   validateRecipeEventTriggerEntry,
   WEBHOOK_PROFILE_REGISTRY,
@@ -36,15 +43,25 @@ import { createEditorHistory, readEditorDraft, writeEditorDraft, type DraftRecov
 import { renderRecipeSettings, EDITOR_WORKBENCH_STYLES } from './editor-panels.js';
 import type { RecipeSimulationResult } from '@recued/contracts';
 import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
+import type { RecipeTryCaller, RecipeTryResult } from './recipe-try-caller.js';
 import type { RecipeRegressionCaller } from './recipe-regression-caller.js';
 import { createRecipeRegressionPanel } from './recipe-regression-panel.js';
 import { createRecipeRunCapturePanel } from './recipe-run-capture-panel.js';
 import type { RecipeRunCaptureCaller } from './recipe-run-capture-caller.js';
 import { createRecipeReleasePanel } from './recipe-release-panel.js';
+import { adoptRecipe, sameAdoptedRecipe } from './recipe-adopt.js';
 import type { RecipeReleaseCaller } from './recipe-release-caller.js';
 import type { RecipeReleaseView } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { RunModal, startPhrase } from '@recued/ui-shared';
+import {
+  RunModal,
+  startPhrase,
+  wireConfigEditorOverlay,
+  type BrowserVariableCallers,
+  type ConfigEditorOverlayHandle,
+  type MailboxVariableCallers,
+} from '@recued/ui-shared';
+import type { HeldRunDelivery } from '../../held-run-follow.js';
 
 import {
   applyFieldToStep,
@@ -74,6 +91,8 @@ import {
   FORM_RESPONSE_READER_OP,
 } from './form-response-automation-seed.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
+// D-201 Slice 10AX — the owner's closing in the words the webhook's card uses too.
+import { ownerClosedDoorClause } from '../../connections/webhook-door-words.js';
 import { mailTemplateVariableNames, starterChanged, starterOf, starterSourceOf } from './mail-template-starters.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -104,6 +123,22 @@ export const RECIPE_EDITOR_COND_ADD_ATTR = 'data-recued-recipe-editor-cond-add';
 export const RECIPE_EDITOR_COLLAPSE_ALL_ATTR =
   'data-recued-recipe-editor-collapse-all';
 export const RECIPE_EDITOR_VALIDATE_ATTR = 'data-recued-recipe-editor-validate';
+/** D-402 slice C — "Try it", a recipe not saved yet run once for real, and what it did. */
+export const RECIPE_EDITOR_TRY_ATTR = 'data-recued-recipe-editor-try';
+export const RECIPE_EDITOR_TRIAL_ATTR = 'data-recued-recipe-trial';
+export const RECIPE_EDITOR_TRIAL_STATUS_ATTR = 'data-recued-recipe-trial-status';
+export const RECIPE_EDITOR_TRIAL_ERROR_ATTR = 'data-recued-recipe-trial-error';
+export const RECIPE_EDITOR_TRIAL_CAPTURE_ATTR = 'data-recued-recipe-trial-capture';
+/** D-402 slice C5 — the waits between reads of a held trial's saved test once the run ended, while the
+ *  server still builds it (its replay is bounded at 10 seconds). */
+export const TRIAL_CAPTURE_READ_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000, 4_000, 8_000];
+/** D-402 slice C5 — the saved test of a held trial that ended, while it is read again, or once it
+ *  cannot be told. */
+const TRIAL_CAPTURE_LINES = {
+  checking: 'Checking whether this run is the recipe\'s saved test…',
+  gone: 'No saved test from this run: it is no longer kept.',
+  unknown: 'Whether this run is the recipe\'s saved test shows on its page, once you save it.',
+} as const;
 export const RECIPE_EDITOR_SAVE_ATTR = 'data-recued-recipe-editor-save';
 export const RECIPE_EDITOR_RECIPE_ID_ATTR = 'data-recued-recipe-editor-recipe-id';
 export const RECIPE_EDITOR_RECIPE_NAME_ATTR = 'data-recued-recipe-editor-recipe-name';
@@ -193,6 +228,11 @@ export const RECIPE_EDITOR_WEBHOOK_REMOVE_ATTR =
 /** D-209 #1 Task 3 — the door-authority consent block. Attribute value = the
  * door state (`minted` / `missing` / `refused`) so tests can pin the branch. */
 export const RECIPE_EDITOR_WEBHOOK_DOOR_ATTR = 'data-recued-recipe-editor-webhook-door';
+/** D-201 Slice 10I — the save's "keep its webhook on?", asked before anything
+ *  is saved; its value is `checking` or `asking`. Its buttons carry
+ *  `RECIPE_EDITOR_SAVE_ANSWER_ATTR` = `keep-on` / `switch-off` / `cancel`. */
+export const RECIPE_EDITOR_SAVE_QUESTION_ATTR = 'data-recued-recipe-editor-save-question';
+export const RECIPE_EDITOR_SAVE_ANSWER_ATTR = 'data-recued-recipe-editor-save-answer';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -230,6 +270,15 @@ export interface RecipeWebhookControl {
   disarmCaller: (args: { recipe_id: string }) => Promise<{
     webhook: LocalRecipeWebhookStatus;
   }>;
+  /** D-201 Slice 10I — what saving a draft would let its webhook do. Without
+   *  it a save leaves the webhook off, as before. */
+  previewCaller?: (args: {
+    recipe: RecipeDefinition;
+    /** D-201 Slice 10M — the ways in the save would send. */
+    webhook_bindings?: ReadonlyArray<WebhookIngressBindingSelection>;
+  }) => Promise<{
+    door: LocalRecipeWebhookDoorPreview | null;
+  }>;
 }
 
 export type RecipeEditorSaveStage =
@@ -245,6 +294,21 @@ export interface BootstrapRecipeEditorRouteOptions {
   recovery?: DraftRecovery;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
   simulateCaller?: RecipeSimulationCaller;
+  /** D-402 slice C — "Try it" for a recipe not saved yet: Kitchen's work in progress only. */
+  tryCaller?: RecipeTryCaller;
+  /** D-402 slice C5 — a trial held for the owner's answer, followed to its end (`held-run-follow.ts`), so
+   *  the trial says what it did once they answer, wherever they answer. Without it, the trial says its
+   *  result shows in Logs. */
+  followHeldRun?: (held: ServerExecuteResponse, deliver: HeldRunDelivery) => () => void;
+  /** D-402 slice C5 — the recipe's captures (`recipe.capture.list`), so a held trial that ended says
+   *  whether it is the recipe's saved test. */
+  trialCapturesCaller?: (args: { recipe_id: string }) => Promise<{ captures: RecipeRunCaptureSummary[] }>;
+  /** D-402 slice C5 — the owner's browsers and mailboxes, which a trial's settings offer for a setting
+   *  that names one. Without them, such a setting is a text box. */
+  trialSettingsCallers?: {
+    readonly browsers?: BrowserVariableCallers;
+    readonly mailboxes?: MailboxVariableCallers;
+  };
   regressionCaller?: RecipeRegressionCaller;
   captureCaller?: RecipeRunCaptureCaller;
   releaseCaller?: RecipeReleaseCaller;
@@ -253,6 +317,10 @@ export interface BootstrapRecipeEditorRouteOptions {
     recipe: RecipeDefinition;
     publisher_id?: string;
     webhook_bindings?: ReadonlyArray<WebhookIngressBindingSelection>;
+    /** D-201 Slice 10I — the owner's answer to "keep its webhook on?". */
+    webhook_on?: boolean;
+    /** D-201 Slice 10M — the `consent` of the question answered. */
+    webhook_consent?: string;
   }) => Promise<RecipeSaveResult>;
   /** Present only on the owner Kitchen surface. MCP authoring deliberately has
    * no equivalent arm authority. */
@@ -435,17 +503,9 @@ const CONDITION_LABELS: Record<ConditionField, string> = {
   stop_when: 'Stop when',
 };
 
-/** Fill the optional list fields the editor reads as if they were required.
- *  ⛔ Only ADDS empty lists — never changes a value the recipe actually
- *  carries, so what the owner saves is what they wrote plus nothing.
- *  Exported so Kitchen can compare a recipe with the editor's copy (D-333). */
-export const adoptRecipe = (
-  recipe: RecipeDefinition | undefined,
-): RecipeDefinition | undefined => {
-  if (recipe === undefined) return undefined;
-  if (Array.isArray(recipe.prefetch_steps)) return recipe;
-  return { ...recipe, prefetch_steps: [] };
-};
+// D-201 Slice 10BD — `adoptRecipe` lives in its own module, which the release
+// panel reads too; exported here as before.
+export { adoptRecipe };
 
 /** All step ids across prefetch + steps — for rename uniqueness checks. */
 const allStepIds = (recipe: RecipeDefinition): string[] => [
@@ -462,7 +522,7 @@ const allStepIds = (recipe: RecipeDefinition): string[] => [
  *  surfaces any that a loaded recipe already carries so the op body offers a
  *  picker instead of free text. */
 const connectionVarNames = (recipe: RecipeDefinition): string[] =>
-  Object.entries(recipe.variables)
+  Object.entries(recipe.variables ?? {})
     .filter(
       ([, v]) =>
         v !== null
@@ -476,7 +536,7 @@ const connectionVarNames = (recipe: RecipeDefinition): string[] =>
  *  longer declares (the validator's `api_connection_setting` advice). */
 const apiConnectionVarNames = (recipe: RecipeDefinition): string[] =>
   connectionVarNames(recipe).filter(
-    (name) => (recipe.variables[name] as { connection_kind?: unknown }).connection_kind === 'api',
+    (name) => ((recipe.variables ?? {})[name] as { connection_kind?: unknown }).connection_kind === 'api',
   );
 
 /** Coerce a `skip_when` / `fail_on` field (string | Condition | undefined) into
@@ -688,6 +748,29 @@ export const RECIPE_EDITOR_STYLES = `
 [${RECIPE_EDITOR_WEBHOOK_DOOR_ATTR}] code { overflow-wrap: anywhere; }
 [${RECIPE_EDITOR_WEBHOOK_DOOR_ATTR}] .recipe-editor-webhook-door-help {
   color: var(--fg-muted);
+}
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] {
+  flex-basis: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+  display: grid;
+  gap: 6px;
+}
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] p { margin: 0; font-size: 13px; }
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] .recipe-editor-save-question-lede {
+  font-weight: 650;
+  color: var(--fg-strong);
+}
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] code { overflow-wrap: anywhere; }
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] .recipe-editor-save-question-help { color: var(--fg-muted); font-size: 12px; }
+[${RECIPE_EDITOR_SAVE_QUESTION_ATTR}] .recipe-editor-save-question-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-section-header {
   display: flex;
@@ -1501,7 +1584,17 @@ export const bootstrapRecipeEditorRoute = (
   const persistDraft = (): void => {
     if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
     recoveryTimer = undefined;
-    if (!options.recovery || (recoveredDraft && state.editEpoch === 0)) return;
+    // D-201 Slice 10BR (10BM finding 21) — a recovery copy on offer is the
+    // owner's to restore or discard: offered only while they have made no edit
+    // (an edit drops the offer), it is never written over. It was kept only
+    // until the edit count first moved, and loading a recipe ("Restore as
+    // draft", "Reload saved draft"), or an undo or redo after it, moves that
+    // count with the offer standing: the next write deleted or replaced the copy
+    // while it was still offered, so the page opened again offered nothing.
+    // While it stands, the editor holds only recipes opened or loaded, none
+    // typed (its undo history starts at the mount), so nothing typed goes
+    // unkept.
+    if (!options.recovery || recoveredDraft) return;
     recoveryFailed = !writeEditorDraft(options.recovery, state.dirty
       ? { base: savedRecipe, snapshot: snapshot() } : null);
     if (recoveryFailed) {
@@ -1534,6 +1627,20 @@ export const bootstrapRecipeEditorRoute = (
   let testCancelBtn: HTMLButtonElement | undefined;
   let testAbort: AbortController | undefined;
   let testGeneration = 0;
+  // D-402 slice C — the trial ("Try it"): whether one is going, and what the last one did.
+  let trialRunning = false;
+  let trialResult: RecipeTryResult | undefined;
+  let trialError = '';
+  let trialEpoch = 0;
+  let trialGeneration = 0;
+  // D-402 slice C5 — the settings the last trial ran with, where the next one starts; the form asking
+  // for them; a held trial followed to its end; and its saved test, read again once it ended.
+  let trialConfig: Record<string, unknown> = {};
+  let trialSettingsForm: ConfigEditorOverlayHandle | undefined;
+  let trialFollowed: ServerExecuteResponse | undefined;
+  let stopTrialFollow: (() => void) | undefined;
+  let trialCaptureLine: 'checking' | 'gone' | 'unknown' | undefined;
+  let trialCaptureTimer: ReturnType<typeof setTimeout> | undefined;
   let regressionPanel: ReturnType<typeof createRecipeRegressionPanel> | undefined;
   let capturePanel: ReturnType<typeof createRecipeRunCapturePanel> | undefined;
   let regressionRecipeEpoch = state.editEpoch;
@@ -1561,6 +1668,10 @@ export const bootstrapRecipeEditorRoute = (
   let starterCopying: string | null = null;
   let webhookStatus = options.webhookControl?.initialStatus;
   let webhookBusy = false;
+  // D-201 Slice 10AF (10AE finding 15) — which way the switch in flight goes:
+  // only its own button reads busy ("Switching off…" never sat beside an
+  // "Opening its door…" that nobody pressed).
+  let webhookBusyArming: boolean | null = null;
   let webhookError: string | null = null;
 
   let disposed = false;
@@ -1675,6 +1786,7 @@ export const bootstrapRecipeEditorRoute = (
     }
     state.dirty = true;
     state.saveStage = 'idle';
+    closeSaveQuestion();
     const hadIssues = state.issues.length > 0;
     state.issues = [];
     if (!rpcInFlight && !webhookBusy) state.status = 'You have changes. Check them, or save.';
@@ -1732,7 +1844,7 @@ export const bootstrapRecipeEditorRoute = (
   /** Patch the fields of an existing recipe variable in place (a focused field
    *  edit — no rerender; the caller follows with markDirty). */
   const patchVariable = (name: string, patch: Record<string, unknown>): void => {
-    const prev = (state.recipe.variables[name] ?? {}) as Record<string, unknown>;
+    const prev = ((state.recipe.variables ?? {})[name] ?? {}) as Record<string, unknown>;
     state.recipe = {
       ...state.recipe,
       variables: {
@@ -1753,6 +1865,11 @@ export const bootstrapRecipeEditorRoute = (
   let statusbarEl: HTMLElement | undefined;
   let routeHeading: HTMLElement | undefined;
   let webhookAuthorityBtn: HTMLButtonElement | undefined;
+  // D-201 Slice 10AF (10AE finding 15) — every webhook button by its action, so
+  // the one pressed keeps focus. One slot held the last drawn: pressing "Switch
+  // off webhook" beside "Open its door" left focus on nothing.
+  const webhookAuthorityBtns = new Map<'arm' | 'disarm' | 'reopen', HTMLButtonElement>();
+  let pendingWebhookAuthority: 'arm' | 'disarm' | 'reopen' | null = null;
   // Render-owning controls rebuild the entire editor. Remember which one had
   // focus, then restore its durable replacement; Validate/Save and webhook
   // Arm/Disarm hold ownership across their guarded, aria-busy paint. A user
@@ -1762,7 +1879,31 @@ export const bootstrapRecipeEditorRoute = (
     | 'save'
     | 'collapse-all'
     | 'webhook-authority'
+    | 'save-question'
     | null = null;
+  /** D-201 Slice 10I — the save's question while its webhook is on, asked
+   *  before anything is saved, with what the new version could do. `epoch`
+   *  is the draft it was asked about. */
+  let saveQuestion: {
+    epoch: number;
+    checking: boolean;
+    door: LocalRecipeWebhookDoorPreview | null;
+    error: string | null;
+  } | null = null;
+  let saveQuestionBlock: HTMLElement | undefined;
+  let saveQuestionIds = 0;
+  /** Set as Save asks: the question the owner just asked for takes the focus
+   *  from wherever it is (⌘S leaves it in a field). Its later repaint, once
+   *  checked, takes it only from Save, the question or nowhere. */
+  let saveQuestionClaimsFocus = false;
+  /** The question is about the draft and the webhook as they were when Save
+   *  was pressed: an edit, or switching the webhook on or off, closes it. */
+  const closeSaveQuestion = (): void => {
+    if (saveQuestion === null) return;
+    saveQuestion = null;
+    saveQuestionBlock?.remove();
+    saveQuestionBlock = undefined;
+  };
   let pendingFieldFocus: RecipeEditorFieldFocus | null = null;
 
   const saveLabel = (): string => {
@@ -1880,7 +2021,58 @@ export const bootstrapRecipeEditorRoute = (
       });
   };
 
-  const runSave = (): void => {
+  /** D-201 Slice 10I — its webhook is on: before anything is saved, ask
+   *  whether to keep it on for this version, saying first what this version
+   *  could do that the saved one cannot. */
+  const askToKeepWebhookOn = (
+    webhookBindings: ReadonlyArray<WebhookIngressBindingSelection>,
+  ): void => {
+    const previewCaller = options.webhookControl?.previewCaller;
+    if (previewCaller === undefined) return;
+    const epoch = state.editEpoch;
+    saveQuestion = { epoch, checking: true, door: null, error: null };
+    pendingActionFocus = 'save-question';
+    saveQuestionClaimsFocus = true;
+    rerender();
+    void previewCaller({ recipe: state.recipe, webhook_bindings: webhookBindings }).then(
+      (result) => {
+        if (disposed || saveQuestion?.epoch !== epoch || !saveQuestion.checking) return;
+        saveQuestion = { epoch, checking: false, door: result.door, error: null };
+        pendingActionFocus = 'save-question';
+        rerender();
+      },
+      (error: unknown) => {
+        if (disposed || saveQuestion?.epoch !== epoch || !saveQuestion.checking) return;
+        saveQuestion = { epoch, checking: false, door: null, error: errorMessage(error) };
+        pendingActionFocus = 'save-question';
+        rerender();
+      },
+    );
+  };
+
+  /** `null` is Cancel. A draft changed since it was asked is asked again. */
+  const answerSaveQuestion = (keepOn: boolean | null): void => {
+    const question = saveQuestion;
+    if (question === null || question.checking || rpcInFlight) return;
+    saveQuestion = null;
+    pendingActionFocus = 'save';
+    if (keepOn === null) {
+      rerender();
+      return;
+    }
+    if (question.epoch !== state.editEpoch || webhookStatus?.armed !== true) {
+      runSave();
+      return;
+    }
+    // D-201 Slice 10M — kept on, the save carries what the owner was shown.
+    runSave(keepOn, keepOn ? question.door?.consent : undefined);
+  };
+
+  const runSave = (answer?: boolean, answeredConsent?: string): void => {
+    // Only a real answer counts: a click handed straight to runSave would pass
+    // its event, which must never read as "keep it on" or skip the question.
+    const webhookOn = typeof answer === 'boolean' ? answer : undefined;
+    const webhookConsent = typeof answeredConsent === 'string' ? answeredConsent : undefined;
     if (blockInvalidFields()) return;
     if (disposed || rpcInFlight || webhookBusy) return;
     if (releasePanel?.managesCurrentRecipe() && state.recipe.recipe_id === options.initialRecipe?.recipe_id) { void releasePanel.saveDraft(); return; }
@@ -1926,7 +2118,18 @@ export const bootstrapRecipeEditorRoute = (
         }
         webhookBindings.push({ binding: requirement.binding, ingress_id: ingressId });
       }
+      if (webhookOn === undefined
+        && webhookStatus?.armed === true
+        && options.webhookControl.previewCaller !== undefined) {
+        if (saveQuestion !== null && saveQuestion.epoch === state.editEpoch) {
+          saveQuestionBlock?.focus({ preventScroll: true });
+          return;
+        }
+        askToKeepWebhookOn(webhookBindings);
+        return;
+      }
     }
+    saveQuestion = null;
     state.saveStage = 'saving';
     state.status = 'Saving…';
     rerender();
@@ -1939,6 +2142,9 @@ export const bootstrapRecipeEditorRoute = (
       .saveCaller({
         recipe: state.recipe,
         ...(webhookBindings ? { webhook_bindings: webhookBindings } : {}),
+        ...(webhookBindings && webhookOn === true
+          ? { webhook_on: true, ...(webhookConsent !== undefined ? { webhook_consent: webhookConsent } : {}) }
+          : {}),
       })
       .then((result) => {
         rpcInFlight = false;
@@ -1947,12 +2153,16 @@ export const bootstrapRecipeEditorRoute = (
         const staleEdits = state.editEpoch !== epochAtSave;
         state.saveStage = staleEdits ? 'idle' : 'saved';
         const savedNote = `Saved ${result.recipe_id} v${result.version}`;
+        // A save kept on whose door could not be made switches it off.
+        const keptOff = webhookOn === true && result.webhook !== undefined && !result.webhook.armed;
         state.status =
-          warnings.length > 0
-            ? `${savedNote} — ${plural(warnings.length, 'warning')}`
-            : staleEdits
-              ? `${savedNote} — newer edits pending`
-              : savedNote;
+          keptOff
+            ? `${savedNote}. Its webhook could not stay on, so it is off`
+            : warnings.length > 0
+              ? `${savedNote} — ${plural(warnings.length, 'warning')}`
+              : staleEdits
+                ? `${savedNote} — newer edits pending`
+                : savedNote;
         // Surface non-blocking save advisories as warn-severity issues.
         state.issues = warnings.map((message) => ({ message, severity: 'warn' }));
         if (result.webhook) {
@@ -1979,7 +2189,12 @@ export const bootstrapRecipeEditorRoute = (
         }
         history.updateVersion(recipeAtSave.recipe_id, result.version);
         neverSaved = false;
-        recoveredDraft = null;
+        // D-201 Slice 10BW (10BS finding 19) — a recovery copy on offer is the
+        // owner's to restore or discard, and no edit can be made while it is
+        // offered: a Save (with none, so) deleted it, against 10BL's ruling for
+        // a release draft saved with no edits. Kept, and moved with the
+        // recipe's new key where saving gives it one.
+        const offered = recoveredDraft;
         state.dirty = staleEdits;
         history.breakGroup();
         if (options.recovery?.savedKey) {
@@ -1987,6 +2202,7 @@ export const bootstrapRecipeEditorRoute = (
           if (key !== options.recovery.key) {
             writeEditorDraft(options.recovery, null);
             options.recovery.key = key;
+            if (offered !== null) writeEditorDraft(options.recovery, offered);
           }
         }
         persistDraft();
@@ -2014,6 +2230,17 @@ export const bootstrapRecipeEditorRoute = (
       .catch((error: unknown) => {
         rpcInFlight = false;
         if (disposed) return;
+        // D-201 Slice 10M — what keeping it on would allow changed since the
+        // owner was asked: nothing was saved, so ask again, as it stands now.
+        if (webhookOn === true
+          && webhookBindings !== undefined
+          && (error as { code?: unknown } | null)?.code === 'webhook_consent_stale') {
+          state.saveStage = 'idle';
+          state.status = 'What keeping its webhook on would allow changed since you were asked. Here it is again.';
+          announce(state.status);
+          askToKeepWebhookOn(webhookBindings);
+          return;
+        }
         // The save rpc throws on rejection (e.g. an inline op-step). Surface it.
         state.saveStage = 'error';
         state.status = errorMessage(error);
@@ -2066,7 +2293,7 @@ export const bootstrapRecipeEditorRoute = (
             const ns = locateStep(id)?.key === 'trigger_steps' ? 'trigger' : 'step';
             return { value: `{{${ns}.${id}}}`, label: `Output: ${id}` };
           }),
-          ...Object.keys(state.recipe.variables).map(name => ({ value: `{{config.${name}}}`, label: `Variable: ${name}` })),
+          ...Object.keys(state.recipe.variables ?? {}).map(name => ({ value: `{{config.${name}}}`, label: `Variable: ${name}` })),
           { value: '{{context.event}}', label: 'Trigger event' },
         ];
       } : undefined,
@@ -2267,6 +2494,184 @@ export const bootstrapRecipeEditorRoute = (
     }
     return row;
   };
+  /** D-402 slice C — "Try it": the recipe as it is here, run once for real in the owner's browser, each
+   *  change asked about first in their approvals (`recipe.try`). Recued never saves it: Save does.
+   *  C5: a recipe with settings asks first for this trial's (`openTrialSettings`). */
+  const runTrial = (): void => {
+    if (trialRunning || !options.tryCaller || blockInvalidFields()) return;
+    if (Object.keys(state.recipe.variables ?? {}).length === 0) startTrial({});
+    else openTrialSettings();
+  };
+  const startTrial = (config: Record<string, unknown>): void => {
+    if (trialRunning || !options.tryCaller) return;
+    stopFollowingTrial();
+    const generation = ++trialGeneration; trialEpoch = state.editEpoch;
+    const recipe = JSON.parse(JSON.stringify(state.recipe)) as RecipeDefinition;
+    // Only what the recipe declares: a run refuses a setting it does not (`undeclared_config_argument`).
+    const declared = recipe.variables ?? {};
+    const settings = Object.fromEntries(Object.entries(config).filter(([key]) => Object.hasOwn(declared, key)));
+    trialRunning = true; trialError = ''; trialResult = undefined; panelOpen.add('trial'); rerender();
+    void options.tryCaller({ recipe, config: settings }).then((result) => {
+      if (disposed || generation !== trialGeneration) return;
+      trialResult = result;
+      followTrial(result, generation);
+    }).catch((error: unknown) => {
+      if (!disposed && generation === trialGeneration) trialError = errorMessage(error);
+    }).finally(() => {
+      if (disposed || generation !== trialGeneration) return;
+      trialRunning = false; rerender();
+    });
+  };
+  /** D-402 slice C5 — the settings this trial runs with: the shared settings form, each setting where the
+   *  last trial left it, else at its default. A setting that names one of the owner's browsers or mailboxes
+   *  is a choice of them. The recipe itself is not changed. */
+  const openTrialSettings = (): void => {
+    if (trialSettingsForm !== undefined) return;
+    const recipe = state.recipe;
+    const variables = recipe.variables ?? {};
+    const browsers = recipeBrowserSettings(recipe);
+    const mailboxes = recipeMailboxSettings(recipe);
+    const callers = options.trialSettingsCallers;
+    trialSettingsForm = wireConfigEditorOverlay({
+      document: doc,
+      title: `Try “${recipe.metadata?.name?.trim() || recipe.recipe_id}”`,
+      copy: 'Settings for this trial only. They do not change the recipe.',
+      confirmLabel: 'Try it',
+      variables,
+      currentOverlay: { ...trialConfig },
+      requireSettings: true,
+      ...(callers?.browsers !== undefined && browsers.length > 0
+        ? { browsers: { settings: browsers, callers: callers.browsers } } : {}),
+      ...(callers?.mailboxes !== undefined && mailboxes.length > 0
+        ? { mailboxes: { settings: mailboxes, callers: callers.mailboxes } } : {}),
+      onConfirm: (config) => {
+        trialConfig = { ...config };
+        startTrial(config);
+      },
+      onClose: () => {
+        trialSettingsForm = undefined;
+        if (!disposed) host.querySelector?.<HTMLElement>(`[${RECIPE_EDITOR_TRY_ATTR}]`)?.focus?.();
+      },
+    });
+  };
+  /** D-402 slice C5 — a trial held for an answer, followed to its end: approved anywhere, its result shows
+   *  here; declined, it says so; held again further on, it is followed on. Only a hold with its receipt
+   *  (`action_ref`) can be followed; without one, the trial says its result shows in Logs. */
+  const followTrial = (result: RecipeTryResult, generation: number): void => {
+    if (options.followHeldRun === undefined || result.awaiting_approval !== true
+      || typeof result.action_ref !== 'string' || result.action_ref === '') return;
+    trialFollowed = result;
+    stopTrialFollow = options.followHeldRun(result, (next, later) => {
+      if (disposed || generation !== trialGeneration || later.replaces !== trialFollowed) return;
+      trialFollowed = next;
+      const capture = trialResult?.capture;
+      trialResult = capture !== undefined ? { ...next, capture } : next;
+      if (next.awaiting_approval !== true) {
+        stopTrialFollow = undefined;
+        if (capture !== undefined) readTrialCapture(generation, capture, 0);
+      }
+      rerender();
+    });
+  };
+  const stopFollowingTrial = (): void => {
+    stopTrialFollow?.(); stopTrialFollow = undefined; trialFollowed = undefined;
+    if (trialCaptureTimer !== undefined) clearTimeout(trialCaptureTimer);
+    trialCaptureTimer = undefined; trialCaptureLine = undefined;
+  };
+  /** D-402 slice C5 — once a held trial ended, whether it is the recipe's saved test, as the server says
+   *  now. The capture settles just after the run's result (its replay is built then), so a read that still
+   *  finds it running asks again, a few times. */
+  const readTrialCapture = (generation: number, capture: RecipeRunCaptureSummary, attempt: number): void => {
+    const caller = options.trialCapturesCaller;
+    if (caller === undefined) { trialCaptureLine = 'unknown'; return; }
+    trialCaptureLine = 'checking';
+    const current = (): boolean => !disposed && generation === trialGeneration && trialResult !== undefined;
+    void caller({ recipe_id: capture.recipe_id }).then(({ captures }) => {
+      if (!current()) return;
+      const found = captures.find((one) => one.capture_id === capture.capture_id);
+      if (found?.state === 'running' && attempt < TRIAL_CAPTURE_READ_DELAYS_MS.length) {
+        trialCaptureTimer = setTimeout(() => {
+          trialCaptureTimer = undefined;
+          if (current()) readTrialCapture(generation, capture, attempt + 1);
+        }, TRIAL_CAPTURE_READ_DELAYS_MS[attempt]);
+        return;
+      }
+      trialCaptureLine = found === undefined ? 'gone' : found.state === 'running' ? 'unknown' : undefined;
+      if (found !== undefined) trialResult = { ...trialResult!, capture: found };
+      rerender();
+    }, () => {
+      if (!current()) return;
+      trialCaptureLine = 'unknown'; rerender();
+    });
+  };
+  /** What a trial's failed step needs, when its element is the trouble (§8.2, §4 rule 4). */
+  const trialFix = (error: { code?: string; message: string }): string | undefined => {
+    if (/names \d+ elements on the page/u.test(error.message)) {
+      return 'To fix: name this element so that only one on the page matches it, by a selector of its own.';
+    }
+    if (error.code === 'DOM_SELECTOR_NOT_FOUND' || error.code === 'DOM_SELECTOR_MISSING') {
+      return 'To fix: the page does not show this element as the step names it now. Name it as the page shows it.';
+    }
+    return undefined;
+  };
+  const trialStatus = (): { text: string; state: string } => {
+    if (trialRunning) return { text: 'Trying… answer each change in your approvals.', state: 'running' };
+    if (trialError !== '') return { text: trialError, state: 'failed' };
+    if (trialResult === undefined) return { text: 'Not tried yet.', state: 'ready' };
+    const since = trialEpoch !== state.editEpoch ? ' You changed the recipe since.' : '';
+    if (trialResult.awaiting_approval === true) {
+      return { text: stopTrialFollow !== undefined
+        ? `It waits for your answer in your approvals. Its result shows here once you answer.${since}`
+        : `It waits for your answer in your approvals. It finishes once you answer, and its result shows in Logs.${since}`, state: 'held' };
+    }
+    return trialResult.success ? { text: `It worked.${since}`, state: 'passed' } : { text: `It stopped.${since}`, state: 'failed' };
+  };
+  const trialCaptureText = (capture: NonNullable<RecipeTryResult['capture']>): string => {
+    const minutes = Math.round(RECIPE_RUN_CAPTURE_LIMITS.ttl_ms / 60_000);
+    if (capture.state === 'ready') {
+      return `Kept as this recipe's saved test for ${String(minutes)} minutes: save the recipe, then keep it under Captured runs on its page.`;
+    }
+    if (capture.state === 'unavailable') return `No saved test from this run: ${capture.reason ?? 'it could not be kept.'}`;
+    return 'Kept for its saved test as it goes, while it waits for you.';
+  };
+  const renderTrialPanel = (): HTMLElement => {
+    const section = doc.createElement('details'); section.className = 'recipe-editor-section recipe-editor-trial';
+    section.setAttribute(RECIPE_EDITOR_TRIAL_ATTR, '');
+    const summary = appendText(doc, section, 'summary', '');
+    appendText(doc, summary, 'span', 'Try it for real');
+    appendText(doc, summary, 'span', 'In your browser, asking first').className = 'recipe-editor-panel-hint';
+    rememberPanel(section, 'trial');
+    const body = doc.createElement('div'); body.className = 'recipe-editor-panel-body'; section.appendChild(body);
+    appendText(doc, body, 'p', 'Runs this recipe once, as it is here, before you save it. Each change it makes asks you first, '
+      + 'in your approvals: what it will type or click, on the page as it is then.').className = 'recipe-editor-test-intro';
+    const { text, state: shown } = trialStatus();
+    const status = appendText(doc, body, 'p', text);
+    status.setAttribute('role', 'status'); status.setAttribute(RECIPE_EDITOR_TRIAL_STATUS_ATTR, ''); status.setAttribute('data-state', shown);
+    if (trialResult !== undefined && !trialRunning) {
+      const errors = (trialResult.errors ?? []) as Array<{ code?: string; message?: string; source?: { step_id?: string } }>;
+      if (errors.length > 0) {
+        const list = doc.createElement('ul'); list.className = 'recipe-editor-trial-errors';
+        for (const error of errors) {
+          const message = typeof error.message === 'string' ? error.message : 'This step failed.';
+          const stepId = error.source?.step_id;
+          const item = appendText(doc, list, 'li', `${stepId !== undefined ? `Step ${stepId}: ` : ''}${message}`);
+          item.setAttribute(RECIPE_EDITOR_TRIAL_ERROR_ATTR, error.code ?? '');
+          const fix = trialFix({ ...(error.code !== undefined ? { code: error.code } : {}), message });
+          if (fix !== undefined) appendText(doc, item, 'p', fix).className = 'recipe-editor-trial-fix';
+          const location = stepId !== undefined ? locateStep(stepId) : undefined;
+          if (location) item.appendChild(makeButton(doc, 'Go to step', 'secondary', 'sm', () => revealIssue(`${location.key}[${location.index}].id`)));
+        }
+        body.appendChild(list);
+      }
+      if (trialResult.capture !== undefined) {
+        const line = appendText(doc, body, 'p', trialCaptureLine !== undefined
+          ? TRIAL_CAPTURE_LINES[trialCaptureLine] : trialCaptureText(trialResult.capture));
+        line.setAttribute(RECIPE_EDITOR_TRIAL_CAPTURE_ATTR, trialCaptureLine ?? trialResult.capture.state);
+      }
+    }
+    return section;
+  };
+
   const renderTestPanel = (): HTMLElement => {
     const section = doc.createElement('details'); section.className = 'recipe-editor-section recipe-editor-test';
     section.setAttribute('data-recued-recipe-test', '');
@@ -3410,7 +3815,9 @@ export const bootstrapRecipeEditorRoute = (
       return;
     }
     webhookBusy = true;
+    webhookBusyArming = armed;
     webhookError = null;
+    closeSaveQuestion();
     rerender();
     const caller = armed
       ? options.webhookControl.armCaller
@@ -3418,6 +3825,7 @@ export const bootstrapRecipeEditorRoute = (
     void caller({ recipe_id: persistedRecipeId }).then(
       (result) => {
         webhookBusy = false;
+        webhookBusyArming = null;
         if (disposed) return;
         webhookStatus = result.webhook;
         state.status = armed ? 'Webhook trigger switched on' : 'Webhook trigger switched off';
@@ -3426,6 +3834,7 @@ export const bootstrapRecipeEditorRoute = (
       },
       (error: unknown) => {
         webhookBusy = false;
+        webhookBusyArming = null;
         if (disposed) return;
         webhookError = errorMessage(error);
         state.status = webhookError;
@@ -3435,15 +3844,40 @@ export const bootstrapRecipeEditorRoute = (
     );
   };
 
-  const ownWebhookAuthorityButton = (button: HTMLButtonElement): void => {
-    webhookAuthorityBtn = button;
+  const ownWebhookAuthorityButton = (
+    button: HTMLButtonElement,
+    action: 'arm' | 'disarm' | 'reopen',
+  ): void => {
+    if (webhookAuthorityBtn === undefined) webhookAuthorityBtn = button;
+    webhookAuthorityBtns.set(action, button);
     if (webhookBusy) {
       // The handler guard is the single-flight authority. Keep the command in
       // the focus order while its RPC owns the editor so the repaint does not
       // strand a keyboard user on <body>.
       button.setAttribute('aria-disabled', 'true');
-      button.setAttribute('aria-busy', 'true');
+      // D-201 Slice 10AF — busy only where the switch in flight goes.
+      if ((action === 'disarm') === (webhookBusyArming === false)) button.setAttribute('aria-busy', 'true');
     }
+  };
+  /** D-201 Slice 10AF (10AE finding 16) — a closed door: `missing` with
+   *  `closed` from a server since 10AF, `closed` from a 10AC server. */
+  const doorClosed = (door: LocalRecipeWebhookDoorStatus | undefined): boolean =>
+    door?.state === 'closed' || (door?.state === 'missing' && door.closed === true);
+  const doorMissing = (door: LocalRecipeWebhookDoorStatus | undefined): boolean =>
+    door?.state === 'missing' && door.closed !== true;
+  /** D-201 Slice 10AX (10AS finding 13) — a door its owner closed, in the
+   *  card's words: with no door now (`no_door`, `no_door_yet`), opening it
+   *  makes one; with a door there, opens it again. */
+  const ownerClosedDoorStatus = (door: LocalRecipeWebhookDoorStatus, armed: boolean, setUp: boolean): string => {
+    const doorLess = door.no_door === true || door.no_door_yet === true;
+    const clause = ownerClosedDoorClause(door);
+    const what = 'with what you switched off under Contracts still off.';
+    if (armed) {
+      return `${clause}${door.no_door_yet === true ? ' and' : ', so'} nothing it lets through runs. `
+        + `${doorLess ? 'Open its door to make one' : 'Open its door to open it again'}, ${what}`;
+    }
+    const switching = doorLess ? 'switching it on makes one' : 'switching it on opens it again';
+    return `${clause}. ${setUp ? switching.charAt(0).toUpperCase() + switching.slice(1) : `Once its webhook is set up, ${switching}`}, ${what}`;
   };
 
   const focusWebhookIngressAfterRender = (binding: string): void => {
@@ -3481,8 +3915,9 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'Pick a switched-on way in for every webhook. Saving always '
-        + 'leaves this Recipe switched off. Turning it on is something you do separately.',
+      'Pick a switched-on way in for every webhook. While its webhook is on, saving asks '
+        + 'whether to keep it on for the version you save, and says first what that version '
+        + 'could do that the saved one cannot.',
     );
     hint.className = 'recipe-editor-hint';
 
@@ -3566,7 +4001,7 @@ export const bootstrapRecipeEditorRoute = (
       if (webhookStatus?.armed) {
         const disarm = makeButton(
           doc,
-          webhookBusy ? 'Switching off…' : 'Switch off saved webhook',
+          webhookBusy && webhookBusyArming === false ? 'Switching off…' : 'Switch off saved webhook',
           'secondary',
           'sm',
           () => {
@@ -3575,7 +4010,7 @@ export const bootstrapRecipeEditorRoute = (
         );
         disarm.setAttribute(RECIPE_EDITOR_WEBHOOK_DISARM_ATTR, '');
         disarm.disabled = rpcInFlight;
-        ownWebhookAuthorityButton(disarm);
+        ownWebhookAuthorityButton(disarm, 'disarm');
         actions.appendChild(disarm);
       }
       const stateLabel = doc.createElement('span');
@@ -3602,9 +4037,20 @@ export const bootstrapRecipeEditorRoute = (
     if (door) {
       const block = doc.createElement('div');
       block.className = 'recipe-editor-webhook-door';
-      block.setAttribute(RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, door.state);
+      // D-201 Slice 10AF — `closed` however the server sends it.
+      block.setAttribute(RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, doorClosed(door) ? 'closed' : door.state);
       if (door.state === 'refused') {
-        const lede = appendText(doc, block, 'p', 'A webhook cannot start this Recipe:');
+        // D-201 Slice 10AX (10AS finding 13) — under its owner's closing, both,
+        // as the webhook's card says them: "refused" alone read here where the
+        // card said "you closed it".
+        const lede = appendText(
+          doc,
+          block,
+          'p',
+          door.closed_by_owner === true
+            ? `${ownerClosedDoorClause(door)}. A webhook cannot start this Recipe as it stands:`
+            : 'A webhook cannot start this Recipe:',
+        );
         lede.className = 'recipe-editor-webhook-door-lede';
         const refusal = door.refusal;
         appendText(
@@ -3620,18 +4066,49 @@ export const bootstrapRecipeEditorRoute = (
           'Nothing gets through. Change the step that was refused, then save again.',
         );
         help.className = 'recipe-editor-webhook-door-help';
-      } else if (door.state === 'missing') {
-        const lede = appendText(doc, block, 'p', 'There is no door behind this webhook.');
+      } else if (doorMissing(door) || doorClosed(door)) {
+        // D-201 Slice 10AC (10AA finding 9) — its switch makes or opens it, as
+        // the card's "Open its door" does; a closed door was shown as open.
+        const armedNow = webhookStatus?.armed === true;
+        const missing = doorMissing(door);
+        // D-201 Slice 10AF (10AE finding 15) — not set up, the switch cannot be
+        // pressed, so it is not offered as the remedy.
+        const setUp = webhookStatus?.configured === true;
+        // D-201 Slice 10AX (10AS finding 13) — its owner's closing in the
+        // card's words (`ownerClosedDoorClause`): with no door now, or closed
+        // before one was made, it is not "the door behind this webhook is
+        // closed", which said a door stood where the card said there was none.
+        const lede = appendText(
+          doc,
+          block,
+          'p',
+          missing
+            ? 'There is no door behind this webhook.'
+            : door.closed_by_owner === true
+              ? `${ownerClosedDoorClause(door)}.`
+              : 'The door behind this webhook is closed.',
+        );
         lede.className = 'recipe-editor-webhook-door-lede';
         const help = appendText(
           doc,
           block,
           'p',
-          'Nothing gets through until there is one. Save the Recipe again to make one.',
+          missing
+            ? `Nothing gets through until there is one. ${armedNow ? 'Open its door to make one.' : setUp ? 'Switching it on makes one.' : 'Once its webhook is set up, switching it on makes one.'}`
+            // D-201 Slice 10AX (10AS finding 13) — with no door to open again,
+            // opening it makes one.
+            : door.no_door === true || door.no_door_yet === true
+              ? `Nothing gets through while it is closed. ${armedNow ? 'Open its door to make one' : setUp ? 'Switching it on makes one' : 'Once its webhook is set up, switching it on makes one'}, with what you switched off under Contracts still off.`
+              : `Nothing gets through while it is closed. ${armedNow ? 'Open its door to open it again' : setUp ? 'Switching it on opens it again' : 'Once its webhook is set up, switching it on opens it again'}, with what you switched off under Contracts still off.`,
         );
         help.className = 'recipe-editor-webhook-door-help';
       } else {
-        const ops = door.operation_ids ?? [];
+        // D-201 Slice 10S (10Q finding 12) — what the owner switched off under
+        // Contracts never runs, so it is not listed as let through.
+        // D-201 Slice 10Y (10V finding 20) — only the door's own: a server
+        // before 10Y also lists one carried onto a door without it.
+        const switchedOff = (door.switched_off ?? []).filter((op) => (door.operation_ids ?? []).includes(op));
+        const ops = (door.operation_ids ?? []).filter((op) => !switchedOff.includes(op));
         const hasOps = ops.length > 0;
         // The consent copy must match the ARMED state — "Once armed …" on a
         // live webhook would read as if the deliveries it describes were
@@ -3642,7 +4119,9 @@ export const bootstrapRecipeEditorRoute = (
           block,
           'p',
           !hasOps
-            ? 'This Recipe does nothing that needs asking, so the door gives nothing away.'
+            ? switchedOff.length > 0
+              ? 'Everything it would ask for is switched off under Contracts, so nothing is let through.'
+              : 'This Recipe does nothing that needs asking, so the door gives nothing away.'
             : armedNow
               ? 'Anything let through may:'
               : 'Once this is on, anything let through may:',
@@ -3668,11 +4147,24 @@ export const bootstrapRecipeEditorRoute = (
           );
           help.className = 'recipe-editor-webhook-door-help';
         }
+        if (switchedOff.length > 0) {
+          const offLede = appendText(doc, block, 'p', 'Switched off under Contracts, so these never run:');
+          offLede.className = 'recipe-editor-webhook-door-lede';
+          const offList = doc.createElement('ul');
+          for (const op of switchedOff) {
+            const item = doc.createElement('li');
+            appendText(doc, item, 'code', op);
+            offList.appendChild(item);
+          }
+          block.appendChild(offList);
+        }
         // The capability diff arrives only on the SAVE response that
         // re-minted (status/arm recompute the door without it). Suppress it
         // once the draft is dirty again — "this save" would then describe a
         // state the editor has already moved past.
-        const added = door.added ?? [];
+        // D-201 Slice 10Y (10V finding 20) — one switched off is not listed as
+        // added: it stays off, so the save did not change that.
+        const added = (door.added ?? []).filter((op) => !switchedOff.includes(op));
         const removed = door.removed ?? [];
         if (!state.dirty && (added.length > 0 || removed.length > 0)) {
           const diffLede = appendText(doc, block, 'p', 'Saving changed what this webhook may do:');
@@ -3784,7 +4276,7 @@ export const bootstrapRecipeEditorRoute = (
     if (webhookStatus?.armed) {
       const disarm = makeButton(
         doc,
-        webhookBusy ? 'Switching off…' : 'Switch off webhook',
+        webhookBusy && webhookBusyArming === false ? 'Switching off…' : 'Switch off webhook',
         'secondary',
         'sm',
         () => {
@@ -3793,12 +4285,29 @@ export const bootstrapRecipeEditorRoute = (
       );
       disarm.setAttribute(RECIPE_EDITOR_WEBHOOK_DISARM_ATTR, '');
       disarm.disabled = rpcInFlight;
-      ownWebhookAuthorityButton(disarm);
+      ownWebhookAuthorityButton(disarm, 'disarm');
       actions.appendChild(disarm);
+      // D-201 Slice 10AC (10AA finding 9) — on, with no door open: switching
+      // it on again makes or opens its door, as the card's "Open its door" does.
+      if (doorMissing(door) || doorClosed(door)) {
+        const reopen = makeButton(
+          doc,
+          webhookBusy && webhookBusyArming === true ? 'Opening its door…' : 'Open its door',
+          'primary',
+          'sm',
+          () => {
+            setWebhookArmed(true);
+          },
+        );
+        reopen.setAttribute(RECIPE_EDITOR_WEBHOOK_ARM_ATTR, '');
+        reopen.disabled = rpcInFlight || state.dirty;
+        ownWebhookAuthorityButton(reopen, 'reopen');
+        actions.appendChild(reopen);
+      }
     } else {
       const arm = makeButton(
         doc,
-        webhookBusy ? 'Switching on…' : 'Switch on webhook',
+        webhookBusy && webhookBusyArming === true ? 'Switching on…' : 'Switch on webhook',
         'primary',
         'sm',
         () => {
@@ -3806,16 +4315,19 @@ export const bootstrapRecipeEditorRoute = (
         },
       );
       arm.setAttribute(RECIPE_EDITOR_WEBHOOK_ARM_ATTR, '');
-      // A door in a non-minted state means the server WILL refuse the arm
+      // A refused door means the server WILL refuse the arm
       // (`webhook_not_ready`); disable proactively so the status line explains
-      // instead of a failed round-trip. An absent door (substrate unwired on
-      // a partial harness) keeps the pre-door behavior.
+      // instead of a failed round-trip. D-201 Slice 10AC (10AA finding 9) — a
+      // missing or closed door is made or opened by switching it on (the
+      // owner's ruling of 2026-11-19), as the card's "Open its door" does: it
+      // was disabled, with the owner told to save again. An absent door
+      // (substrate unwired on a partial harness) keeps the pre-door behavior.
       arm.disabled = rpcInFlight
         || state.dirty
         || triggers.length === 0
         || webhookStatus?.configured !== true
-        || (door !== undefined && door.state !== 'minted');
-      ownWebhookAuthorityButton(arm);
+        || door?.state === 'refused';
+      ownWebhookAuthorityButton(arm, 'arm');
       actions.appendChild(arm);
     }
     const status = doc.createElement('span');
@@ -3824,10 +4336,26 @@ export const bootstrapRecipeEditorRoute = (
       ?? (webhookBusy ? 'Changing what the webhook may do…'
         : state.dirty ? 'Save your webhook choices before switching it on.'
           : triggers.length === 0 ? 'Add a webhook trigger before switching it on.'
-          : door?.state === 'missing'
-            ? 'The webhook door is missing. Save the Recipe again to make one.'
+          : doorMissing(door)
+            ? webhookStatus?.armed
+              ? 'Its webhook door is missing, so nothing it lets through runs. Open its door to make one.'
+              : webhookStatus?.configured === true
+                ? 'Its webhook door is missing. Switching it on makes one.'
+                : 'Its webhook door is missing. Once its webhook is set up, switching it on makes one.'
+          // D-201 Slice 10AX (10AS finding 13) — its owner's closing as the
+          // webhook's card says it, and with no door now, opening makes one.
+          : doorClosed(door) && door?.closed_by_owner === true
+            ? ownerClosedDoorStatus(door, webhookStatus?.armed === true, webhookStatus?.configured === true)
+          : doorClosed(door)
+            ? webhookStatus?.armed
+              ? 'Its webhook door is closed, so nothing it lets through runs. Open its door to open it again, with what you switched off under Contracts still off.'
+              : webhookStatus?.configured === true
+                ? 'Its webhook door is closed. Switching it on opens it again, with what you switched off under Contracts still off.'
+                : 'Its webhook door is closed. Once its webhook is set up, switching it on opens it again, with what you switched off under Contracts still off.'
           : door?.state === 'refused'
-            ? 'This Recipe cannot have a webhook door. Change the step that was refused, then save.'
+            ? door.closed_by_owner === true
+              ? `${ownerClosedDoorClause(door)}. This Recipe cannot have a webhook door as it stands. Change the step that was refused, then save.`
+              : 'This Recipe cannot have a webhook door. Change the step that was refused, then save.'
           : webhookStatus?.armed ? 'Anything let through from now on can start this Recipe.'
             : 'No webhook can start this Recipe yet.');
     actions.appendChild(status);
@@ -3910,7 +4438,7 @@ export const bootstrapRecipeEditorRoute = (
         [
           { value: '', label: 'Any template, or none' },
           ...settings.map((name) => {
-            const label = (state.recipe.variables[name] as { label?: unknown } | undefined)?.label;
+            const label = ((state.recipe.variables ?? {})[name] as { label?: unknown } | undefined)?.label;
             return { value: name, label: `The one in the setting “${typeof label === 'string' && label !== '' ? label : name}”` };
           }),
           ...(current.template_variable !== undefined && !settings.includes(current.template_variable)
@@ -4413,7 +4941,7 @@ export const bootstrapRecipeEditorRoute = (
     // Existing connection variables — label + kind editable, name is the key
     // ({{config.<name>}}), renamed by remove + re-add.
     for (const name of connVars) {
-      const cv = state.recipe.variables[name] as {
+      const cv = (state.recipe.variables ?? {})[name] as {
         label?: unknown;
         connection_kind?: unknown;
       };
@@ -4527,7 +5055,7 @@ export const bootstrapRecipeEditorRoute = (
     const addVar = makeButton(doc, 'Add connection input', 'secondary', 'sm', () => {
       const name = draft.name.trim();
       if (name === '') return;
-      if (name in state.recipe.variables) return; // dup any variable — ignore
+      if (name in (state.recipe.variables ?? {})) return; // dup any variable — ignore
       pendingFieldFocus = {
         fieldKey: `conn_var_label:${name}`,
         occurrence: 0,
@@ -4619,7 +5147,7 @@ export const bootstrapRecipeEditorRoute = (
         return;
       }
       starterPicks.set(name, template_id);
-      const prev = state.recipe.variables[name] as unknown as Record<string, unknown>;
+      const prev = (state.recipe.variables ?? {})[name] as unknown as Record<string, unknown>;
       mutateAndRerender({
         ...state.recipe,
         variables: { ...state.recipe.variables, [name]: { ...prev, starter } as unknown as VariableDefault },
@@ -4659,8 +5187,8 @@ export const bootstrapRecipeEditorRoute = (
     hint.className = 'recipe-editor-hint';
 
     for (const name of names) {
-      const hintDef = state.recipe.variables[name] as { label?: unknown };
-      const starter = starterOf(state.recipe.variables[name]);
+      const hintDef = (state.recipe.variables ?? {})[name] as { label?: unknown };
+      const starter = starterOf((state.recipe.variables ?? {})[name]);
       const row = doc.createElement('div');
       row.className = 'recipe-editor-conn-var-row';
       row.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, name);
@@ -4771,7 +5299,7 @@ export const bootstrapRecipeEditorRoute = (
     addWrap.appendChild(nameField);
     const add = makeButton(doc, 'Add template setting', 'secondary', 'sm', () => {
       const name = draft.name.trim();
-      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) || name in state.recipe.variables) return;
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) || name in (state.recipe.variables ?? {})) return;
       pendingFieldFocus = {
         fieldKey: `mail_template_label:${name}`,
         occurrence: 0,
@@ -4796,6 +5324,233 @@ export const bootstrapRecipeEditorRoute = (
   // ────────────────────────────────────────────────────────────
   // Status line (sticky topbar) + issues panel (top of content)
   // ────────────────────────────────────────────────────────────
+
+  /** D-201 Slice 10I — the save's question, next to the Save it asks for. */
+  const renderSaveQuestion = (topbar: HTMLElement): void => {
+    saveQuestionBlock = undefined;
+    const question = saveQuestion;
+    if (question === null) return;
+    const block = doc.createElement('div');
+    block.className = 'recipe-editor-save-question';
+    block.setAttribute(RECIPE_EDITOR_SAVE_QUESTION_ATTR, question.checking ? 'checking' : 'asking');
+    block.setAttribute('role', 'group');
+    // The block takes the focus, not an answer: it is read whole, and a stray
+    // Enter cannot say yes to what it warns about.
+    block.setAttribute('tabindex', '-1');
+    const ledeId = `recipe-editor-save-question-${++saveQuestionIds}`;
+    // D-201 Slice 10S (10Q finding 13) — switched off since (another tab): the
+    // lede no longer says it is on above the line that says it is not.
+    // D-201 Slice 10Y (10V finding 21) — above a draft that cannot keep it on
+    // too: a server from 10Y says so on a refusal.
+    const switchedOffSince = !question.checking
+      && question.error === null
+      && question.door?.armed === false;
+    const lede = appendText(
+      doc,
+      block,
+      'p',
+      switchedOffSince
+        ? 'Its webhook was switched off since you opened this.'
+        : 'Its webhook is on. Keep it on for the version you save?',
+    );
+    lede.className = 'recipe-editor-save-question-lede';
+    lede.setAttribute('id', ledeId);
+    block.setAttribute('aria-labelledby', ledeId);
+    const warningId = `${ledeId}-warning`;
+    const listId = `${ledeId}-list`;
+    const consentId = `${ledeId}-consent`;
+    let described = warningId;
+    let warned = false;
+    if (question.checking) {
+      appendText(doc, block, 'p', 'Checking what this version could do…').setAttribute('id', warningId);
+    } else if (question.error !== null) {
+      const text = appendText(
+        doc,
+        block,
+        'p',
+        `Recued could not check what this version could do (${question.error}), so it cannot keep it on with this save. `
+          + 'Save and switch it off, then switch it on again to see what it may do.',
+      );
+      text.setAttribute('id', warningId);
+      warned = true;
+    } else if (switchedOffSince) {
+      // D-201 Slice 10M — switched off since (another tab): nothing to keep on,
+      // whatever this version could do.
+      appendText(doc, block, 'p', 'Saving now leaves it off.').setAttribute('id', warningId);
+      warned = true;
+    } else if (question.door?.state === 'refused') {
+      const reason = question.door.refusal?.reason;
+      const detail = question.door.refusal?.detail ?? 'it cannot have a webhook door';
+      const text = appendText(
+        doc,
+        block,
+        'p',
+        // D-201 Slice 10AC (10AA finding 16) — the remedy that keeps what is
+        // waiting: open the door, then save. Saving switched off closed that.
+        reason === 'door_revoked'
+          ? 'Its door is closed, so this save cannot keep it on. Open its door first, from its webhook in Settings → Connections → Webhooks, then save again: what is waiting for it is kept. Saving with it switched off closes that.'
+          : reason === 'not_ready'
+            ? `Its webhook cannot stay on: ${detail}.`
+            : `This version cannot keep it on: ${detail}.`,
+      );
+      text.setAttribute('id', warningId);
+      warned = true;
+    } else if (question.door?.state === 'derivable') {
+      // D-201 Slice 10M (10L finding 1) — everything the door gains, as the
+      // mint names it: operations, connections, steps, and more of each message.
+      const added = question.door.added ?? [];
+      const prefixed = (prefix: string) => added
+        .filter((entry) => entry.startsWith(prefix))
+        .map((entry) => entry.slice(prefix.length));
+      const connections = prefixed('connection:');
+      const ingredients = prefixed('ingredient:');
+      // D-201 Slice 10S (10Q finding 13) — one the owner switched off stays off
+      // (the mint keeps it so), so it is listed there, never also as new.
+      const stayingOff = new Set(question.door.kept_off ?? []);
+      const operations = added.filter((entry) =>
+        !entry.startsWith('connection:') && !entry.startsWith('ingredient:') && !stayingOff.has(entry));
+      const widened = question.door.widened ?? [];
+      if (operations.length + connections.length + ingredients.length + widened.length > 0) {
+        const intro = appendText(
+          doc,
+          block,
+          'p',
+          'This version can also do these when a message comes in, which the saved one cannot:',
+        );
+        intro.setAttribute('id', warningId);
+        const list = doc.createElement('ul');
+        list.setAttribute('id', listId);
+        const listItem = (before: string, name: string, after = ''): void => {
+          const item = doc.createElement('li');
+          if (before.length > 0) appendText(doc, item, 'span', before);
+          appendText(doc, item, 'code', name);
+          if (after.length > 0) appendText(doc, item, 'span', after);
+          list.appendChild(item);
+        };
+        for (const operation of operations) listItem('', operation);
+        for (const connection of connections) listItem('use the connection ', connection);
+        for (const ingredient of ingredients) listItem('run ', ingredient);
+        for (const entry of widened) {
+          const cut = entry.lastIndexOf(':');
+          const slot = entry.slice(0, cut);
+          if (entry.slice(cut + 1) === 'delivery_payload_allowed') {
+            listItem('trust what ', slot, ' messages say without checking with the service');
+          } else {
+            listItem('read what ', slot, ' messages say');
+          }
+        }
+        block.appendChild(list);
+        appendText(doc, block, 'p', 'Keeping it on says yes to them. They run without asking you each time.')
+          .setAttribute('id', consentId);
+        described = `${warningId} ${listId} ${consentId}`;
+        warned = true;
+      } else {
+        appendText(doc, block, 'p', 'This version can do nothing a message could start that the saved one cannot.')
+          .setAttribute('id', warningId);
+      }
+      // The owner's call: what they switched off under Contracts stays off.
+      // D-201 Slice 10AC (10AA finding 22) — only what this version's door has:
+      // a server before 10Y sends a switch-off kept for an operation it lacks.
+      const doorOperations = question.door.operation_ids;
+      const keptOff = (question.door.kept_off ?? [])
+        .filter((entry) => doorOperations === undefined || doorOperations.includes(entry));
+      if (keptOff.length > 0) {
+        const offId = `${ledeId}-kept-off`;
+        const stays = appendText(doc, block, 'p', 'These stay off, as you switched them off under Contracts:');
+        stays.setAttribute('id', offId);
+        const list = doc.createElement('ul');
+        for (const entry of keptOff) {
+          const item = doc.createElement('li');
+          appendText(doc, item, 'code', entry);
+          list.appendChild(item);
+        }
+        block.appendChild(list);
+        described = `${described} ${offId}`;
+      }
+    }
+    // D-201 Slice 10M (10L finding 7) — the history is kept only when the
+    // setup continues; the question says which.
+    const history = question.door?.state === 'derivable' ? question.door.history : undefined;
+    // D-201 Slice 10S (10Q finding 13) — "keeping it on keeps them" only where
+    // keeping it on is an answer; switched off since, there is nothing to close.
+    const keepable = !question.checking
+      && question.error === null
+      && question.door?.state !== 'refused'
+      && !switchedOffSince;
+    // D-201 Slice 10Y (10V finding 6) — per trigger: a keep-on save keeps each
+    // one that continues, so one that does not closes only its own messages.
+    const historyTriggers = question.door?.state === 'derivable' ? question.door.history_triggers : undefined;
+    const closing = (historyTriggers ?? []).filter((trigger) => trigger.history === 'closed');
+    const keeping = (historyTriggers ?? []).filter((trigger) => trigger.history === 'kept');
+    const triggerList = (triggers: typeof closing): HTMLElement => {
+      const list = doc.createElement('ul');
+      for (const trigger of triggers) {
+        const item = doc.createElement('li');
+        appendText(doc, item, 'code', trigger.event_type);
+        appendText(doc, item, 'span', ' on ');
+        appendText(doc, item, 'code', trigger.slot);
+        list.appendChild(item);
+      }
+      return list;
+    };
+    if (!switchedOffSince) {
+      const partlyKept = keepable && history === 'closed' && closing.length > 0 && keeping.length > 0;
+      const help = appendText(
+        doc,
+        block,
+        'p',
+        !keepable
+          ? 'Switching it off closes the messages that did not reach it and cancels the ones waiting.'
+          : partlyKept
+            ? 'This version changes how these messages reach it, so the ones that did not reach it close and the ones waiting are cancelled, whichever you choose:'
+            : history === 'closed' && historyTriggers === undefined
+              // A server before 10Y says only that one closes, not which.
+              ? 'This version changes how messages reach it, so those it takes differently close if they did not reach it and their waiting ones are cancelled, whichever you choose. Keeping it on keeps the rest for this version.'
+              : history === 'closed'
+                ? 'This version changes how messages reach it, so the messages that did not reach it close and the ones waiting are cancelled, whichever you choose.'
+                : 'Switching it off closes the messages that did not reach it and cancels the ones waiting. Keeping it on keeps them for this version.',
+      );
+      help.className = 'recipe-editor-save-question-help';
+      // D-201 Slice 10AC (10AA finding 23) — what the history does is part of
+      // the question, so it is part of its description: it was left out, the
+      // per-trigger lists with it.
+      help.setAttribute('id', `${ledeId}-history`);
+      described = `${described} ${ledeId}-history`;
+      if (partlyKept) {
+        const closingList = triggerList(closing);
+        closingList.setAttribute('id', `${ledeId}-closing`);
+        block.appendChild(closingList);
+        const keeps = appendText(doc, block, 'p', 'Keeping it on keeps these for this version. Switching it off closes them too:');
+        keeps.className = 'recipe-editor-save-question-help';
+        keeps.setAttribute('id', `${ledeId}-keeps`);
+        const keepingList = triggerList(keeping);
+        keepingList.setAttribute('id', `${ledeId}-keeping`);
+        block.appendChild(keepingList);
+        described = `${described} ${ledeId}-closing ${ledeId}-keeps ${ledeId}-keeping`;
+      }
+    }
+    block.setAttribute('aria-describedby', described);
+    const actions = doc.createElement('div');
+    actions.className = 'recipe-editor-save-question-actions';
+    const keep = makeButton(doc, 'Save and keep it on', 'primary', 'sm', () => { answerSaveQuestion(true); });
+    keep.setAttribute(RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'keep-on');
+    keep.disabled = question.checking
+      || question.error !== null
+      || question.door?.state === 'refused'
+      || question.door?.armed === false;
+    if (warned) keep.setAttribute('aria-describedby', described);
+    const off = makeButton(doc, 'Save and switch it off', 'secondary', 'sm', () => { answerSaveQuestion(false); });
+    off.setAttribute(RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'switch-off');
+    off.disabled = question.checking;
+    const cancel = makeButton(doc, 'Cancel', 'secondary', 'sm', () => { answerSaveQuestion(null); });
+    cancel.setAttribute(RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'cancel');
+    actions.appendChild(keep);
+    actions.appendChild(off);
+    actions.appendChild(cancel);
+    block.appendChild(actions);
+    saveQuestionBlock = block;
+    topbar.appendChild(block);
+  };
 
   /** The one-line outcome readout. Lives INSIDE the sticky topbar so the
    *  result of Validate / Save appears next to the buttons that ran them —
@@ -4857,6 +5612,10 @@ export const bootstrapRecipeEditorRoute = (
   // ────────────────────────────────────────────────────────────
   const rerender = (): void => {
     if (disposed) return;
+    // The save's question is about the draft it was asked for: any change to
+    // it (a structural edit, undo or redo, a load) closes it here, before the
+    // focus is read, so a focus inside it goes back to Save.
+    if (saveQuestion !== null && saveQuestion.epoch !== state.editEpoch) saveQuestion = null;
     const activeBeforeRender = (
       doc.activeElement as HTMLElement | null | undefined
     ) ?? null;
@@ -4868,14 +5627,34 @@ export const bootstrapRecipeEditorRoute = (
     }
     const restoreTestFocus = (testRunBtn !== undefined && activeBeforeRender === testRunBtn)
       || (testCancelBtn !== undefined && activeBeforeRender === testCancelBtn);
-    if (activeBeforeRender === validateBtn) {
+    const inSaveQuestion = saveQuestionBlock !== undefined
+      && activeBeforeRender !== null
+      && saveQuestionBlock.contains?.(activeBeforeRender) === true;
+    const questionClaims = saveQuestionClaimsFocus;
+    saveQuestionClaimsFocus = false;
+    if (pendingActionFocus === 'save-question'
+      && saveQuestion !== null
+      && (questionClaims
+        || activeBeforeRender === null
+        || activeBeforeRender === doc.body
+        || activeBeforeRender === saveBtn
+        || inSaveQuestion)) {
+      // A question just asked takes the focus; one just checked takes it from
+      // Save (a click focuses Save in a browser) or the question, never from
+      // a field the owner went to while it was checking.
+      if (questionClaims) restoreActiveField = null;
+    } else if (activeBeforeRender === validateBtn) {
       pendingActionFocus = 'validate';
     } else if (activeBeforeRender === saveBtn) {
       pendingActionFocus = 'save';
     } else if (activeBeforeRender === collapseAllBtn) {
       pendingActionFocus = 'collapse-all';
-    } else if (activeBeforeRender === webhookAuthorityBtn) {
+    } else if ([...webhookAuthorityBtns.values()].includes(activeBeforeRender as HTMLButtonElement)) {
       pendingActionFocus = 'webhook-authority';
+      pendingWebhookAuthority = [...webhookAuthorityBtns.entries()]
+        .find(([, button]) => button === activeBeforeRender)?.[0] ?? null;
+    } else if (inSaveQuestion) {
+      pendingActionFocus = saveQuestion === null ? 'save' : 'save-question';
     } else if (
       activeBeforeRender !== null
       && activeBeforeRender !== doc.body
@@ -4892,6 +5671,7 @@ export const bootstrapRecipeEditorRoute = (
     renderedTriggerFocusTargets = new Map();
     triggerAddKindSelect = undefined;
     webhookAuthorityBtn = undefined;
+    webhookAuthorityBtns.clear();
 
     // Slim sticky header.
     const topbar = doc.createElement('section');
@@ -4961,17 +5741,26 @@ export const bootstrapRecipeEditorRoute = (
     redoBtn.setAttribute('title', 'Redo (⌘⇧Z or Ctrl+Shift+Z)');
     redoBtn.setAttribute('data-recued-recipe-redo', ''); actions.appendChild(redoBtn);
 
+    if (options.tryCaller) {
+      const tryBtn = makeButton(doc, trialRunning ? 'Trying…' : 'Try it', 'secondary', 'sm', runTrial);
+      tryBtn.setAttribute(RECIPE_EDITOR_TRY_ATTR, '');
+      tryBtn.setAttribute('title', 'Run this recipe once in your browser, asking before each change');
+      tryBtn.setAttribute('aria-busy', String(trialRunning)); tryBtn.setAttribute('aria-disabled', String(trialRunning));
+      actions.appendChild(tryBtn);
+    }
     validateBtn = makeButton(doc, 'Validate', 'secondary', 'sm', runValidate);
     validateBtn.setAttribute(RECIPE_EDITOR_VALIDATE_ATTR, '');
     validateBtn.setAttribute('title', 'Check this Recipe without saving');
     actions.appendChild(validateBtn);
 
-    saveBtn = makeButton(doc, saveLabel(), 'primary', 'sm', runSave);
+    // Wrapped: a click's event must never reach runSave's answer.
+    saveBtn = makeButton(doc, saveLabel(), 'primary', 'sm', () => { runSave(); });
     saveBtn.setAttribute(RECIPE_EDITOR_SAVE_ATTR, '');
     saveBtn.setAttribute('title', 'Save Recipe (⌘S or Ctrl+S)');
     actions.appendChild(saveBtn);
 
     topbar.appendChild(actions);
+    renderSaveQuestion(topbar);
     renderStatusLine(topbar);
     content.appendChild(topbar);
     topbarEl = topbar;
@@ -4994,10 +5783,10 @@ export const bootstrapRecipeEditorRoute = (
           for (const key of Object.keys(fieldDrafts)) {
             const [owner, field] = JSON.parse(key) as [string, string];
             if (owner) continue;
-            if ((field.startsWith('variables.') && !Object.hasOwn(recipe.variables, field.slice(10)))
+            if ((field.startsWith('variables.') && !Object.hasOwn(recipe.variables ?? {}, field.slice(10)))
               || (field.startsWith('auto_run.') && !recipe.auto_run)) delete fieldDrafts[key];
           }
-          const added = Object.keys(recipe.variables).find(key => !Object.hasOwn(state.recipe.variables, key));
+          const added = Object.keys(recipe.variables ?? {}).find(key => !Object.hasOwn(state.recipe.variables ?? {}, key));
           const intervalChanged = Boolean(state.recipe.auto_run) !== Boolean(recipe.auto_run);
           pendingFieldFocus = { fieldKey: added ? `variables.${added}` : intervalChanged
             ? recipe.auto_run ? 'auto_run.interval_ms' : 'auto_run_enabled' : 'variable_new_name',
@@ -5021,6 +5810,7 @@ export const bootstrapRecipeEditorRoute = (
     renderBindingsSection(body);
     renderMailTemplatesSection(body);
     body.appendChild(renderTestPanel());
+    if (options.tryCaller) body.appendChild(renderTrialPanel());
     if (regressionPanel) body.appendChild(regressionPanel.element);
     if (capturePanel) body.appendChild(capturePanel.element);
     if (releasePanel) body.appendChild(releasePanel.element);
@@ -5047,16 +5837,21 @@ export const bootstrapRecipeEditorRoute = (
       }
     }
 
-    const ownedAction = pendingActionFocus === 'validate'
+    const ownedAction: HTMLElement | undefined = pendingActionFocus === 'validate'
       ? validateBtn
       : pendingActionFocus === 'save'
         ? saveBtn
         : pendingActionFocus === 'collapse-all'
           ? collapseAllBtn
           : pendingActionFocus === 'webhook-authority'
-            ? webhookAuthorityBtn
-            : undefined;
-    if (ownedAction !== undefined && !ownedAction.disabled) {
+            // The button pressed, else the one drawn in its place (after
+            // "Switch off webhook", "Switch on webhook").
+            ? (pendingWebhookAuthority === null ? undefined : webhookAuthorityBtns.get(pendingWebhookAuthority))
+              ?? webhookAuthorityBtn
+            : pendingActionFocus === 'save-question'
+              ? saveQuestionBlock
+              : undefined;
+    if (ownedAction !== undefined && (ownedAction as { disabled?: boolean }).disabled !== true) {
       pendingActionFocus = null;
       ownedAction.focus({ preventScroll: true });
     }
@@ -5161,16 +5956,25 @@ export const bootstrapRecipeEditorRoute = (
       return state.recipe;
     },
     hasUnsavedChanges: () => state.dirty,
+    // D-201 Slice 10BD (10AY finding 13) — adopted, as every other road into the
+    // editor is: loaded as written, a draft without `variables` saved none, and
+    // draft recovery, which needs them, dropped the edits made after it.
     loadRecipe(recipe) {
+      const adopted = adoptRecipe(recipe)!;
       for (const key of Object.keys(fieldDrafts)) delete fieldDrafts[key];
-      state.recipe = structuredClone(recipe); state.editEpoch++; state.dirty = false;
-      savedRecipe = structuredClone(recipe); history.record({ recipe: state.recipe,fields: {} }); history.breakGroup();
+      state.recipe = structuredClone(adopted); state.editEpoch++; state.dirty = false;
+      savedRecipe = structuredClone(adopted); history.record({ recipe: state.recipe,fields: {} }); history.breakGroup();
       persistDraft(); rerender();
     },
     draftSaved(recipe,unchanged) {
-      if (unchanged && JSON.stringify(state.recipe) === JSON.stringify(recipe)) {
-        savedRecipe = structuredClone(recipe); state.dirty = false; state.saveStage = 'saved';
-        recoveredDraft = null; history.breakGroup(); persistDraft();
+      // D-201 Slice 10BD (10AY finding 12) — as the editor holds it.
+      if (unchanged && sameAdoptedRecipe(state.recipe, recipe)) {
+        savedRecipe = structuredClone(adoptRecipe(recipe)!); state.dirty = false; state.saveStage = 'saved';
+        // D-201 Slice 10BL (10BF finding 18) — a recovery copy the owner has not
+        // restored or discarded stays offered, and stored: an activation, or a
+        // draft saved with no edits, deleted it unasked.
+        history.breakGroup();
+        if (recoveredDraft === null) persistDraft();
       }
       state.status = 'Release draft saved. The active recipe changes only after testing and activation.';
       rerender();
@@ -5284,6 +6088,7 @@ export const bootstrapRecipeEditorRoute = (
       if (disposed) return;
       disposed = true;
       testGeneration += 1; testAbort?.abort();
+      stopFollowingTrial(); trialSettingsForm?.destroy();
       regressionPanel?.dispose();
       capturePanel?.dispose();
       releasePanel?.dispose();

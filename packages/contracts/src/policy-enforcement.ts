@@ -416,6 +416,8 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'kitchen-draft-list',
   'kitchen-draft-get',
   'kitchen-draft-update',
+  // D-402 slice A5 — the draft is Recued's own, made from the app's job: no collection either.
+  'kitchen-draft-from-job',
   'peer-ask',
   // D-345 — the server's own fetch of a public web address reads and writes nothing stored: the
   // address is the op's argument, and the answer is the site's.

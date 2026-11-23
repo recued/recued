@@ -49,6 +49,7 @@ import {
 } from './webhook-json-object-decoder.js';
 import {
   createWebhookJsonSingleMemberEventNormalizer,
+  jsonSingleMemberEventTypeParserPreset,
   type WebhookJsonSingleMemberEventNormalizerPreset,
 } from './webhook-json-single-member-event-normalizer.js';
 import {
@@ -113,6 +114,7 @@ import {
   webhookPrefixedAsciiCredentialProfilePreset,
   webhookSegmentedAsciiCredentialProfilePreset,
 } from './webhook-shared-profile-parser-presets.js';
+import { assertWebhookEventTypeParserMatchesProfile } from './webhook-event-type-grammar-parity.js';
 
 export interface WebhookStaticHeaderTokenDeliveryProfilePreset {
   readonly profile_id: WebhookProfileId;
@@ -145,6 +147,14 @@ const staticHeaderTokenPreset = (
   const event_normalizer = eventNormalizerInput === null
     ? null
     : createWebhookJsonSingleMemberEventNormalizer(eventNormalizerInput).preset;
+  // D-201 Slice 10C — the runtime admits exactly the profile's grammar.
+  if (event_normalizer !== null) {
+    assertWebhookEventTypeParserMatchesProfile(
+      profile_id,
+      jsonSingleMemberEventTypeParserPreset(event_normalizer),
+      'webhook static header-token event normalizer',
+    );
+  }
   const delivery_deduplicator = deliveryDeduplicatorInput === null
     ? null
     : createWebhookNormalizedDeliveryDeduplicator(
@@ -245,7 +255,7 @@ const STATIC_HEADER_TOKEN_PRESET_LIST = [
     event_id_field: 'update_id',
     event_id_grammar: 'positive_safe_integer.v1',
     event_id_max_value: 0x7fffffff,
-    event_type_grammar: 'ascii_identifier.v1',
+    event_type_grammar: 'lowercase_json_member_event_type.v1',
     event_type_max_bytes: 128,
   }, {
     kind: 'normalized_required_single_id_sha256.v1',
@@ -845,6 +855,13 @@ const timestampedPreset = (
   const event_normalizer = eventNormalizerInput === null
     ? null
     : createWebhookJsonEventNormalizer(eventNormalizerInput).preset;
+  // D-201 Slice 10C — the runtime admits exactly the profile's grammar.
+  if (event_normalizer !== null) {
+    assertWebhookEventTypeParserMatchesProfile(profile_id, {
+      kind: event_normalizer.event_type_grammar,
+      max_bytes: event_normalizer.event_type_max_bytes,
+    }, 'webhook timestamped event normalizer');
+  }
   const environment_admission = environmentAdmissionInput === null
     ? null
     : createWebhookJsonEnvironmentAdmission(environmentAdmissionInput).preset;

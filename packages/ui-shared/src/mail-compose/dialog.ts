@@ -114,8 +114,10 @@ export interface MailComposeDialogProps {
     mailboxStatus?: string;
   };
   discardConfirm?: boolean;
+  discardError?: string;
   copyRecipientsOpen?: boolean;
   replySubject?: string;
+  recovery?: { message: string; locked: boolean; approvalsHref: string; historyHref: string };
 }
 
 const dialogTitle = (state: MailComposeDialogState): string =>
@@ -176,16 +178,22 @@ export const renderMailComposeDialog = (
     && props.aiAssist.busyAction !== null;
   const attachmentBusy = props.attachmentBusy === true;
   const submitDisabled = props.state.submitting === true
+    || props.discardConfirm === true
+    || props.recovery?.locked === true
     || cannotSubmit
     || assistBusy
     || attachmentBusy;
   const submittingAttr = submitDisabled ? ' disabled' : '';
   const draftDisabled = props.state.submitting === true
+    || props.discardConfirm === true
+    || props.recovery?.locked === true
     || cannotDraft
     || assistBusy
     || attachmentBusy;
   const draftAttr = draftDisabled ? ' disabled' : '';
   const mailboxDisabled = props.state.submitting === true
+    || props.discardConfirm === true
+    || props.recovery?.locked === true
     || cannotSaveToMailbox
     || assistBusy
     || attachmentBusy;
@@ -231,10 +239,12 @@ export const renderMailComposeDialog = (
             aria-label="Close"${closeLockAttr}
           >${renderActionIcon('close')}</button>
         </header>
-        ${props.discardConfirm ? `<div class="mail-compose-discard" role="alert"><p>Discard this unsaved draft?</p><button type="button" data-action="keep-mail-compose">Keep editing</button><button type="button" data-action="discard-mail-compose">Discard draft</button></div>` : ''}
+        ${props.discardConfirm ? `<div class="mail-compose-discard" role="alertdialog" aria-modal="true" aria-labelledby="mail-compose-leave-title"><p id="mail-compose-leave-title">${props.recovery ? 'Keep this email for later?' : 'Discard this unsaved draft?'}</p>${props.recovery ? '<p>Keep this draft in this browser tab for up to 7 days, discard it, or continue editing.</p>' : ''}${props.discardError ? `<p role="alert">${e(props.discardError)}</p>` : ''}<div class="mail-compose-discard-actions"><button type="button" data-action="keep-mail-compose">Keep editing</button>${props.recovery ? `<button type="button" data-action="keep-mail-compose-for-later"${props.state.submitting || assistBusy || attachmentBusy ? ' disabled' : ''}>Keep draft for later</button>` : ''}<button type="button" data-action="discard-mail-compose">Discard draft</button></div></div>` : ''}
         <div class="mail-compose-body">
           <form class="mail-compose-form" data-form-kind="mail_message">
-            <fieldset class="mail-compose-fields" aria-label="Message details"${props.state.submitting ? ' disabled' : ''}>
+            ${props.recovery ? `<div class="mail-compose-recovery"><p role="status" data-mail-compose-recovery-status>${e(props.recovery.message)}</p>
+              ${props.recovery.locked ? `<p><a href="${e(props.recovery.approvalsHref)}">Open Approvals</a> · <a href="${e(props.recovery.historyHref)}">Recipe run history</a></p>` : ''}</div>` : ''}
+            <fieldset class="mail-compose-fields" aria-label="Message details"${props.state.submitting || props.recovery?.locked || props.discardConfirm ? ' disabled' : ''}>
             ${senderPicker}
             ${props.replySubject ? `<p class="mail-compose-reply-context">Replying to <strong>${e(props.replySubject)}</strong></p>` : ''}
             ${fields('to')}
@@ -247,7 +257,7 @@ export const renderMailComposeDialog = (
             ${renderMailComposeAttachmentPicker({
               attachment_ids: props.state.values.attachments,
               known: props.attachments ?? [],
-              submitting: props.state.submitting || assistBusy || attachmentBusy,
+              submitting: props.state.submitting || props.recovery?.locked || assistBusy || attachmentBusy,
             })}
             ${submitError}
             ${sendUnavailable}
@@ -288,7 +298,7 @@ export const renderMailComposeDialog = (
             </fieldset>
           </form>
           ${renderAiAssistSidebar({
-            submitting: props.state.submitting || attachmentBusy,
+            submitting: props.state.submitting || props.recovery?.locked || attachmentBusy || props.discardConfirm === true,
             mode: props.state.mode,
             ...props.aiAssist,
           })}

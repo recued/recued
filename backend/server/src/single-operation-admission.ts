@@ -40,6 +40,10 @@ export interface SingleOperationAdmissionDeps {
   recipeCoversOp(opId: string | undefined): boolean;
   /** Dispatch-only audit projection. Preparation supplies no activity sink. */
   onRecipeCoverage?(opId: string | undefined): void;
+  /** D-402 slice C — a trial run of a draft: every write asks, as an owner's "always ask" action
+   *  does, which no ceiling relaxes and nothing stands in for. A change in a web page is asked about
+   *  at its step instead (`bridges/browser-trials.ts`), where the page can be seen. */
+  trial?: true;
 }
 
 export const createSingleOperationAdmission = (deps: SingleOperationAdmissionDeps) => (
@@ -50,8 +54,12 @@ export const createSingleOperationAdmission = (deps: SingleOperationAdmissionDep
   const opId = operationId !== undefined
     ? manifest.operations?.[operationId]?.operation_id ?? operationId : kernelOpForBackingSlug(slug);
   const scope = deriveDispatchScope({ kind: manifest.kind, slug }, input);
-  const override = !isCatalogForm(manifest)
+  const owned = !isCatalogForm(manifest)
     ? readOwnerOperationOverride({ scan: deps.contractScan, ingredient_id: slug, operation_id: slug }) : undefined;
+  // A browser sequence's changes ask at their steps, on the live page; a single click, write or page
+  // open is held here and described before it, as any held browser action is.
+  const override = deps.trial === true && !isCatalogForm(manifest) && manifest.risk_tier !== undefined
+    && manifest.risk_tier !== 'read' && slug !== 'dom-act' ? { ...owned, approval: 'always' as const } : owned;
   const decision = evaluatePreflightAdmission({
     source: deps.source, tool: { slug, kind: manifest.kind, risk_tier: manifest.risk_tier },
     ...(executionSourceHasContract(deps.source) && deps.contract_snapshot !== undefined

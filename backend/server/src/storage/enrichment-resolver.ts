@@ -246,9 +246,9 @@ export const createEnrichmentResolver = (store: EnrichmentStore): EnrichmentReso
  *  triggers. */
 export interface EnrichmentReaderPolicy {
   gate_mcp_private?: boolean;
-  /** D-187 AMENDMENT — the enclosing recipe's bound-contract read-grant checker,
-   *  resolved ONCE at the execute boundary (via the overlay) when the recipe is
-   *  MCP-triggered. The reader short-circuits a topic the contract isn't read-granted
+  /** D-187 AMENDMENT — the enclosing recipe's bound-contract read-grant checker
+   *  for this read. MCP-triggered recipe execution resolves it through the live
+   *  overlay at each read. The reader short-circuits a topic the contract isn't read-granted
    *  (the unified `enrichment.<topic>` grant — folding the former scope-fence +
    *  `mcp_exposed` visibility). Optional; absent ⇒ {@link AUTHOR_DEFAULT_READ_GRANT_CHECKER}
    *  (every topic at its registry author default). */

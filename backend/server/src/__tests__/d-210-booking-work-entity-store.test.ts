@@ -380,7 +380,8 @@ describe('booking storage round-trip', () => {
       .toThrow(WorkEntityValidationError);
     expect(() => store.listBookings({ search: 'x'.repeat(201) }))
       .toThrow(WorkEntityValidationError);
-    expect(() => store.listNotes({ search: 'unsupported-search' }))
+    // Notes support text search; booking lifecycle filters remain booking-only.
+    expect(() => store.listNotes({ booking_lifecycle_states: ['confirmed'] }))
       .toThrow(WorkEntityValidationError);
   });
 

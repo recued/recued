@@ -17,6 +17,10 @@ import {
   estimateConservativeMessageTokens,
   estimateConservativeMessagesTokens,
   LLMError,
+  answeredByAnotherModel,
+  failedCallResult,
+  isModelMissingRejection,
+  stoppedAtOutputLimit,
   normalizeLLMSlot,
   completeWithFallbacks,
   type AdapterKey,
@@ -318,7 +322,7 @@ export interface LlmGatewayDirectCompletionProviderDeps {
   readonly adapters: AdapterRegistry;
   readonly quota?: Pick<
     QuotaTracker,
-    'registerRequest' | 'recordUsage' | 'advanceCursor'
+    'registerRequest' | 'recordUsage' | 'advanceCursor' | 'recordCallOutcome'
   >;
   readonly timeout_ms?: number | null;
 }
@@ -986,15 +990,28 @@ export const createLlmGatewayDirectCompletionProvider = (
     // shared path would auto-recover and the direct path would 400 on the same
     // slot — one door working and its neighbour not, for no reason the owner
     // could see. See `@recued/llm`'s `system-role-fallback.ts`.
-    const result = await completeWithFallbacks(
-      adapter,
-      input.route.slot,
-      [
-        { role: input.system_role, content: input.system_prompt_direct },
-        ...input.messages,
-      ],
-      options,
-    );
+    // This path calls the provider itself, so it keeps the source's last call as the executor does
+    // for every other (`SourceCallOutcome`), and counts a reply that ran out of room before answering.
+    let result: Awaited<ReturnType<typeof completeWithFallbacks>>;
+    try {
+      result = await completeWithFallbacks(
+        adapter,
+        input.route.slot,
+        [
+          { role: input.system_role, content: input.system_prompt_direct },
+          ...input.messages,
+        ],
+        options,
+      );
+    } catch (e) {
+      const spent = stoppedAtOutputLimit(e) ? (e.details?.usage as { total_tokens?: number } | undefined)?.total_tokens : undefined;
+      if (spent !== undefined) deps.quota?.recordUsage(sourceId, spent, input.now);
+      deps.quota?.recordCallOutcome?.(sourceId, { at: Date.now(), model: options.model, result: failedCallResult(e) });
+      throw e;
+    }
+    const answered = result.usage.answered_model;
+    deps.quota?.recordCallOutcome?.(sourceId, { at: Date.now(), model: options.model, result: 'answered',
+      ...(answered !== undefined && answeredByAnotherModel(options.model, answered) ? { answered_by: answered } : {}) });
     deps.quota?.recordUsage(sourceId, result.usage.total_tokens, input.now);
     if (input.route.kind === 'pool') deps.quota?.advanceCursor(POOL_CURSOR_KEY);
     return {
@@ -1530,6 +1547,21 @@ const cooldownFailure = (retry_at: number | undefined, nowMs: number): Completio
     message: `The AI model this service uses is paused after a provider failure.${tryAgainIn(seconds) || ' Try again shortly.'}` };
 };
 
+/** The provider does not have the model this service runs on (retired, renamed or mistyped): only
+ *  the owner can fix that, by choosing another, so it is a 503 that names no model and no Settings,
+ *  and carries none of the provider's own text. */
+const MODEL_UNAVAILABLE_FAILURE: CompletionFailure = {
+  status: 503, code: 'llm_gateway_model_unavailable', type: 'server_error',
+  message: 'The AI model this service uses is not available from its provider.',
+};
+
+/** The model spent its whole output allowance before it wrote an answer (a thinking model can, on
+ *  thinking alone). The owner's setting fixes it, not a retry, so no wait is promised. */
+const OUTPUT_LIMIT_FAILURE: CompletionFailure = {
+  status: 502, code: 'llm_gateway_model_output_limit', type: 'server_error',
+  message: 'The AI model used its whole output allowance before it answered.',
+};
+
 /** D-337 follow-up 33 — a turn that produced no answer, said as its cause.
  *  The app's user reads this, not the owner, so it names no Settings.
  *  Before, every cause was the same 502. */
@@ -1544,6 +1576,10 @@ const describeUnansweredTurn = (e: ChatTurnUnansweredError, nowMs: number): Comp
     case 'invalid_output':
       return { status: 502, code: 'llm_gateway_model_output_invalid', type: 'server_error',
         message: 'The AI model returned an answer that could not be read.' };
+    case 'model_unavailable':
+      return MODEL_UNAVAILABLE_FAILURE;
+    case 'output_limit':
+      return OUTPUT_LIMIT_FAILURE;
     case 'provider_failure':
       return { status: 502, code: 'llm_gateway_provider_failed', type: 'server_error', ...retryAfterHeader(seconds),
         message: `The AI provider failed before answering.${tryAgainIn(seconds)}` };
@@ -1575,6 +1611,11 @@ const describeCompletionFailure = (
   if (e instanceof LlmGatewayLiveAuthorityError) {
     return { status: e.status, code: e.public_code, message: e.message, type: e.type };
   }
+  // The plain completion path calls the provider directly, so its error is the provider's own:
+  // read by the same rule the executor and Test connection use.
+  if (isModelMissingRejection(e)
+    || (e instanceof LLMError && e.details?.model_unavailable !== undefined)) return MODEL_UNAVAILABLE_FAILURE;
+  if (stoppedAtOutputLimit(e)) return OUTPUT_LIMIT_FAILURE;
   return {
     status: 502,
     code: 'llm_gateway_provider_failed',

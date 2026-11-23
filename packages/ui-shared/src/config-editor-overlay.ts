@@ -21,6 +21,7 @@ import type { MailboxSetting, VariableDefault } from '@recued/contracts';
 
 import {
   asMailboxWidget,
+  asBrowserWidget,
   choiceListProblem,
   FILE_REF_VARIABLE_ATTR,
   fileRefDisplayLabel,
@@ -60,6 +61,7 @@ import {
   type MailboxVariableCallers,
   type MailboxVariablesHandle,
 } from './mailbox-variable.js';
+import { wireBrowserVariables, type BrowserVariableCallers, type BrowserVariablesHandle } from './browser-variable.js';
 
 const STYLES_MARKER = 'data-recued-config-editor-styles';
 const ACTION_ATTR = 'data-recued-config-editor-action';
@@ -310,6 +312,13 @@ export interface ConfigEditorOverlayOptions {
     readonly settings: ReadonlyArray<MailboxSetting>;
     readonly callers: MailboxVariableCallers;
   };
+  /** D-402 slice H2b — the settings that name one of the owner's browsers
+   *  (`ServerRecipeListEntry.browser_settings`), and the list of their paired browsers. Present, each
+   *  is that list by name; absent, a text box. */
+  browsers?: {
+    readonly settings: ReadonlyArray<{ readonly key: string }>;
+    readonly callers: BrowserVariableCallers;
+  };
   /** D-319 — ask for the dish's name. `required` refuses an empty one (a
    *  second dish of a recipe needs one to be told apart); otherwise an empty
    *  name is `''`. Absent ⇒ no name box. */
@@ -381,11 +390,13 @@ export const wireConfigEditorOverlay = (
       const def = asked[key];
       return def === undefined
         ? ''
-        : renderVariableWidget(asMailboxWidget(toWidgetShape(key, def, config[key]), opts.mailboxes?.settings), {
+        : renderVariableWidget(asBrowserWidget(asMailboxWidget(toWidgetShape(key, def, config[key]), opts.mailboxes?.settings),
+          opts.browsers?.settings), {
             fileRefPicker: opts.fileRefSearch !== undefined,
             recordRefPicker: opts.recordRefSearch !== undefined,
             mailTemplatePicker: opts.mailTemplates !== undefined,
             mailboxPicker: opts.mailboxes !== undefined,
+            browserPicker: opts.browsers !== undefined,
             idPrefix: 'cfg-edit-var',
           });
     })
@@ -423,6 +434,7 @@ export const wireConfigEditorOverlay = (
   const fileRefArrays: FileRefArrayHandle[] = [];
   let mailTemplates: MailTemplateVariablesHandle | null = null;
   let mailboxes: MailboxVariablesHandle | null = null;
+  let browsers: BrowserVariablesHandle | null = null;
   let destroyed = false;
   let confirming = false;
 
@@ -437,6 +449,8 @@ export const wireConfigEditorOverlay = (
     mailTemplates = null;
     mailboxes?.destroy();
     mailboxes = null;
+    browsers?.destroy();
+    browsers = null;
     trap?.release();
     trap = null;
     overlay.remove();
@@ -623,6 +637,13 @@ export const wireConfigEditorOverlay = (
   if (opts.mailboxes !== undefined) {
     mailboxes = wireMailboxVariables(overlay, {
       callers: opts.mailboxes.callers,
+      onChange: (key, value) => { config[key] = value; },
+    });
+  }
+  // D-402 slice H2b — a browser setting starts on the only paired browser, saved with the form.
+  if (opts.browsers !== undefined) {
+    browsers = wireBrowserVariables(overlay, {
+      callers: opts.browsers.callers,
       onChange: (key, value) => { config[key] = value; },
     });
   }

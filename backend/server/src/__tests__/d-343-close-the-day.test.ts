@@ -25,7 +25,9 @@ import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import { createAssetOccurrenceService } from '../situations/asset-occurrence-service.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
-import { createNoticeConversationOpener } from '../chat-notices.js';
+import { APP_DAY_SESSION_ID, createNoticeConversationOpener } from '../chat-notices.js';
+import { createEmailCloseDay } from '../email-close-day.js';
+import { createChatTurnQueueStore } from '../storage/chat-turn-queue-store.js';
 import type { NotificationSendArgs } from '../notification-handler.js';
 
 // Monday 19 October 2026, 20:00 UTC (the server's zone is UTC).
@@ -39,7 +41,7 @@ const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 
 const fixture = (options: { events?: SituationFact[]; quiet?: (at: number) => boolean; quietEnd?: (minute: number) => number | null;
-  opener?: boolean } = {}) => {
+  opener?: boolean; deliveredTo?: string[] } = {}) => {
   let clock = EVENING;
   const db = new Database(':memory:'); ensureWorkEntitySchema(db); ensureChatSchema(db);
   const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
@@ -48,7 +50,7 @@ const fixture = (options: { events?: SituationFact[]; quiet?: (at: number) => bo
   const query = createSituationQuery({ now: () => clock, sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }),
     sources: [{ id: 'calendar', collection: 'calendar', verb_op: 'core.work-entity.read', read: vi.fn(() => events) }] });
   const sent: NotificationSendArgs[] = [];
-  const send = vi.fn(async (message: NotificationSendArgs) => { sent.push(message); return { delivered_to: ['telegram'] }; });
+  const send = vi.fn(async (message: NotificationSendArgs) => { sent.push(message); return { delivered_to: options.deliveredTo ?? ['telegram'] }; });
   const store = createSituationStore(db);
   const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => clock });
   const occurrences = createAssetOccurrenceService({ db, work, dispatchers, timeZone: () => 'UTC', now: () => clock });
@@ -59,7 +61,7 @@ const fixture = (options: { events?: SituationFact[]; quiet?: (at: number) => bo
   // As `compose-collection-context.ts` composes them: Today's overview is the Yours service's.
   const scheduled = createScheduledSituations({ db, work, store, query, timeZone: () => 'UTC', isVaultUnlocked: () => true,
     isQuiet: options.quiet ?? (() => false), ...(options.quietEnd ? { quietEnd: options.quietEnd } : {}), now: () => clock, send,
-    overview: () => yours.overview() });
+    overview: () => yours.overview(), ...(options.opener === false ? {} : { recordAppNotice: () => opener.record }) });
   scheduled.bindAccess(createSituationAccess({ contracts: createContractStore(db), query, now: () => clock, isVaultUnlocked: () => true }));
   yours.bindScheduled(scheduled);
   cleanups.push(async () => { await yours.stop(); await scheduled.stop(); db.close(); });
@@ -69,10 +71,38 @@ const fixture = (options: { events?: SituationFact[]; quiet?: (at: number) => bo
   const pursuit = (name: string, settings: Record<string, unknown>, patch: Partial<Asset> = {}) => work.writeAsset({ source_id: 'recued.asset',
     source: { kind: 'owner', ref: 'owner' }, name, class_id: PURSUIT_CLASS_ID, settings, ...patch } as never, EVENING - 86_400_000);
   const closing = () => sent.filter(message => message.title?.startsWith('Close the day'));
-  return { db, chat, scheduled, handlers, change, status, pursuit, closing, sent, setClock: (value: number) => { clock = value; } };
+  return { db, chat, yours, scheduled, handlers, change, status, pursuit, closing, sent, setClock: (value: number) => { clock = value; } };
 };
 
 describe('D-343 slice 4 — Close the day, beside the Agenda', () => {
+  it('reports unresolved email handoffs through its owner RPC and retries or marks reviewed without repeating an admitted turn', async () => {
+    const f = fixture(); const journal = createChatTurnQueueStore(f.db);
+    f.db.exec(`CREATE TABLE email_close_day_replies(rfc_message_id TEXT PRIMARY KEY,session_id TEXT,created_at INTEGER NOT NULL);
+      INSERT INTO email_close_day_replies VALUES('earlier-reply',NULL,1);`);
+    let refuse = true;
+    const opener = createNoticeConversationOpener({ chatStore: f.chat, signature: { server_kind: 'recued', version: '1', instance_id: 'd343' } });
+    const emails = createEmailCloseDay({ db: f.db, openNoticeConversation: () => opener, readReply: async () => null,
+      queue: () => ({ routing: () => undefined, submit: async (...args) => {
+        if (refuse) throw new Error('injected admission refusal'); return journal.admit(...args);
+      } }) });
+    cleanups.push(() => emails.stop()); f.yours.bindEmailCloseDay(emails);
+    const reply = { title: 'Your day · Mon 19 Oct', text: 'Did the run.', quoted: '', rfc_message_id: 'new-reply', source: { slug: 'alerts', record_id: 'alerts:1' } };
+    expect(await emails(reply)).toBe('pending');
+    const pending = (await f.status()).email_replies!;
+    const current = pending.find(row => row.reason === 'retry')!;
+    const earlier = pending.find(row => row.reason === 'unknown')!;
+    expect(current).toMatchObject({ retry_available: true, session_id: expect.any(String) });
+    await expect(f.handlers['yours.change']!({ action: 'close_day.retry_reply', id: current.id }, {} as WsClient)).rejects.toThrow('paired webclient');
+    expect(f.db.prepare('SELECT count(*) AS n FROM chat_turn_queue').get()).toEqual({ n: 0 });
+    refuse = false;
+    expect(await f.change({ action: 'close_day.retry_reply', id: current.id })).toEqual({ message: 'Your reply has been handed to Chat.' });
+    await f.change({ action: 'close_day.retry_reply', id: current.id });
+    await f.change({ action: 'close_day.review_reply', id: earlier.id });
+    expect((await f.status()).email_replies).toEqual([]);
+    expect(f.db.prepare('SELECT count(*) AS n FROM chat_turn_queue').get()).toEqual({ n: 1 });
+    expect(await emails(reply)).toBe('seen');
+  });
+
   it('is off until the owner turns it on, at 21:00, and the Agenda names it', async () => {
     const f = fixture();
     expect(await f.status()).toMatchObject({ settings: { enabled: false, time: '21:00' }, last_run: null, last_sent: null, pending: 0, uncertain: 0 });
@@ -167,19 +197,47 @@ describe('D-343 slice 4 — what retention keeps of it', () => {
 });
 
 describe('D-343 slice 4 — Today\'s "Close the day" (ruling 20)', () => {
-  it('opens a conversation holding today\'s evening notice, for the app\'s reply to quote', async () => {
+  it('opens the app\'s "Your day" conversation at today\'s evening notice, for the app\'s reply to quote', async () => {
     const f = fixture();
     f.pursuit('Learn Spanish', { evening: true });
     const result = await f.change({ action: 'close_day.open' });
     const title = 'Close the day · Mon 19 Oct';
     const text = `07:00 Run 5 km\n21:30 Dinner with Sam\n\nPursuit: Learn Spanish\n\n${CLOSE_DAY_ASK}`;
-    expect(result).toEqual({ message: 'Your day is ready to close.', conversation: { session_id: expect.any(String), message_id: expect.stringMatching(/^notice:/u), title, text } });
+    expect(result).toEqual({ message: 'Your day is ready to close.', conversation: { session_id: APP_DAY_SESSION_ID, message_id: expect.stringMatching(/^notice:/u), title, text } });
     const { session_id, message_id } = result.conversation!;
-    expect(f.chat.getSession(session_id)).toMatchObject({ id: session_id, title });
+    expect(f.chat.getSession(session_id)).toMatchObject({ id: APP_DAY_SESSION_ID, title: 'Your day' });
     expect(await f.chat.listMessages(session_id)).toEqual([expect.objectContaining({ id: message_id, role: 'notice', content: text,
       notice: { vendor: 'app', title } })]);
     // Nothing went to a channel: the conversation is the app's own.
     expect(f.sent).toEqual([]);
+    // Pressed again, it is the same notice, not a second one.
+    expect((await f.change({ action: 'close_day.open' })).conversation).toMatchObject({ session_id, message_id });
+    expect(await f.chat.listMessages(session_id)).toHaveLength(1);
+  });
+
+  it('keeps the evening notice that went out in "Your day", and the button opens that one', async () => {
+    const f = fixture();
+    await f.change({ action: 'close_day.send_now' });
+    const [kept] = await f.chat.listMessages(APP_DAY_SESSION_ID);
+    expect(kept).toMatchObject({ role: 'notice', notice: { vendor: 'app', title: 'Close the day · Mon 19 Oct' } });
+    expect(kept!.content).toBe(f.closing()[0]!.text);
+    expect((await f.change({ action: 'close_day.open' })).conversation).toMatchObject({ session_id: APP_DAY_SESSION_ID, message_id: kept!.id });
+    expect(await f.chat.listMessages(APP_DAY_SESSION_ID)).toHaveLength(1);
+    // The day changed since it went (the 2026-11-15 drive: a task ticked off in a close on Telegram):
+    // the button still opens today's one notice, not a second with the new lines.
+    f.setClock(EVENING + 60_000);
+    f.pursuit('Read more books', { evening: true });
+    expect((await f.change({ action: 'close_day.open' })).conversation).toMatchObject({ session_id: APP_DAY_SESSION_ID, message_id: kept!.id });
+    expect(await f.chat.listMessages(APP_DAY_SESSION_ID)).toHaveLength(1);
+  });
+
+  it('keeps the Agenda that went out there too, and nothing that went nowhere', async () => {
+    const f = fixture();
+    await f.change({ action: 'agenda.send_now' });
+    expect((await f.chat.listMessages(APP_DAY_SESSION_ID)).map(message => message.notice?.title)).toEqual(['Agenda · Mon 19 Oct']);
+    const nowhere = fixture({ deliveredTo: [] });
+    await nowhere.change({ action: 'close_day.send_now' }).catch(() => undefined);
+    expect(nowhere.chat.getSession(APP_DAY_SESSION_ID)).toBeNull();
   });
 
   it('is offered by Today only where the server can open it', async () => {

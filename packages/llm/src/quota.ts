@@ -1,3 +1,4 @@
+import type { SourceCallOutcome } from './call-outcome.js';
 import type { AvailabilityStatus, FreePoolEntry } from './types.js';
 
 /** Serializable snapshot the caller persists and rehydrates.
@@ -45,6 +46,10 @@ export interface QuotaSnapshot {
   transcription_seconds_today?: Record<string, number>;
   /** Per-source-key cursor index (round-robin). */
   cursor: Record<string, number>;
+  /** Each source's last call to its provider (`SourceCallOutcome`), keyed by source id. ⚠ NOT
+   *  daily: a retired model's failure at 3 am must still be there when the owner looks at noon, and
+   *  after a restart in between. Absent when no call has been recorded. */
+  last_calls?: Record<string, SourceCallOutcome>;
 }
 
 export interface QuotaTracker {
@@ -124,6 +129,11 @@ export interface QuotaTracker {
    *  PERSISTENCE and carries the round-robin cursors, which are not daily.
    *  A day-aware `snapshot()` would have silently dropped them. */
   currentDay(now?: number): string;
+  /** Keep how a source's last call ended (`SourceCallOutcome`), for Settings to show beside it.
+   *  Optional, like `cooldownUntil`: a host's own tracker may predate it. */
+  recordCallOutcome?(sourceId: string, outcome: SourceCallOutcome): void;
+  /** The source's last call, when one has been recorded. */
+  lastCall?(sourceId: string): SourceCallOutcome | undefined;
   /** Serializable snapshot for persistence. Carries `daily_reset_at` — the
    *  day the buckets were last WRITTEN on, which is not necessarily today.
    *  For a display label use `currentDay()`. */
@@ -191,6 +201,9 @@ export const createQuotaTracker = (
   // resets cooldowns, which degrades gracefully — next call probes the
   // source afresh and re-marks it if still rate-limited).
   const cooldown_until = new Map<string, number>();
+  const last_calls = new Map<string, SourceCallOutcome>(
+    Object.entries(initial?.last_calls ?? {}),
+  );
 
   let current_daily_key = daily_key;
 
@@ -263,6 +276,7 @@ export const createQuotaTracker = (
         ? { transcription_seconds_today: Object.fromEntries(transcription_seconds_today) }
         : {}),
       cursor: Object.fromEntries(cursor),
+      ...(last_calls.size > 0 ? { last_calls: Object.fromEntries(last_calls) } : {}),
     };
   };
 
@@ -402,6 +416,16 @@ export const createQuotaTracker = (
 
     currentCursor(sourceKey) {
       return cursor.get(sourceKey) ?? 0;
+    },
+
+    recordCallOutcome(sourceId, outcome) {
+      last_calls.set(sourceId, { ...outcome });
+      notify();
+    },
+
+    lastCall(sourceId) {
+      const outcome = last_calls.get(sourceId);
+      return outcome === undefined ? undefined : { ...outcome };
     },
 
     currentDay(now) {

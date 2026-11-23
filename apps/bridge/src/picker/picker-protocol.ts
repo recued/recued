@@ -35,6 +35,7 @@ export type PickerResult = PickerPickedResult | PickerCancelledResult;
 
 export interface PickerResultMessage {
   readonly type: typeof PICKER_RESULT_MESSAGE_TYPE;
+  readonly launch_id: string;
   readonly result: PickerResult;
 }
 
@@ -53,8 +54,8 @@ export const isUsablePickedSelector = (selector: string): boolean => {
  *  result message. Brick 3's SW listener uses this. */
 export const isPickerResultMessage = (message: unknown): message is PickerResultMessage => {
   if (typeof message !== 'object' || message === null) return false;
-  const m = message as { type?: unknown; result?: unknown };
-  if (m.type !== PICKER_RESULT_MESSAGE_TYPE) return false;
+  const m = message as { type?: unknown; launch_id?: unknown; result?: unknown };
+  if (m.type !== PICKER_RESULT_MESSAGE_TYPE || typeof m.launch_id !== 'string' || !m.launch_id) return false;
   const r = m.result as { status?: unknown } | null | undefined;
   if (typeof r !== 'object' || r === null) return false;
   if (r.status === 'cancelled') return true;

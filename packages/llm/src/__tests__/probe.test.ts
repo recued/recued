@@ -11,12 +11,14 @@ import {
   hydrateEndpointCapabilities,
   diagnoseProbeFailure,
   imageInputSeen,
+  isModelMissingRejection,
   PICTURE_PROBE_TIMEOUT_MS,
   PROBE_PICTURE,
   probeLlmSource,
   resetEndpointCapabilities,
 } from '../index.js';
-import { LLMError } from '../types.js';
+import { createOpenAIAdapter } from '../adapters/openai.js';
+import { LLMError, markOutputLimit } from '../types.js';
 import type {
   LLMAdapter,
   LLMCompletionOptions,
@@ -112,6 +114,37 @@ describe('diagnoseProbeFailure — point at the field the owner should fix', () 
       '{"error":{"message":"temperature must be <= 2 for this model"}}',
       null,
     )).diagnosis).toBe('rejected');
+  });
+
+  /** ⛔ ONE RULE FOR TEST CONNECTION AND A REAL CALL (`isModelMissingRejection`): a chat turn that
+   *  meets a retired model says so by this test, so the two cannot disagree about one answer. */
+  it('reads a missing model by the rule a real call uses, on the shapes providers send', () => {
+    const missing = [
+      // OpenAI, for a model it shut down or never had.
+      classifyProviderError(404, '{"error":{"message":"The model `gpt-4.1-mini` does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}', null),
+      // Google, live 2026-11-16, two weeks before the model's shutdown date.
+      classifyProviderError(404, '{"error":{"code":404,"message":"This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use models/gemini-3.8-flash.","status":"NOT_FOUND"}}', null),
+      classifyProviderError(404, '{"type":"error","error":{"type":"not_found_error","message":"model: claude-2.0"}}', null),
+      classifyProviderError(404, '{"error":"model \\"llama9\\" not found, try pulling it first"}', null),
+      // Groq and OpenRouter say it with a 400; Groq's words alone are enough, its code alone too.
+      classifyProviderError(400, '{"error":{"message":"The model `llama3-70b-8192` has been decommissioned and is no longer supported."}}', null),
+      classifyProviderError(400, '{"error":{"message":"Model retired.","type":"invalid_request_error","code":"model_decommissioned"}}', null),
+      classifyProviderError(400, '{"error":{"message":"openai/gpt-nine is not a valid model ID","code":400}}', null),
+    ];
+    for (const e of missing) {
+      expect(isModelMissingRejection(e)).toBe(true);
+      expect(diagnoseProbeFailure(e).diagnosis).toBe('model_missing');
+    }
+    const other = [
+      // A 404 that names no model is a wrong address, not a missing model.
+      classifyProviderError(404, '404 page not found', null),
+      classifyProviderError(400, '{"error":{"message":"Unsupported value: \'reasoning_effort\' does not support \'none\' with this model."}}', null),
+      classifyProviderError(400, '{"error":{"message":"This model\'s maximum context length is 128000 tokens."}}', null),
+      classifyProviderError(401, '{"error":"model access denied"}', null),
+      classifyProviderError(503, '{"error":"model overloaded"}', null),
+    ];
+    for (const e of other) expect(isModelMissingRejection(e)).toBe(false);
+    expect(diagnoseProbeFailure(other[0]).diagnosis).toBe('rejected');
   });
 
   it('keeps rate limit and provider outage distinct from a bad request', () => {
@@ -292,6 +325,39 @@ describe('probeLlmSource', () => {
     await probeLlmSource({ adapter, slot: slot(), onUsage, now: clock() });
     expect(onUsage).toHaveBeenCalledWith(9);
   });
+
+  /** ⛔ The probe allows one token, and a model that thinks can spend it thinking and stop with no
+   *  answer. That reported `gemini-3.8-flash` "rejected" (live 2026-11-16). The endpoint took the
+   *  request and answered it, which is the question. Run through the real OpenAI adapter, in the
+   *  shape OpenAI's reasoning models answer with. */
+  it('passes a model that spends its one token thinking, and meters what it used', async () => {
+    const realFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ choices: [{ index: 0, finish_reason: 'length', message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 20, completion_tokens: 1, total_tokens: 21, completion_tokens_details: { reasoning_tokens: 1 } } }),
+      { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    try {
+      const onUsage = vi.fn();
+      const result = await probeLlmSource({ adapter: createOpenAIAdapter('openai'),
+        slot: { provider: 'openai', model: 'gpt-6-luna', api_key: 'k', supports_json: true }, onUsage, now: clock() });
+      expect(result).toMatchObject({ ok: true, diagnosis: 'ok', accepts_system_role: true, supports_json: true });
+      expect(onUsage).toHaveBeenCalledWith(21);
+      expect(bodies[0]?.max_completion_tokens).toBe(1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('still fails a reply with no answer that did not stop at the limit', async () => {
+    const { adapter } = adapterThat(() => {
+      throw new LLMError('AI_RESPONSE_PARSE_FAILED', 'Google response had no text parts');
+    });
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock() });
+    expect(result).toMatchObject({ ok: false, diagnosis: 'rejected' });
+  });
 });
 
 /** Test connection is the one place a chat model proves it can see pictures
@@ -386,6 +452,21 @@ describe('probeLlmSource — the picture check', () => {
     expect(result.ok).toBe(true);
     expect(result.sees_pictures).toBeUndefined();
     expect(result.picture_detail).toBeDefined();
+    expect(imageInputSeen(slot())).toBe(true);
+  });
+
+  it('says a model that ran out of room before answering left the picture unknown, and meters it', async () => {
+    hydrateEndpointCapabilities([{ fingerprint: FP, image_input_seen: true }]);
+    const { adapter } = answeringPicture(markOutputLimit(
+      new LLMError('AI_RESPONSE_PARSE_FAILED', 'OpenAI response had no answer: the model spent its whole output limit reasoning'),
+      'length', { input_tokens: 300, output_tokens: 256, total_tokens: 556 },
+    ) as LLMError);
+    const onUsage = vi.fn();
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock(), onUsage, pictures: true });
+    expect(result.ok).toBe(true);
+    expect(result.sees_pictures).toBeUndefined();
+    expect(result.picture_detail).toBe('The model ran out of room before answering, so whether it can see pictures is unknown.');
+    expect(onUsage.mock.calls).toEqual([[9], [556]]);
     expect(imageInputSeen(slot())).toBe(true);
   });
 

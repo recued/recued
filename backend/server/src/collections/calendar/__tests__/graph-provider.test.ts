@@ -38,6 +38,7 @@ import {
   type GraphCalProviderConfig,
 } from '../graph-provider.js';
 import type { CalendarSyncEvent, CalendarSyncOutcome } from '../provider.js';
+import { EXCHANGE_MADE_ID, LIVE_EXCHANGE_INVITE_ID, LIVE_INVITE_UID } from '../../../__tests__/helpers/exchange-meeting-id.js';
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
@@ -236,6 +237,18 @@ describe('canonicalizeGraphEvent', () => {
   });
 
   // D-336 (spec §57) — measured live 2026-11-03: a create asking for UTC was answered in the zone
+  // ⛔ Graph's `iCalUId` is Exchange's meeting id in hex, never an iCalendar UID as the fixtures here write it. For an
+  // event Exchange made from an emailed invite it wraps the invite's UID, and nothing joined by that UID on Outlook
+  // until it was read out (measured live 2026-11-22).
+  it("an event Exchange made from an emailed invite carries the invite's UID; one made in Exchange, Exchange's id", () => {
+    const at = { start: { dateTime: '2026-12-10T15:30:00.0000000', timeZone: 'UTC' }, end: { dateTime: '2026-12-10T16:00:00.0000000', timeZone: 'UTC' } };
+    expect(canonicalizeGraphEvent({ id: 'AAMkINVITE=', iCalUId: LIVE_EXCHANGE_INVITE_ID, subject: 'Dr. Lee follow-up', ...at }, 'cal').ical_uid)
+      .toBe(LIVE_INVITE_UID);
+    expect(canonicalizeGraphEvent({ id: 'AAMkOWN=', iCalUId: EXCHANGE_MADE_ID, subject: 'Weekly sync', ...at }, 'cal').ical_uid)
+      .toBe(EXCHANGE_MADE_ID);
+    expect(canonicalizeGraphEvent({ id: 'AAMkNOUID=', subject: 'No id of its own', ...at }, 'cal').ical_uid).toBe('AAMkNOUID=');
+  });
+
   // its request named, labelled with it. Read as UTC, a 10:00 Los Angeles event was held at 02:00.
   it('reads a clock labelled with a zone in that zone, as Outlook answers a write', () => {
     const c = canonicalizeGraphEvent({
@@ -1593,7 +1606,7 @@ describe('GraphCalProvider — updateEvent', () => {
     const provider = createGraphCalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher });
     cleanup.push(() => provider.close());
     const context = await provider.readEventForEdit!('team', 'event');
-    expect(context.editable_fields).toEqual(['summary', 'start_at', 'end_at', 'location']);
+    expect(context.editable_fields).toEqual(['summary', 'start_at', 'end_at', 'location', 'marked_private', 'alert_minutes']);
     canEdit = false; expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toEqual([]);
     canEdit = true; current.isOrganizer = false;
     expect((await provider.readEventForEdit!('team', 'event')).editable_fields).toEqual([]);
@@ -2216,5 +2229,45 @@ describe('GraphCalProvider — a write is read in the zone Outlook answers it in
     });
     expect(payload.event.start_at).toBe(midnight);
     expect(payload.event.end_at).toBe(midnight + 86_400_000);
+  });
+});
+
+// D-407 slice 4 — an occasion's own event: private at Outlook (`sensitivity`), and its one alert as given (an empty list
+// is none; absent, Outlook's default), on create and on update.
+describe('D-407 slice 4 — GraphCalProvider writes the private marking and the alert as given', () => {
+  const event = { id: 'occ-1', '@odata.etag': 'W/"e1"', iCalUId: 'occ-1@x', subject: 'Dr. Lee', isOrganizer: true,
+    start: { dateTime: '2026-12-12T10:30:00', timeZone: 'UTC' }, end: { dateTime: '2026-12-12T11:30:00', timeZone: 'UTC' },
+    createdDateTime: '2026-11-21T00:00:00Z', lastModifiedDateTime: '2026-11-21T00:00:00Z' };
+  const writer = () => {
+    const sent: Array<{ method: string; body: Record<string, unknown> }> = [];
+    const fetcher: HttpFetcher = async (url, init) => {
+      if (init?.method === 'POST' || init?.method === 'PATCH') sent.push({ method: init.method, body: JSON.parse(String(init.body ?? '{}')) });
+      const body = url.includes('/me/calendars?') ? { value: [{ id: 'cal-1', canEdit: true, name: 'Personal' }] } : event;
+      return { status: 200, ok: true, async json() { return body; }, async text() { return JSON.stringify(body); } };
+    };
+    const provider = createGraphCalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher, scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    return { provider, sent };
+  };
+  const base = { calendar_id: 'cal-1', summary: 'Dr. Lee', start_at: Date.parse('2026-12-12T10:30:00Z'), end_at: Date.parse('2026-12-12T11:30:00Z'),
+    timezone: 'UTC', is_all_day: false, status: 'confirmed' as const };
+
+  it('create: private with one alert; no alert; Outlook\'s default when none is given', async () => {
+    const { provider, sent } = writer();
+    await provider.createEvent('cal-1', { ...base, marked_private: true, reminders: [{ method: 'popup', minutes: 120 }] });
+    await provider.createEvent('cal-1', { ...base, reminders: [] });
+    await provider.createEvent('cal-1', base);
+    expect(sent[0]!.body).toMatchObject({ sensitivity: 'private', isReminderOn: true, reminderMinutesBeforeStart: 120 });
+    expect(sent[1]!.body).toMatchObject({ isReminderOn: false });
+    expect(sent[1]!.body).not.toHaveProperty('sensitivity');
+    expect(sent[2]!.body).not.toHaveProperty('isReminderOn');
+  });
+
+  it('update: the marking taken away or set, the alert changed or removed', async () => {
+    const { provider, sent } = writer();
+    await provider.updateEvent({ calendar_id: 'cal-1', source_id: 'occ-1', patch: { marked_private: false, reminders: [{ method: 'popup', minutes: 30 }] } });
+    await provider.updateEvent({ calendar_id: 'cal-1', source_id: 'occ-1', patch: { marked_private: true, reminders: [] } });
+    expect(sent[0]).toEqual({ method: 'PATCH', body: { sensitivity: 'normal', isReminderOn: true, reminderMinutesBeforeStart: 30 } });
+    expect(sent[1]).toEqual({ method: 'PATCH', body: { sensitivity: 'private', isReminderOn: false } });
   });
 });

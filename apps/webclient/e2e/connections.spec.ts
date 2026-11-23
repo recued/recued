@@ -309,7 +309,11 @@ test('Connections webhook writes retain their exact action focus and stay single
   const card = page.locator(`[${WEBHOOKS_CARD}]`);
   await expect(card).toContainText('Signed test deliveries');
   const actions = card.locator(`[${WEBHOOKS_ACTION}]`);
-  await expect(actions).toHaveCount(7);
+  // D-201 Slice 10I: the dead-letter action shows with none open, since the
+  // closed ones are inside it.
+  await expect(actions).toHaveCount(8);
+  await expect(card.locator(`[${WEBHOOKS_ACTION}="dead-letters"]`))
+    .toHaveText('See the messages that did not reach their recipes');
   const actionHeights = await actions.evaluateAll((targets) => targets.map(
     (target) => target.getBoundingClientRect().height,
   ));
@@ -343,6 +347,199 @@ test('Connections webhook writes retain their exact action focus and stay single
   await expect(sendTest).not.toHaveAttribute('aria-disabled');
   await expect(sendTest).not.toHaveAttribute('aria-busy');
   await expect(sendTest).not.toHaveAttribute('disabled');
+});
+
+test('Connections webhook messages that did not reach their recipes: closed with a reason and tried again, at phone width', async ({ page }) => {
+  // D-201 Slice 10B.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(
+    `${HARNESS_URL}?connection=webhooks&webhook_dead_letters=1#connections/webhooks`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const card = page.locator(`[${WEBHOOKS_CARD}]`);
+  const open = card.locator(`[${WEBHOOKS_ACTION}="dead-letters"]`);
+  await expect(open).toHaveText('See the messages that did not reach their recipes (2)');
+  await open.click();
+  const items = card.locator('[data-recued-webhooks-dead-letter]');
+  await expect(items).toHaveCount(2);
+  await expect(items.first()).toContainText('Its run of record-paid-orders-with-a-very-long-recipe-name-that-wraps');
+  await expect(items.nth(1)).toContainText('Handing it to its recipes');
+  // Nothing in it runs past a phone's width, and its buttons keep their height.
+  const width = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    client: document.documentElement.clientWidth,
+  }));
+  expect(width.scroll).toBeLessThanOrEqual(width.client);
+  const heights = await card.locator('[data-recued-webhooks-dead-letter] button').evaluateAll(
+    (buttons) => buttons.map((button) => button.getBoundingClientRect().height),
+  );
+  expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
+
+  // Closing one asks for a reason first, and sends what was typed.
+  const first = items.first();
+  const reason = first.locator(`[${WEBHOOKS_FIELD}="dead-letter-reason"]`);
+  await first.locator(`[${WEBHOOKS_ACTION}="dead-letter-resolve"]`).click();
+  await expect(page.locator('[data-recued-webhooks-error]')).toContainText('Write why you are closing it first');
+  await expect(page.getByRole('button', { name: 'Refresh webhooks', exact: true })).toHaveCount(0);
+  await expect(reason).toBeFocused();
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('webhook.delivery.dead_letter.resolve'),
+  )).toBe(0);
+  await reason.fill('Refunded by hand');
+  await first.locator(`[${WEBHOOKS_ACTION}="dead-letter-resolve"]`).click();
+  await expect(items).toHaveCount(1);
+  await expect(card).toContainText('Closed. Recued keeps your reason with it.');
+  // Focus stays in the list: the next one's same button.
+  await expect(items.first().locator(`[${WEBHOOKS_ACTION}="dead-letter-resolve"]`)).toBeFocused();
+
+  // Trying the other again needs no reason; with none left, focus goes to the
+  // list's Close.
+  await items.first().locator(`[${WEBHOOKS_ACTION}="dead-letter-requeue"]`).click();
+  await expect(items).toHaveCount(0);
+  await expect(card).toContainText('Recued is trying it again now.');
+  await expect(card).toContainText('None are waiting');
+  await expect(card.locator(`[${WEBHOOKS_ACTION}="dead-letters-close"]`)).toBeFocused();
+  expect(await page.evaluate(() => [
+    window.__app.rpcCallCount('webhook.delivery.dead_letter.resolve'),
+    window.__app.rpcCallCount('webhook.delivery.dead_letter.requeue'),
+  ])).toEqual([1, 1]);
+});
+
+test('Connections webhook messages that did not reach their recipes: the closed ones say who closed each and why, and retiring says first what it closes, at phone width', async ({ page }) => {
+  // D-201 Slice 10F.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(
+    `${HARNESS_URL}?connection=webhooks&webhook_dead_letters=1#connections/webhooks`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const card = page.locator(`[${WEBHOOKS_CARD}]`);
+  await card.locator(`[${WEBHOOKS_ACTION}="dead-letters"]`).click();
+  const items = card.locator('[data-recued-webhooks-dead-letter]');
+  await expect(items).toHaveCount(2);
+  await items.first().locator(`[${WEBHOOKS_FIELD}="dead-letter-reason"]`).fill('Refunded by hand');
+  await items.first().locator(`[${WEBHOOKS_ACTION}="dead-letter-resolve"]`).click();
+  await expect(items).toHaveCount(1);
+
+  // The closed ones: who closed each, and why, in words.
+  const toggle = card.locator(`[${WEBHOOKS_ACTION}="dead-letters-closed"]`);
+  await expect(toggle).toHaveText('Show the closed ones');
+  await toggle.click();
+  const closed = card.locator('[data-recued-webhooks-closed-dead-letter]');
+  await expect(closed).toHaveCount(2);
+  // Each in its own box, as the open ones are.
+  expect(await closed.evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).borderTopStyle)))
+    .toEqual(['solid', 'solid']);
+  await expect(closed.first()).toContainText('You closed it: Refunded by hand');
+  await expect(closed.nth(1)).toContainText(
+    'Recued closed it. More than 1,000 were waiting, and this was the oldest.',
+  );
+  await expect(toggle).toHaveText('Hide the closed ones');
+  await expect(toggle).toBeFocused();
+  const width = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    client: document.documentElement.clientWidth,
+  }));
+  expect(width.scroll).toBeLessThanOrEqual(width.client);
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(36);
+  // The section's Close keeps its word on one line at a phone's width: no
+  // taller than a one-line button below it.
+  const headClose = (await card.locator(`[${WEBHOOKS_ACTION}="dead-letters-close"]`).boundingBox())!;
+  const oneLine = (await items.first().locator(`[${WEBHOOKS_ACTION}="dead-letter-requeue"]`).boundingBox())!;
+  expect(headClose.height).toBeLessThanOrEqual(oneLine.height);
+  await toggle.click();
+  await expect(closed).toHaveCount(0);
+  await expect(toggle).toBeFocused();
+
+  // Retiring says first that it closes the one still open, as the confirm
+  // button's description.
+  await card.locator(`[${WEBHOOKS_ACTION}="disable"]`).click();
+  await card.locator(`[${WEBHOOKS_ACTION}="retire"]`).click();
+  const confirmRetire = card.locator(`[${WEBHOOKS_ACTION}="retire-confirm"]`);
+  await expect(confirmRetire).toBeFocused();
+  await expect(card.locator('[data-recued-webhooks-retire-dead-letters]')).toHaveText(
+    'Retiring it also closes the 1 message that did not reach its recipes. It cannot be tried again once the webhook is retired.',
+  );
+  await expect(confirmRetire).toHaveAccessibleDescription(
+    'Retiring it also closes the 1 message that did not reach its recipes. It cannot be tried again once the webhook is retired.',
+  );
+  // On its own line, just above the button it describes.
+  const warningBox = (await card.locator('[data-recued-webhooks-retire-dead-letters]').boundingBox())!;
+  const confirmBox = (await confirmRetire.boundingBox())!;
+  expect(confirmBox.y - (warningBox.y + warningBox.height)).toBeGreaterThanOrEqual(0);
+  expect(confirmBox.y - (warningBox.y + warningBox.height)).toBeLessThanOrEqual(16);
+  await confirmRetire.click();
+  await expect(card).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.retire'))).toBe(1);
+});
+
+test('Connections webhook events: a typed name the service grammar takes, Enter adds it, and a webhook changes its events, at phone width', async ({ page }) => {
+  // D-201 Slice 10C.
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto(
+    `${HARNESS_URL}?connection=webhooks&webhook_open_catalog=1#connections/webhooks`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const panel = page.locator(`[${WEBHOOKS_PANEL}]`);
+  const box = (scope: typeof panel, eventType: string) =>
+    scope.locator(`[data-recued-webhooks-event-type="${eventType}"]`);
+
+  // Creating one: the typed name is checked against the server's grammar.
+  await page.locator(`[${WEBHOOKS_NEW}]`).click();
+  await page.locator('[data-recued-webhooks-profile]').selectOption('lemonsqueezy.webhook.v1');
+  await page.locator(`[${WEBHOOKS_FIELD}="display_name"]`).fill('Lemon store');
+  await page.locator(`[${WEBHOOKS_FIELD}="signing_secret"]`).fill('lemon-browser-secret');
+  const custom = panel.locator(`[${WEBHOOKS_FIELD}="event-type-custom"]`);
+  await custom.fill('Plan.Changed');
+  await custom.press('Enter');
+  await expect(panel).toContainText("This service's events are not named like that.");
+  await expect(custom).toBeFocused();
+  await custom.fill('subscription_plan_changed');
+  // Enter adds the name; it does not send the form.
+  await custom.press('Enter');
+  await expect(box(panel, 'subscription_plan_changed')).toBeChecked();
+  await expect(custom).toHaveValue('');
+  await expect(custom).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.create'))).toBe(0);
+  await box(panel, 'order_created').check();
+  const width = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    client: document.documentElement.clientWidth,
+  }));
+  expect(width.scroll).toBeLessThanOrEqual(width.client);
+  const add = panel.locator(`[${WEBHOOKS_ACTION}="event-type-add"]`);
+  expect((await add.boundingBox())!.height).toBeGreaterThanOrEqual(36);
+  await panel.locator(`[${WEBHOOKS_ACTION}="create-submit"]`).click();
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('webhook.ingress.create'),
+  )).toBe(1);
+  // What was sent is what the new webhook holds.
+  const created = page.locator(`[${WEBHOOKS_CARD}]`, { hasText: 'Lemon store' });
+  await created.locator(`[${WEBHOOKS_ACTION}="events-edit"]`).click();
+  const createdEditor = created.locator('[data-recued-webhooks-events-editor]');
+  await expect(box(createdEditor, 'order_created')).toBeChecked();
+  await expect(box(createdEditor, 'subscription_plan_changed')).toBeChecked();
+  await createdEditor.locator(`[${WEBHOOKS_ACTION}="events-cancel"]`).click();
+  await expect(created.locator(`[${WEBHOOKS_ACTION}="events-edit"]`)).toBeFocused();
+
+  // Changing an existing one keeps the name it took outside the known list.
+  const card = page.locator(`[${WEBHOOKS_CARD}]`, { hasText: 'Repository events' });
+  await card.locator(`[${WEBHOOKS_ACTION}="events-edit"]`).click();
+  const editor = card.locator('[data-recued-webhooks-events-editor]');
+  await expect(editor.locator('[data-recued-webhooks-event-type]').first()).toBeFocused();
+  await expect(box(editor, 'issues')).toBeChecked();
+  await expect(box(editor, 'merge_group')).toBeChecked();
+  await box(editor, 'issues').uncheck();
+  await box(editor, 'pull_request').check();
+  await editor.locator(`[${WEBHOOKS_ACTION}="events-save"]`).click();
+  await expect(card.locator('[data-recued-webhooks-events-notice]')).toHaveText(
+    'Saved. Change the events at the service too: it sends what is set up there.',
+  );
+  await expect(card.locator(`[${WEBHOOKS_ACTION}="events-edit"]`)).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.update'))).toBe(1);
+  await card.locator(`[${WEBHOOKS_ACTION}="events-edit"]`).click();
+  await expect(box(editor, 'issues')).not.toBeChecked();
+  await expect(box(editor, 'pull_request')).toBeChecked();
+  await expect(box(editor, 'merge_group')).toBeChecked();
 });
 
 test('Connections webhook disclosures hand focus to their logical destination', async ({ page }) => {
@@ -382,6 +579,38 @@ test('Connections webhook disclosures hand focus to their logical destination', 
 
   await back.click();
   await expect(inspect).toBeFocused();
+});
+
+test('Connections webhook inventory failures can refresh without claiming the inventory is empty', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=webhooks#chat`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__connectionsFixture = async (method) => method === 'webhook.ingress.list'
+      ? { error: { code: 'UNAVAILABLE', message: 'Webhook inventory could not be read.' } }
+      : undefined;
+    window.__app.setHash('#connections/webhooks');
+  });
+  const panel = page.locator(`[${WEBHOOKS_PANEL}]`);
+  await expect(panel.getByRole('alert')).toHaveText('Webhook inventory could not be read.');
+  await expect(panel).not.toContainText('No webhooks coming in yet.');
+  await expect(panel.locator(`[${WEBHOOKS_NEW}]`)).toBeDisabled();
+  await page.evaluate(() => {
+    window.__connectionsFixture = undefined;
+    window.__app.holdRpcResponses?.('webhook.ingress.list');
+  });
+  const retry = panel.getByRole('button', { name: 'Refresh webhooks', exact: true });
+  await retry.focus(); await retry.press('Enter');
+  const heading = panel.getByRole('heading', { name: 'Webhooks coming in', exact: true });
+  await expect(heading).toBeFocused();
+  await expect(panel).toContainText('Loading webhooks…');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.list'))).toBe(2);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('webhook.ingress.list'))).toBe(1);
+  await expect(panel.locator(`[${WEBHOOKS_CARD}]`)).toContainText('Signed test deliveries');
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+  await expect(panel.locator(`[${WEBHOOKS_NEW}]`)).toBeEnabled();
+  await expect(heading).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('webhook.ingress.list'))).toBe(2);
 });
 
 test('Connections webhook terminal writes hand focus to durable context', async ({ page }) => {
@@ -824,6 +1053,7 @@ test('Connections serializes live pack-context refreshes without moving focus', 
   await expect.poll(() => page.evaluate(
     () => window.__app.rpcCallCount('packs.list'),
   )).toBe(1);
+  await page.evaluate(() => window.__app.holdRpcResponses?.('packs.list'));
 
   const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
   const add = route.getByRole('button', { name: /Add Connection/ });
@@ -857,16 +1087,25 @@ test('Connections serializes live pack-context refreshes without moving focus', 
   expect(await page.evaluate(
     () => window.__app.rpcCallCount('packs.list'),
   )).toBe(2);
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('packs.list', 0),
+  )).toBe(1);
   await expect.poll(() => page.evaluate(
     () => window.__app.rpcCallCount('packs.list'),
   )).toBe(3);
+  // Hold the latest reply until the old node is captured. Its render can
+  // otherwise finish between the request-count poll and elementHandle().
   const beforeLatestPaint = await add.elementHandle();
   expect(beforeLatestPaint).not.toBeNull();
+  expect(await page.evaluate(
+    () => window.__app.releaseRpcResponses?.('packs.list', 0),
+  )).toBe(1);
   await page.waitForFunction(
     (element) => element?.isConnected === false,
     beforeLatestPaint,
   );
   await expect(add).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('packs.list'))).toBe(3);
 });
 
 test('a Connections account removal dialog owns and restores focus', async ({ page }) => {
@@ -1105,6 +1344,44 @@ test('the first mailbox enrolment ends by opening Proposals', async ({ page }) =
   await expect(page.getByRole('heading', { name: 'Yours', level: 1 })).toBeVisible();
   // "What is read" is a disclosure on Yours since df90904f4, not a heading.
   await expect(page.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
+});
+
+test('D-405 slice 7 — the first mailbox, from a chat answer\'s "Connect your mail", opens Proposals with the way back', async ({ page }) => {
+  // The answer's link carries it after the lane; the page offers the way back, and D-325's first
+  // session still ends on Proposals, which carry the answer on and offer the way back too.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=imap-success`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections/mail/return/chat/chat_1/message_mail_answer'));
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const back = route.locator('[data-recued-connections-route-back-to-chat]');
+  await expect(back).toHaveText('Back to chat');
+  await expect(back).toHaveAttribute('href', '#chat/session/chat_1/answer/message_mail_answer');
+  // The lane opens on its list, never on an account named "return".
+  await route.getByRole('button', { name: 'Connect mailbox' }).click();
+  await route.getByRole('button', { name: /IMAP \/ SMTP/ }).click();
+  await route.getByRole('textbox', { name: 'Name', exact: true }).fill('fastmail');
+  await route.getByRole('textbox', { name: 'IMAP Host', exact: true }).fill('imap.fastmail.com');
+  await route.getByRole('textbox', { name: 'Username', exact: true }).fill('me@example.com');
+  await route.getByLabel('Password', { exact: true }).fill('app-password');
+  await route.getByRole('button', { name: 'Connect account' }).click();
+
+  await expect(page).toHaveURL(/#yours\/proposals\/return\/chat\/chat_1\/message_mail_answer$/u);
+  await expect(page.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
+  const proposalsBack = page.locator('[data-yours-back-to-chat]');
+  await expect(proposalsBack).toHaveText('Back to chat');
+  await expect(proposalsBack).toHaveAttribute('href', '#chat/session/chat_1/answer/message_mail_answer');
+  // No sideways scroll on a phone.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('⛔ D-405 slice 7 — Proposals opened any other way offer no way back to chat', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#yours/proposals'));
+  await expect(page.locator('summary').filter({ hasText: /^What is read$/u })).toBeVisible();
+  await expect(page.locator('[data-yours-back-to-chat]')).toHaveCount(0);
 });
 
 test('a successful IMAP enrollment confirms the connected account in focus', async ({ page }) => {

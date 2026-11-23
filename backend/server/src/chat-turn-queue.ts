@@ -127,8 +127,9 @@ export const withQueuedChatTurns = (
           } catch (error) {
             if (!options.db.open) return;
             journal.settle(row.turn_id, worker.id, closed ? 'interrupted' : 'failed');
-            // Status is durable and contains no error text or user payload.
-            if (journal.get(row.turn_id)?.status === 'failed') console.error('[chat queue] turn failed', row.turn_id);
+            // Status is durable and contains no error text or user payload. The log says where it was
+            // thrown, never what it said (`turnFailureWhere`).
+            if (journal.get(row.turn_id)?.status === 'failed') console.error('[chat queue] turn failed', row.turn_id, turnFailureWhere(error));
           } finally {
             active.delete(row.turn_id);
             retired.add(row.turn_id);
@@ -253,4 +254,18 @@ export const withQueuedChatTurns = (
       });
     },
   };
+};
+
+/** D-343 (2026-11-15) — where a failed turn's error was thrown, for the log: its name and the first
+ *  frames of its stack as `function (file:line)`, never its message, which can carry the owner's words
+ *  or data. "turn failed <id>" alone hid a reply the chat store refused (`recallCandidatesFor`): it took
+ *  a patched build to find. */
+export const turnFailureWhere = (error: unknown): string => {
+  if (!(error instanceof Error)) return `(${typeof error})`;
+  const frames = (error.stack ?? '').split('\n').slice(1)
+    .map((line) => /^\s*at\s+(?:(.+?)\s+\()?(?:.*[/\\])?([^/\\():]+):(\d+):\d+\)?\s*$/u.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .slice(0, 3)
+    .map((match) => `${match[1] ?? '<anonymous>'} (${match[2]!}:${match[3]!})`);
+  return `${error.name}${frames.length > 0 ? ` at ${frames.join(' < ')}` : ''}`;
 };

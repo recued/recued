@@ -100,6 +100,8 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   'core.kitchen.draft.list',
   'core.kitchen.draft.get',
   'core.kitchen.draft.update',
+  // D-402 slice A5 — and an AI app's draft request, off for every door until switched on.
+  'core.kitchen.draft.from_job',
   // The cross-pack adapter defaults to the owner and still holds every release
   // for its own decision. Customer response links confer no execution grant.
   'core.work-entity.quote-signoff.release',
@@ -117,6 +119,11 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // D-343 slice 2 — the Tier-1 `episode.record`: the owner's record of their day, kept as
   // episodes, which are owner-only by default (P17, `data.episode` below). Owner-on / door-off.
   'core.situation.record',
+  // D-343 (§355) — the Tier-1 change of an occasion made in Yours. Owner-on / door-off, as the
+  // day's records beside it: an AI app may change one once the owner grants it.
+  'core.situation.occasion-update',
+  // D-407 slice 1 — the Tier-1 new occasion. Owner-on / door-off, as its change.
+  'core.situation.occasion-create',
   // The Tier-1 `work.create` writes — OWNER-on / door-off, the same posture as
   // `core.memory.write` beside it and `core.work-entity.read` below.
   //

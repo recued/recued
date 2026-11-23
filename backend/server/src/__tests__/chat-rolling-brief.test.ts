@@ -107,6 +107,16 @@ describe('shouldBrief — derived from the ladder\'s own arithmetic', () => {
     expect(shouldBrief({ priorToolCalls: three, ...REAL }).brief).toBe(false);
   });
 
+  // 2026-11-20 (the owner: "go ahead", the brief's handoff) — a fold keeps the round that landed, so later packets
+  // carry what earlier folds left: it takes room, and the next fold must come that much sooner.
+  it('counts what earlier folds left in the packet against the room, not against what the fold can read', () => {
+    const three = Array.from({ length: 3 }, () => call(4_000));
+    const held = shouldBrief({ priorToolCalls: three, ...REAL, heldTokens: ROOM - 4_000 });
+    expect(held.brief).toBe(true);
+    expect(held.reason).toMatch(/room 4000 /);
+    expect(shouldBrief({ priorToolCalls: three, ...REAL, heldTokens: 0 }).brief).toBe(false);
+  });
+
   it('⛔ the margin ADAPTS to what this turn is reading', () => {
     // A fixed margin under-reserves on a turn pulling large results. Same
     // accumulated bytes, different result sizes: the one whose individual

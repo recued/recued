@@ -1,15 +1,21 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import { CalendarAdapterError, opGrantEntry, READABLE_COLLECTIONS, collectionGrantEntry,
-  type PreapprovalContinuationRequest } from '@recued/contracts';
+  type PreapprovalContinuationRequest, type PreapprovalResult } from '@recued/contracts';
 import type { PreapprovalOrigin } from '../preapproval-model.js';
 import { startServer } from '../server.js';
 import { GATED_ACTION_TERMINAL_RETENTION_MS } from '../gated-action-store.js';
+import { preapprovalHash } from '../preapproval-invocations.js';
+import { createPreapprovalCodec } from '../storage/preapproval-codec.js';
 import { resourceFixture, resourceFixtureDisposers, recordStep, calendarStep, recordsManifest } from './preapproval-resources-fixture.js';
 
 afterEach(async () => { for (const dispose of resourceFixtureDisposers.splice(0).reverse()) await dispose(); });
 type Fixture = Awaited<ReturnType<typeof resourceFixture>>;
+const stored = (f: Fixture) => Object.fromEntries(['preapproval_proposals', 'preapproval_executions', 'preapproval_grants',
+  'preapproval_members', 'preapproval_decisions', 'preapproval_mutations', 'preapproval_continuations',
+  'preapproval_outbox', 'preapproval_retired_reviews', 'commits', 'gated_action_receipts']
+  .map(table => [table, f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 const request = (f: Fixture, proposalId: string): PreapprovalContinuationRequest => ({
   proposal_id: proposalId, idempotency_key: randomUUID(),
   activation: { kind: 'one_shot', run_at: f.clock.now + 60_000, time_zone: 'UTC' },
@@ -80,6 +86,106 @@ describe('new owner review for unfinished resource changes', () => {
     const reopened = await f.reopen();
     expect(await reopened.service.continuePlan(args, reopened.responder)).toEqual(first);
     expect(reopened.db.prepare('SELECT count(*) FROM preapproval_continuations').pluck().get()).toBe(1);
+  });
+
+  it('replays a revoked continuation after parent retirement and reopen without restoring authority or losing request conflicts', async () => {
+    const original = await conflict(); let f = original.f; const parent = original.prepared;
+    const args = request(f, parent.proposal_id);
+    args.activation.run_at += GATED_ACTION_TERMINAL_RETENTION_MS;
+    args.decision_deadline += GATED_ACTION_TERMINAL_RETENTION_MS;
+    args.dispatch_deadline += GATED_ACTION_TERMINAL_RETENTION_MS;
+    const created = await f.service.continuePlan(args, f.responder);
+    f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+    const input = await f.decision(created.proposal_id);
+    const decision = await f.storage.repository.decide(input, f.responder);
+    const approved = await f.storage.repository.inspect(created.proposal_id);
+    const mutation = { grant_id: approved.grant!.grant_id, expected_revision: approved.grant!.revision, request_id: randomUUID() };
+    await f.storage.repository.revoke(mutation, f.responder);
+    await f.composed.outbox.drain();
+    expect((await f.storage.repository.inspect(parent.proposal_id)).retired_review).toBeDefined();
+    expect(f.db.prepare('SELECT snapshot_ciphertext FROM preapproval_executions WHERE future_ref=?')
+      .get(parent.future_execution_ref)).toEqual({ snapshot_ciphertext: '' });
+    expect((await f.storage.repository.loadExecution(created.future_execution_ref)).continuation?.proposal_id).toBe(parent.proposal_id);
+    const state = () => stored(f);
+    let before = state();
+    const check = async () => {
+      expect(await f.service.continuePlan(args, f.responder)).toEqual(created);
+      await expect(f.service.continuePlan({ ...args, dispatch_deadline: args.dispatch_deadline + 1 }, f.responder))
+        .rejects.toMatchObject({ code: 'preapproval_idempotency_conflict' });
+      await expect(f.service.continuePlan({ ...args, idempotency_key: randomUUID() }, f.responder))
+        .rejects.toMatchObject({ code: 'preapproval_expired' });
+      for (const responder of [{ ...f.responder, key: 'invalid-owner' },
+        { ...f.responder, channel: 'telegram' as const, connection_id: 'telegram', owner_sender: 'unenrolled-owner' }]) {
+        await expect(f.service.continuePlan(args, responder)).rejects.toMatchObject({ code: 'preapproval_invalid_proof' });
+      }
+      expect((await f.storage.repository.revoke(mutation, f.responder)).grant?.status).toBe('revoked');
+      expect(await f.storage.repository.decide(input, f.responder)).toEqual({ ...decision, execution_status: 'cancelled' });
+      expect(state()).toEqual(before);
+      expect(f.row('a')!._record.revision).toBe(1); expect(f.row('b')!.title).toBe('Concurrent b');
+      expect(f.calendarUpdates).not.toHaveBeenCalled();
+    };
+    await check(); f = await f.reopen(); await check();
+    f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+    expect(await f.storage.repository.retireReviewContent()).toBe(1);
+    expect((await f.storage.repository.inspect(created.proposal_id)).retired_review).toBeDefined();
+    before = state(); await check(); f = await f.reopen(); await check();
+    const currentOwner = await f.clients.issue({ client_kind: 'webclient', metadata: { instance_id: 'current-owner' } });
+    f.clients.revoke(f.token.token_id, 'Original request credential revoked', f.clock.now);
+    await expect(f.service.continuePlan(args, { channel: 'webclient', key: currentOwner.token_id }))
+      .rejects.toMatchObject({ code: 'preapproval_authority_changed' });
+    expect(state()).toEqual(before);
+  });
+
+  it('refuses unavailable legacy replay metadata and malformed envelopes while preserving owner history', async () => {
+    const { f, prepared } = await conflict(); const args = request(f, prepared.proposal_id);
+    const created = await f.service.continuePlan(args, f.responder);
+    const plan = await f.storage.repository.loadExecution(created.future_execution_ref);
+    await f.storage.repository.decide({ ...await f.decision(created.proposal_id), decision: 'deny' }, f.responder);
+    await f.composed.outbox.drain(); f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+    await f.composed.outbox.drain();
+    expect((await f.storage.repository.inspect(created.proposal_id)).retired_review).toBeDefined();
+    expect(await f.service.continuePlan(args, f.responder)).toEqual(created);
+    const histories = await Promise.all([f.storage.repository.inspect(prepared.proposal_id), f.storage.repository.inspect(created.proposal_id)]);
+    const original = f.db.prepare('SELECT summary_ciphertext,summary_hash FROM preapproval_retired_reviews WHERE future_ref=?')
+      .get(created.future_execution_ref) as { summary_ciphertext: string; summary_hash: string };
+    const codec = createPreapprovalCodec(() => new Uint8Array(32).fill(5));
+    const envelope = await codec.open(original.summary_ciphertext) as Record<string, unknown>;
+    const replace = async (value: Record<string, unknown>) => {
+      f.db.prepare('UPDATE preapproval_retired_reviews SET summary_ciphertext=?,summary_hash=? WHERE future_ref=?')
+        .run(await codec.seal(value), preapprovalHash(value), created.future_execution_ref);
+    };
+    const faults: Array<[string, (value: Record<string, unknown>) => void]> = [
+      ['version', value => { value.schema_version = 2; }],
+      ['origin', value => { value.origin = { ...f.origin, credential_id: 'different-credential' }; }],
+      ['request hash', value => { value.request_hash = 'invalid'; }],
+      ['input digest', value => { value.input_digest = preapprovalHash('another request'); }],
+      ['extra field', value => { value.extra = true; }],
+    ];
+    for (const [label, corrupt] of faults) {
+      const altered = structuredClone(envelope); corrupt(altered.continuation_replay as Record<string, unknown>);
+      await replace(altered); const before = stored(f);
+      await expect(f.service.continuePlan(args, f.responder), label).rejects.toMatchObject({ code: 'preapproval_stale' });
+      expect(await Promise.all([f.storage.repository.inspect(prepared.proposal_id), f.storage.repository.inspect(created.proposal_id)]))
+        .toEqual(histories);
+      expect(stored(f)).toEqual(before);
+    }
+    const legacy = structuredClone(envelope); delete legacy.continuation_replay;
+    await replace(legacy); const before = stored(f);
+    await expect(f.service.continuePlan(args, f.responder)).rejects.toMatchObject({ code: 'preapproval_expired' });
+    expect(await f.storage.repository.preparedRequest(plan.request, plan.origin, prepared.future_execution_ref)).toEqual(created);
+    expect(await f.storage.repository.inspect(created.proposal_id)).toEqual(histories[1]); expect(stored(f)).toEqual(before);
+    await replace(envelope);
+    const parent = f.db.prepare('SELECT summary_ciphertext,summary_hash FROM preapproval_retired_reviews WHERE future_ref=?')
+      .get(prepared.future_execution_ref) as { summary_ciphertext: string; summary_hash: string };
+    f.db.prepare('UPDATE preapproval_retired_reviews SET summary_hash=? WHERE future_ref=?').run('invalid', prepared.future_execution_ref);
+    await expect(f.service.continuePlan(args, f.responder)).rejects.toMatchObject({ code: 'preapproval_stale' });
+    f.db.prepare('DELETE FROM preapproval_retired_reviews WHERE future_ref=?').run(prepared.future_execution_ref);
+    await expect(f.service.continuePlan(args, f.responder)).rejects.toMatchObject({ code: 'preapproval_expired' });
+    f.db.prepare('INSERT INTO preapproval_retired_reviews(future_ref,summary_ciphertext,summary_hash,retired_at) VALUES(?,?,?,?)')
+      .run(prepared.future_execution_ref, parent.summary_ciphertext, parent.summary_hash, histories[0]!.retired_review!.at);
+    expect(await f.service.continuePlan(args, f.responder)).toEqual(created);
+    expect(f.row('a')!._record.revision).toBe(1); expect(f.row('b')!.title).toBe('Concurrent b');
+    expect(f.calendarUpdates).not.toHaveBeenCalled();
   });
 
   it('never uses inspection or preparation to clear an uncertain provider attempt', async () => {
@@ -181,7 +287,7 @@ describe('new owner review for unfinished resource changes', () => {
     expect(f.db.prepare('SELECT count(*) FROM preapproval_continuations').pluck().get()).toBe(1);
   });
 
-  it.each(['keep', 'revoke_before_prepare', 'revoke_before_dispatch'] as const)('retains the original contract and its grants (%s)', async scenario => {
+  it.each(['keep', 'revoke_before_prepare', 'revoke_before_dispatch', 'replay_after_retirement'] as const)('retains the original contract and its grants (%s)', async scenario => {
     const f = await resourceFixture(); f.save([recordStep('a'), recordStep('b')]);
     const operations = ['core.preapproval.request', 'core.schedule.recipe', 'fixture.note.update'];
     const contract = f.definitions.mint({ minted_by: 'owner', display_name: 'Original assistant', door_types: ['mcp'],
@@ -207,10 +313,34 @@ describe('new owner review for unfinished resource changes', () => {
       expect(f.db.prepare('SELECT count(*) FROM preapproval_continuations').pluck().get()).toBe(0);
       return;
     }
-    const next = await f.service.continuePlan(request(f, original.proposal_id), f.responder);
+    const args = request(f, original.proposal_id);
+    if (scenario === 'replay_after_retirement') {
+      args.activation.run_at += GATED_ACTION_TERMINAL_RETENTION_MS;
+      args.decision_deadline += GATED_ACTION_TERMINAL_RETENTION_MS;
+      args.dispatch_deadline += GATED_ACTION_TERMINAL_RETENTION_MS;
+    }
+    const next = await f.service.continuePlan(args, f.responder);
     const plan = await f.storage.repository.loadExecution(next.future_execution_ref);
     expect(plan.origin).toEqual((await f.storage.repository.loadExecution(original.future_execution_ref)).origin);
     expect((await f.storage.repository.review(next.proposal_id, f.responder)).requested_through.contract_id).toBe(contract.contract_id);
+    if (scenario === 'replay_after_retirement') {
+      await f.composed.outbox.drain(); f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+      await f.composed.outbox.drain();
+      expect((await f.storage.repository.inspect(original.proposal_id)).retired_review).toBeDefined();
+      expect(await f.service.continuePlan(args, f.responder)).toEqual(next);
+      await f.storage.repository.decide({ ...await f.decision(next.proposal_id), decision: 'deny' }, f.responder);
+      await f.composed.outbox.drain(); f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+      await f.composed.outbox.drain();
+      const reopened = await f.reopen();
+      expect((await reopened.storage.repository.inspect(next.proposal_id)).retired_review).toBeDefined();
+      expect(await reopened.service.continuePlan(args, reopened.responder)).toEqual(next);
+      reopened.grants.set(contract.contract_id, opGrantEntry('core.schedule.recipe'), false, reopened.clock.now);
+      const before = stored(reopened);
+      await expect(reopened.service.continuePlan(args, reopened.responder)).rejects.toMatchObject({ code: 'preapproval_authority_changed' });
+      expect(stored(reopened)).toEqual(before);
+      expect(reopened.row('b')!.title).toBe('Concurrent b'); expect(reopened.calendarUpdates).not.toHaveBeenCalled();
+      return;
+    }
     await f.storage.repository.decide(await f.decision(next.proposal_id), f.responder);
     if (scenario === 'revoke_before_dispatch') {
       f.grants.set(contract.contract_id, opGrantEntry('fixture.note.update'), false, f.clock.now);
@@ -373,6 +503,84 @@ describe('new owner review for unfinished resource changes', () => {
     expect(retired.retired_review).toBeDefined(); expect(retired.recovery?.eligible).toBe(false);
     expect(await f.run(next.future_execution_ref)).toMatchObject({ success: true });
     expect(f.row('a')!._record.revision).toBe(1); expect(f.row('b')!.title).toBe('Reviewed b');
+  });
+
+  it('keeps a continuation created by another SQLite connection reachable from retired history', async () => {
+    const { f, prepared, before } = await conflict();
+    await f.composed.outbox.drain();
+    f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+    const writer = await resourceFixture({ dir: f.dir, clock: f.clock, token: f.token });
+    const args = request(writer, prepared.proposal_id);
+    const inspect = f.storage.repository.inspect.bind(f.storage.repository);
+    let next!: PreapprovalResult;
+    // Retention's captured history and the branch writer each use the actual
+    // repository and independent SQLite connections. No persisted state is faked.
+    const captured = vi.spyOn(f.storage.repository, 'inspect').mockImplementationOnce(async (...input) => {
+      const snapshot = await inspect(...input);
+      expect(snapshot.recovery?.successor_proposal_id).toBeNull();
+      expect(f.db.inTransaction).toBe(false);
+      next = await writer.service.continuePlan(args, writer.responder);
+      return snapshot;
+    });
+    try { expect(await f.storage.repository.retireReviewContent()).toBe(1); }
+    finally { captured.mockRestore(); }
+    expect(next).toBeDefined();
+    const retired = await f.storage.repository.inspect(prepared.proposal_id);
+    expect(retired).toMatchObject({ execution_status: 'partial', decision: before.decision,
+      recovery: { eligible: false, successor_proposal_id: next.proposal_id } });
+    expect(retired.retired_review).toBeDefined(); expect(retired.reviewed).toBeUndefined();
+    expect(f.db.prepare('SELECT snapshot_ciphertext FROM preapproval_executions WHERE future_ref=?')
+      .get(prepared.future_execution_ref)).toEqual({ snapshot_ciphertext: '' });
+    expect((await f.storage.repository.list('', 100)).proposals.find(row => row.proposal_id === prepared.proposal_id)
+      ?.recovery?.successor_proposal_id).toBe(next.proposal_id);
+    await writer.close();
+    const reopened = await f.reopen();
+    const history = await reopened.storage.repository.inspect(prepared.proposal_id);
+    expect(history.recovery).toMatchObject({ eligible: false, successor_proposal_id: next.proposal_id });
+    expect(history.decision).toEqual(before.decision);
+    expect(history.members.map(({ member_id, status, action_ref, commit_id }) => ({ member_id, status, action_ref, commit_id })))
+      .toEqual(before.members.map(({ member_id, status, action_ref, commit_id }) => ({ member_id, status, action_ref, commit_id })));
+    await expect(reopened.service.continuePlan(request(reopened, prepared.proposal_id), reopened.responder))
+      .rejects.toMatchObject({ code: 'preapproval_expired' });
+    expect(reopened.db.prepare('SELECT COUNT(*) AS n FROM preapproval_continuations WHERE parent_ref=?')
+      .get(prepared.future_execution_ref)).toEqual({ n: 1 });
+    const decision = await reopened.decision(next.proposal_id);
+    const accepted = await reopened.storage.repository.decide(decision, reopened.responder);
+    expect(await reopened.storage.repository.decide(decision, reopened.responder)).toEqual(accepted);
+    expect(await reopened.run(next.future_execution_ref)).toMatchObject({ success: true });
+    expect(reopened.row('a')!._record.revision).toBe(1);
+    expect(reopened.row('b')).toMatchObject({ title: 'Reviewed b', _record: { revision: 2 } });
+    expect(reopened.calendarUpdates).toHaveBeenCalledTimes(1);
+    await expect(reopened.run(next.future_execution_ref)).rejects.toBeDefined();
+  });
+
+  it('clears a declined unused continuation from retired history across SQLite connections and reopen', async () => {
+    const { f, prepared, before } = await conflict();
+    const args = request(f, prepared.proposal_id);
+    args.activation.run_at = f.clock.now + GATED_ACTION_TERMINAL_RETENTION_MS + 120_000;
+    args.decision_deadline = args.activation.run_at - 60_000;
+    args.dispatch_deadline = args.activation.run_at + 60_000;
+    const next = await f.service.continuePlan(args, f.responder);
+    await f.composed.outbox.drain();
+    f.clock.now += GATED_ACTION_TERMINAL_RETENTION_MS + 1;
+    expect(await f.storage.repository.retireReviewContent()).toBe(1);
+    expect((await f.storage.repository.inspect(prepared.proposal_id)).recovery?.successor_proposal_id).toBe(next.proposal_id);
+    const writer = await resourceFixture({ dir: f.dir, clock: f.clock, token: f.token });
+    await writer.storage.repository.decide({ ...await writer.decision(next.proposal_id), decision: 'deny' }, writer.responder);
+    expect((await f.storage.repository.inspect(prepared.proposal_id)).recovery)
+      .toMatchObject({ eligible: false, successor_proposal_id: null });
+    await writer.close();
+    const reopened = await f.reopen();
+    const history = await reopened.storage.repository.inspect(prepared.proposal_id);
+    expect(history.recovery).toMatchObject({ eligible: false, successor_proposal_id: null });
+    expect(history.decision).toEqual(before.decision); expect(history.reviewed).toBeUndefined();
+    expect((await reopened.storage.repository.inspect(next.proposal_id)).status).toBe('denied');
+    await expect(reopened.service.continuePlan(request(reopened, prepared.proposal_id), reopened.responder))
+      .rejects.toMatchObject({ code: 'preapproval_expired' });
+    expect(reopened.db.prepare('SELECT COUNT(*) AS n FROM preapproval_continuations WHERE parent_ref=?')
+      .get(prepared.future_execution_ref)).toEqual({ n: 1 });
+    expect(reopened.row('a')!._record.revision).toBe(1); expect(reopened.row('b')!.title).toBe('Concurrent b');
+    expect(reopened.calendarUpdates).not.toHaveBeenCalled();
   });
 
   it('refuses an unselected call because its effects are outside the durable member outcomes', async () => {

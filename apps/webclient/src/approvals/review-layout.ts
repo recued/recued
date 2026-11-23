@@ -11,7 +11,7 @@ export const APPROVAL_VIEW_NAV_STYLES = `
   margin: 0 0 16px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: var(--wc-radius-lg, 10px);
+  border-radius: var(--wc-radius-lg, 14px);
   background: var(--surface-subtle);
 }
 .approval-view-nav a {
@@ -20,10 +20,10 @@ export const APPROVAL_VIEW_NAV_STYLES = `
   justify-content: center;
   box-sizing: border-box;
   min-width: 0;
-  min-height: 44px;
+  min-height: var(--wc-control-h, 40px);
   padding: 8px 12px;
   border: 1px solid transparent;
-  border-radius: var(--wc-radius, 6px);
+  border-radius: var(--wc-radius, 9px);
   color: var(--muted);
   font-size: 13px;
   font-weight: 600;
@@ -88,8 +88,10 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
   padding: 16px;
+  --wc-control-h: 40px;
+  container: approval-review / inline-size;
   color: var(--fg);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -98,10 +100,10 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
   display: inline-flex;
   align-items: center;
   box-sizing: border-box;
-  min-height: 44px;
+  min-height: var(--wc-control-h, 40px);
   max-width: 100%;
   padding: 6px 8px;
-  border-radius: var(--wc-radius, 6px);
+  border-radius: var(--wc-radius, 9px);
   color: var(--accent);
   font-size: 13px;
   text-decoration: none;
@@ -125,7 +127,9 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
   flex: 1 1 240px;
   min-width: 0;
   margin: 0;
-  font-size: 24px;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -.02em;
   line-height: 1.3;
 }
 [data-recued-approval-review] h2 {
@@ -136,13 +140,13 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
 [data-recued-approval-review] p { margin: 0; }
 [data-recued-approval-review] button {
   box-sizing: border-box;
-  min-height: 44px;
+  min-height: var(--wc-control-h, 40px);
   max-width: 100%;
 }
 [data-recued-approval-review] .approval-review-button {
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: var(--wc-radius, 6px);
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -158,13 +162,14 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
   background: var(--accent);
   color: var(--on-accent);
 }
+[data-recued-approval-review] button[aria-disabled="true"],
 [data-recued-approval-review] button:disabled { opacity: .6; cursor: not-allowed; }
 [data-recued-approval-review] :is(.approval-review-summary, .approval-review-member, .approval-review-actions) {
   box-sizing: border-box;
   min-width: 0;
-  padding: clamp(14px, 2vw, 22px);
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: var(--wc-radius-lg, 10px);
+  border-radius: var(--wc-radius-lg, 14px);
   background: var(--surface);
 }
 [data-recued-approval-review] :is(.approval-review-summary, .approval-review-content, .approval-review-member) {
@@ -175,14 +180,16 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
 [data-recued-approval-review] :is(.approval-review-summary, .approval-review-content) { margin-bottom: 16px; }
 [data-recued-approval-review] .approval-review-summary > .approval-review-button { justify-self: start; }
 [data-recued-approval-review] .approval-review-content { min-width: 0; }
+[data-recued-approval-review] .approval-review-content > .approval-review-button { justify-self: start; }
 [data-recued-approval-review] .approval-review-member > * { min-width: 0; max-width: 100%; }
 [data-recued-approval-review] .approval-review-member-child { margin-left: 12px; }
 [data-recued-approval-review] .approval-review-member > label {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
+  min-height: var(--wc-control-h, 40px);
   font-weight: 650;
+  font-size: 14px;
 }
 [data-recued-approval-review] input[type="checkbox"] {
   flex: 0 0 auto;
@@ -194,11 +201,11 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
 [data-recued-approval-review] input:not([type="checkbox"]) {
   box-sizing: border-box;
   min-width: 0;
-  min-height: 44px;
+  min-height: var(--wc-control-h, 40px);
   max-width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--wc-radius, 6px);
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface);
   color: var(--fg);
 }
@@ -209,7 +216,7 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
   margin: 0;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: var(--wc-radius, 6px);
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface-subtle);
   color: var(--fg);
   font: 12px/1.6 var(--mono, ui-monospace, monospace);
@@ -228,11 +235,26 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
 [data-recued-approval-review] .approval-review-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
 }
 [data-recued-approval-review] .approval-review-actions > p { flex-basis: 100%; }
 [data-recued-approval-review] :is(.approval-review-summary, .approval-review-content, .approval-review-actions):empty { display: none; }
+[data-recued-approval-review] .approval-review-receipts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-recued-approval-review] .approval-review-receipts > li {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 9px);
+  background: var(--surface-subtle);
+}
 [data-recued-approval-review] .approval-review-list {
   display: grid;
   gap: 12px;
@@ -242,12 +264,30 @@ const REVIEW_STYLES = `${APPROVAL_VIEW_NAV_STYLES}
 }
 [data-recued-approval-review] .approval-review-list > li {
   min-width: 0;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: var(--wc-radius-lg, 10px);
+  border-radius: var(--wc-radius-lg, 14px);
   background: var(--surface);
 }
 [data-recued-approval-review] .approval-review-list > li > p { margin-top: 6px; color: var(--muted); font-size: 13px; }
+[data-recued-approval-review] .approval-review-member > label:has(input:not([type="checkbox"])) {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  font-size: 13px;
+}
+[data-recued-approval-review] input:not([type="checkbox"]) { width: 100%; font: inherit; font-weight: 400; }
+[data-recued-approval-review] form.approval-review-member { gap: 16px; }
+[data-recued-approval-review] form.approval-review-member > button { justify-self: start; }
+@container approval-review (max-width: 600px) {
+  [data-recued-approval-review] > .approval-review-header h1 { flex-basis: 160px; }
+  [data-recued-approval-review] .approval-review-actions > button { flex: 1 1 160px; }
+}
+@media (max-width: 600px) {
+  [data-recued-approval-review] { padding: 12px; --wc-control-h: 44px; }
+  [data-recued-approval-review] :is(.approval-review-summary, .approval-review-member, .approval-review-actions) { padding: 12px; }
+}
+
 `;
 
 /** Presentation only: callers retain the existing reads, decision callbacks,
@@ -256,7 +296,7 @@ export const createApprovalReviewLayout = (
   doc: Document,
   host: HTMLElement,
   options: { title: string; view: 'runs' | 'changes'; refresh: HTMLButtonElement },
-): { summary: HTMLElement; content: HTMLElement; actions: HTMLElement } => {
+): { heading: HTMLHeadingElement; summary: HTMLElement; content: HTMLElement; actions: HTMLElement } => {
   if (doc.head && !doc.head.querySelector('[data-recued-approval-review-styles]')) {
     const style = doc.createElement('style');
     style.setAttribute('data-recued-approval-review-styles', '');
@@ -278,5 +318,5 @@ export const createApprovalReviewLayout = (
   const content = doc.createElement('div'); content.className = 'approval-review-content';
   const actions = doc.createElement('div'); actions.className = 'approval-review-actions';
   host.append(back, header, createApprovalViewNav(doc, options.view), summary, content, actions);
-  return { summary, content, actions };
+  return { heading, summary, content, actions };
 };

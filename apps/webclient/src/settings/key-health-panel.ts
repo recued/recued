@@ -809,8 +809,11 @@ export const mountKeyHealthPanel = (
     const status = doc.createElement('p');
     status.className = 'key-health-help key-health-help-busy';
     status.setAttribute('role', 'status');
+    status.setAttribute('aria-atomic', 'true');
+    status.setAttribute('tabindex', '-1');
     status.textContent = COPY.busy;
     wrapper.appendChild(status);
+    readFocusTarget = status;
   };
 
   const renderDone = (): void => {
@@ -821,6 +824,8 @@ export const mountKeyHealthPanel = (
 
     if (lastDepaired) {
       heading.textContent = COPY.depair_done_heading;
+      heading.setAttribute('tabindex', '-1');
+      readFocusTarget = heading;
       body.textContent = COPY.depair_done_body;
       wrapper.appendChild(heading);
       wrapper.appendChild(body);
@@ -907,17 +912,17 @@ export const mountKeyHealthPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
-    actions.appendChild(
-      makeButton('Back', 'undo', KEY_HEALTH_BACK_BTN_ATTR, '', 'secondary', () => {
-        const focusTarget = pendingActionFocus;
-        pendingAction = null;
-        transitionTo('idle');
-        if (focusTarget !== null) {
-          focusIfSupported(findBtn(focusTarget.attr, focusTarget.value));
-        }
-        pendingActionFocus = null;
-      }),
-    );
+    const back = makeButton('Back', 'undo', KEY_HEALTH_BACK_BTN_ATTR, '', 'secondary', () => {
+      const focusTarget = pendingActionFocus;
+      pendingAction = null;
+      transitionTo('idle');
+      if (focusTarget !== null) {
+        focusIfSupported(findBtn(focusTarget.attr, focusTarget.value));
+      }
+      pendingActionFocus = null;
+    });
+    actions.appendChild(back);
+    readFocusTarget = back;
     wrapper.appendChild(heading);
     wrapper.appendChild(hint);
     wrapper.appendChild(errBox);
@@ -927,6 +932,8 @@ export const mountKeyHealthPanel = (
   const render = (): void => {
     if (disposed) return;
     const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
+    const keepRotationFocus = state === 'busy'
+      && doc.activeElement?.getAttribute?.(KEY_HEALTH_CONFIRM_BTN_ATTR) != null;
     readFocusTarget = null;
     postureList = null;
     postureCard = null;
@@ -957,7 +964,7 @@ export const mountKeyHealthPanel = (
     const target = keepReadFocus && state === 'idle' && pendingActionFocus !== null
       ? findBtn(pendingActionFocus.attr, pendingActionFocus.value) ?? readFocusTarget
       : readFocusTarget;
-    if (keepReadFocus && target && (target.getClientRects?.().length ?? 1) > 0) {
+    if ((keepReadFocus || keepRotationFocus) && target && (target.getClientRects?.().length ?? 1) > 0) {
       focusIfSupported(target);
     }
   };

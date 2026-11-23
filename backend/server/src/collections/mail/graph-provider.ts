@@ -13,6 +13,9 @@
  *          `@odata.deltaLink` appears, then saves it as the next-tick
  *          watermark.)
  *    POST /me/messages                           — create draft (D-127 P1.4)
+ *    POST /me/messages/{id}/attachments           — a file under 3 MB
+ *    POST /me/messages/{id}/attachments/createUploadSession, then PUT
+ *         its ranges to the session's own address — a larger file (2026-11-17)
  *    POST /me/messages/{id}/send                  — send draft (D-127 P1.4)
  *
  *  Canonicalization is done against Graph's JSON shape directly —
@@ -36,7 +39,8 @@
  *  mapping mirrors gmail: 401 / 403 → MAIL_SEND_AUTH_FAILED,
  *  4xx other → MAIL_SEND_RECIPIENT_INVALID, 5xx →
  *  MAIL_SEND_NETWORK_FAILED; Graph's 400 for a header it will not take,
- *  and its 413 for a request over 4 MB, → MAIL_SEND_MESSAGE_REFUSED.
+ *  its 413 for a request over 4 MB, and a file it will not take,
+ *  → MAIL_SEND_MESSAGE_REFUSED.
  *  Attachments go one per request (`createGraphDraft`). Sent records
  *  appear under Sent Items on the next inbound delta.
  *
@@ -61,7 +65,7 @@ import {
   type MailSentRepliesResult,
   type MailSentReplyMatch,
 } from '@recued/contracts';
-import { IngredientError } from '@recued/ingredients';
+import { discardResponseBody, IngredientError, readBoundedResponseText } from '@recued/ingredients';
 import { looksLikeIcs } from '@recued/transforms';
 import { simpleParser } from 'mailparser';
 import {
@@ -102,6 +106,8 @@ import {
   type SentMessageMeta,
   normalizeRfcMessageId,
   mailContentId,
+  mailUploadDeadlineMs,
+  type OutgoingAttachment,
 } from './provider.js';
 import {
   defaultHttpFetcher,
@@ -163,9 +169,79 @@ export interface CreateGraphProviderOptions {
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
+  /** Test hook: the PUTs of a file's ranges to an upload session's address. */
+  uploadFetcher?: GraphUploadFetcher;
 }
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
+
+/** D-127 follow-up (2026-11-17), "Attach large files to Outlook messages or
+ *  events": "If the file size is under 3 MB, do a single POST on the
+ *  attachments navigation property"; "between 3 MB and 150 MB, create an upload
+ *  session". A file from here up goes by an upload session. Should Outlook
+ *  answer that a file is under its minimum (`ErrorAttachmentSizeShouldNotBe
+ *  LessThanMinimumSize`, the documents give no byte count), it goes in one POST.
+ *  Live on Outlook.com (2026-11-17), a session for exactly 3,000,000 bytes was
+ *  made and took its file. */
+export const GRAPH_UPLOAD_SESSION_MIN_BYTES = 3_000_000;
+
+/** How much larger than its file Graph's `size` for an attachment may be (2026-11-17): Exchange counts
+ *  the stored item, the file and its properties. Measured live on Outlook.com: 117 and 166 bytes. */
+export const GRAPH_ATTACHMENT_ITEM_OVERHEAD_MAX = 64 * 1024;
+
+/** One PUT's range of a file: "For better performance, keep each byte range
+ *  less than 4 MB." Ten times 320 KiB. */
+export const GRAPH_UPLOAD_RANGE_BYTES = 3_276_800;
+
+/** One PUT of a range of a file to an Outlook upload session (2026-11-17). The
+ *  session's address is pre-authenticated ("Do not specify an Authorization
+ *  request header"), so no credential of ours goes with it, and it never goes
+ *  through a broker, which would add one. The body is the file's own bytes,
+ *  which the string-bodied `HttpFetcher` cannot carry. */
+export type GraphUploadFetcher = (url: string, init: {
+  method: 'PUT';
+  headers: Record<string, string>;
+  body: Uint8Array;
+  timeoutMs: number;
+}) => Promise<{ status: number; ok: boolean; text(): Promise<string> }>;
+
+const GRAPH_UPLOAD_RESPONSE_MAX_BYTES = 64 * 1024;
+
+const defaultGraphUploadFetcher: GraphUploadFetcher = async (url, init) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), init.timeoutMs);
+  let response: Response | undefined;
+  try {
+    response = await globalThis.fetch(url, {
+      method: init.method,
+      headers: init.headers,
+      body: init.body as unknown as BodyInit,
+      redirect: 'error',
+      signal: controller.signal,
+    });
+    const { text } = await readBoundedResponseText(response, GRAPH_UPLOAD_RESPONSE_MAX_BYTES);
+    const { status, ok } = response;
+    return { status, ok, async text() { return text; } };
+  } finally {
+    if (response !== undefined) discardResponseBody(response);
+    clearTimeout(timer);
+  }
+};
+
+/** An upload session's address, when it is one a file's bytes may go to:
+ *  https, on Outlook's host ("in the https://outlook.office.com domain") or
+ *  another of Microsoft's: an Outlook.com mailbox's was on
+ *  `outlook.office365.com` (live, 2026-11-17). Kept exactly as given: "Do not
+ *  customize this URL". */
+export const graphUploadAddress = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  return url.protocol === 'https:'
+    && /(^|\.)(office\.com|office365\.com|outlook\.com|microsoft\.com)$/i.test(url.hostname)
+    ? value
+    : null;
+};
 /** D-318 — MAPI's `PidTagInReplyToId`, as Graph names an extended property.
  *  ⛔ A Sent Items message's `internetMessageHeaders` holds only the `x-`
  *  headers set when it was made, never `In-Reply-To`: measured on Outlook.com
@@ -354,10 +430,9 @@ export const canonicalizeGraph = (
 // ────────────────────────────────────────────────────────────────
 
 /** D-172 P2 — a single Graph `fileAttachment` resource (the inline-
- *  bytes attachment kind). `contentBytes` is base64; Graph's inline
- *  fileAttachment path caps around 3 MB before an upload session is
- *  needed (the over-size guard at `MailCollection.send` keeps us under
- *  that — larger files are dropped + warned at Half A). */
+ *  bytes attachment kind). `contentBytes` is base64; it is one POST for a
+ *  file under `GRAPH_UPLOAD_SESSION_MIN_BYTES`, and a larger file goes by an
+ *  upload session (2026-11-17, `createGraphDraft`). */
 export interface GraphFileAttachment {
   '@odata.type': '#microsoft.graph.fileAttachment';
   name: string;
@@ -400,6 +475,9 @@ export interface GraphCreatedDraft {
 interface GraphDraftFailure {
   refused: (status: number, text: string) => never;
   failed: 'MAIL_SEND_NETWORK_FAILED' | 'MAIL_DRAFT_NETWORK_FAILED';
+  /** A file Outlook will not take as written (an upload session's 4xx): the
+   *  message, not a recipient. */
+  fileRefused: 'MAIL_SEND_MESSAGE_REFUSED' | 'MAIL_DRAFT_WRITE_FAILED';
 }
 
 const buildGraphRecipients = (addresses: string[]): GraphRecipient[] =>
@@ -541,6 +619,7 @@ export const createGraphProvider = (
   opts: CreateGraphProviderOptions,
 ): MailProvider => {
   const fetcher = opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
+  const uploadFetcher = opts.uploadFetcher ?? defaultGraphUploadFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   /** Aborted by `close()`, armed again by `connect()`: the first scan and the
@@ -1111,7 +1190,10 @@ export const createGraphProvider = (
     // right, and each D-318 answer was to be retried for a day (live, 2026-10-15).
     // Too large: Graph's write cap (413, "Request entity too large"). The
     // message, not a recipient: sent again, it is refused again.
-    if (status === 413 || (status === 400 && graphErrorCode(text) === 'InvalidInternetMessageHeader')) {
+    // Over the mailbox's own limit on a whole message is Exchange's
+    // `ErrorMessageSizeExceeded` (an Exchange response code; not yet seen live).
+    if (status === 413 || (status === 400 && graphErrorCode(text) === 'InvalidInternetMessageHeader')
+      || (status >= 400 && status < 500 && graphErrorCode(text) === 'ErrorMessageSizeExceeded')) {
       throw new IngredientError(
         'MAIL_SEND_MESSAGE_REFUSED',
         `Graph refused the message (${status}): ${text.slice(0, 200)}`,
@@ -1197,6 +1279,72 @@ export const createGraphProvider = (
     return hit?.id ?? null;
   };
 
+  /** A file of 3 MB or more, attached to the draft by an upload session
+   *  (2026-11-17): the session is made with the file's name, size and type, and
+   *  its bytes go to the session's address in order, a range per PUT. `true`
+   *  once attached; `false` when Outlook answers that the file is under its
+   *  minimum, which then goes in one POST. Any other failure deletes the draft
+   *  and is told, as a file refused in one POST is: nothing was sent.
+   *
+   *  A PUT's 401 or 403 is the session's own token, not the owner's sign-in,
+   *  so it is never told as one: the next try makes a new session. */
+  const attachByUploadSession = async (
+    draftUrl: string,
+    file: OutgoingAttachment,
+    failure: GraphDraftFailure,
+  ): Promise<boolean> => {
+    const abandon = async (code: GraphDraftFailure['failed'] | GraphDraftFailure['fileRefused'],
+      message: string, status?: number): Promise<never> => {
+      await deleteWithRetry(draftUrl).catch(() => undefined);
+      throw new IngredientError(code, message, {
+        kind: 'graph', slug: opts.slug, ...(status !== undefined ? { status } : {}),
+      });
+    };
+    const created = await postWithRetry(`${draftUrl}/attachments/createUploadSession`, JSON.stringify({
+      AttachmentItem: { attachmentType: 'file', name: file.filename, size: file.size_bytes, contentType: file.mime_type },
+    }));
+    if (!created.ok) {
+      const text = await created.text().catch(() => '');
+      if (graphErrorCode(text) === 'ErrorAttachmentSizeShouldNotBeLessThanMinimumSize') return false;
+      if (created.status === 401 || created.status === 403 || created.status === 429 || created.status >= 500) {
+        await deleteWithRetry(draftUrl).catch(() => undefined);
+        failure.refused(created.status, text);
+      }
+      return abandon(failure.fileRefused,
+        `Outlook refused the file '${file.filename}' (${created.status}): ${text.slice(0, 200)}`, created.status);
+    }
+    const session = (await created.json().catch(() => null)) as { uploadUrl?: unknown } | null;
+    const uploadUrl = graphUploadAddress(session?.uploadUrl);
+    if (uploadUrl === null) {
+      return abandon(failure.failed, `Outlook gave no upload address for the file '${file.filename}'`, created.status);
+    }
+    const bytes = Buffer.from(file.bytes_b64, 'base64');
+    for (let start = 0; start < bytes.length; start += GRAPH_UPLOAD_RANGE_BYTES) {
+      const range = bytes.subarray(start, Math.min(start + GRAPH_UPLOAD_RANGE_BYTES, bytes.length));
+      let put: Awaited<ReturnType<GraphUploadFetcher>>;
+      try {
+        put = await uploadFetcher(uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'Content-Range': `bytes ${start}-${start + range.length - 1}/${bytes.length}`,
+          },
+          body: range,
+          timeoutMs: mailUploadDeadlineMs(range.length),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return abandon(failure.failed,
+          `The upload of the file '${file.filename}' to Outlook did not finish: ${message.slice(0, 200)}`);
+      }
+      if (put.ok) continue;
+      const text = await put.text().catch(() => '');
+      return abandon(put.status === 413 ? failure.fileRefused : failure.failed,
+        `Outlook did not take the file '${file.filename}' (${put.status}): ${text.slice(0, 200)}`, put.status);
+    }
+    return true;
+  };
+
   /** The draft a message is sent from (`send`, which then posts `/send`) or
    *  saved as (D-264's `saveDraft`, which stops here). One body, so the two
    *  paths cannot drift in how a message becomes a Graph resource.
@@ -1210,11 +1358,10 @@ export const createGraphProvider = (
    *  deleted, and the failure told. Graph caps every write request at 4 MB,
    *  base64 included ("Use the Microsoft Graph API"), so files inline in one
    *  new message were one request: two 2 MB files came to over 4 MB, and Graph
-   *  answers 413. Its documented way is one file per request, each under 3 MB
-   *  ("Attach large files to Outlook messages": "attach the files
-   *  individually"). A file over that needs an upload session, which this does
-   *  not make: with `MAIL_SEND_ATTACHMENT_MAX_BYTES` at 3 MiB, only a file
-   *  within about 150 KB of the cap can be refused (413, the message refused). */
+   *  answers 413. Its documented way is one file per request ("Attach large
+   *  files to Outlook messages": "attach the files individually"): one POST
+   *  for a file under 3 MB, an upload session for a larger one (2026-11-17,
+   *  `attachByUploadSession`). */
   const createGraphDraft = async (
     msg: OutgoingMessage,
     failure: GraphDraftFailure,
@@ -1240,7 +1387,11 @@ export const createGraphProvider = (
       );
     }
     const draftUrl = `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(draft.id)}`;
-    for (const attachment of attachments ?? []) {
+    const files = msg.attachments ?? [];
+    for (const [index, attachment] of (attachments ?? []).entries()) {
+      const file = files[index];
+      if (file !== undefined && file.size_bytes >= GRAPH_UPLOAD_SESSION_MIN_BYTES
+        && await attachByUploadSession(draftUrl, file, failure)) continue;
       const added = await postWithRetry(`${draftUrl}/attachments`, JSON.stringify(attachment));
       if (added.ok) continue;
       const text = await added.text().catch(() => '');
@@ -1285,7 +1436,9 @@ export const createGraphProvider = (
     const savedAt = nowOf();
     /** The create step, with the DRAFT taxonomy rather than the send one. */
     const createDraftOnly = (): Promise<GraphCreatedDraft & { id: string }> =>
-      createGraphDraft(msg, { refused: throwDraftError, failed: 'MAIL_DRAFT_NETWORK_FAILED' });
+      createGraphDraft(msg, {
+        refused: throwDraftError, failed: 'MAIL_DRAFT_NETWORK_FAILED', fileRefused: 'MAIL_DRAFT_WRITE_FAILED',
+      });
     if (prior) {
       // ⛔ PATCH IS A MERGE, SO ABSENT MEANS UNCHANGED, NOT CLEARED.
       // `buildGraphMessage` omits empty `cc` / `bcc` / `replyTo` — correct for a
@@ -1336,7 +1489,9 @@ export const createGraphProvider = (
     // afresh (`not_sent`).
     let draft: GraphCreatedDraft & { id: string };
     try {
-      draft = await createGraphDraft(msg, { refused: throwSendError, failed: 'MAIL_SEND_NETWORK_FAILED' });
+      draft = await createGraphDraft(msg, {
+        refused: throwSendError, failed: 'MAIL_SEND_NETWORK_FAILED', fileRefused: 'MAIL_SEND_MESSAGE_REFUSED',
+      });
     } catch (err) {
       if (err instanceof IngredientError) {
         err.details = { ...err.details, not_sent: true };
@@ -1446,9 +1601,17 @@ export const createGraphProvider = (
     const attachment = metadata[0]!;
     const filename = attachment.name ?? '';
     const mimeType = normalizeMailAttachmentMimeType(attachment.contentType);
+    // ⛔ Graph's `size` is the attachment as Exchange stores it, not the file: live on Outlook.com
+    // (2026-11-17), files of 7,000,000, 3,000,000 and 1,000,000 bytes read 7,000,117, 3,000,117 and
+    // 1,000,166. Held equal to the file's, an Outlook send claimed by its one file never matched.
+    // So it only rules a file out: an item smaller than the file cannot hold it, nor one far larger
+    // (`GRAPH_ATTACHMENT_ITEM_OVERHEAD_MAX`), whose bytes are not read. The bytes, read below,
+    // decide: their length and sha256 are compared exactly with the claim.
     if (
       !attachment.id
-      || attachment.size !== query.attachment_size_bytes
+      || typeof attachment.size !== 'number'
+      || attachment.size < query.attachment_size_bytes
+      || attachment.size > query.attachment_size_bytes + GRAPH_ATTACHMENT_ITEM_OVERHEAD_MAX
       || attachment.isInline === true
       || filename !== query.attachment_filename
       || mimeType !== normalizeMailAttachmentMimeType(query.attachment_mime_type)
@@ -1478,11 +1641,8 @@ export const createGraphProvider = (
       return { parts: [], complete: false };
     }
     const detailBytes = decodeGraphContentBytes(detail.contentBytes);
-    if (
-      detail.isInline === true
-      || (detail.size !== undefined && detail.size !== query.attachment_size_bytes)
-      || detailBytes.length > query.attachment_size_bytes
-    ) {
+    // The decoded bytes are the file; Graph's `size` here is the stored item's again (above).
+    if (detail.isInline === true || detailBytes.length > query.attachment_size_bytes) {
       return { parts: [], complete: false };
     }
     return {

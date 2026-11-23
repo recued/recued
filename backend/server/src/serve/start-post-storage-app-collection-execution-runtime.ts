@@ -247,6 +247,8 @@ export const startPostBaseStorageVaultRuntime = async (
     runtimeConfig: base.runtimeConfig,
     vaultQuotas: base.vaultQuotas,
     getVaultKey: () => keysRef?.keyProvider('vault')() ?? null,
+    // D-348 — the chat's key, for the owner's words a chain is learned under.
+    getChatKey: () => keysRef?.keyProvider('chat')() ?? null,
   });
   options.publishDbCleanup?.(() => {
     storageContext.db.close();
@@ -349,6 +351,9 @@ export const startPostBaseStorageVaultRuntime = async (
       baseVault,
       accountStore: storageContext.accountStore,
       mailFactStore: storageContext.mailFactStoreRef,
+      recordsStore: storageContext.recordsStore,
+      // D-339 slice 12a — a Body's page shows the owner's chats' switch for its numbers.
+      bodyNumbers: storageContext.bodyNumbers,
     },
     execution: {
       storage: storageContext,

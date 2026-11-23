@@ -138,6 +138,20 @@ describe('reviewed command acknowledgement and durable admission', () => {
     expect(out).toEqual({ status: 'error', error: { code: 'value_not_applied', message: 'It is disabled, so it was not clicked.' } });
   });
 
+  it('carries bounded obstruction evidence only for a canonical reviewed click refusal', async () => {
+    const obstruction = { operation: 'click', executed: false, reason: 'target_occluded', source: 'hit_test',
+      target: { tag: 'button' }, blocker: { tag: 'div', role: 'dialog' }, waited_ms: 0 };
+    const message = 'Something covers it, so it was not clicked.';
+    const run = (action: 'click' | 'fill', not_applied: unknown) => executeReviewedBridgeDocument({ executeScript: async () => [
+      { documentId: document.document_id, result: { not_applied } },
+    ] }, document, action, { selector: '#save', value: 'value' });
+    expect(await run('click', { message, obstruction })).toEqual({ status: 'error', error: {
+      code: 'value_not_applied', message, obstruction } });
+    expect(await run('click', { message, obstruction: { ...obstruction, waited_ms: NaN } }))
+      .toMatchObject({ status: 'error', error: { code: 'delivery_uncertain' } });
+    expect(await run('fill', { message, obstruction })).toMatchObject({ status: 'error', error: { code: 'delivery_uncertain' } });
+  });
+
   // A refusal belongs to one operation; on any other it proves nothing.
   it.each([
     ['click', { not_applied: true }], ['click', { protected: true }], ['fill', { protected: true }],

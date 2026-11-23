@@ -35,7 +35,11 @@ export const createReleaseHarnessCaller = (): RecipeReleaseCaller => {
     checkRevision(state,request.expected_revision); const active = state.view.active!;
     if (!state.view.managed) { active.sequence = 1; state.view.releases = [{ sequence: 1,digest: active.digest,created_at: 1 }]; }
     state.view.managed = true; state.view.revision++;
-    const draft = { revision: state.view.revision,digest: await digest(candidate),base_digest: active.digest,created_at: Date.now(),recipe: structuredClone(candidate) };
+    // D-201 Slice 10BD — a draft kept without `variables`, as another client
+    // may save one (10AY findings 12 and 13).
+    const kept = structuredClone(candidate) as RecipeDefinition & { variables?: unknown };
+    if (scenario === 'no-variables') delete kept.variables;
+    const draft = { revision: state.view.revision,digest: await digest(kept),base_digest: active.digest,created_at: Date.now(),recipe: kept as RecipeDefinition };
     state.view.draft = draft; const { recipe: _recipe,...metadata } = draft; state.view.drafts.push(metadata); state.view.qualification = null; state.review = null;
     const result: RecipeReleaseMutation = { ...structuredClone(state.view),mutation_revision: state.view.revision,saved_draft: structuredClone(draft) };
     state.requests[request.request_id] = { fingerprint: JSON.stringify(request),result }; write(state); return result;

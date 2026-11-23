@@ -22,9 +22,14 @@
  *      at boot. Runs AFTER `commitStore.sweepPendingToInDoubt()`.
  */
 
+import { registerRunQuestionHandler } from '../../run-question.js';
+import { preparedInboxApprovalActivity } from '../../reception-inbox-prepared-answer.js';
+import { createPreparedInboxRejectionRecorder } from '../../reception-inbox-prepared-rejection.js';
+import { createReceptionInboxSubviewStore } from '../../storage/reception-inbox-subview-store.js';
 import {
   isBrowserPassOptionId,
   TRIGGER_PREAPPROVAL_OPTION_ID,
+  KIND_GRANT_OPTION_ID,
   mayHoldAskForQuietHours,
   resolveQuietHoursOccurrence,
   resolveServerTimeZone,
@@ -74,11 +79,13 @@ import {
 import {
   NEVER_ASK_OPERATION_OPTION_ID,
   RELAX_OPERATION_TO_ASK_OPTION_ID,
+  readPreflightOverrideOffer,
   raiseInDoubtAsks,
   registerInDoubtHandler,
   registerPreflightHandler,
   type PreflightAskContext,
   type PreflightResumer,
+  type PreflightOverrideWriter,
 } from '@recued/gateway';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { EventBus } from '../../events/bus.js';
@@ -87,7 +94,11 @@ import { createSQLiteCollection } from '../../sqlite-collection.js';
 import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ClientTokenStore } from '../../pairing/client-tokens.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
-import { createPreflightResumer } from '../../preflight-resumer.js';
+import {
+  createPreflightResumer,
+  settleReturnedApprovedDispatchesAtBoot,
+  type ServerPreflightResumer,
+} from '../../preflight-resumer.js';
 import { createPausedAnswerRefusal } from '../../pause-approval.js';
 import {
   createBatchApprovalCoordinator,
@@ -118,6 +129,10 @@ import {
   sweepAwaitingCheckpoints,
   type PreflightBootSweepDeps,
 } from '../../preflight-boot-sweep.js';
+import {
+  sweepApprovalRestartContinuations,
+  type ApprovalRestartContinuationStore,
+} from '../../storage/approval-restart-continuation-store.js';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 
 /** Dependencies the notification-block composition needs. All five are
@@ -169,7 +184,8 @@ export interface ComposeNotificationBlockDeps {
     context: PreflightAskContext,
   ) => Promise<void>;
   /** D-211 — authoritative standing-ruling writer for preflight affordances. */
-  upsertOverride?: (offer: PreflightOverrideOffer) => Promise<void>;
+  upsertOverride?: PreflightOverrideWriter;
+  captureOverridePolicy?: (offer: PreflightOverrideOffer) => string | undefined;
   /** D-192 Slice 6c — lazy accessor for the boot-singleton work-entity write
    *  executor (populated post-listener; `null` at compose time). The create-plan
    *  answer dispatcher derefs it at ANSWER time to run `executeCreatePlan`. */
@@ -256,6 +272,17 @@ export interface ComposeNotificationBlockDeps {
 export interface NotificationBlockBundle {
   block: NotificationBlock;
   resumer: PreflightResumer;
+  /** D-201 Slice 10W — the owner's try again of an approved webhook run a stop
+   *  left in doubt (`ServerPreflightResumer.continueHeldRun`), for the webhook
+   *  runner. The undecorated resumer's: it answers no ask. */
+  continueHeldRun: ServerPreflightResumer['continueHeldRun'];
+  /** D-201 Slice 10AB (10AA finding 1) — settles a try again the process went
+   *  during (`ServerPreflightResumer.settleDiedTryAgain`), for the runner. */
+  settleDiedTryAgain: ServerPreflightResumer['settleDiedTryAgain'];
+  /** D-201 Slice 10AP (10AM findings 5 and 18) — whether an answer's resume of
+   *  a run is still under way (`ServerPreflightResumer.isResumingRun`), for
+   *  the webhook reconcile. */
+  isResumingRun: ServerPreflightResumer['isResumingRun'];
   batchApprovals: BatchApprovalCoordinator;
   /** Narrow LIVE read of a batch row's membership — the `/ask` landing needs
    *  to know whether a batch-registered ask covers ONE member or many before
@@ -347,6 +374,12 @@ export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry =>
     + ` via ${record.answered_via}`,
 });
 
+/** The host owns both projections; the leaf treats prepared data as opaque. */
+export const buildAnswerActivities = (record: AnswerAuditRecord): ActivityEntry[] => {
+  const approval = preparedInboxApprovalActivity(record);
+  return [...(approval ? [approval] : []), buildAnswerActivity(record)];
+};
+
 /** Map an answered option id to its activity code.
  *
  *  ⛔ Deliberately NOT `option === 'deny' ? deny : allow`. The block audits
@@ -365,6 +398,8 @@ const answerAuditAction = (option: string): ActivityAction =>
   || isBrowserPassOptionId(option)
   // D-341 slice B2 — "Always allow for this webhook / schedule / trigger".
   || option === TRIGGER_PREAPPROVAL_OPTION_ID
+  // D-177 N.15 — "Allow in this chat".
+  || option === KIND_GRANT_OPTION_ID
   || option === NEVER_ASK_OPERATION_OPTION_ID
   || option === RELAX_OPERATION_TO_ASK_OPTION_ID
     ? 'approval_allow'
@@ -739,8 +774,21 @@ export const composeNotificationBlock = (
     // is append-only and keyed on `activity_id` (unlike the run-keyed
     // anchor), and both actions are reserve-class, so the row outlives both
     // the ask and normal retention.
-    recordAnswerAudit: (record) => auditLog.logActivity(buildAnswerActivity(record)),
+    recordAnswerAudit: async record => {
+      for (const activity of buildAnswerActivities(record)) await auditLog.logActivity(activity);
+    },
   });
+
+  if (deps.captureOverridePolicy) {
+    const raise = block.ask.bind(block);
+    block.ask = (message, options, handler, channels, extras) => {
+      const offer = readPreflightOverrideOffer(handler.payload.owner_override_offer);
+      const revision = offer ? deps.captureOverridePolicy!(offer) : undefined;
+      return raise(message, options, revision === undefined ? handler : {
+        ...handler, payload: { ...handler.payload, owner_override_policy_revision: revision },
+      }, channels, extras);
+    };
+  }
 
   const baseResumer = createPreflightResumer({
     getExecuteDeps,
@@ -781,10 +829,14 @@ export const composeNotificationBlock = (
   const batchAskStore = createBatchAskStore(
     createSQLiteCollection<BatchAskRecord>(db, 'batch_asks'),
   );
+  const recordPreparedDenial = createPreparedInboxRejectionRecorder({
+    subviewStore: createReceptionInboxSubviewStore(db), auditLog,
+  });
   const batchApprovals = createBatchApprovalCoordinator({
     batchAskStore,
     checkpointStore,
     resumer,
+    recordPreparedDenial,
     notifier: block,
     listUnresolvedAsks: () => block.listUnresolvedAsks(),
     cancelAsk: (ask_id) => block.cancelAsk(ask_id),
@@ -802,10 +854,25 @@ export const composeNotificationBlock = (
   registerPreflightHandler(block, {
     checkpointStore,
     resumer,
+    recordPreparedDenial,
     batchApprovals: batchApprovals.hooks,
     ...(deps.upsertOverride !== undefined
       ? { upsertOverride: deps.upsertOverride }
       : {}),
+  });
+  // D-402 slice F3 — the question before a run: its answer grants what it names in the pre-approval
+  // store (read when the answer comes, like the resumer's own deps) and starts or ends the run.
+  registerRunQuestionHandler(block, {
+    checkpointStore,
+    resumer,
+    store: {
+      grantCaller: (input) => {
+        const store = deps.getExecuteDeps()?.triggerPreapprovals;
+        if (store === undefined) throw new Error('the pre-approval store is not ready; the answer is replayed at boot');
+        return store.grantCaller(input);
+      },
+      listCallers: () => deps.getExecuteDeps()?.triggerPreapprovals?.listCallers() ?? [],
+    },
   });
   registerInDoubtHandler(
     block,
@@ -909,6 +976,9 @@ export const composeNotificationBlock = (
   return {
     block,
     resumer,
+    continueHeldRun: baseResumer.continueHeldRun,
+    settleDiedTryAgain: baseResumer.settleDiedTryAgain,
+    isResumingRun: baseResumer.isResumingRun,
     batchApprovals,
     getBatch: async (batch_id: string) => await batchAskStore.get(batch_id),
     reconcileOpenBatch: (batch_id: string) =>
@@ -925,6 +995,9 @@ export interface NotificationBlockBootRecoveryDeps {
   checkpointStore: CheckpointStore;
   auditLog: AuditLogStore;
   gatedActionStore?: GatedActionStore;
+  /** D-201 Slice 10R (10Q finding 17) — what restarts kept for approved runs:
+   *  a row whose checkpoint is gone (consumed, expired, swept) is dropped. */
+  approvalRestartContinuations?: ApprovalRestartContinuationStore;
   /** Replay exactly journaled peer deliveries before generic dispatch claims
    * are frozen. The journal remains the authority if this retry throws. */
   recoverPeerDeliveries?: () => Promise<void>;
@@ -1061,6 +1134,27 @@ export const recoverNotificationBlockAtBoot = async (
           + (e instanceof Error ? e.message : String(e)),
       );
     }
+    // D-201 Slice 10AV (10AS finding 9) — before the freeze: an approved step a
+    // held run says came back (the row it wrote ahead) is settled from the
+    // value it kept, not frozen in doubt beside a run that goes on past it.
+    if (deps.approvalRestartContinuations !== undefined) {
+      try {
+        const settled = await settleReturnedApprovedDispatchesAtBoot(
+          deps.gatedActionStore,
+          deps.approvalRestartContinuations,
+        );
+        if (settled > 0) {
+          console.warn(
+            `[gated-action] settled ${settled} approved step${settled === 1 ? '' : 's'} a held run kept at boot`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          '[gated-action] settling approved steps held runs kept failed at boot: '
+            + (e instanceof Error ? e.message : String(e)),
+        );
+      }
+    }
     try {
       const reconciled = await reconcileInterruptedGatedActionsAtBoot(
         deps.gatedActionStore,
@@ -1123,6 +1217,27 @@ export const recoverNotificationBlockAtBoot = async (
         + (e instanceof Error ? e.message : String(e)),
     );
   }
+
+  // D-201 Slice 10R (10Q finding 17) — a row a restart kept outlives its
+  // checkpoint when the resume ended without running it (refused, superseded,
+  // denied) or the checkpoint went another way. Only rows whose checkpoint is
+  // gone go: one that is still there is about to be resumed.
+  if (deps.approvalRestartContinuations !== undefined) {
+    try {
+      const removed = await sweepApprovalRestartContinuations({
+        continuations: deps.approvalRestartContinuations,
+        hasCheckpoint: async (checkpointId) => (await checkpointStore.get(checkpointId)) !== null,
+      });
+      if (removed > 0) {
+        console.warn(`[preflight] dropped ${removed} kept approved run(s) whose checkpoint is gone`);
+      }
+    } catch (e) {
+      console.warn(
+        '[preflight] kept approved-run sweep threw — retried at the next boot: '
+          + (e instanceof Error ? e.message : String(e)),
+      );
+    }
+  }
 };
 
 /** D-158 P3 — the block's sweep (`recoverPendingAsks`: open asks re-delivered,
@@ -1142,12 +1257,26 @@ export const recoverNotificationBlockAtBoot = async (
  *  the sweep again, as before. */
 export const recoverPendingAsksOnceRunning = (deps: {
   readonly block: Pick<NotificationBlock, 'recoverPendingAsks'>;
+  readonly recoverInboxRejections?: () => Promise<void>;
   readonly lifecycle?: { readonly machine: Pick<LifecycleStateMachine, 'state' | 'onStateChange'> };
   readonly warn?: (message: string) => void;
 }): (() => void) => {
   const warn = deps.warn ?? ((message: string) => console.warn(message));
+  let retryTimer: ReturnType<typeof setInterval> | undefined;
+  const recoverRejections = (): void => {
+    if (!deps.recoverInboxRejections) return;
+    (async () => deps.recoverInboxRejections!())().catch((error: unknown) => {
+      warn('[reception-inbox] rejection recovery failed; durable records will retry: '
+        + (error instanceof Error ? error.message : String(error)));
+    });
+  };
   // Never throws into the boot: a failure is told, and the asks stay durable.
   const sweep = (): void => {
+    recoverRejections();
+    if (deps.recoverInboxRejections && retryTimer === undefined) {
+      retryTimer = setInterval(recoverRejections, 60_000);
+      retryTimer.unref();
+    }
     (async () => deps.block.recoverPendingAsks())().catch((e: unknown) => {
       warn(
         '[notification] the sweep after boot failed — outstanding asks remain '
@@ -1159,7 +1288,7 @@ export const recoverPendingAsksOnceRunning = (deps: {
   const machine = deps.lifecycle?.machine;
   if (machine === undefined || machine.state === 'running') {
     sweep();
-    return () => undefined;
+    return () => { clearInterval(retryTimer); retryTimer = undefined; };
   }
   let stop: (() => void) | undefined = machine.onStateChange((_prev, next) => {
     if (next === 'booting') return;
@@ -1168,6 +1297,8 @@ export const recoverPendingAsksOnceRunning = (deps: {
     if (next === 'running') sweep();
   });
   return () => {
+    clearInterval(retryTimer);
+    retryTimer = undefined;
     stop?.();
     stop = undefined;
   };
@@ -1186,8 +1317,23 @@ export const recoverPendingAsksOnceRunning = (deps: {
 export const raiseInDoubtForSweptCommits = async (deps: {
   block: NotificationBlock;
   sweptCommits: readonly Commit[];
+  /** D-201 Slice 10AV (10AS finding 29) — whether a run is held for the
+   *  owner's try again (`ApprovalRestartContinuationStore.getHeldForRun`). Its
+   *  dead letter is the one recovery for what the death left in doubt: it
+   *  names the step, and its try again goes on from it. An "Unconfirmed action"
+   *  ask beside it knew nothing of it, and its answer changed nothing there. */
+  heldForTryAgain?: (runId: string) => boolean;
 }): Promise<void> => {
-  const { block, sweptCommits } = deps;
+  const { block } = deps;
+  const sweptCommits = deps.heldForTryAgain === undefined
+    ? deps.sweptCommits
+    : deps.sweptCommits.filter((commit) => {
+      try {
+        return !deps.heldForTryAgain!(commit.request_id);
+      } catch {
+        return true;
+      }
+    });
   if (sweptCommits.length === 0) return;
   try {
     const outcome = await raiseInDoubtAsks(block, sweptCommits);

@@ -28,7 +28,8 @@ export interface StreamPanelOptions {
   preview: (stream: SituationStreamKind) => Promise<SituationStreamPreview>;
   /** The channels set up, for Send to. One that cannot be read leaves only "Every channel". */
   channels: () => Promise<StreamChannel[]>;
-  closeDay?: { save: (settings: SituationCloseDaySettings) => Promise<unknown>; sendNow: () => Promise<unknown> };
+  closeDay?: { save: (settings: SituationCloseDaySettings) => Promise<unknown>; sendNow: () => Promise<unknown>;
+    retryReply?: (id: string) => Promise<unknown>; reviewReply?: (id: string) => Promise<unknown> };
 }
 
 const KINDS = ['daily', 'weekly'] as const;
@@ -40,6 +41,27 @@ const RUN_MODE: Readonly<Record<string, string>> = { stream: 'Daily', stream_man
 const RUN_STATE: Readonly<Record<string, string>> = {
   sent: 'Sent', skipped: 'Nothing on, so nothing was sent', pending: 'Waiting to retry', sending: 'Sending',
   uncertain: 'Delivery not confirmed', superseded: 'Not sent: a newer one replaced it',
+};
+/** D-340 ruling 13 — how a message's AI suggestions went, in the words its message used. */
+const SUGGESTIONS_OUTCOME: Readonly<Record<string, string>> = {
+  included: 'AI suggestions included',
+  stuck: 'AI suggestions missing: the AI stopped responding',
+  failed: 'AI suggestions missing: the AI service did not respond',
+  unfinished: 'AI suggestions missing: the AI ran out of lookups',
+  approval: 'AI suggestions waiting on your approval',
+  not_started: 'AI suggestions missing: they did not start',
+};
+/** D-340 ruling 13 (the owner, 2026-11-15) — when a message went after it started preparing, and how its
+ *  suggestions did, so the owner can set "Starts preparing at" to their habit. Empty for a run before it. */
+export const runTimingText = (run: { at: number; prepared_at?: number; suggestions?: string } | null): string => {
+  if (run === null) return '';
+  const parts: string[] = [];
+  if (run.prepared_at !== undefined) {
+    const minutes = Math.round((run.at - run.prepared_at) / 60_000);
+    parts.push(minutes < 1 ? 'Went as soon as it started preparing' : `Went ${String(minutes)} min after it started preparing`);
+  }
+  if (run.suggestions !== undefined) parts.push(SUGGESTIONS_OUTCOME[run.suggestions] ?? 'AI suggestions missing');
+  return parts.join(' · ');
 };
 const LEDE = 'One message at your time, holding the parts you check, sent to the channels you pick. Today, here in the app, '
   + 'shows everything whatever is checked.';
@@ -137,15 +159,20 @@ export const mountStreamPanel = (opts: StreamPanelOptions) => {
     form.insertBefore(enabled.parentElement!, fields);
     const weekday = kind === 'weekly' ? select('weekday', 'Day', WEEKDAYS.map((name, index) => [String(index + 1), name] as const)) : undefined;
     const day = select('day', kind === 'weekly' ? 'Which days' : 'Which day', kind === 'weekly' ? agendaWeekChoices(1) : [['today', 'Today'], ['tomorrow', 'Tomorrow']]);
-    const time = node('input', undefined, field('Time'), 'rx-input');
+    // D-340 ruling 13 (the owner, 2026-11-15) — the time Recued starts preparing the message, not when it
+    // arrives: with AI suggestions it goes once they are ready, so it says so plainly.
+    const time = node('input', undefined, field('Starts preparing at'), 'rx-input');
     time.type = 'time'; time.name = 'time'; time.required = true;
-    time.setAttribute('aria-label', 'Time');
+    time.setAttribute('aria-label', 'Starts preparing at');
+    node('p', 'Recued starts preparing this message at this time. With AI suggestions on, it arrives once they are ready, '
+      + 'usually within a few minutes: to have it by a set time, set this a little earlier.', form, 'sd-hint');
     const parts = node('fieldset', undefined, form, 'stream-parts');
     node('legend', 'In it', parts);
     const agenda = check('agenda', 'Agenda', parts);
     node('p', kind === 'weekly' ? 'The seven days in time order, a day at a time.' : 'The day in time order, recurring events included.', parts, 'sd-hint');
     const suggestions = check('suggestions', 'AI suggestions', parts);
-    node('p', 'After it goes, Recued’s AI looks the Agenda over and sends suggestions, such as clashes and what to prepare.', parts, 'sd-hint');
+    node('p', 'Recued’s AI looks the Agenda over, with times for what has none, clashes and what to prepare, and they come '
+      + 'inside this message. If they cannot be made, the message says so, and ones that finish later are in Today.', parts, 'sd-hint');
     const comingUp = check('coming_up', 'Coming up', parts);
     const ahead = select('look_ahead_days', 'Looks ahead', LOOK_AHEAD.filter(days => kind === 'daily' || days >= 7)
       .map(days => [String(days), `${days} days`] as const), node('label', undefined, parts, 'sd-field stream-ahead'));
@@ -259,7 +286,8 @@ export const mountStreamPanel = (opts: StreamPanelOptions) => {
       }
       shape();
       const { last_run: run, last_sent: sent } = row;
-      results.innerHTML = `${run ? `<p>Last sent ${e(new Date(run.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))} · ${e(RUN_MODE[run.mode] ?? run.mode)} · ${e(RUN_STATE[run.state] ?? run.state)}</p>${sent?.text ? `<details><summary>What it sent</summary><p class="sd-sent">${e(sent.text)}</p></details>` : ''}` : '<p>Nothing has been sent yet.</p>'}`;
+      const timing = runTimingText(run);
+      results.innerHTML = `${run ? `<p>Last sent ${e(new Date(run.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))} · ${e(RUN_MODE[run.mode] ?? run.mode)} · ${e(RUN_STATE[run.state] ?? run.state)}</p>${timing ? `<p class="sd-timing">${e(timing)}</p>` : ''}${sent?.text ? `<details><summary>What it sent</summary><p class="sd-sent">${e(sent.text)}</p></details>` : ''}` : '<p>Nothing has been sent yet.</p>'}`;
     };
     const showPreview = async () => {
       const own = generation;

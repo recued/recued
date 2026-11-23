@@ -67,6 +67,33 @@ test('mobile Chat switches history without losing an unsent draft', async ({ pag
   await noPageOverflow(page);
 });
 
+test('Chat composer keeps a consistent keyboard order on phone and desktop', async ({ page, browserName }) => {
+  // macOS WebKit uses Option-Tab to include buttons in keyboard navigation.
+  // https://support.apple.com/guide/safari/keyboard-shortcuts-and-gestures-cpsh003/mac
+  const nextControl = browserName === 'webkit' && process.platform === 'darwin' ? 'Alt+Tab' : 'Tab';
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await boot(page, '', '#chat/new');
+    const composer = page.locator('[data-recued-chat-route-composer]');
+    const input = composer.getByRole('textbox', { name: 'Message to Recued' });
+    const controls = [
+      composer.getByRole('combobox', { name: 'Model', exact: true }),
+      composer.getByRole('button', { name: 'Add records', exact: true }),
+      composer.getByRole('button', { name: 'Attach a file', exact: true }),
+      composer.getByRole('button', { name: 'Send', exact: true }),
+    ];
+    await expect(controls[0]!).toBeEnabled();
+    await input.fill('Keep this as an unsent draft.');
+    await input.focus();
+    for (const control of controls) {
+      await page.keyboard.press(nextControl);
+      await expect(control).toBeFocused();
+      await withinViewport(page, control);
+    }
+    expect(await page.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+  }
+});
+
 test('mobile Data exposes records before the fold and retains keyboard focus through collection changes', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await boot(page, '&data=work-entities-paged', '#data/task');
@@ -90,6 +117,42 @@ test('mobile Data exposes records before the fold and retains keyboard focus thr
   await expect(tabs).toBeVisible();
   await tabs.getByRole('tab', { name: 'Tasks', exact: true }).click();
   await expect(page).toHaveURL(/#data\/task$/);
+  await noPageOverflow(page);
+});
+
+test('compact Tasks keeps records visible and preserves native navigation and filter focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await boot(page, '&data=work-entities-paged', '#data/task');
+  const rows = page.locator('.work-entity-list-row-button');
+  await page.getByRole('button', { name: 'Load more', exact: true }).click();
+  await withinViewport(page, rows.nth(0));
+  await withinViewport(page, rows.nth(1));
+  const picker = page.getByRole('combobox', { name: 'Collection', exact: true });
+  const original = await picker.elementHandle();
+  await picker.focus();
+  const before = await page.evaluate(() => window.__app.rpcCallCount('work_entity.list'));
+  await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+    kind: 'warehouse', collection: 'task', op: 'update', id: 'task-0', cursor: Date.now() + 10_000,
+  } }));
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('work_entity.list'))).toBeGreaterThan(before);
+  expect(await original!.evaluate(element => element.isConnected)).toBe(true);
+  await expect(picker).toBeFocused();
+  const toggle = page.getByRole('button', { name: 'Task filters', exact: true });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByRole('combobox', { name: 'Source', exact: true })).toBeVisible();
+  await toggle.click();
+  const status = page.getByRole('combobox', { name: 'Task status', exact: true });
+  await status.focus();
+  await status.selectOption('open');
+  await expect(status).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await status.press('Escape');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.work-entity-task-active-filters')).toContainText('Open tasks');
+  await toggle.click();
+  await expect(status).toHaveValue('open');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('work_entity.upsert'))).toBe(0);
   await noPageOverflow(page);
 });
 

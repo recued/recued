@@ -31,6 +31,7 @@ import {
   reminderDeliveryText,
 } from '@recued/contracts';
 
+import { reminderRevision } from './reminder-revision.js';
 import { releasedAtStop, settleWithin, STOP_GRACE_MS } from '../lifecycle/settle-within.js';
 import type { ReminderStore } from '../storage/reminder-store.js';
 
@@ -105,8 +106,9 @@ export const createReminderDelivery = (deps: ReminderDeliveryDeps): ReminderDeli
     for (const reminder of due) {
       // A stop sends nothing more: the rest stay pending (the module header).
       if (stopping.signal.aborted) break;
-      // False when it was cancelled since the list was read: not sent.
-      if (!deps.store.recordAttempt(reminder.reminder_id, current)) continue;
+      // A queued reminder may have been moved, reworded or cancelled while a
+      // preceding channel send waited. Never send that earlier snapshot.
+      if (!deps.store.recordAttempt(reminder.reminder_id, current, reminderRevision(reminder))) continue;
       let delivered_to: readonly string[] = [];
       try {
         const baseUrl = deps.publicBaseUrl?.();

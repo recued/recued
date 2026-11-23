@@ -41,7 +41,7 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   const vars = doc.createElement('div'); vars.className = 'recipe-editor-settings-block';
   text(doc, vars, 'h3', 'Inputs');
   text(doc, vars, 'p', 'Set what these start as. Use JSON to say which are needed, or to offer choices.');
-  for (const [name, initial] of Object.entries(context.recipe.variables)) {
+  for (const [name, initial] of Object.entries(context.recipe.variables ?? {})) {
     // A connection and a mail template have their own sections (D-315 §5.2).
     if (initial && typeof initial === 'object' && !Array.isArray(initial)
       && 'type' in initial && (String(initial.type) === 'connection' || String(initial.type) === 'mail_template')) continue;
@@ -68,7 +68,7 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) {
       error.textContent = 'Use letters, numbers and underscores. Start with a letter.'; return;
     }
-    if (Object.hasOwn(context.recipe.variables, key)) { error.textContent = 'You already have an input with this name.'; return; }
+    if (Object.hasOwn(context.recipe.variables ?? {}, key)) { error.textContent = 'You already have an input with this name.'; return; }
     context.change({ ...context.recipe, variables: { ...context.recipe.variables, [key]: null } }, true);
   }));
   vars.appendChild(add); vars.appendChild(error); body.appendChild(vars);
@@ -150,10 +150,10 @@ export const EDITOR_WORKBENCH_STYLES = `
 [data-recued-recipe-editor-route] [aria-invalid="true"] { border-color: var(--danger); }
 .recipe-editor-field-error { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
 .recipe-editor-field-error:empty { display: none; }
-.recipe-editor-settings > summary, .recipe-editor-test > summary, .recipe-editor-outline > details > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; list-style: none; cursor: pointer; min-height: 26px; font-size: 14px; font-weight: 650; }
-.recipe-editor-settings > summary::-webkit-details-marker, .recipe-editor-test > summary::-webkit-details-marker, .recipe-editor-outline > details > summary::-webkit-details-marker { display: none; }
-.recipe-editor-settings > summary::before, .recipe-editor-test > summary::before, .recipe-editor-outline > details > summary::before { content: '▸'; color: var(--fg-muted); font-size: 12px; }
-.recipe-editor-settings[open] > summary::before, .recipe-editor-test[open] > summary::before, .recipe-editor-outline > details[open] > summary::before { transform: rotate(90deg); }
+.recipe-editor-settings > summary, .recipe-editor-test > summary, .recipe-editor-trial > summary, .recipe-editor-outline > details > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; list-style: none; cursor: pointer; min-height: 26px; font-size: 14px; font-weight: 650; }
+.recipe-editor-settings > summary::-webkit-details-marker, .recipe-editor-test > summary::-webkit-details-marker, .recipe-editor-trial > summary::-webkit-details-marker, .recipe-editor-outline > details > summary::-webkit-details-marker { display: none; }
+.recipe-editor-settings > summary::before, .recipe-editor-test > summary::before, .recipe-editor-trial > summary::before, .recipe-editor-outline > details > summary::before { content: '▸'; color: var(--fg-muted); font-size: 12px; }
+.recipe-editor-settings[open] > summary::before, .recipe-editor-test[open] > summary::before, .recipe-editor-trial[open] > summary::before, .recipe-editor-outline > details[open] > summary::before { transform: rotate(90deg); }
 [data-recued-recipe-editor-route] summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
 .recipe-editor-panel-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--fg-muted); }
 .recipe-editor-outline .recipe-editor-panel-hint { font-size: 10px; }
@@ -185,7 +185,7 @@ export const EDITOR_WORKBENCH_STYLES = `
 .recipe-editor-test-values > * { min-width: 0; }
 .recipe-editor-test-results pre, .recipe-editor-test-help pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; font-size: 12px; line-height: 1.5; }
 .recipe-editor-test-results pre { padding: 10px; border-radius: 6px; background: var(--surface-sunk); }
-[data-recued-recipe-editor-route] .recipe-editor-settings, [data-recued-recipe-editor-route] .recipe-editor-test { display: block; }
+[data-recued-recipe-editor-route] .recipe-editor-settings, [data-recued-recipe-editor-route] .recipe-editor-test, [data-recued-recipe-editor-route] .recipe-editor-trial { display: block; }
 .recipe-editor-panel-body { display: grid; gap: 16px; margin-top: 16px; min-width: 0; }
 @media (max-width: 1100px) {
   .recipe-editor-workspace { grid-template-columns: minmax(0, 1fr); }

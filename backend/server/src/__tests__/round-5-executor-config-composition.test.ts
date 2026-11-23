@@ -154,6 +154,7 @@ const alwaysKernelKeys = [
   'preapprovalRequest',
   'mailDraft',
   'kitchenDraftImport',
+  'kitchenDraftFromJob',
   'kitchenDraft',
   // D-264 — wired unconditionally for the same reason `mailDraft` is: the
   // dispatcher looks the owner service up per call, so there is nothing to gate

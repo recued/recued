@@ -80,7 +80,26 @@ export interface RunNeedsInput {
   signInOf: (pack_slug: string, slot: string) => { vendor?: string; label: string };
   /** A pack's name. */
   packNameOf: (pack_slug: string) => string | undefined;
+  /** D-402 slice H3c — for a run its browsers refused before step 1: the dish whose settings it used,
+   *  the browsers its settings name (never offered in place of another: a recipe that reads in one browser
+   *  and types in another must not end up doing both in one), and the browsers connected now. */
+  browsers?: {
+    readonly dish_id?: string;
+    readonly named: ReadonlySet<string>;
+    readonly connected: () => ReadonlyArray<{ readonly browser_id: string; readonly name: string }>;
+  };
 }
+
+/** A browser the check before step 1 found gone or not connected (`details.browsers`). */
+const browserProblemOf = (value: unknown): { step_id: string; problem: 'not_paired' | 'offline'; setting: string;
+  browser_id: string; name?: string } | undefined => {
+  if (value === null || typeof value !== 'object') return undefined;
+  const one = value as { step_id?: unknown; problem?: unknown; setting?: unknown; browser_id?: unknown; name?: unknown };
+  if ((one.problem !== 'not_paired' && one.problem !== 'offline') || typeof one.step_id !== 'string'
+    || typeof one.setting !== 'string' || typeof one.browser_id !== 'string') return undefined;
+  return { step_id: one.step_id, problem: one.problem, setting: one.setting, browser_id: one.browser_id,
+    ...(typeof one.name === 'string' && one.name !== '' ? { name: one.name } : {}) };
+};
 
 const text = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -139,6 +158,27 @@ export const runNeedsOf = (input: RunNeedsInput): RunNeed[] => {
         ...(pack_slug !== undefined ? { pack_slug } : {}),
         ...(label !== undefined ? { label } : {}),
       });
+      continue;
+    }
+
+    // D-402 slice H3c (ruling 14) — a browser the run's settings name, gone or not connected: the dish's
+    // settings can move to another, "Use this browser instead". Read from the refusal's carrier, never
+    // its message. The one browser to offer is the only one connected that the run does not already name.
+    const refused = error.code === 'ROLE_RESTRICTION' && error.details !== null && typeof error.details === 'object'
+      ? (error.details as { browsers?: unknown }).browsers
+      : undefined;
+    if (Array.isArray(refused)) {
+      const offer = (input.browsers?.connected() ?? []).filter((browser) => !input.browsers!.named.has(browser.browser_id));
+      for (const raw of refused) {
+        const one = browserProblemOf(raw);
+        if (one === undefined) continue;
+        add(`browser\u0000${one.setting}\u0000${one.browser_id}`, {
+          kind: 'browser',
+          ...one,
+          ...(input.browsers?.dish_id !== undefined ? { dish_id: input.browsers.dish_id } : {}),
+          ...(offer.length === 1 ? { instead: { browser_id: offer[0]!.browser_id, name: offer[0]!.name } } : {}),
+        });
+      }
       continue;
     }
 

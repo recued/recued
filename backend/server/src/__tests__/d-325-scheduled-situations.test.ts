@@ -307,6 +307,14 @@ describe('D-325 scheduled overview through the shared query', () => {
       expect(texts(f).map(message => message.text)).toEqual([['07:00 Feed the cat', '08:00 Driving to work', '09:00 Morning briefing',
         '12:00 Pay electricity bill'].join('\n')]);
     });
+    it('says a task due on the day with no time is due, and keeps an occasion "All day"', async () => {
+      // The owner, 2026-11-14, on "All day · Call the plumber": a task is no all-day event.
+      const plumber = fact('plumber', { ref: { collection: 'task', id: 'plumber' }, kind: 'task', title: 'Call the plumber',
+        when: { from: on(1, '00:00'), to: on(2, '00:00') }, when_day: '2026-10-20', act_by: on(1, '00:00'), evidence: [{ collection: 'task', id: 'plumber' }] });
+      const f = fixture([plumber, allDay('mum', 'Mum’s birthday', 1)]);
+      f.time(on(0, '20:00')); agendaOnly(f, { time: '20:00', day: 'tomorrow' }); await f.service().tick();
+      expect(texts(f)[0]?.text).toBe('Due · Call the plumber\nAll day · Mum’s birthday');
+    });
     it('leaves out an ended event that comes in only as related to one still to come', async () => {
       // The query adds what a due record names as related, ended or not.
       const report = fact('report', { ref: { collection: 'task', id: 'report' }, kind: 'task', title: 'Send the run report',

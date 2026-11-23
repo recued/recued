@@ -17,18 +17,25 @@ import { parseAddress, splitAddressList } from './contact.js';
  *  and keeps the column a normal SQLite TEXT cell. */
 export const MAIL_MESSAGE_SUBJECT_MAX = 300;
 
-/** D-172 P2 — Half-A per-attachment byte cap. There is no Recued byte
- *  ceiling (D-172 Resolved Q5) — the real constraint is the provider's
- *  input window — but the three providers' *inline* attachment paths
- *  differ (Gmail `raw` tolerates tens of MB; Graph's
- *  `fileAttachment.contentBytes` inline path caps at ~3 MB before it
- *  needs an upload session; SMTP varies by host). Half A ships a single
- *  conservative cap pegged to the smallest provider inline window so a
- *  too-large file surfaces a WARNING on the send (via
- *  `SentMessageMeta.warnings[]`) and is OMITTED from that provider's
- *  payload — never silently dropped without a trace (I-6). Per-modality
- *  / per-provider sizing (downscale, upload-session, chunking) is Half
- *  B. 3 MB raw bytes ≈ 4 MB base64-on-the-wire.
+/** D-172 P2 — the per-file byte cap on an outbound mail attachment. A file
+ *  over it surfaces a WARNING on the send (via `SentMessageMeta.warnings[]`)
+ *  and is OMITTED from the message — never silently dropped without a trace
+ *  (I-6).
+ *
+ *  25 MiB since 2026-11-17 (D-127 follow-up, "A file over 3 MB goes by
+ *  email"); 3 MiB before, pegged to Graph's inline attachment window. Each
+ *  provider now carries a file up to it its own documented way:
+ *   - Gmail: a message with files goes to the upload address, whose limit is
+ *     the whole message, files included: 36,700,160 bytes (35 MiB, the
+ *     `maxSize` Gmail's API discovery document gives `messages.send`).
+ *     A 25 MiB file, base64 in its MIME part, still fits beside its message.
+ *   - Outlook (Graph): a file under 3 MB is one POST; from 3 MB to 150 MB an
+ *     upload session ("Attach large files to Outlook messages or events").
+ *   - SMTP: the message as built; the server's own size limit decides.
+ *  A mailbox's own limit on the whole message is smaller for some (Outlook
+ *  personal and Exchange Online's default) and is the provider's to apply:
+ *  a message it refuses as too large fails as `MAIL_SEND_MESSAGE_REFUSED`,
+ *  nothing sent. 25 MB is also Gmail's documented attachment limit.
  *
  *  ⛔ LIVES HERE, NOT WITH THE SERVER THAT ENFORCES IT, BECAUSE TWO SIDES
  *  NEED IT AND `packages/` MAY NOT IMPORT `backend/`. The compose UI reads it
@@ -37,7 +44,7 @@ export const MAIL_MESSAGE_SUBJECT_MAX = 300;
  *  the UI mark is advisory, and a compose that ignored it still has the file
  *  dropped + warned at `MailCollection.send`. Never let the UI check become
  *  the only one. */
-export const MAIL_SEND_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024;
+export const MAIL_SEND_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 
 /** D-172 P2 — warning code attached to `SentMessageMeta.warnings[]` when an
  *  attachment exceeded `MAIL_SEND_ATTACHMENT_MAX_BYTES` and was omitted. */

@@ -74,6 +74,21 @@ test('D-336 §45 — a "matched by name" line links its name to this thing, the 
   await expect(relationships.getByRole('button', { name: /^Link to this thing/ })).toHaveCount(0);
 });
 
+test('D-404 slice E — a thing\'s page names the installed recipes that work on its type, each opening its recipe', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&yours_thing_recipes#yours/asset/passport`);
+  const used = page.locator('[data-recued-yours] [data-yours-thing-recipes]');
+  await expect(used.getByRole('heading', { name: 'Recipes for it', exact: true })).toBeVisible();
+  await expect(used.getByRole('link')).toHaveText(['Check a passport for a trip', 'Renew a passport']);
+  await expect(used.getByRole('link', { name: 'Renew a passport', exact: true })).toHaveAttribute('href', '#recipes/renew-passport');
+});
+
+test('D-404 slice E — a thing with no recipe for its type shows no Recipes for it section', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
+  // The page has loaded: its overview is shown, so an absent section is absent, not still loading.
+  await expect(page.locator('[data-recued-yours] [data-yours-asset-panel="overview"]')).toBeVisible();
+  await expect(page.locator('[data-recued-yours] [data-yours-thing-recipes]')).toHaveCount(0);
+});
+
 test('D-336 slice D — a thing no note names shows no Relationships section', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/asset/passport`);
   const route = page.locator('[data-recued-yours]');
@@ -1304,6 +1319,47 @@ test('A broadcast burst never rebuilds Yours over what the owner is typing', asy
   await page.waitForTimeout(800);
   expect(await page.evaluate(() => window.__app.rpcCallCount('yours.read'))).toBe(before + 2);
 });
+// D-404 slice A — a chat answer's "Add a Passport" opens Yours' form at `#yours/new/<type>`, with
+// that type chosen, as choosing it by hand does (a passport asks for its holder up front).
+test('D-404 slice A — #yours/new/<type> opens the form with that type chosen, and saves it as one', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/new/passport`);
+  const form = page.locator('[data-yours-editor]');
+  await expect(form.getByLabel('Type (optional)', { exact: true })).toHaveValue('passport');
+  await expect(form.getByLabel('Holder', { exact: true })).toBeVisible();
+  await expect(form.getByText('Includes reminders, for you only.', { exact: false })).toBeVisible();
+  await form.getByLabel('Name', { exact: true }).fill('My passport');
+  await form.getByLabel('Holder', { exact: true }).selectOption({ label: 'Ana' });
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page).toHaveURL(/#yours\/asset\/new-\d+$/u);
+  await expect(page.locator('[data-recued-yours]').getByRole('heading', { name: 'My passport', exact: true })).toBeVisible();
+});
+// D-404 slice B2 — opened from a chat answer: the form offers the way back, and saving returns there.
+test('D-404 slice B2 — a form opened from a chat answer offers Back to chat, and saving returns to the answer', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/new/boiler/return/chat/chat_1/message_9`);
+  const form = page.locator('[data-yours-editor]');
+  await expect(form.getByLabel('Type (optional)', { exact: true })).toHaveValue('boiler');
+  await expect(form.locator('[data-yours-back-to-chat]')).toHaveAttribute('href', '#chat/session/chat_1/answer/message_9');
+  await form.getByLabel('Name', { exact: true }).fill('Kitchen boiler');
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page).toHaveURL(/#chat\/session\/chat_1\/answer\/message_9$/u);
+});
+test('D-404 slice B2 — a form opened from Yours itself offers no way back to a chat', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo#yours/new/boiler`);
+  const form = page.locator('[data-yours-editor]');
+  await expect(form.getByLabel('Name', { exact: true })).toBeVisible();
+  await expect(form.locator('[data-yours-back-to-chat]')).toHaveCount(0);
+});
+test('D-404 slice A — a type the form does not offer opens it with none chosen', async ({ page }) => {
+  // The server lists Pursuit (the flag), and it is still not chosen: a pursuit is added on its own
+  // tab. A type the server does not list is not chosen either. Boiler is the control: the same list
+  // does choose a type it offers.
+  for (const [type, chosen] of [['pursuit', ''], ['no_such_type', ''], ['boiler', 'boiler']] as const) {
+    await page.goto(`${HARNESS_URL}?yours=demo&with_pursuit_type=1#yours/new/${type}`);
+    const form = page.locator('[data-yours-editor]');
+    await expect(form.getByLabel('Name', { exact: true })).toBeVisible();
+    await expect(form.getByLabel('Type (optional)', { exact: true })).toHaveValue(chosen);
+  }
+});
 test('A cancelled new asset stays closed through the next refresh', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/new`);
   const route = page.locator('[data-recued-yours]'); const form = page.locator('[data-yours-editor]');
@@ -1889,7 +1945,7 @@ test('Due says each task’s deadline in words, and a renewal asks for its new d
 test('a receipt proposal becomes an asset only after acceptance and leaves the waiting lane', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo#yours/proposals`);
   const route = page.locator('[data-recued-yours]'); const card = route.locator('article').filter({ has: page.getByRole('heading', { name: 'LG television', exact: true }) });
-  await card.getByText('Why suggested', { exact: true }).click(); await expect(card).toContainText('high confidence'); await card.getByRole('button', { name: 'Add asset', exact: true }).click();
+  await card.getByText('Why suggested', { exact: true }).click(); await expect(card).toContainText('Fairly sure'); await card.getByRole('button', { name: 'Add asset', exact: true }).click();
   await expect(route.getByText('No proposals waiting.', { exact: true })).toBeVisible();
   await page.getByRole('navigation', { name: 'Yours', exact: true }).getByRole('link', { name: 'Assets', exact: true }).click();
   await expect(route.getByRole('heading', { name: 'LG television', exact: true })).toBeVisible();

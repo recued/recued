@@ -1,7 +1,9 @@
 import { yoursFieldError } from './yours-field-errors.js';
 import { validateAsset, type Asset, type AssetPatch } from '@recued/contracts';
+import { assetFieldName } from './reading-words.js';
 
-export const assetObservationFieldName = (name: string) => name[0]!.toUpperCase() + name.slice(1).replaceAll('_', ' ');
+/** A reading's or condition's name ("Sleep", "Battery"): every place the page names one calls this. */
+export const assetObservationFieldName = (name: string) => assetFieldName(name);
 const localTime = (at: number) => {
   const date = new Date(at); const pad = (value: number) => String(value).padStart(2, '0');
   return `${String(date.getFullYear()).padStart(4, '0')}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
@@ -10,7 +12,10 @@ const localTime = (at: number) => {
 /** A manual observation writes one typed fact through the existing owner path.
  * Values are never prefilled from an old sample or another field's draft. */
 export const mountAssetObservationEditor = (host: HTMLFormElement, asset: Asset, kind: 'reading' | 'condition', changed: () => void, initialField?: string,
-  options: { newOrUnknownOnly?: boolean; blankTime?: boolean; suggestedNewField?: string } = {}) => {
+  options: { newOrUnknownOnly?: boolean; blankTime?: boolean; suggestedNewField?: string;
+    /** D-339 slice 18 — readings saved as measurements rather than as the owner's own value (a Body's weight
+     *  and height): the unit each is kept in, and what the form says of them in place of the priority line. */
+    measured?: { units: Readonly<Record<string, string>>; words: string } } = {}) => {
   const doc = host.ownerDocument;
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, parent: HTMLElement, text?: string) => {
     const value = doc.createElement(tag); if (text !== undefined) value.textContent = text; parent.append(value); return value;
@@ -58,7 +63,8 @@ export const mountAssetObservationEditor = (host: HTMLFormElement, asset: Asset,
       explicitInstants.set(picker.value, { text: at.value, instant }); changed(); });
   }
   node('p', host, 'Times use this device’s time zone.').className = 'yours-muted';
-  node('p', host, 'Your entry takes priority over automatic updates to this field.');
+  const OWN_PRIORITY = 'Your entry takes priority over automatic updates to this field.';
+  const priority = node('p', host, OWN_PRIORITY);
   type Draft = { value: string; unit: string; state: string; at: string };
   const drafts = new Map<string, Draft>(); let selected = picker.value;
   const ruleUnits = (key: string) => [...new Set(asset.rules.flatMap(rule => rule.when.kind === 'objective' && rule.when.field === key ? [rule.when.unit] : []))];
@@ -67,11 +73,13 @@ export const mountAssetObservationEditor = (host: HTMLFormElement, asset: Asset,
     custom.hidden = !fresh; name.disabled = !fresh; name.required = fresh;
     if (value && unit && unitHint) {
       const reading = fresh ? null : asset.readings[selected]; const units = fresh ? [] : ruleUnits(selected);
+      const measuredUnit = fresh || !options.measured || !Object.hasOwn(options.measured.units, selected) ? undefined : options.measured.units[selected];
       value.value = draft?.value ?? '';
-      unit.value = reading?.unit ?? (units.length === 1 ? units[0]! : draft?.unit ?? '');
-      unit.readOnly = !!reading || units.length === 1;
+      unit.value = reading?.unit ?? measuredUnit ?? (units.length === 1 ? units[0]! : draft?.unit ?? '');
+      unit.readOnly = !!reading || !!measuredUnit || units.length === 1;
       unitHint.textContent = units.length > 1 ? 'Rules for this reading use different units. Edit those rules before recording a value.'
-        : reading ? 'Unit from the last recorded reading.' : units.length === 1 ? 'Unit from this asset’s rule.' : 'Enter the unit you observed.';
+        : reading ? 'Unit from the last recorded reading.' : measuredUnit ? 'The unit it is kept in.' : units.length === 1 ? 'Unit from this asset’s rule.' : 'Enter the unit you observed.';
+      priority.textContent = measuredUnit && options.measured ? options.measured.words : OWN_PRIORITY;
       previous.textContent = reading ? `Last recorded: ${reading.value} ${reading.unit} · ${new Date(reading.as_of).toLocaleString()}` : fresh ? 'Add the value you observed.' : 'No reading recorded yet. Enter the actual value.';
     } else if (state) {
       const condition = fresh ? null : asset.observations[selected]; state.value = draft?.state ?? '';

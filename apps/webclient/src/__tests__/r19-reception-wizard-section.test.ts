@@ -182,7 +182,7 @@ const makeFakeWizard = () => {
   const dispose = vi.fn();
   const mountWizard = ((opts: LaunchWizardMountOptions): LaunchWizardMount => {
     captured = opts.onClose;
-    return { update, dispose };
+    return { update, dispose, hasInFlightWork: () => false, hasUnsavedChanges: () => false };
   }) as typeof mountLaunchWizard;
   return {
     mountWizard,

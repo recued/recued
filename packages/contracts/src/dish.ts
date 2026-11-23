@@ -134,6 +134,11 @@ export const DISH_WEBHOOK_DOOR_RPCS = [
   'packs.connections.add_many',
   // …and deleting a connection takes it off every list.
   'collection.connection.delete',
+  // D-201 Slice 10AC (10AA finding 19) — switching a webhook on opens the doors
+  // of the recipes it starts that are not open, the owner's closed ones included.
+  'webhook.ingress.enable',
+  // D-201 Slice 10AF — and opening one recipe's door on the webhook's card.
+  'webhook.ingress.door.set',
 ] as const;
 
 /** D-209 — what a change to a recipe's MAIN dish did to the webhook door its
@@ -173,6 +178,12 @@ export interface DishWebhookDoorChange {
    *  the recipe itself cannot back a door (`reason` says why); `fault` — the
    *  server could not record the door, and saving again retries. */
   readonly reason_code?: 'no_account' | 'refused' | 'fault';
+  /** D-201 Slice 10BL (10BF finding 16) — the owner's switch for this recipe
+   *  could not be kept after its door step, which left the recipe with no open
+   *  door: a restart, a settings change or an update would make its door as an
+   *  earlier answer said. The screen tells the owner to switch it again. With
+   *  `unchanged`, it is the only news. Absent from a server before 10BL. */
+  readonly choice_not_kept?: true;
 }
 
 /** D-215 slice 3 — the last-outcome cell a dish row renders.

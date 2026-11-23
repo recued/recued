@@ -10,6 +10,7 @@ import {
 import { e } from '../template.js';
 
 export interface AiAssistSidebarProps {
+  context?: { label: string; href: string };
   /** Sending and rewriting are mutually exclusive draft mutations. */
   submitting: boolean;
   /** The one transformation awaiting its governed execute response. */
@@ -56,6 +57,7 @@ export const renderAiAssistSidebar = (props: AiAssistSidebarProps): string => {
   return `
     <aside class="mail-compose-ai-assist" aria-label="AI assist">
       <h3 class="mail-compose-ai-title">AI assist</h3>
+      ${props.context ? `<p class="mail-compose-ai-help" data-mail-compose-contact-context>Drafting for <a href="${e(props.context.href)}">${e(props.context.label)}</a>.</p>` : ''}
       <p class="mail-compose-ai-help">
         ${props.mode === 'reply' ? 'Draft a reply using the original email and your instructions.' : 'Describe the email you want to write.'} Review and edit the draft before sending.
       </p>

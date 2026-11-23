@@ -23,6 +23,8 @@
  *     (DL-1) — WS connection auth (pair-blob) is the trust boundary.
  */
 
+import type { BrowserClickObstruction } from './browser-failure.js';
+
 /** D-148 § A.3.1 — closed list of browser-DOM actions the bridge can
  *  perform. The bridge declines anything not in this set; ingredient
  *  manifests declare `permitted_actions` from this list at publish
@@ -217,10 +219,23 @@ export const bridgeRunsAction = (
  *  two came in the same Bridge (D-335 slice B), and an older Bridge answers a
  *  write with no selector "requires selector argument". */
 export const bridgeRunsCommand = (
-  profile: Pick<BridgeCapabilityProfile, 'supported_actions'>,
+  profile: Pick<BridgeCapabilityProfile, 'supported_actions' | 'guarded_links' | 'structural_reads' | 'row_checks' | 'card_rows' | 'settled_reads' | 'long_waits'>,
   action: BridgeAction,
   args: Record<string, unknown>,
 ): boolean => bridgeRunsAction(profile, action)
+  && (args.navigation_guard === undefined || action === 'click' && profile.guarded_links === true)
+  // D-402 slice G — a click or typing named by the row it sits in needs a Bridge that checks the row
+  // again at the step: an older one drops the argument and acts on the element alone.
+  && (args.within === undefined || (action === 'click' || action === 'fill' || action === 'submit') && profile.row_checks === true)
+  // 2026-11-21 (task P) — and one named by the card it sits in needs a Bridge that finds the card: one that
+  // checks rows alone finds no row around it and refuses every such step.
+  && (args.within_card === undefined || profile.card_rows === true)
+  // 2026-11-21 (D-402, task H) — a click or a sent form watched longer than an older Bridge watches needs one that watches
+  // that long: an older one stops at 10 s, and the step's check fails before its time.
+  && (Math.max(Number(args.watch_ms ?? 0), Number(args.send_watch_ms ?? 0)) <= BRIDGE_SHORT_WAIT_MAX_MS || profile.long_waits === true)
+  && (args.preserve_structure !== true || ['inspect', 'reread'].includes(action) && profile.structural_reads === true)
+  // 2026-11-20 — a read asked to settle needs a Bridge that waits: an older one ignores the argument and reads at once.
+  && (args.settle_ms === undefined || ['inspect', 'reread'].includes(action) && profile.settled_reads === true)
   && (action === 'inspect' || action === 'describe' || (args.page === undefined && args.ref === undefined)
     || bridgeRunsAction(profile, 'describe'));
 
@@ -241,7 +256,7 @@ export const BRIDGE_INSPECT_MAX_VALUE_CHARS = 2_000;
  *  bytes of JSON (`\u001f`), so 600,000 of them always fit. */
 export const BRIDGE_INSPECT_CEILING_CHARS = 600_000;
 /** The keys of an `inspect` answer. */
-export const BRIDGE_INSPECT_OUTPUT_KEYS = ['page', 'url', 'title', 'html', 'truncated'] as const;
+export const BRIDGE_INSPECT_OUTPUT_KEYS = ['page', 'url', 'title', 'html', 'truncated', 'selector_matches', 'selected_index'] as const;
 /** The keys of a `describe` answer. */
 export const BRIDGE_DESCRIBE_OUTPUT_KEYS = ['page', 'url', 'title', 'role', 'label', 'protected'] as const;
 /** The keys of a `list_tabs` answer, and the most tabs it lists. */
@@ -291,8 +306,17 @@ export interface BridgeActedOn {
   role: string;
   label: string;
   protected: boolean;
+  /** D-402 slice G (§3.1) — the kind of secret a protected field takes, as the page says it (Bridge 0.0.13). */
+  protected_kind?: BridgeProtectedKind;
   selector?: string;
 }
+/** D-402 slice G — the kinds of secret a protected field can take, from its `autocomplete`. */
+export type BridgeProtectedKind = 'password' | 'sign-in code' | 'card';
+/** D-402 slice G (§4.1) — the `detail` of the Bridge's refusal of a click or typing whose row no longer
+ *  shows the texts the step named it by. Checked before anything is typed or clicked, so the server
+ *  may find the element again and send the step once more. */
+export const BRIDGE_ROW_CHANGED_DETAIL = 'row_changed';
+const PROTECTED_KINDS: ReadonlySet<string> = new Set(['password', 'sign-in code', 'card']);
 /** The `acted_on` of an answer, when it is one. */
 export const readBridgeActedOn = (value: unknown): BridgeActedOn | undefined => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -300,6 +324,8 @@ export const readBridgeActedOn = (value: unknown): BridgeActedOn | undefined => 
   if (typeof v.url !== 'string' || typeof v.title !== 'string' || typeof v.role !== 'string' || typeof v.label !== 'string'
     || typeof v.protected !== 'boolean' || (v.selector !== undefined && typeof v.selector !== 'string')) return undefined;
   return { url: v.url, title: v.title, role: v.role, label: v.label, protected: v.protected,
+    ...(typeof v.protected_kind === 'string' && PROTECTED_KINDS.has(v.protected_kind)
+      ? { protected_kind: v.protected_kind as BridgeProtectedKind } : {}),
     ...(typeof v.selector === 'string' ? { selector: v.selector } : {}) };
 };
 
@@ -403,12 +429,30 @@ export const BRIDGE_PICK_MAX_MS = 10_000;
  *  it then waits for that page to finish. A click that loads nothing costs the first. */
 export const BRIDGE_CLICK_SETTLE_MS = 800;
 export const BRIDGE_CLICK_LOAD_MAX_MS = 10_000;
+/** 2026-11-20 — a read asked to settle (`settle_ms`, a Bridge with `settled_reads`) reads once no content of the page has
+ *  been added, removed or changed for this long, and no shown region says it is busy (`aria-busy="true"`). Changes to
+ *  attributes alone, such as an animation's, do not count. A click that loads nothing gets only the
+ *  {@link BRIDGE_CLICK_SETTLE_MS} watch, so a dialog, a list drawn by a script or a route change was read as it was
+ *  drawn; the model padded nearly every batch with a fixed wait instead (27 of 30 batches in P's runs on `ba7af419d`). */
+export const BRIDGE_READ_QUIET_MS = 400;
+/** The longest a read waits to settle. It then reads anyway and answers `settled: false`. */
+export const BRIDGE_READ_SETTLE_MAX_MS = 3_000;
+/** 2026-11-20 (the owner: "go ahead", a wait at the Bridge) — the longest a read asked to wait for the page to change
+ *  (`wait_change_ms`, a Bridge with `settled_waits`) waits, the act tool's longest wait. It then reads anyway and
+ *  answers whether the page had changed (`changed`) and held still (`settled`). 2026-11-21 (D-402, task H) — 30 s from
+ *  Bridge 0.0.14 (`long_waits`), as long as one wait may take; an older Bridge stops at {@link BRIDGE_SHORT_WAIT_MAX_MS}. */
+export const BRIDGE_WAIT_CHANGE_MAX_MS = 30_000;
 /** D-335 slice J — the longest a click or a sent form watches for its page to start moving, when
  *  the command asks for longer than {@link BRIDGE_CLICK_SETTLE_MS} (`args.watch_ms`): a sign-in
  *  form that checks the password with the site before it loads the next page moves on only once
  *  the site has answered. A Bridge asked for a CAPTCHA (`challenge`) stops watching as soon as one
- *  shows, and one that predates the argument watches for the usual time. */
-export const BRIDGE_WATCH_MAX_MS = 10_000;
+ *  shows, and one that predates the argument watches for the usual time. 2026-11-21 (D-402, task H) — 30 s from Bridge
+ *  0.0.14 (`long_waits`), as long as one check may take; an older Bridge stops at {@link BRIDGE_SHORT_WAIT_MAX_MS}. */
+export const BRIDGE_WATCH_MAX_MS = 30_000;
+/** 2026-11-21 (D-402, benchmark task H, live) — the most a Bridge before 0.0.14 watches a click or a sent form
+ *  ({@link BRIDGE_WATCH_MAX_MS}) or waits for a page to change ({@link BRIDGE_WAIT_CHANGE_MAX_MS}). A longer watch
+ *  needs `long_waits`; a longer wait for a change is waited by the server instead (`bridge-performance.ts`). */
+export const BRIDGE_SHORT_WAIT_MAX_MS = 10_000;
 /** D-347 follow-up 18 (2026-11-08) — the longest a click by its page waits for what covers its element to go:
  *  a banner shown in turn over the one it names, a notice that new mail has come, a list's loading veil. A
  *  dialog over it is refused at once. Within the command's budget, leaving 15 s for the click and the watch
@@ -456,7 +500,7 @@ export const BRIDGE_WAIT_MAX_MS = 30_000;
  *  also watches for that, and ends `found: false, failed: true` as soon as it shows; with
  *  `args.problems`, for an error message the step before led to (`problem`, its text). A Bridge
  *  answers them only when asked. */
-export const BRIDGE_WAIT_OUTPUT_KEYS = ['page', 'url', 'title', 'found', 'waited_ms', 'failed', 'problem'] as const;
+export const BRIDGE_WAIT_OUTPUT_KEYS = ['page', 'url', 'title', 'found', 'waited_ms', 'failed', 'problem', 'match_counts'] as const;
 /** D-335 slice H — the most rows one `read_table` answers. Its cells share
  *  inspect's budget: at most {@link BRIDGE_INSPECT_MAX_CHARS} characters in all,
  *  and at most {@link BRIDGE_INSPECT_MAX_VALUE_CHARS} in one cell. A table that
@@ -671,6 +715,8 @@ export interface BridgeResult {
     code: BridgeErrorCode;
     message: string;
     detail?: string;
+    /** Present only for a confirmed, hit-tested click refusal. */
+    obstruction?: BrowserClickObstruction;
   };
   duration_ms: number;
   bridge_version: string;
@@ -854,6 +900,38 @@ export const BRIDGE_PROHIBITED_CHROME_PERMISSIONS: ReadonlyArray<string> = [
  *  the rest of the report family (2026-09-16) — reachability.ts no longer
  *  re-exports this type, and `index.ts` exports it from here. */
 export interface BridgeCapabilityProfile {
+  /** Rechecks a recovered navigation link's source URL and destination at dispatch. */
+  guarded_links?: boolean;
+  /** Returns a sanitized region in the same injection that satisfies a shown-element wait. */
+  wait_read?: boolean;
+  /** Preserves omitted element siblings for positional collection. */
+  structural_reads?: boolean;
+  /** D-402 slice G — checks, just before a click or typing named by the row it sits in (`within`), that
+   *  the row still shows those texts; refuses a write by a selector that names several elements; and
+   *  says which kind of secret a protected field takes (Bridge 0.0.13). */
+  row_checks?: boolean;
+  /** 2026-11-21 (D-402, task P) — checks the card a step's element sits in (`within_card`, the kind of card a
+   *  `within` names: `div[data-testid="note-card"]`) as it checks a row, for an item that is no list item, table
+   *  row, article or row by its role (Bridge 0.0.14). */
+  card_rows?: boolean;
+  /** 2026-11-21 (D-402, benchmark task H, live) — watches a click or a sent form, and waits for a page to change, up to
+   *  30 s ({@link BRIDGE_WATCH_MAX_MS}, {@link BRIDGE_WAIT_CHANGE_MAX_MS}), as long as one wait or check may take; an
+   *  older Bridge stops both at {@link BRIDGE_SHORT_WAIT_MAX_MS} (Bridge 0.0.14). */
+  long_waits?: boolean;
+  /** Accepts DOM-ready snapshots and optional predicate-driven click completion.
+   * Older servers keep full-load behavior by omitting these command arguments. */
+  dom_readiness?: boolean;
+  /** 2026-11-20 — a read (`inspect`, `reread`) asked to settle (`settle_ms`) first waits until the page's content has
+   *  stopped changing, at most {@link BRIDGE_READ_SETTLE_MAX_MS}, and answers whether it had (`settled`). Older
+   *  servers omit the argument, and an older Bridge is never sent it. */
+  settled_reads?: boolean;
+  /** 2026-11-20 (the owner: "go ahead", a wait at the Bridge) — a read (`inspect`, `reread`) asked to wait for a change
+   *  (`wait_change_ms`) first waits until the page has changed since the Bridge last read it (a document it has not
+   *  watched counts as changed) and then holds still, at most {@link BRIDGE_WAIT_CHANGE_MAX_MS}. Holding still is the
+   *  settle of {@link settled_reads}, and no endless animation, such as a spinner, started since that read. It answers
+   *  `changed` and `settled`. A plain wait of seconds is sent as one; to an older Bridge the server strips the
+   *  argument, the read answers at once, and the server waits as it did. */
+  settled_waits?: boolean;
   /** Bridge-side semver matching the `apps/bridge/` package version. */
   software_version: string;
   /** Major Chrome version detected at the bridge's offscreen
@@ -878,6 +956,12 @@ export interface BridgeCapabilityProfile {
    *  predates `inspect`: it runs {@link ORIGINAL_BRIDGE_ACTIONS}. Strings, since
    *  a newer Bridge may list an action this server does not know. */
   supported_actions?: string[];
+}
+
+export interface BridgeReadinessCheck {
+  selector: string;
+  until: 'shown' | 'gone';
+  text?: string;
 }
 
 /** D-148 § A.3.4 — closed list of fields the bridge persists in

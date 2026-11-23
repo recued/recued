@@ -332,3 +332,37 @@ describe('every run dialog the webclient opens offers a next step', () => {
     expect(users.length).toBeGreaterThanOrEqual(7);
   });
 });
+
+// D-402 slice H3c (ruling 14) — a run its browser stopped before step 1: "Use “Home” instead".
+describe('a browser the run could not use — "Use this browser instead"', () => {
+  const gone: RunNeed = { kind: 'browser', step_id: 'type_home', problem: 'not_paired', setting: 'browser_2', browser_id: 'inst-old',
+    name: 'Old laptop', dish_id: 'dsh_main', instead: { browser_id: 'inst-home', name: 'Home (paired Nov 18)' } };
+  it('says what else to do and opens the dish\'s settings; its own reason, above, already names the browser', () => {
+    expect(runNeedStep(gone)).toEqual({ lead: 'Use another browser instead.',
+      link: { text: 'Choose a browser', href: '#automation/dishes/dsh_main' } });
+    expect(runNeedStep({ ...gone, problem: 'offline' }).lead).toBe('Or use another browser instead.');
+  });
+  it('moves the dish to the one browser offered, in one click, and says where it acts now', async () => {
+    const moved: unknown[] = [];
+    const step = runNeedsStep([gone], undefined, async (args) => { moved.push(args); })!;
+    expect(step.action).toMatchObject({ text: 'Use “Home (paired Nov 18)” instead', done: 'It acts in “Home (paired Nov 18)” now. Run it again.' });
+    await step.action!.run();
+    expect(moved).toEqual([{ dish_id: 'dsh_main', from: 'inst-old', to: 'inst-home' }]);
+    // Two settings holding the one browser: said once, linked once, moved together by the server.
+    const twice = runNeedsStep([gone, { ...gone, setting: 'browser_3' }], undefined, async () => undefined)!;
+    expect(twice.lead).toBe('Use another browser instead.');
+    expect(twice.links).toHaveLength(1);
+    expect(twice.action?.text).toBe('Use “Home (paired Nov 18)” instead');
+  });
+  it('⛔ no click for two browsers gone at once, none to offer, no dish, or a switch to turn on first', () => {
+    const move = async () => undefined;
+    expect(runNeedsStep([gone, { ...gone, setting: 'browser_1', browser_id: 'inst-older' }], undefined, move)!.action).toBeUndefined();
+    const { instead: _instead, ...nothing } = gone as Extract<RunNeed, { kind: 'browser' }>;
+    expect(runNeedsStep([nothing], undefined, move)!.action).toBeUndefined();
+    const { dish_id: _dish, ...dishless } = gone as Extract<RunNeed, { kind: 'browser' }>;
+    expect(runNeedsStep([dishless], undefined, move)!).toEqual({ lead: 'Use another browser instead.', links: [] });
+    const off: RunNeed = { kind: 'switch', step_id: 'find', ingredient_id: 'rg-catalog', operation_id: 'search', pack_slug: 'ripgrep', label: 'Ripgrep' };
+    expect(runNeedsStep([off, gone], async () => undefined, move)!.action?.text).toBe('Turn it on');
+    expect(runNeedsStep([gone])!.action).toBeUndefined();
+  });
+});

@@ -47,6 +47,7 @@ export {
   REF_PICKER_RECOVERY_ATTR,
   REF_PICKER_RECOVERY_MESSAGE_ATTR,
   REF_PICKER_RETRY_ATTR,
+  REF_PICKER_KEEP_QUERY_ATTR,
 } from './render.js';
 
 export { asRefPickerSearchPage } from './types.js';

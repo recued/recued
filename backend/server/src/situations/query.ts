@@ -486,6 +486,15 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
   // digest, a push, the chat's prefetch) show the few that fit them.
   const tool = (query.surface ?? 'tool') === 'tool';
   const maxItems = tool ? query.limit_items ?? Infinity : context.everyItem ? Infinity : Math.min(3, query.limit_items ?? 3);
+  // D-340 §4 — Today shows each state that holds on its own line at its top, so on Today a state
+  // does not count against its cluster's few items: four Body states holding showed three, and the
+  // one left out (by rule id) was simply missing. The digest, a push and the chat keep their few.
+  const statesUncapped = query.surface === 'today';
+  const capItems = <T>(list: readonly T[], kindOf: (entry: T) => string): T[] => {
+    if (!statesUncapped) return list.slice(0, maxItems);
+    let others = 0;
+    return list.filter(entry => kindOf(entry) === 'asset_state' || ++others <= maxItems);
+  };
   const clusters: Array<SituationCluster & { score: number }> = [...groups.values()].flatMap(group => {
     group.sort((a, b) => score(b) - score(a) || refKey(a.ref).localeCompare(refKey(b.ref)));
     const allSubjects = uniqueRefs(group.flatMap(fact => fact.subjects));
@@ -505,7 +514,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     const admitted = group.filter(fact => fact.basis !== 'inferred' || ++inferred <= 1);
     const projecting = context.projectClusterItems !== undefined;
     const collisions = projecting ? collidingFacts(group) : undefined;
-    const supplied = (projecting ? admitted : admitted.slice(0, maxItems)).map(fact => {
+    const supplied = (projecting ? admitted : capItems(admitted, fact => fact.kind)).map(fact => {
       const reasons = selected.get(refKey(fact.ref))!;
       if (collisions ? collisions.has(fact) : fact.when && group.some(other => other !== fact && other.when && intersects(fact.when!, other.when))) reasons.add('collides');
       return itemOf(fact, reasons, query, window, text, projectedPeople, textMatch(fact).matches);
@@ -514,7 +523,7 @@ export const createSituationQuery = (deps: SituationQueryDeps) => async (
     if (projected === null || !projected.length) return [];
     const allowedItems = new Set(supplied);
     if (projected.some(item => !allowedItems.has(item))) throw new Error('A situation projection must use supplied items');
-    const ordered = [...new Set(projected)]; const items = ordered.slice(0, maxItems);
+    const ordered = [...new Set(projected)]; const items = capItems(ordered, item => item.kind);
     const omitted = projecting ? group.length - admitted.length + ordered.length - items.length : group.length - items.length;
     return [{ id: `situation-${createHash('sha256').update(identity).digest('hex').slice(0, 32)}`,
       subjects: allSubjects, span: anchor.when ?? null, items, omitted, score: score(group[0]!) }];

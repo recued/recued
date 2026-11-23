@@ -15,7 +15,7 @@ import type { AddressInfo } from 'node:net';
 import { PassThrough, Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpInboundTokenRecord } from '@recued/contracts';
-import { LLMError, type LLMConfig } from '@recued/llm';
+import { classifyProviderError, LLMError, type LLMConfig } from '@recued/llm';
 
 import { ChatContextLengthError, ChatTurnUnansweredError } from '../chat-turn-executor.js';
 import {
@@ -404,6 +404,11 @@ describe('createLlmGatewayPortHandler with stream: true', () => {
       [new Error('upstream exploded'), 'llm_gateway_provider_failed'],
       [new ChatContextLengthError(), 'context_length_exceeded'],
       [new LLMError('AI_TOKEN_BUDGET_EXCEEDED', 'over budget'), 'context_length_exceeded'],
+      // The provider's own answer for a model it does not have, as the plain path meets it.
+      [classifyProviderError(404, '{"error":{"message":"The model `gpt-4.1-mini` does not exist or you do not have access to it."}}', null),
+        'llm_gateway_model_unavailable'],
+      // A reply that stopped at its limit before any answer, as the adapters mark it.
+      [new LLMError('AI_RESPONSE_PARSE_FAILED', 'OpenAI response had no answer', { finish_reason: 'length' }), 'llm_gateway_model_output_limit'],
     ];
     for (const [error, code] of cases) {
       const handler = createLlmGatewayPortHandler(makeDeps(makeProvider(async () => { throw error; })));
@@ -480,6 +485,10 @@ describe('D-337 follow-up 33 — a turn that produced no answer says why', () =>
       ['provider_failure', NOW + 1_500, 502, 'llm_gateway_provider_failed', '2', 'The AI provider failed before answering. Try again in 2 seconds.'],
       ['provider_failure', undefined, 502, 'llm_gateway_provider_failed', undefined, 'The AI provider failed before answering.'],
       ['cooldown', undefined, 503, 'llm_gateway_model_cooling_down', undefined, 'The AI model this service uses is paused after a provider failure. Try again shortly.'],
+      // Only the owner can fix it, by choosing another model: no wait would help, and no model is named.
+      ['model_unavailable', undefined, 503, 'llm_gateway_model_unavailable', undefined, 'The AI model this service uses is not available from its provider.'],
+      // The owner's thinking setting fixes it, not a wait.
+      ['output_limit', undefined, 502, 'llm_gateway_model_output_limit', undefined, 'The AI model used its whole output allowance before it answered.'],
       // A turn that recorded no cause reads as before.
       [undefined, undefined, 502, 'llm_gateway_provider_failed', undefined, 'llm_gateway shared chat turn did not produce a valid AI output'],
     ];

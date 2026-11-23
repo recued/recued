@@ -12,12 +12,27 @@
 import {
   OWNER_CONTRACT_ID,
   chatFixesOf,
+  chatHintKeyOfFix,
+  chatNextStepKey,
+  featureStepWords,
+  sourceStepWords,
+  thingPageSetupOf,
+  thingStepWords,
   type ChatFix,
   type ChatMessage,
 } from '@recued/contracts';
 
 import { runNeedStep, type ProgramSwitchSet } from '../shell/run-needs-offer.js';
 import { serializeShellRoute } from '../shell/route.js';
+import {
+  buildChatHintErrorLine,
+  buildChatHintNotNow,
+  buildChatHintSetAside,
+  chatHintError,
+  chatHintSetAside,
+  chatHintsOffered,
+  type ChatHint,
+} from './chat-hints.js';
 
 /** Marks the fixes under an answer — what a host or a drive asserts on. */
 export const CHAT_FIXES_ATTR = 'data-chat-fixes';
@@ -38,34 +53,83 @@ export const setChatFixActions = (next: ChatFixActions | null): void => {
   actions = next;
 };
 
-/** One fix as drawn: what happened, where to go, and the one-click fix when there is one. */
+/** One fix as drawn: what happened, where to go, and the one-click fix when there is one.
+ *  `landed` (D-404 slice B1): its step is done, as the server read it (a thing now in Yours). */
 export interface ChatFixRow {
   readonly key: string;
   readonly lead: string;
   readonly link: { readonly text: string; readonly href: string } | null;
   readonly action?: { readonly text: string; readonly run: () => Promise<void>; readonly done: string };
+  readonly landed?: true;
+  /** D-405 slice 3 — a hint (a thing to add, a pack's setup, a feature to connect): "Not now" on it. */
+  readonly hint?: ChatHint;
 }
 
 const keyOf = (fix: ChatFix): string =>
-  fix.kind === 'switch'
-    ? `grant:${fix.entry_key}`
-    : fix.need.kind === 'switch'
-      ? `program:${fix.need.ingredient_id}:${fix.need.operation_id}`
-      : `${fix.need.kind}:${fix.need.step_id}`;
+  fix.kind === 'feature'
+    ? `feature:${fix.feature}`
+    : fix.kind === 'source'
+    ? `source:${fix.pack_slug}`
+    : fix.kind === 'thing'
+    ? `thing:${fix.type_id}`
+    : fix.kind === 'switch'
+      ? `grant:${fix.entry_key}`
+      : fix.need.kind === 'switch'
+        ? `program:${fix.need.ingredient_id}:${fix.need.operation_id}`
+        : `${fix.need.kind}:${fix.need.step_id}`;
 
-/** The rows an answer offers: none for any message but an answer, or with nothing stamped. */
-export const chatFixRows = (message: Pick<ChatMessage, 'role' | 'fixes'>): ChatFixRow[] => {
+/** The rows an answer offers: none for any message but an answer, or with nothing stamped.
+ *  `landed` holds the keys (`chatNextStepKey`) of its steps the server says are done. */
+export const chatFixRows = (
+  message: Pick<ChatMessage, 'role' | 'fixes'> & Partial<Pick<ChatMessage, 'id' | 'session_id'>>,
+  landed: ReadonlySet<string> = new Set(),
+): ChatFixRow[] => {
   if (message.role !== 'assistant') return [];
   const can = actions;
   return chatFixesOf(message.fixes).map((fix): ChatFixRow => {
     const key = keyOf(fix);
+    // D-404 step 4 — a thing with no readings yet, and the installed pack that feeds them: its page,
+    // where its setup is, carrying this answer so the page offers the way back. D-339 slice 23: a pack set up on
+    // the thing's own page (a Body's Connect Apple Health) opens that form there instead (`#yours/asset/<id>/setup/<pack>`).
+    if (fix.kind === 'source') {
+      const onPage = thingPageSetupOf(fix);
+      const words = sourceStepWords(fix.thing_name, fix.pack_name, onPage);
+      const back = message.session_id !== undefined && message.id !== undefined ? ['return', 'chat', message.session_id, message.id] : [];
+      const href = onPage !== undefined && fix.thing_id !== undefined
+        ? serializeShellRoute('yours', 'asset', fix.thing_id, 'setup', fix.pack_slug, ...back)
+        : serializeShellRoute('packs', fix.pack_slug, ...back);
+      return { key, lead: words.lead, link: { text: words.link, href }, hint: { key: chatHintKeyOfFix(fix)!, label: words.link } };
+    }
+    // D-405 slice 2 — one of the owner's core features with none connected: its lane on the Connections
+    // page, where the owner connects one. Once one is, the line says so and the block offers Ask again.
+    if (fix.kind === 'feature') {
+      const words = featureStepWords(fix.feature);
+      if (landed.has(chatNextStepKey({ kind: 'feature', id: fix.feature }))) return { key, lead: words.landed, link: null, landed: true };
+      // D-405 slice 7 — the link carries this answer, so the page offers "Back to chat" (and the first
+      // mailbox's Proposals do too), back to this line saying one is connected.
+      const back = message.session_id !== undefined && message.id !== undefined ? ['return', 'chat', message.session_id, message.id] : [];
+      return { key, lead: words.lead, link: { text: words.link, href: serializeShellRoute('connections', fix.feature, ...back) },
+        hint: { key: chatHintKeyOfFix(fix)!, label: words.link } };
+    }
+    // D-404 slice A — a type of thing the owner has none of: Yours' form, with that type chosen.
+    // The owner adds it there; nothing here adds anything.
+    if (fix.kind === 'thing') {
+      const words = thingStepWords(fix.type_name);
+      // D-404 slice B1 — once one is in Yours, the line says so, and the block offers Ask again.
+      if (landed.has(chatNextStepKey({ kind: 'thing', id: fix.type_id }))) return { key, lead: words.landed, link: null, landed: true };
+      // D-404 slice B2 — the link carries this answer, so Yours' form offers "Back to chat" and its save
+      // returns here, where this line then says the thing is in Yours.
+      const back = message.session_id !== undefined && message.id !== undefined ? ['return', 'chat', message.session_id, message.id] : [];
+      return { key, lead: words.lead, link: { text: words.link, href: serializeShellRoute('yours', 'new', fix.type_id, ...back) },
+        hint: { key: chatHintKeyOfFix(fix)!, label: words.link } };
+    }
     if (fix.kind === 'switch') {
       return {
         key,
         lead: `${fix.label} is turned off for you.`,
         link: { text: 'Open Self (you)', href: serializeShellRoute('contracts', OWNER_CONTRACT_ID) },
         ...(can !== null
-          ? { action: { text: 'Turn it on', run: () => can.grant(fix.entry_key), done: `${fix.label} is on now. Ask again.` } }
+          ? { action: { text: 'Turn it on', run: () => can.grant(fix.entry_key), done: `${fix.label} is on now.` } }
           : {}),
       };
     }
@@ -80,7 +144,7 @@ export const chatFixRows = (message: Pick<ChatMessage, 'role' | 'fixes'>): ChatF
             action: {
               text: 'Turn it on',
               run: () => can.program({ ingredient_id: need.ingredient_id, operation_id: need.operation_id }),
-              done: `${need.label !== undefined ? `${need.label}'s program` : 'The program'} is on now. Ask again.`,
+              done: `${need.label !== undefined ? `${need.label}'s program` : 'The program'} is on now.`,
             },
           }
         : {}),
@@ -91,12 +155,65 @@ export const chatFixRows = (message: Pick<ChatMessage, 'role' | 'fixes'>): ChatF
 /** Where each one-click fix stands, by message and fix, so a repaint keeps it. */
 const status = new Map<string, { state: 'running' | 'done' | 'failed'; error?: string }>();
 
-/** Draw the fixes. `messageId` scopes each fix's state; `repaint` redraws once one settles. */
+/** D-404 slice B1 (ruling P2) — "Ask again" under an answer once a step under it landed: it sends the
+ *  request that started the turn again, and nothing else. It may refuse (the composer holds a draft),
+ *  and says why in place. Marked by this attribute. */
+export const CHAT_ASK_AGAIN_ATTR = 'data-chat-ask-again';
+
+/** The "Ask again" button for one answer, its state kept by message so a repaint keeps it. */
+export const buildAskAgain = (
+  doc: Document,
+  messageId: string,
+  askAgain: () => Promise<void>,
+  repaint: () => void,
+): HTMLElement => {
+  const id = `${messageId}\u0000ask-again`;
+  const at = status.get(id);
+  const host = doc.createElement('div');
+  host.className = 'chat-ask-again';
+  if (at?.state === 'done') {
+    const said = doc.createElement('p');
+    said.className = 'chat-fix-lead chat-fix-done';
+    said.setAttribute('role', 'status');
+    said.textContent = 'Asked again.';
+    host.appendChild(said);
+    return host;
+  }
+  const button = doc.createElement('button');
+  button.className = 'chat-fix-button';
+  button.setAttribute('type', 'button');
+  button.setAttribute(CHAT_ASK_AGAIN_ATTR, messageId);
+  button.textContent = 'Ask again';
+  if (at?.state === 'running') button.setAttribute('disabled', '');
+  button.addEventListener('click', () => {
+    if (status.get(id)?.state === 'running') return;
+    status.set(id, { state: 'running' });
+    repaint();
+    void askAgain().then(
+      () => { status.set(id, { state: 'done' }); repaint(); },
+      (err: unknown) => { status.set(id, { state: 'failed', error: err instanceof Error ? err.message : String(err) }); repaint(); },
+    );
+  });
+  host.appendChild(button);
+  if (at?.state === 'failed' && at.error !== undefined) {
+    const error = doc.createElement('p');
+    error.className = 'chat-fix-error';
+    error.setAttribute('role', 'alert');
+    error.textContent = at.error;
+    host.appendChild(error);
+  }
+  return host;
+};
+
+/** Draw the fixes. `messageId` scopes each fix's state; `repaint` redraws once one settles.
+ *  `askAgain` (D-404 slice B1): once a row's step is done (a thing in Yours, a switch turned on
+ *  here), the block ends with "Ask again". */
 export const buildChatFixes = (
   doc: Document,
   messageId: string,
   rows: readonly ChatFixRow[],
   repaint: () => void,
+  askAgain?: () => Promise<void>,
 ): HTMLElement => {
   const root = doc.createElement('div');
   root.className = 'chat-fixes';
@@ -104,6 +221,12 @@ export const buildChatFixes = (
   root.setAttribute('role', 'group');
   root.setAttribute('aria-label', 'What this needed');
   for (const row of rows) {
+    // D-405 slice 3 — a hint the owner set aside: said so in its place, with "Show it again".
+    const setAside = row.hint !== undefined ? chatHintSetAside(row.hint.key) : undefined;
+    if (setAside !== undefined) {
+      root.appendChild(buildChatHintSetAside(doc, setAside, repaint));
+      continue;
+    }
     const item = doc.createElement('div');
     item.className = 'chat-fix';
     const at = status.get(`${messageId}\u0000${row.key}`);
@@ -149,7 +272,10 @@ export const buildChatFixes = (
       anchor.textContent = row.link.text;
       controls.appendChild(anchor);
     }
+    if (row.hint !== undefined && row.landed !== true && chatHintsOffered()) controls.appendChild(buildChatHintNotNow(doc, row.hint, repaint));
     item.appendChild(controls);
+    const hintError = row.hint !== undefined ? chatHintError(row.hint.key) : undefined;
+    if (hintError !== undefined) item.appendChild(buildChatHintErrorLine(doc, hintError));
     if (at?.state === 'failed' && at.error !== undefined) {
       const error = doc.createElement('p');
       error.className = 'chat-fix-error';
@@ -159,6 +285,9 @@ export const buildChatFixes = (
     }
     root.appendChild(item);
   }
+  const landedHere = rows.some((row) => row.landed === true
+    || (row.action !== undefined && status.get(`${messageId}\u0000${row.key}`)?.state === 'done'));
+  if (askAgain !== undefined && landedHere) root.appendChild(buildAskAgain(doc, messageId, askAgain, repaint));
   return root;
 };
 
@@ -176,6 +305,8 @@ export const CHAT_FIXES_STYLES = `
 .chat-fix-button { font: inherit; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 0.375rem;
   border: 1px solid var(--border); background: var(--surface); color: var(--fg); cursor: pointer; }
 .chat-fix-button[disabled] { opacity: 0.6; cursor: progress; }
+/* D-405 slice 3 — "Not now" sits after the hint's own link, quieter than it. */
+.chat-hint-not-now { font-weight: 400; color: var(--muted); background: transparent; }
 .chat-fix-link { font-size: 13px; font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
 .chat-fix-link:hover, .chat-fix-link:focus-visible { text-decoration: underline; }
 .chat-fix-done { font-size: 13px; color: var(--muted); }

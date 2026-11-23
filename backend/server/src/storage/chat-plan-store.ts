@@ -1,3 +1,6 @@
+import { CANCELLED_APPROVAL_LIMITS, PENDING_APPROVAL_LIMITS, COMPLETED_HELD_ACTION_LIMITS,
+  type ApprovalEvidenceRows, type PendingApprovalRows, type CancelledApprovalRows,
+  type CompletedHeldActionRows } from '../chat-request-evidence.js';
 import { isResourceReview } from '@recued/contracts';
 import { isLocalMutationReceiptSummary } from '@recued/contracts';
 import { withLocalMutationScope } from '../local-mutation-context.js';
@@ -67,6 +70,8 @@ interface ChatPlanRow {
   hold_run_id: string | null;
   /** D-329 — when that hold expired unanswered (`hold.lapsed_at`). */
   hold_lapsed_at: number | null;
+  /** D-343 — when a newer version of the same call replaced that hold (`hold.replaced_at`). */
+  hold_replaced_at?: number | null;
   /** D-329 — the names of the records its args name (`ChatPlanProposal.value_labels`). */
   value_labels_encrypted: string | null;
   /** D-336 slice G — the notes in memory a held save meets (`ChatPlanProposal.memory_conflicts`). */
@@ -76,6 +81,9 @@ interface ChatPlanRow {
   hold_always_allow?: string | null;
   /** D-341 — what that answer lets happen, in the ask's words (`hold.always_allow_note`). */
   hold_always_allow_note?: string | null;
+  /** D-177 §N.15.9 — the round's group it was asked in, once, with the others of its kind
+   *  (`hold.group`). Absent on a row made before the column. */
+  hold_group?: string | null;
 }
 
 const chatMutationIdentity = (row: ChatPlanRow): unknown => ({
@@ -244,10 +252,12 @@ const planShellFromRow = (
           hold: {
             run_id: row.hold_run_id,
             ...(typeof row.hold_lapsed_at === 'number' ? { lapsed_at: row.hold_lapsed_at } : {}),
+            ...(typeof row.hold_replaced_at === 'number' ? { replaced_at: row.hold_replaced_at } : {}),
             ...(typeof row.hold_always_allow === 'string' && row.hold_always_allow !== ''
               ? { always_allow: row.hold_always_allow } : {}),
             ...(typeof row.hold_always_allow_note === 'string' && row.hold_always_allow_note !== ''
               ? { always_allow_note: row.hold_always_allow_note } : {}),
+            ...(typeof row.hold_group === 'string' && row.hold_group !== '' ? { group: row.hold_group } : {}),
           },
           // D-336 slice E — what the owner may change on its card while approving it.
           ...(heldPlanEditableArgs(row.tool) !== undefined ? { editable_args: heldPlanEditableArgs(row.tool) } : {}),
@@ -413,6 +423,9 @@ export const createSqliteChatPlanStore = (
   getKey?: ChatKeyProvider,
   now: () => number = Date.now,
 ): planApproval.PlanApprovalStore & {
+  readPendingEvidenceRows(session_id: string): Promise<PendingApprovalRows>;
+  readCancelledEvidenceRows(session_id: string): Promise<CancelledApprovalRows>;
+  readCompletedHeldEvidenceRows(session_id: string): Promise<CompletedHeldActionRows>;
   listForTurn(session_id: string, turn_id: string): Promise<ReadonlyArray<ChatPlanRecord>>;
 } => {
   const localMutations = createOrdinaryLocalMutationReceipts(db, now);
@@ -522,6 +535,13 @@ export const createSqliteChatPlanStore = (
            hold_lapsed_at = @lapsed_at
      WHERE plan_id = @plan_id AND hold_run_id = @run_id AND status = 'proposed'
   `);
+  const replaceHoldRun = db.prepare(`
+    UPDATE chat_plans
+       SET status = 'cancelled',
+           resolved_at = @replaced_at,
+           hold_replaced_at = @replaced_at
+     WHERE plan_id = @plan_id AND hold_run_id = @run_id AND status = 'proposed'
+  `);
   const answerMessageRow = db.prepare<{ plan_id: string }>(
     'SELECT message_id FROM chat_plans WHERE plan_id = @plan_id',
   );
@@ -529,8 +549,14 @@ export const createSqliteChatPlanStore = (
     UPDATE chat_plans
        SET hold_run_id = NULL,
            hold_always_allow = NULL,
-           hold_always_allow_note = NULL
+           hold_always_allow_note = NULL,
+           hold_group = NULL
      WHERE plan_id = @plan_id AND hold_run_id = @run_id
+  `);
+  const setHoldGroupRun = db.prepare(`
+    UPDATE chat_plans
+       SET hold_group = @group
+     WHERE plan_id = @plan_id AND hold_run_id = @run_id AND status = 'proposed'
   `);
   const addConflictRun = db.prepare(`
     UPDATE chat_plans
@@ -554,13 +580,13 @@ export const createSqliteChatPlanStore = (
       args_encrypted, resource_review_encrypted, args_hash, target_instance, status, created_at,
       resolved_at, consumed_at, execution_status, execution_turn_id,
       execution_blob_encrypted, execution_updated_at, hold_run_id, value_labels_encrypted,
-      memory_conflicts_encrypted, hold_always_allow, hold_always_allow_note
+      memory_conflicts_encrypted, hold_always_allow, hold_always_allow_note, hold_group
     ) VALUES (
       @plan_id, @session_id, @turn_id, @retry_of_plan_id, NULL,
       @tool, @tier, @classification,
       @args_encrypted, @resource_review_encrypted, @args_hash, @target_instance, @status, @created_at,
       @resolved_at, @consumed_at, NULL, NULL, NULL, NULL, @hold_run_id, @value_labels_encrypted,
-      @memory_conflicts_encrypted, @hold_always_allow, @hold_always_allow_note
+      @memory_conflicts_encrypted, @hold_always_allow, @hold_always_allow_note, @hold_group
     )
     ON CONFLICT(plan_id) DO NOTHING
   `);
@@ -732,6 +758,7 @@ export const createSqliteChatPlanStore = (
       hold_run_id: plan.hold?.run_id ?? null,
       hold_always_allow: plan.hold?.always_allow ?? null,
       hold_always_allow_note: plan.hold?.always_allow_note ?? null,
+      hold_group: plan.hold?.group ?? null,
       value_labels_encrypted: plan.value_labels
         ? await encodePayload(plan.value_labels, 'value_labels', plan, getKey) : null,
       memory_conflicts_encrypted: plan.memory_conflicts !== undefined && plan.memory_conflicts.length > 0
@@ -744,6 +771,17 @@ export const createSqliteChatPlanStore = (
     run_id: string,
   ): Promise<ChatPlanProposal | undefined> => {
     unlinkHoldRun.run({ plan_id, run_id });
+    const row = rowFor(plan_id);
+    return row === undefined ? undefined : decodePlan(row, getKey);
+  };
+
+  /** D-177 §N.15.9 — a held write kept for its round's one approval joins the round's group. */
+  const setHoldGroup = async (
+    plan_id: string,
+    run_id: string,
+    group: string,
+  ): Promise<ChatPlanProposal | undefined> => {
+    setHoldGroupRun.run({ plan_id, run_id, group });
     const row = rowFor(plan_id);
     return row === undefined ? undefined : decodePlan(row, getKey);
   };
@@ -827,6 +865,17 @@ export const createSqliteChatPlanStore = (
     lapseHoldRun.run({ plan_id, run_id, lapsed_at });
     const row = rowFor(plan_id);
     // The shell when the payload cannot be read: nothing runs from a lapsed plan.
+    if (row === undefined) return undefined;
+    return await decodePlan(row, getKey).catch(() => undefined) ?? planShellFromRow(row, null);
+  };
+
+  const replaceHold = async (
+    plan_id: string,
+    run_id: string,
+    replaced_at: number,
+  ): Promise<ChatPlanProposal | undefined> => {
+    replaceHoldRun.run({ plan_id, run_id, replaced_at });
+    const row = rowFor(plan_id);
     if (row === undefined) return undefined;
     return await decodePlan(row, getKey).catch(() => undefined) ?? planShellFromRow(row, null);
   };
@@ -1037,6 +1086,78 @@ export const createSqliteChatPlanStore = (
     return withLocalProof(before, execution);
   };
 
+  const readEvidenceRows = async (session_id: string, status: 'proposed' | 'approved' | 'cancelled',
+    limits: { plans: number; storedBytes: number }): Promise<ApprovalEvidenceRows> => {
+    const observed_at = now();
+    const order = status === 'cancelled' ? 'resolved_at' : 'created_at';
+    const selected = db.prepare(`SELECT plan_id,
+      length(args_encrypted)+COALESCE(length(resource_review_encrypted),0)
+      +COALESCE(length(value_labels_encrypted),0)+COALESCE(length(memory_conflicts_encrypted),0) AS bytes
+      FROM chat_plans WHERE session_id=? AND status=? ${status === 'approved' ? 'AND consumed_at IS NULL AND COALESCE(resolved_at, created_at) >= ?' : ''}
+      ORDER BY ${order} DESC, rowid DESC LIMIT ?`).all(session_id, status, ...(status === 'approved' ? [observed_at - planApproval.PLAN_APPROVAL_CONSUMPTION_TTL_MS] : []),
+      limits.plans + 1) as { plan_id: string; bytes: number }[];
+    const plans: ChatPlanProposal[] = [];
+    let incomplete = selected.length > limits.plans;
+    for (const item of selected.slice(0, limits.plans)) {
+      if (item.bytes > limits.storedBytes) { incomplete = true; continue; }
+      const row = rowFor(item.plan_id);
+      if (!row || row.session_id !== session_id || row.status !== status) { incomplete = true; continue; }
+      try {
+        const plan = await decodePlan(row, getKey);
+        if (plan) plans.push(plan);
+        else incomplete = true;
+      } catch { incomplete = true; }
+    }
+    return { observed_at, plans, incomplete };
+  };
+
+  const readCompletedHeldEvidenceRows = async (session_id: string): Promise<CompletedHeldActionRows> => {
+    const limits = COMPLETED_HELD_ACTION_LIMITS, observed_at = now();
+    // Include interrupted dispatches: an exact local commit proof can recover
+    // their completion. A status column or saved receipt summary alone cannot.
+    const selected = db.prepare(`SELECT plan_id,
+      length(args_encrypted)+COALESCE(length(resource_review_encrypted),0)
+      +COALESCE(length(value_labels_encrypted),0)+COALESCE(length(memory_conflicts_encrypted),0)
+      +COALESCE(length(execution_blob_encrypted),0) AS bytes
+      FROM chat_plans WHERE session_id=? AND status='approved'
+        AND consumed_at IS NOT NULL AND hold_run_id IS NOT NULL
+      ORDER BY COALESCE(execution_updated_at,consumed_at) DESC, rowid DESC LIMIT ?`)
+      .all(session_id, limits.plans + 1) as { plan_id: string; bytes: number }[];
+    const records: Array<CompletedHeldActionRows['records'][number]> = [];
+    // 2026-11-19 — an attempt whose receipt says it failed or has no known result was in no record, so a later
+    // turn had only the chat, where the model had called it a success. Listed apart from the completed ones.
+    const unconfirmed: Array<NonNullable<CompletedHeldActionRows['unconfirmed']>[number]> = [];
+    let incomplete = selected.length > limits.plans;
+    // A row that cannot be read could be either kind, so both lists say something may be missing.
+    let unconfirmed_incomplete = incomplete;
+    const unread = (): void => { incomplete = true; unconfirmed_incomplete = true; };
+    for (const item of selected.slice(0, limits.plans)) {
+      if (item.bytes > limits.storedBytes) { unread(); continue; }
+      const row = rowFor(item.plan_id);
+      if (!row || row.session_id !== session_id || row.status !== 'approved'
+        || row.consumed_at === null || !row.hold_run_id) { unread(); continue; }
+      try {
+        const plan = await decodePlan(row, getKey), execution = await readExecution(row);
+        if (!plan) { unread(); continue; }
+        const recorded_at = row.execution_updated_at ?? row.consumed_at;
+        if (execution?.status === 'failed' || execution?.status === 'unknown') {
+          unconfirmed.push({ plan, execution, recorded_at });
+        }
+        // A local attempt whose binding or journal no longer verifies must not
+        // fall back to an old encrypted completion after an epoch/identity change.
+        if (localMutations.has('chat_plan', row.plan_id)
+          && (execution?.status !== 'completed' || !execution.local_receipt)) {
+          incomplete = true; continue;
+        }
+        if (execution?.status === 'completed') {
+          records.push({ plan, execution, recorded_at });
+        } else if (execution?.status === 'unknown' || row.execution_status === 'completed'
+          || localMutations.hasJournal('chat_plan', row.plan_id)) incomplete = true;
+      } catch { unread(); }
+    }
+    return { observed_at, records, incomplete, unconfirmed, unconfirmed_incomplete };
+  };
+
   return {
     async runLocalMutation(plan_id, turn_id, source, validate, dispatch) {
       const before = rowFor(plan_id);
@@ -1062,6 +1183,14 @@ export const createSqliteChatPlanStore = (
     },
     get,
     listPending,
+    readPendingEvidenceRows: async session_id => {
+      const pending = await readEvidenceRows(session_id, 'proposed', PENDING_APPROVAL_LIMITS);
+      const approved = await readEvidenceRows(session_id, 'approved', PENDING_APPROVAL_LIMITS);
+      return { ...pending, observed_at: approved.observed_at,
+        approved_plans: approved.plans, approved_incomplete: approved.incomplete };
+    },
+    readCancelledEvidenceRows: session_id => readEvidenceRows(session_id, 'cancelled', CANCELLED_APPROVAL_LIMITS),
+    readCompletedHeldEvidenceRows,
     findLatest,
     findApprovedForDispatch,
     markConsumed,
@@ -1074,10 +1203,12 @@ export const createSqliteChatPlanStore = (
     linkTurnToMessage,
     recordExecution,
     unlinkHold,
+    setHoldGroup,
     editHeld,
     addMemoryConflict,
     findByHoldRun,
     lapseHold,
+    replaceHold,
     findPendingHeld,
     answerMessageId: async (plan_id: string): Promise<string | undefined> => {
       const row = answerMessageRow.get({ plan_id }) as { message_id: string | null } | undefined;

@@ -29,7 +29,7 @@ import {
   type ToolCall,
   type ToolEntry,
 } from '@recued/contracts';
-import { BOUNDED_RUN_LAST_ROUND, TOOL_BUDGET_EXHAUSTED_MESSAGE, isToolBudgetExhaustedAnswer } from '../chat-turn-budget.js';
+import { BOUNDED_RUN_LAST_ROUND, CHAT_TURN_AFTER_ROUND_LIMIT, TOOL_BUDGET_EXHAUSTED_MESSAGE, isToolBudgetExhaustedAnswer } from '../chat-turn-budget.js';
 import {
   createChatOrchestrator,
   type BroadcastChatEvent,
@@ -254,6 +254,7 @@ describe('D-164 P6.3 inline main-turn packet', () => {
       'chat_tail',
       'current_date',
       'user_message',
+      'tool_round_budget',
     ]);
     expect(parsed.commitment_context).toEqual([]);
     // Current-instant clock anchor (weekday + YYYY-MM-DD + 24h time +
@@ -775,7 +776,7 @@ describe('D-164 P6.3 tool-loop prompt threading', () => {
 });
 
 describe('D-164 P6.3 failure paths', () => {
-  it('preserves partial work when the next reply reaches its output limit', async () => {
+  it('saves the output-limit notice and completed tools without unfinished prose', async () => {
     const calls: CapturedAiCall[] = [];
     let dispatched = 0;
     const { orchestrator, sessionId } = setup({
@@ -788,7 +789,7 @@ describe('D-164 P6.3 failure paths', () => {
     });
     await orchestrator.runTurn({ session_id: sessionId, message: 'check messages', picker_state: { current: 'self' } });
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe('I will check these messages.\n\nThe model reached its output limit before it could finish a valid response.');
+    expect(assistant?.content).toBe('The model reached its output limit before it could finish a valid response.');
     expect(assistant?.content).not.toContain('PRIVATE-LENGTH-731');
     expect(assistant?.tool_calls).toHaveLength(1); expect(dispatched).toBe(1); expect(calls).toHaveLength(2);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'output_unreadable' }]);
@@ -864,8 +865,8 @@ describe('D-164 P6.3 failure paths', () => {
     expect(eventsByKind('engine.budget_exceeded')).toHaveLength(1);
   });
 
-  it('preserves prior assistant content and dispatch provenance on mid-loop abort', async () => {
-    // Mutation caught: mid-loop abort clears the last valid AI response.
+  it('preserves dispatch provenance with a host failure notice on mid-loop abort', async () => {
+    // A stopped turn keeps its completed tool provenance without presenting planning prose as an answer.
     let dispatched = 0;
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([
@@ -894,7 +895,7 @@ describe('D-164 P6.3 failure paths', () => {
       { termination_reason: 'aborted' },
     ]);
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe('I will search first.\n\nThe AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.');
+    expect(assistant?.content).toBe('The AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.');
     expect(assistant?.tool_calls?.[0]).toMatchObject({ tool_name: 'mail.search', status: 'ok' });
   });
 });
@@ -989,10 +990,57 @@ describe('D-164 P6.3 multi-round loop boundaries', () => {
 
     expect(calls).toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP + 1);
     expect(dispatched).toBe(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
+    // 2026-11-21 (the owner: "recued sees the limit, stop the model, show a continue") — the model is told the
+    // discovery allowance and, at the last call, that no round remains: never how many work rounds remain.
+    expect(calls.map((call) => promptBody(call).tool_round_budget)).toEqual(
+      Array.from({ length: CHAT_MAIN_TURN_TOOL_LOOP_CAP + 1 }, (_, index) => expect.objectContaining({
+        discovery_only_rounds_remaining: index === CHAT_MAIN_TURN_TOOL_LOOP_CAP ? 0 : CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP,
+      })),
+    );
+    expect(calls.some((call) => 'work_rounds_remaining' in (promptBody(call).tool_round_budget as object))).toBe(false);
+    expect(promptBody<{ output_feedback: string }>(calls.at(-1)!).output_feedback).toContain(BOUNDED_RUN_LAST_ROUND);
+    expect(calls.slice(0, -1).some((call) => String(promptBody(call).output_feedback ?? '').includes(BOUNDED_RUN_LAST_ROUND))).toBe(false);
+    expect(calls[0]!.input['llm.cache_prefix']).toEqual(expect.any(String));
+    expect(new Set(calls.map((call) => call.input['llm.cache_prefix'])).size).toBe(1);
+    expect(String(calls[0]!.input['llm.cache_prefix'])).not.toContain('tool_round_budget');
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
       { termination_reason: 'completed' },
     ]);
-    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'final synthesis' });
+    // An answer written with no round left is kept as one: Chat offers Continue under it.
+    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'final synthesis', reached_round_limit: true });
+  });
+
+  it('keeps no round-limit mark on an answer written before the limit', async () => {
+    const calls: CapturedAiCall[] = [];
+    const executeAiCall = mkExecuteAiCall((index) => ({
+      body: index === 0 ? aiOutput('looking', [toolCall()]) : aiOutput('Found it.'),
+    }), calls);
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)],
+      dispatchImpl: async () => ({ ok: true, result: { found: true } }), executeAiCall });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'one lookup', picker_state: { current: 'self' } });
+    expect(calls).toHaveLength(2);
+    const answer = await finalAssistant(sessionId);
+    expect(answer).toMatchObject({ content: 'Found it.' });
+    expect(answer).not.toHaveProperty('reached_round_limit');
+  });
+
+  // 2026-11-21 (the owner: "finish the followups") — the answer at the limit often said the turn's rounds were gone, and the
+  // packet carries no count to say otherwise. The turn after it is told it has rounds of its own; no other turn is.
+  it('tells the turn after an answer at the limit that it has rounds of its own, and no other turn', async () => {
+    const calls: CapturedAiCall[] = [];
+    const executeAiCall = mkExecuteAiCall(() => ({ body: aiOutput('ok') }), calls);
+    const { orchestrator, sessionId } = setup({ executeAiCall });
+    const row = (id: string, role: 'user' | 'assistant', content: string, ts: number, extra: Record<string, unknown> = {}) =>
+      store.appendMessage({ id, session_id: sessionId, role, content, target_server: 'self',
+        picker_at_send: { display_name: 'Self', signature: selfSignature }, model_used: { provider: 'local', model_id: 'm' }, ts, ...extra });
+    await row('limit-user', 'user', 'Find the code at the end of the trail.', 1001);
+    await row('limit-answer', 'assistant', 'The code was not found: the tool round budget was exhausted.', 1002, { reached_round_limit: true });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'Continue.', picker_state: { current: 'self' } });
+    expect(promptBody(calls[0]!).tool_round_budget).toMatchObject({ previous_turn: CHAT_TURN_AFTER_ROUND_LIMIT });
+    // That turn answered before its limit, so the one after it is told nothing.
+    await orchestrator.runTurn({ session_id: sessionId, message: 'Thanks.', picker_state: { current: 'self' } });
+    expect(calls).toHaveLength(2);
+    expect(promptBody(calls[1]!).tool_round_budget).not.toHaveProperty('previous_turn');
   });
 
   it('a discovery-only round does NOT charge the loop cap — but the budget is bounded', async () => {
@@ -1027,6 +1075,14 @@ describe('D-164 P6.3 multi-round loop boundaries', () => {
 
     const total = CHAT_MAIN_TURN_TOOL_LOOP_CAP + CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP;
     expect(dispatched).toBe(total);
+    expect(promptBody(calls[CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP - 1]!).tool_round_budget)
+      .toMatchObject({ discovery_only_rounds_remaining: 1 });
+    expect(promptBody(calls[CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP]!).tool_round_budget)
+      .toMatchObject({ discovery_only_rounds_remaining: 0 });
+    expect(promptBody(calls.at(-1)!).tool_round_budget)
+      .toMatchObject({ discovery_only_rounds_remaining: 0 });
+    expect(String(promptBody(calls.at(-1)!).output_feedback)).toContain(BOUNDED_RUN_LAST_ROUND);
+    expect(calls.slice(0, -1).some((call) => String(promptBody(call).output_feedback ?? '').includes(BOUNDED_RUN_LAST_ROUND))).toBe(false);
     expect(eventsByKind('recued.multi_turn.round_completed')).toHaveLength(total);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
       { termination_reason: 'max_rounds_exhausted' },
@@ -1065,6 +1121,8 @@ describe('D-164 P6.3 multi-round loop boundaries', () => {
     expect(eventsByKind('recued.multi_turn.round_completed'))
       .toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
     expect(dispatched).toBe(CHAT_MAIN_TURN_TOOL_LOOP_CAP * 2);
+    expect(promptBody(calls[1]!).tool_round_budget)
+      .toMatchObject({ discovery_only_rounds_remaining: CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP });
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
       { termination_reason: 'max_rounds_exhausted' },
     ]);
@@ -1507,8 +1565,8 @@ describe('D-164 P6.3 cap-exit saved limit context', () => {
     ]);
   });
 
-  it('retains partial cap response with a saved tool-limit note', async () => {
-    // Preserve useful text and completed work without presenting the capped turn as finished.
+  it('saves the tool-limit notice and completed tools without unfinished cap prose', async () => {
+    // Retain actual completed work without promoting unfinished model prose into an answer.
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall((index) => ({
       body: aiOutput(
@@ -1530,7 +1588,7 @@ describe('D-164 P6.3 cap-exit saved limit context', () => {
     });
 
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe('partial answer from cap\n\nThe AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.');
+    expect(assistant?.content).toBe('The AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.');
     expect(assistant?.tool_calls).toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
     expect(calls).toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP + 1);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
@@ -1766,8 +1824,8 @@ describe('D-164 P6.3 abort-exit provider-failure fail-loud', () => {
       note: 'The AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.' },
     { failure: 'invalid_output', step: { body: { response: 42 } } as AiStep, expectedCalls: 3,
       note: 'The AI model returned a reply that could not be read after some tools had already run. Check those results before trying again.' },
-  ])('retains partial planning with saved failure context on $failure abort', async ({ step, expectedCalls, note }) => {
-    // Keep useful partial text and completed work while making the aborted turn readable after hydration.
+  ])('saves the failure notice and completed tools without unfinished planning on $failure abort', async ({ step, expectedCalls, note }) => {
+    // Keep completed work and a readable failure after hydration, without unverified planning prose.
     let dispatched = 0;
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([
@@ -1790,7 +1848,7 @@ describe('D-164 P6.3 abort-exit provider-failure fail-loud', () => {
     });
 
     const assistant = await finalAssistant(sessionId);
-    expect(assistant?.content).toBe(`Checking your contacts now.\n\n${note}`);
+    expect(assistant?.content).toBe(note);
     expect(assistant?.content).not.toContain('socket hang up');
     expect(assistant?.content).not.toContain('response_not_string');
     expect(assistant?.tool_calls).toMatchObject([{ tool_name: 'mail.search', status: 'ok' }]);
@@ -2270,7 +2328,7 @@ describe('D-340 slice 4 — a run\'s own tool rounds (§3.3, ruling 9)', () => {
     expect(isToolBudgetExhaustedAnswer('Leave at 08:10 for the dentist.')).toBe(false);
   });
 
-  it('never raises the chat\'s own cap, and says nothing more to a run at it', async () => {
+  it('never raises the chat\'s own cap, and warns a run clamped to it', async () => {
     let dispatched = 0;
     const calls: CapturedAiCall[] = [];
     const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)], toolRoundCap: CHAT_MAIN_TURN_TOOL_LOOP_CAP + 5,
@@ -2278,7 +2336,8 @@ describe('D-340 slice 4 — a run\'s own tool rounds (§3.3, ruling 9)', () => {
       executeAiCall: looping(calls) });
     await orchestrator.runTurn({ session_id: sessionId, message: 'suggest', picker_state: { current: 'self' } });
     expect(dispatched).toBe(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
-    expect(calls.some((call) => feedbackOf(call).includes(BOUNDED_RUN_LAST_ROUND))).toBe(false);
+    expect(calls.map(feedbackOf).map((text) => text.includes(BOUNDED_RUN_LAST_ROUND)))
+      .toEqual([...Array(CHAT_MAIN_TURN_TOOL_LOOP_CAP).fill(false), true]);
     expect(eventsByKind('recued.multi_turn.round_started')[0]).toMatchObject({ expected_max_rounds: CHAT_MAIN_TURN_TOOL_LOOP_CAP });
   });
 
@@ -2296,6 +2355,31 @@ describe('D-340 slice 4 — a run\'s own tool rounds (§3.3, ruling 9)', () => {
     await orchestrator.runTurn({ session_id: sessionId, message: 'suggest', picker_state: { current: 'self' } });
     expect(dispatched).toBe(4);
     expect(calls.map(feedbackOf).map((text) => text.includes(BOUNDED_RUN_LAST_ROUND))).toEqual([false, false, false, false, true]);
-    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'Leave at 08:10.' });
+    expect(calls.map((call) => promptBody(call).tool_round_budget)).toEqual([4, 4, 4, 3, 0].map((discovery) =>
+      expect.objectContaining({ discovery_only_rounds_remaining: discovery })));
+    expect(calls.some((call) => 'work_rounds_remaining' in (promptBody(call).tool_round_budget as object))).toBe(false);
+    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'Leave at 08:10.', reached_round_limit: true });
+  });
+
+  it.each(['empty', 'invalid'] as const)('preserves final-call guidance through an %s-output repair', async (failure) => {
+    let dispatched = 0;
+    const calls: CapturedAiCall[] = [];
+    const executeAiCall = mkExecuteAiCall((index) => ({
+      body: index < CHAT_MAIN_TURN_TOOL_LOOP_CAP ? aiOutput('lookup', [toolCall()])
+        : index === CHAT_MAIN_TURN_TOOL_LOOP_CAP ? failure === 'empty' ? aiOutput('') : { response: 7, events: [], tool_calls: [] }
+        : aiOutput('Verified answer from the saved results.'),
+    }), calls);
+    const { orchestrator, sessionId } = setup({ catalog: [mkTool('mail.search', 1)], executeAiCall,
+      dispatchImpl: async () => { dispatched += 1; return { ok: true, result: { dispatched } }; } });
+    await orchestrator.runTurn({ session_id: sessionId, message: 'finish at the cap', picker_state: { current: 'self' } });
+    expect(dispatched).toBe(CHAT_MAIN_TURN_TOOL_LOOP_CAP);
+    expect(calls).toHaveLength(CHAT_MAIN_TURN_TOOL_LOOP_CAP + 2);
+    for (const call of calls.slice(-2)) {
+      expect(feedbackOf(call)).toContain(BOUNDED_RUN_LAST_ROUND);
+      expect(promptBody(call).tool_round_budget).toMatchObject({ discovery_only_rounds_remaining: 0 });
+      expect(promptBody(call).tool_round_budget).not.toHaveProperty('work_rounds_remaining');
+    }
+    expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([{ termination_reason: 'completed' }]);
+    expect(await finalAssistant(sessionId)).toMatchObject({ content: 'Verified answer from the saved results.', reached_round_limit: true });
   });
 });

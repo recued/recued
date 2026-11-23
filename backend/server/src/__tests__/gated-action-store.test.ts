@@ -607,6 +607,41 @@ describe('GatedActionStore', () => {
     });
   });
 
+  it('D-201 Slice 10N — a run held again at a step whose receipt is closed gets a receipt of its own, which its answer can claim', async () => {
+    // 10L finding 2: a delivery tried again runs again on its run id. Its new
+    // hold renewed the closed receipt, which came back unchanged; the owner's
+    // answer then read its checkpoint as superseded and ran nothing.
+    const store = createGatedActionStore(createInMemoryCollection<GatedActionRecord>(), { now: () => 100 });
+    const first = await store.createHeld({ run_id: 'run-1', gated_step_id: 'refund', checkpoint_id: 'checkpoint-1' });
+    await store.finish(first.action_ref, {
+      status: 'in_doubt',
+      status_message: 'The server restarted while it ran.',
+      result: null,
+      observed: { items: 1, succeeded: 0, failed: 0 },
+    });
+    const again = await store.createHeld({ run_id: 'run-1', gated_step_id: 'refund', checkpoint_id: 'checkpoint-2' });
+    expect(again.action_ref).not.toBe(first.action_ref);
+    expect(again).toMatchObject({
+      status: 'awaiting_approval',
+      current_checkpoint_id: 'checkpoint-2',
+      predecessor_action_ref: first.action_ref,
+    });
+    // The closed receipt is unchanged, and a stale create for its own
+    // checkpoint still finds it, never reopened.
+    expect(await store.get(first.action_ref)).toMatchObject({ status: 'in_doubt', current_checkpoint_id: 'checkpoint-1' });
+    expect(await store.createHeld({ run_id: 'run-1', gated_step_id: 'refund', checkpoint_id: 'checkpoint-1' }))
+      .toMatchObject({ action_ref: first.action_ref, status: 'in_doubt' });
+    // The subject is the new receipt now, and the answer to its checkpoint claims it.
+    expect((await store.getBySubject('run-1', 'refund'))?.action_ref).toBe(again.action_ref);
+    expect((await store.getByCheckpoint('checkpoint-2'))?.action_ref).toBe(again.action_ref);
+    const claim = await store.claimDispatch(again.action_ref, { checkpoint_id: 'checkpoint-2', attempt_id: 'attempt-1' });
+    expect(claim).toMatchObject({ kind: 'claimed', record: { status: 'dispatching' } });
+    // A hold renewed while still waiting keeps one receipt, as before.
+    const waiting = await store.createHeld({ run_id: 'run-2', gated_step_id: 'refund', checkpoint_id: 'checkpoint-3' });
+    expect((await store.createHeld({ run_id: 'run-2', gated_step_id: 'refund', checkpoint_id: 'checkpoint-4' })).action_ref)
+      .toBe(waiting.action_ref);
+  });
+
   it('cannot reopen a receipt that another process terminalized after a stale read', async () => {
     const backing = createInMemoryCollection<GatedActionRecord>();
     let injectedTerminal = false;

@@ -399,6 +399,8 @@ export const renderManageReschedulePage = (input: {
   readonly post_action: string;
   readonly form_nonce: string;
   readonly instructions?: string;
+  /** A stale submission can return the refreshed picker with an explanation. */
+  readonly notice?: string;
 }): string => {
   const instructionsBlock =
     input.instructions && input.instructions.length > 0
@@ -406,6 +408,10 @@ export const renderManageReschedulePage = (input: {
       : '';
   const currentBlock = `<p class="rcp-meta">Currently booked for ${htmlEscape(input.current_slot_label)}. Pick a new time below.</p>`;
   const slotPicker = renderSlotPicker({ slots: input.slots });
+  const noticeBlock = input.notice ? `<p class="rcp-tagline" role="alert">${htmlEscape(input.notice)}</p>` : '';
+  const submitAction = input.slots.length > 0
+    ? '<button type="submit" class="rcp-button rcp-button-primary">Request new time</button>'
+    : `<a class="rcp-button rcp-button-primary" href="${htmlEscape(input.post_action)}">Check availability again</a>`;
   return `${renderHead(`Reschedule with ${input.display_name}`)}
 <body>
 <div class="rcp-shell">
@@ -415,12 +421,13 @@ export const renderManageReschedulePage = (input: {
 <h1 class="rcp-name">Reschedule your booking</h1>
 ${instructionsBlock}
 ${currentBlock}
+${noticeBlock}
 </div>
 </div>
 <form class="rcp-form" method="POST" action="${htmlEscape(input.post_action)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
 ${slotPicker}
-<button type="submit" class="rcp-button rcp-button-primary">Request new time</button>
+${submitAction}
 </form>
 ${renderFooter(input.tz_label)}
 </div>

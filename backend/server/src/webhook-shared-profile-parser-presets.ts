@@ -13,10 +13,6 @@ import {
   type WebhookCanonicalUuidParserPreset,
 } from './webhook-canonical-uuid-parser.js';
 import {
-  createWebhookAsciiIdentifierParser,
-  type WebhookAsciiIdentifierParserPreset,
-} from './webhook-ascii-identifier-parser.js';
-import {
   createWebhookAsciiEventTypeParser,
   type WebhookAsciiEventTypeParserPreset,
 } from './webhook-ascii-event-type-parser.js';
@@ -68,6 +64,7 @@ import {
   createWebhookSegmentedAsciiTokenParser,
   type WebhookSegmentedAsciiTokenParserPreset,
 } from './webhook-segmented-ascii-token-parser.js';
+import { assertWebhookEventTypeParserMatchesProfile } from './webhook-event-type-grammar-parity.js';
 
 export interface WebhookCanonicalUuidProfilePreset {
   readonly profile_id: WebhookProfileId;
@@ -744,6 +741,13 @@ const asciiEventTypePreset = (
       `webhook ASCII event-type preset '${profile_id}' does not admit its catalog`,
     );
   }
+  // D-201 Slice 10C — and exactly its profile's language, not merely its
+  // known names: the descriptor's grammar is what every other caller admits.
+  assertWebhookEventTypeParserMatchesProfile(
+    profile_id,
+    parser.preset,
+    'webhook ASCII event-type preset',
+  );
   const value = Object.freeze({
     profile_id,
     parser: parser.preset,
@@ -784,70 +788,6 @@ export const webhookAsciiEventTypeProfilePreset = (
 ): WebhookAsciiEventTypeProfilePreset | null =>
   WEBHOOK_ASCII_EVENT_TYPE_PROFILE_PRESETS[profileId] ?? null;
 
-export interface WebhookAsciiIdentifierEventTypeProfilePreset {
-  readonly profile_id: WebhookProfileId;
-  readonly parser: WebhookAsciiIdentifierParserPreset;
-}
-
-const asciiIdentifierEventTypePreset = (
-  profile_id: WebhookProfileId,
-  parserInput: WebhookAsciiIdentifierParserPreset,
-): WebhookAsciiIdentifierEventTypeProfilePreset => {
-  const descriptor = webhookProfile(profile_id);
-  const parser = createWebhookAsciiIdentifierParser(parserInput);
-  const catalogValues = descriptor?.event_types.kind === 'closed'
-    ? descriptor.event_types.values
-    : descriptor?.event_types.known_values;
-  if (descriptor === null
-    || catalogValues === undefined
-    || catalogValues.some((eventType) => parser.parse(eventType) === null)) {
-    throw new Error(
-      `webhook ASCII identifier event-type preset '${profile_id}' does not admit its catalog`,
-    );
-  }
-  const value = Object.freeze({
-    profile_id,
-    parser: parser.preset,
-  });
-  JSON.stringify(value);
-  return value;
-};
-
-const ASCII_IDENTIFIER_EVENT_TYPE_PRESET_LIST = [
-  asciiIdentifierEventTypePreset('telegram.bot-webhook.v1', {
-    kind: 'ascii_identifier.v1',
-    max_bytes: 128,
-  }),
-] as const;
-
-const mutableAsciiIdentifierEventTypePresets = Object.create(null) as Record<
-  WebhookProfileId,
-  WebhookAsciiIdentifierEventTypeProfilePreset | undefined
->;
-for (const value of ASCII_IDENTIFIER_EVENT_TYPE_PRESET_LIST) {
-  if (Object.prototype.hasOwnProperty.call(
-    mutableAsciiIdentifierEventTypePresets,
-    value.profile_id,
-  )) {
-    throw new Error(
-      `duplicate webhook ASCII identifier event-type preset '${value.profile_id}'`,
-    );
-  }
-  mutableAsciiIdentifierEventTypePresets[value.profile_id] = value;
-}
-
-export const WEBHOOK_ASCII_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS: Readonly<
-  Partial<Record<
-    WebhookProfileId,
-    WebhookAsciiIdentifierEventTypeProfilePreset
-  >>
-> = Object.freeze(mutableAsciiIdentifierEventTypePresets);
-
-export const webhookAsciiIdentifierEventTypeProfilePreset = (
-  profileId: WebhookProfileId,
-): WebhookAsciiIdentifierEventTypeProfilePreset | null =>
-  WEBHOOK_ASCII_IDENTIFIER_EVENT_TYPE_PROFILE_PRESETS[profileId] ?? null;
-
 export interface WebhookLowercaseIdentifierEventTypeProfilePreset {
   readonly profile_id: WebhookProfileId;
   readonly parser: WebhookLowercaseIdentifierEventTypeParserPreset;
@@ -869,6 +809,13 @@ const lowercaseIdentifierEventTypePreset = (
       `webhook lowercase identifier event-type preset '${profile_id}' does not admit its catalog`,
     );
   }
+  // D-201 Slice 10C — and exactly its profile's language, not merely its
+  // known names: the descriptor's grammar is what every other caller admits.
+  assertWebhookEventTypeParserMatchesProfile(
+    profile_id,
+    parser.preset,
+    'webhook lowercase identifier event-type preset',
+  );
   const value = Object.freeze({
     profile_id,
     parser: parser.preset,
@@ -878,6 +825,12 @@ const lowercaseIdentifierEventTypePreset = (
 };
 
 const LOWERCASE_IDENTIFIER_EVENT_TYPE_PRESET_LIST = [
+  // D-201 Slice 10G — Telegram's update names are lowercase (it lowercases any
+  // it is given) and each is the Update's one JSON member name.
+  lowercaseIdentifierEventTypePreset('telegram.bot-webhook.v1', {
+    kind: 'lowercase_json_member_event_type.v1',
+    max_characters: 128,
+  }),
   lowercaseIdentifierEventTypePreset('github.webhook.v1', {
     kind: 'lowercase_identifier_event_type.v1',
     max_characters: 128,
@@ -933,6 +886,13 @@ const dotSegmentEventTypePreset = (
       `webhook dot-segment event-type preset '${profile_id}' does not admit its catalog`,
     );
   }
+  // D-201 Slice 10C — and exactly its profile's language, not merely its
+  // known names: the descriptor's grammar is what every other caller admits.
+  assertWebhookEventTypeParserMatchesProfile(
+    profile_id,
+    parser.preset,
+    'webhook dot-segment event-type preset',
+  );
   const value = Object.freeze({
     profile_id,
     parser: parser.preset,

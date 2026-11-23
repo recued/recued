@@ -78,7 +78,7 @@ import {
   createReadGrantChecker,
   type ReadGrantChecker,
 } from './read-grant-checker.js';
-import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
+import type { ContractDefinitionStore, ContractUseRefund } from './storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 
 /** Shared frozen empty `scope_restrictions` — the admit-all baseline that the
@@ -164,7 +164,8 @@ export interface ContractOverlayResolver {
   /** Close a {@link takeDispatchUse}. `crossedBoundary` is the SAME predicate the
    *  late `recordUse` gated on, so the accounting is byte-for-byte what it was —
    *  a dispatch that crossed keeps its unit, one that was held for approval,
-   *  refused downstream or failed before any effect gives it back. Idempotent:
+   *  refused downstream or failed before any effect gives it back to its original
+   *  budget while that version and window are still current. Idempotent:
    *  a token settles once, so a double-settle cannot credit twice. */
   settleDispatchUse?(take: ContractUseTake, crossedBoundary: boolean): void;
   /** D-166 P2 / D-196 token↔contract binding — true iff `contract_id` names a
@@ -176,6 +177,9 @@ export interface ContractOverlayResolver {
    *  MCP transport consumes before applying any seller-customer admission
    *  overlay. */
   isContractLive(contract_id: string): boolean;
+  /** Host-only identity probe, independent of lifecycle. A synthetic unbound
+   *  MCP token id names no definition; a revoked definition still exists. */
+  hasContractDefinition?(contract_id: string): boolean;
   /** ⛔⛔ THE CONNECTION FENCE, FINALLY GIVEN AN ACCESS-TIME CALLER. True iff the
    *  contract governing this dispatch admits `connection_name` on its
    *  `scope.connection_names` axis.
@@ -325,6 +329,8 @@ export const createContractOverlayResolver = (
    *  — cannot credit a second unit back. The store's `max_uses` clamp is the
    *  backstop under this, not a substitute for it. */
   const settledTakes = new WeakSet<object>();
+  // Refund accounting stays with the host token, outside provider/recheck data.
+  const refunds = new WeakMap<object, ContractUseRefund>();
   // Shared per-dispatch read-grant checker build — the ONE place that resolves the
   // governing contract + overlays the grant rows. BOTH `resolveReadGrantChecker` (the
   // native-tool read gate) and `resolveContractScopeRestrictions` (the execute-path
@@ -425,9 +431,11 @@ export const createContractOverlayResolver = (
       // Unbounded: the store left `after === before` and took nothing, so there
       // is nothing to settle and nothing to give back.
       if (typeof reserved.before.uses_remaining !== 'number') return { kind: 'unmetered' };
+      const token = issueContractDispatchReservation(reserved.before, reserved.after);
+      if (reserved.refund !== undefined) refunds.set(token, reserved.refund);
       return {
         kind: 'taken',
-        token: issueContractDispatchReservation(reserved.before, reserved.after),
+        token,
         contract_id,
       };
     },
@@ -435,11 +443,13 @@ export const createContractOverlayResolver = (
       if (take.kind !== 'taken') return;
       if (settledTakes.has(take.token)) return;
       settledTakes.add(take.token);
+      const refund = refunds.get(take.token);
+      refunds.delete(take.token);
       // Crossed the boundary ⇒ the reservation IS the charge; keep it. This is
       // the same condition the late `recordUse` gated on, so what gets counted
       // is unchanged — only when it was taken, and whether it could refuse.
-      if (crossedBoundary) return;
-      deps.definitionStore.releaseDispatchUse?.(take.contract_id);
+      if (crossedBoundary || refund === undefined) return;
+      deps.definitionStore.releaseDispatchUse?.(take.contract_id, refund);
     },
     reserveDispatchUse(source, ingredientSlug, connectionName) {
       const id = executionSourceContractId(source); if (!id) return null;
@@ -452,6 +462,9 @@ export const createContractOverlayResolver = (
       const reserved = deps.definitionStore.reserveDispatchUse?.(id);
       if (!reserved) throw new RpcError('preapproval_authority_changed', 'The original contract could not reserve this dispatch.', 403);
       return issueContractDispatchReservation(reserved.before, reserved.after);
+    },
+    hasContractDefinition(contract_id): boolean {
+      return deps.definitionStore.get(contract_id) !== null;
     },
     isContractLive(contract_id): boolean {
       const def = deps.definitionStore.get(contract_id);

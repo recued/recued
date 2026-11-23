@@ -320,8 +320,10 @@ const renderDetail = (state: RecordsExplorerState): string => {
     ${!state.canDelete ? '' : state.deletePending ? `<div class="records-delete-confirm" role="alert"><p>Delete this record permanently? ${state.diagnostics?.incoming.length
         ? `${state.diagnostics.incoming.length} incoming relationship${state.diagnostics.incoming.length === 1 ? '' : 's'} will be checked, and may stop you deleting this.`
         : 'Nothing else points at this record.'}</p>
-      <button type="button" data-action="${RECORDS_CONFIRM_DELETE_ACTION}" ${state.deleting ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.deleting ? 'Deleting…' : 'Delete record'}</button>
-      <button type="button" data-action="${RECORDS_CANCEL_DELETE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button></div>`
+      <div class="records-detail-delete-actions">
+        <button type="button" data-action="${RECORDS_CONFIRM_DELETE_ACTION}" ${state.deleting ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.deleting ? 'Deleting…' : 'Delete record'}</button>
+        <button type="button" data-action="${RECORDS_CANCEL_DELETE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button>
+      </div></div>`
       : `<button type="button" data-action="${RECORDS_DELETE_RECORD_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Delete record…</button>`}
   </section>`;
 };
@@ -370,12 +372,14 @@ const renderChanges = (state: RecordsExplorerState): string => {
             ? 'Not reviewed yet.'
             : 'Open this pack through a saved view to keep a review mark.'}</span>`
         : `<span>Last reviewed ${e(renderAge(Date.now() - state.reviewMark.reviewed_at))} ago</span>`}
-      <button type="button" data-action="${RECORDS_REFRESH_CHANGES_ACTION}" ${locked || busy ? 'aria-disabled="true"' : ''} ${state.changesRefreshing ? 'aria-busy="true"' : ''}>${state.changesRefreshing ? 'Refreshing…' : 'Check again'}</button>
-      ${state.canMarkReviewed
-        ? `<button type="button" data-action="${RECORDS_MARK_REVIEWED_ACTION}" ${locked || busy || feed.next === undefined ? 'aria-disabled="true"' : ''} ${state.markingReviewed ? 'aria-busy="true"' : ''}>${state.markingReviewed ? 'Marking…' : 'Mark reviewed'}</button>`
-        : ''}
+      <div class="records-change-actions">
+        <button type="button" data-action="${RECORDS_REFRESH_CHANGES_ACTION}" ${locked || busy ? 'aria-disabled="true"' : ''} ${state.changesRefreshing ? 'aria-busy="true"' : ''}>${state.changesRefreshing ? 'Refreshing…' : 'Check again'}</button>
+        ${state.canMarkReviewed
+          ? `<button type="button" data-action="${RECORDS_MARK_REVIEWED_ACTION}" ${locked || busy || feed.next === undefined ? 'aria-disabled="true"' : ''} ${state.markingReviewed ? 'aria-busy="true"' : ''}>${state.markingReviewed ? 'Marking…' : 'Mark reviewed'}</button>`
+          : ''}
+      </div>
     </div>
-    ${count === 0 ? '' : `<ol class="records-change-events">${feed.changes.map((change) => `<li>
+    ${count === 0 ? '' : `<ol class="records-change-events" role="list">${feed.changes.map((change) => `<li>
       <div class="records-change-heading"><strong>${e(changeVerb(change.type))}</strong>
         <span><span aria-hidden="true">·</span> ${renderReference(`${change.entity}/${encodeURIComponent(change.id)}`, locked)}</span></div>
       ${change.changed_fields.length === 0 ? '' : `<small>${e(change.changed_fields.join(', '))}</small>`}
@@ -395,13 +399,15 @@ const renderOutbox = (state: RecordsExplorerState): string => {
   return `<details class="records-outbox" ${outboxOpen ? 'open' : ''}>
     <summary data-action="${RECORDS_TOGGLE_OUTBOX_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Watcher delivery · ${outbox.pending.toLocaleString()} pending · ${outbox.dead_letter.toLocaleString()} dead-lettered</summary>
     <div class="records-outbox-summary">
-      <span>Oldest pending: ${e(renderAge(outbox.oldest_pending_age_ms))}</span>
-      <span>Total retries: ${outbox.total_retries.toLocaleString()}</span>
-      <span>Delivered evidence: ${outbox.delivered.toLocaleString()}</span>
+      <dl class="records-outbox-metrics">
+        <div><dt>Oldest pending</dt><dd>${e(renderAge(outbox.oldest_pending_age_ms))}</dd></div>
+        <div><dt>Total retries</dt><dd>${outbox.total_retries.toLocaleString()}</dd></div>
+        <div><dt>Delivered evidence</dt><dd>${outbox.delivered.toLocaleString()}</dd></div>
+      </dl>
       <button type="button" data-action="${RECORDS_REFRESH_OUTBOX_ACTION}" ${recordsControlsLocked(state) || state.outboxRefreshing ? 'aria-disabled="true"' : ''} ${state.outboxRefreshing ? 'aria-busy="true"' : ''}>${state.outboxRefreshing ? 'Refreshing…' : 'Check again'}</button>
     </div>
     <p class="records-help">The durable worker drains admitted deliveries automatically. A pending event can be explicitly retired to dead-letter evidence when recovery cannot proceed.</p>
-    ${outbox.events.length === 0 ? '<p class="records-empty">No event evidence in this view.</p>' : `<ol class="records-outbox-events">${outbox.events.map((item) => {
+    ${outbox.events.length === 0 ? '<p class="records-empty">No event evidence in this view.</p>' : `<ol class="records-outbox-events" role="list">${outbox.events.map((item) => {
       const pending = item.status === 'pending';
       const confirming = state.retiringEventId === item.event.event_id;
       const retiring = confirming && state.retiringEventBusy;
@@ -412,8 +418,10 @@ const renderOutbox = (state: RecordsExplorerState): string => {
           `<li><code>${e(delivery.recipe_id)}</code> · ${e(delivery.status)} · ${delivery.retry_count} retries${delivery.error ? ` · ${e(delivery.error)}` : ''}</li>`).join('')}</ul></details>` : ''}
         ${pending && state.canRetireEvents ? confirming
           ? `<div class="records-delete-confirm" role="alert"><p>Retire this exact pending event? It will not run and will remain dead-letter audit evidence.</p>
-              <button type="button" data-action="${RECORDS_CONFIRM_RETIRE_EVENT_ACTION}" ${RECORDS_EVENT_ID_ATTR}="${e(item.event.event_id)}" ${retiring ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${retiring ? 'Retiring…' : 'Retire event'}</button>
-              <button type="button" data-action="${RECORDS_CANCEL_RETIRE_EVENT_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button></div>`
+              <div class="records-event-actions">
+                <button type="button" data-action="${RECORDS_CONFIRM_RETIRE_EVENT_ACTION}" ${RECORDS_EVENT_ID_ATTR}="${e(item.event.event_id)}" ${retiring ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${retiring ? 'Retiring…' : 'Retire event'}</button>
+                <button type="button" data-action="${RECORDS_CANCEL_RETIRE_EVENT_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button>
+              </div></div>`
           : `<button type="button" data-action="${RECORDS_RETIRE_EVENT_ACTION}" ${RECORDS_EVENT_ID_ATTR}="${e(item.event.event_id)}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Retire pending event…</button>` : ''}
       </li>`;
     }).join('')}</ol>`}
@@ -424,17 +432,19 @@ const renderPurge = (state: RecordsExplorerState, namespace: RecordsNamespaceVie
   if (!state.canPurge || namespace.state.state !== 'orphaned') return '';
   const fullRef = namespaceKey(namespace);
   if (!state.purgePending) {
-    return `<button type="button" class="records-danger" data-action="${RECORDS_PURGE_ACTION}">Purge retained Records…</button>`;
+    return `<div class="records-purge"><button type="button" class="records-danger" data-action="${RECORDS_PURGE_ACTION}">Purge retained Records…</button></div>`;
   }
-  return `<div class="records-delete-confirm records-purge-confirm" role="alert">
+  return `<div class="records-purge"><div class="records-delete-confirm records-purge-confirm" role="alert">
     <p>This permanently removes all retained rows, event evidence, policies, and migration receipts for <strong>${e(fullRef)}</strong>. Export first if recovery may be needed.</p>
     <label>Type the full pack reference to confirm
       <input ${RECORDS_PURGE_CONFIRMATION_ATTR} autocomplete="off" spellcheck="false" placeholder="${e(fullRef)}"
         value="${e(state.purgeConfirmation)}" ${recordsControlsLocked(state) ? 'readonly aria-disabled="true"' : ''}>
     </label>
-    <button type="button" data-action="${RECORDS_CONFIRM_PURGE_ACTION}" ${state.purging ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.purging ? 'Purging…' : 'Delete everything for good'}</button>
-    <button type="button" data-action="${RECORDS_CANCEL_PURGE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button>
-  </div>`;
+    <div class="records-purge-actions">
+      <button type="button" data-action="${RECORDS_CONFIRM_PURGE_ACTION}" ${state.purging ? 'aria-disabled="true" aria-busy="true"' : recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>${state.purging ? 'Purging…' : 'Delete everything for good'}</button>
+      <button type="button" data-action="${RECORDS_CANCEL_PURGE_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Cancel</button>
+    </div>
+  </div></div>`;
 };
 
 const renderExportButton = (
@@ -464,7 +474,7 @@ export const renderRecordsExplorer = (state: RecordsExplorerState, importPanel =
     ${state.error && state.detail === null ? `<p role="alert">${e(state.error)}</p>` : ''}
     ${state.loading ? '<p aria-live="polite">Loading Records…</p>' : ''}
     <div class="records-layout">${renderNamespaceNav(state)}
-      <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(packLabel(namespace))}</h3><p>by ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
+      <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(packLabel(namespace))}</h3><p>by ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p></div>${renderQuota(namespace)}${renderPurge(state, namespace)}</section>
         ${importPanel}
         ${renderChanges(state)}
         ${renderOutbox(state)}
@@ -481,9 +491,11 @@ export const renderRecordsExplorer = (state: RecordsExplorerState, importPanel =
                 ? renderRecordsViewControls(state, namespace.schema.entities[state.selectedKind]!, browsingLocked) : ''}
                 ${renderList(state)}
                 <nav class="records-pagination" aria-label="Records pages">
-                  <button type="button" data-action="records-prev-page"${pagingLocked || !state.prevCursor ? ' aria-disabled="true"' : ''}>Previous page</button>
                   <span role="status">Page ${state.page} · ${state.records.length} records</span>
-                  <button type="button" data-action="records-next-page"${pagingLocked || !state.nextCursor ? ' aria-disabled="true"' : ''}>Next page</button>
+                  <div class="records-page-actions">
+                    <button type="button" data-action="records-prev-page"${pagingLocked || !state.prevCursor ? ' aria-disabled="true"' : ''}>Previous page</button>
+                    <button type="button" data-action="records-next-page"${pagingLocked || !state.nextCursor ? ' aria-disabled="true"' : ''}>Next page</button>
+                  </div>
                   <button type="button" data-action="records-first-page"${pagingLocked ? ' aria-disabled="true"' : ''}>Refresh results</button>
                 </nav>`}
             </div>`}`}</section>
@@ -492,15 +504,90 @@ export const renderRecordsExplorer = (state: RecordsExplorerState, importPanel =
 };
 
 export const RECORDS_EXPLORER_STYLES = `
-  .records-import{display:grid;gap:10px;margin:16px 0;padding:16px;border:1px solid var(--border,#d0d5dd);border-radius:8px;min-width:0;overflow-wrap:anywhere}.records-import h4,.records-import p{margin:0}.records-import>section{display:grid;gap:10px;min-width:0}.records-import .records-export-actions{justify-content:flex-start}
+  .records-import{display:grid;gap:16px;margin:16px 0;padding:16px;border:1px solid var(--border,#d0d5dd);border-radius:var(--wc-radius,9px);background:var(--surface,#fff);min-width:0;overflow-wrap:anywhere}.records-import h4,.records-import p{margin:0}.records-import>section{display:grid;gap:12px;min-width:0}
+  .records-import-heading{display:flex;flex-wrap:wrap;align-items:center;gap:12px 16px;min-width:0}.records-import-heading>div:first-child{flex:1 1 20rem;min-width:0}.records-import-heading h4,.records-import-result>h4{font-size:16px;font-weight:600;line-height:1.3}.records-import-heading p{margin-top:6px;font-size:13px;line-height:1.5;color:var(--muted)}
+  .records-import-heading>.records-export-actions{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;flex:0 1 12rem;max-width:100%;min-width:0}
+  .records-explorer .records-import button[data-action="records-import-open"],.records-explorer .records-import>button[data-action="records-import-retry"]{width:100%;min-width:0;min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+  .records-explorer .records-import button[data-action="records-import-open"],.records-explorer .records-import button[data-action="records-import-open"]:hover:not([aria-disabled=true]){border-color:var(--accent,#087f8c);background:var(--accent,#087f8c);color:var(--on-accent,#fff)}
+  .records-explorer .records-import>button[data-action="records-import-retry"]{justify-self:start;width:auto;max-width:100%}.records-import>p,.records-import-result>p{font-size:13px;line-height:1.5;color:var(--muted)}.records-import>[role="alert"]{color:var(--danger,#dc2626)}
+  .records-import-result{padding-top:16px;border-top:1px solid var(--border,#d0d5dd)}
+  @container records-content (max-width:34rem){.records-import-heading{display:grid;grid-template-columns:minmax(0,1fr)}.records-import-heading>.records-export-actions{width:100%}}
   .records-applied-view{display:grid;gap:6px;min-width:0;margin:12px 0;font-size:13px;overflow-wrap:anywhere}.records-applied-view p{margin:0}.records-applied-filters{display:flex;flex-wrap:wrap;gap:6px;min-width:0;margin:0;padding:0;list-style:none}.records-applied-filters li{box-sizing:border-box;min-width:0;max-width:100%;padding:5px 8px;border:1px solid var(--border,#e4e7ec);border-radius:6px;white-space:pre-wrap}.records-empty-state{min-width:0;overflow-wrap:anywhere}
-  .records-view-controls{display:grid;gap:10px;margin:16px 0;min-width:0}.records-filter-row,.records-view-actions,.records-pagination{display:flex;align-items:end;gap:8px;flex-wrap:wrap;min-width:0}.records-view-controls label{display:grid;gap:4px;flex:1 1 150px;min-width:0;max-width:100%}.records-view-controls input,.records-view-controls select{width:100%;min-width:0}.records-view-controls select{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}.records-view-controls .records-help{margin:0;overflow-wrap:anywhere}.records-pagination{align-items:center;margin-top:12px}.records-view-controls button:disabled{opacity:.6;cursor:default}
-  .records-explorer{display:grid;gap:18px;min-width:0}.records-heading{display:flex;justify-content:space-between;gap:20px;align-items:end}.records-heading>*{min-width:0}.records-heading h2{margin:2px 0}.records-heading p{max-width:760px;margin:6px 0;color:var(--muted,#667085)}
+  .records-view-controls{container:records-filters / inline-size;display:grid;gap:12px;margin:16px 0;min-width:0}
+  .records-filter-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;align-items:end;gap:12px;min-width:0}
+  .records-filter-row>button{grid-column:4;justify-self:end}
+  .records-view-actions{display:flex;align-items:end;gap:12px;flex-wrap:wrap;min-width:0}
+  .records-view-tools{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:end;gap:8px;flex:1 1 260px;min-width:0}
+  .records-view-apply-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;flex:1 1 350px;min-width:0}
+  .records-view-controls label{display:grid;gap:6px;min-width:0;max-width:100%;font-size:12px;font-weight:600;line-height:1.4;color:var(--muted)}
+  .records-explorer .records-view-controls :is(input,select){box-sizing:border-box;width:100%;min-width:0;min-height:var(--wc-control-h,44px);padding:0 10px;border:1px solid var(--border-strong);border-radius:var(--wc-radius,9px);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:400}
+  .records-explorer .records-view-controls button{min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600;white-space:normal;overflow-wrap:anywhere}
+  .records-view-apply-actions>button{width:100%;min-width:0}
+  .records-view-controls .records-help{margin:0;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+  .records-view-controls button:disabled{opacity:.6;cursor:default}
+  .records-pagination{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,16rem) auto;align-items:center;gap:8px 12px;min-width:0;margin-top:16px;padding-top:12px;border-top:1px solid var(--border,#d0d5dd)}
+  .records-pagination>span{min-width:0;font-size:12px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+  .records-page-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}
+  .records-explorer .records-pagination button{width:100%;min-width:0;min-height:var(--wc-control-h,44px);padding:0 8px;border-radius:var(--wc-radius,9px);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+  @container records-content (max-width:34rem){.records-pagination{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.records-pagination>span{grid-column:1/-1}.records-page-actions{grid-column:span 2}}
+  @container records-filters (max-width:34rem){.records-filter-row{grid-template-columns:repeat(2,minmax(0,1fr))}.records-filter-row>button{grid-column:2;width:100%}}
+  @container records-filters (max-width:22rem){.records-filter-row{grid-template-columns:minmax(0,1fr)}.records-filter-row>button{grid-column:1}}
+  .records-explorer{display:grid;gap:18px;min-width:0;container:records-explorer / inline-size}
+  .records-heading{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px 20px;min-width:0}
+  .records-heading>*{min-width:0}.records-heading>div:first-child{flex:1 1 20rem}
+  .records-heading>div>span{font-size:12px;font-weight:600;color:var(--muted)}
+  .records-heading h2{margin:4px 0 0;font-size:20px;font-weight:600;line-height:1.2}
+  .records-heading p{max-width:48rem;margin:6px 0 0;font-size:13px;line-height:1.5;color:var(--muted,#667085)}
   .records-explorer button{box-sizing:border-box;min-height:36px;padding:7px 10px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit;font-size:13px;line-height:1.2;cursor:pointer}.records-explorer button:hover:not([aria-disabled=true]){border-color:var(--border-strong,var(--border,#98a2b3));background:var(--surface-sunk,var(--surface-subtle,#f7f8fa))}.records-explorer button:focus-visible,.records-explorer summary:focus-visible{outline:2px solid var(--accent,#315efb);outline-offset:1px}.records-explorer summary{box-sizing:border-box;min-height:36px;padding:8px 4px;border-radius:6px;cursor:pointer}.records-explorer input{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}
   .records-layout{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);gap:18px;min-width:0}.records-layout>.records-content{min-width:0}.records-namespace-nav{display:grid;gap:8px;align-content:start;min-width:0}.records-namespace{text-align:left;display:grid;gap:2px;min-width:0;padding:10px;border:1px solid var(--border,#d0d5dd);border-radius:8px;background:transparent}.records-namespace[data-active=true]{border-color:var(--accent,#315efb);background:var(--surface-subtle,#f5f7ff)}.records-namespace strong,.records-namespace span,.records-namespace small{overflow-wrap:anywhere}.records-namespace span,.records-namespace small{color:var(--muted,#667085)}
-  .records-pack-summary{display:flex;justify-content:space-between;gap:16px;align-items:start;min-width:0}.records-pack-summary>*{min-width:0}.records-pack-summary h3{margin:0}.records-pack-summary p{margin:4px 0}.records-pack-summary h3,.records-pack-summary p{overflow-wrap:anywhere}.records-quota{display:flex;gap:14px;margin:0;flex-wrap:wrap}.records-quota div{display:grid}.records-quota dt,.records-quota small{color:var(--muted,#667085);font-size:12px}.records-quota dd{margin:0}
-  .records-kind-nav{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0}.records-kind-nav button{max-width:100%;min-width:0;overflow-wrap:anywhere}.records-kind-nav button[aria-selected=true]{border-color:var(--accent,#315efb)}.records-kind-nav span{opacity:.7}.records-kind-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;min-width:0;margin:8px 0}.records-kind-toolbar>*{min-width:0}.records-kind-toolbar>span{overflow-wrap:anywhere}.records-export-actions{display:flex;gap:6px;flex-wrap:wrap;min-width:0}.records-explorer .records-ref-link,.records-explorer .records-ref-link:hover:not([aria-disabled=true]){border:0;padding:0;max-width:100%;min-width:0;background:transparent;color:var(--accent,#315efb);text-decoration:underline;overflow-wrap:anywhere;cursor:pointer;text-align:left}.records-danger{color:#b42318;border-color:#fda29b}
+  .records-pack-summary{display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px 20px;align-items:start;min-width:0}.records-pack-summary>*{min-width:0}.records-pack-summary>div:first-child{flex:1 1 12rem}.records-pack-summary>.records-quota{flex:1 1 22rem}
+  .records-pack-summary h3{margin:0;font-size:16px;font-weight:600;line-height:1.3}.records-pack-summary p{margin:4px 0 0;font-size:13px;line-height:1.5;color:var(--muted,#667085)}.records-pack-summary h3,.records-pack-summary p{overflow-wrap:anywhere}
+  .records-quota{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 16px;min-width:0;margin:0}.records-quota div{display:grid;align-content:start;gap:4px;min-width:0}.records-quota dt,.records-quota small{color:var(--muted,#667085);font-size:12px;line-height:1.4}.records-quota dt{overflow-wrap:anywhere}.records-quota dd{margin:0;font-size:13px;line-height:1.5;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.records-quota dd small{display:inline-block}
+  .records-global-quota{grid-template-columns:repeat(4,minmax(0,1fr));padding:12px 16px;border:1px solid var(--border,#d0d5dd);border-radius:var(--wc-radius,9px);background:var(--surface-subtle,#f7f8fa)}
+  @container records-explorer (max-width:40rem){.records-global-quota{grid-template-columns:repeat(2,minmax(0,1fr));padding:12px}}
+  @container records-content (max-width:27rem){.records-pack-summary>.records-quota{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .records-kind-nav{box-sizing:border-box;display:flex;gap:4px;flex-wrap:wrap;width:fit-content;max-width:100%;min-width:0;margin:16px 0;padding:4px;border-radius:var(--wc-radius,9px);background:var(--surface-subtle,#f7f8fa)}
+  .records-explorer .records-kind-nav>button{display:flex;align-items:center;justify-content:center;gap:6px;max-width:100%;min-width:0;min-height:var(--wc-control-h,44px);padding:0 12px;border-color:transparent;border-radius:var(--wc-radius,9px);background:transparent;color:var(--muted);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+  .records-explorer .records-kind-nav>button[aria-selected=true]{border-color:var(--border,#d0d5dd);background:var(--surface,#fff);color:var(--fg,#101828)}
+  .records-kind-nav span{min-width:0;font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
+  .records-kind-toolbar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;min-width:0;margin:12px 0}.records-kind-toolbar>*{min-width:0}.records-kind-toolbar>span{font-size:12px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}.records-export-actions{display:flex;gap:6px;flex-wrap:wrap;min-width:0}.records-explorer .records-ref-link,.records-explorer .records-ref-link:hover:not([aria-disabled=true]){border:0;padding:0;max-width:100%;min-width:0;background:transparent;color:var(--accent,#315efb);text-decoration:underline;overflow-wrap:anywhere;cursor:pointer;text-align:left}.records-danger{color:#b42318;border-color:#fda29b}
+  .records-content{container:records-content / inline-size}
+  .records-explorer :is(.records-heading,.records-kind-toolbar)>.records-export-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;flex:0 1 20rem;max-width:100%}
+  .records-heading>.records-export-actions{width:min(100%,20rem);justify-self:end}
+  .records-explorer :is(.records-heading,.records-kind-toolbar)>.records-export-actions>button{width:100%;min-width:0;min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+  @container records-content (max-width:27rem){.records-kind-toolbar>.records-export-actions{flex-basis:100%;width:100%}}
+  @media(max-width:600px){.records-explorer :is(.records-heading,.records-kind-toolbar)>.records-export-actions{flex-basis:100%;width:100%}}
   .records-table-scroll{max-width:100%;min-width:0;overflow:auto}.records-table{width:100%;border-collapse:collapse}.records-table th,.records-table td{text-align:left;padding:9px;border-bottom:1px solid var(--border,#e4e7ec);vertical-align:top;max-width:240px}.records-table th small{display:block;font-weight:400}.records-table tbody tr{cursor:pointer}.records-table tbody tr:hover{background:var(--surface-subtle,#f7f8fa)}.records-row-open{margin-left:8px}.records-pii-tag{display:inline-block;margin-left:5px;padding:1px 4px;border-radius:4px;background:#fff0cc;color:#7a4c00;font-size:10px}.records-empty{color:var(--muted,#667085)}
   .records-explorer button[aria-disabled=true]{cursor:wait;opacity:.7}.records-detail{display:grid;gap:14px;min-width:0}.records-detail>*{min-width:0}.records-detail header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;min-width:0}.records-detail header>div{min-width:0}.records-detail header>button{flex:0 0 auto}.records-detail header small,.records-detail h3{overflow-wrap:anywhere}.records-detail h3{margin:2px 0}.records-detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;min-width:0}.records-detail dl div{min-width:0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:7px}.records-detail dt{font-weight:600}.records-detail dt,.records-detail dl div>small{overflow-wrap:anywhere}.records-detail dd{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.records-detail-meta{color:var(--muted,#667085);font-size:13px;overflow-wrap:anywhere}.records-detail details{min-width:0}.records-detail pre{box-sizing:border-box;max-width:100%;min-width:0;overflow:auto;max-height:340px}.records-delete-confirm{min-width:0;border:1px solid #d92d20;padding:12px;border-radius:8px;overflow-wrap:anywhere}.records-delete-confirm button+button{margin-left:8px}.records-relationship-impact li,.records-relationship-impact code{overflow-wrap:anywhere}.records-relationship-impact ul,.records-outbox-events{margin:6px 0;padding-left:22px}.records-changes,.records-outbox{min-width:0;margin:14px 0;padding:10px;border:1px solid var(--border,#e4e7ec);border-radius:8px}.records-changes>*{min-width:0}.records-changes summary{overflow-wrap:anywhere}.records-changes-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-change-events{display:grid;gap:8px;min-width:0;margin:6px 0;padding-left:22px}.records-change-events>li{min-width:0;padding:8px;border-bottom:1px solid var(--border,#e4e7ec);overflow-wrap:anywhere;display:grid;gap:3px}.records-change-heading{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;min-width:0}.records-change-events small{color:var(--muted,#667085);overflow-wrap:anywhere}.records-outbox>*{min-width:0}.records-outbox summary{overflow-wrap:anywhere}.records-outbox-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px}.records-outbox-events{display:grid;gap:8px;min-width:0}.records-outbox-events>li{min-width:0;padding:8px;border-bottom:1px solid var(--border,#e4e7ec);overflow-wrap:anywhere}.records-outbox-events>li>*{min-width:0}.records-outbox-events>li>div:first-child{display:grid;gap:3px}.records-outbox-event-heading{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;min-width:0}.records-outbox-event-heading>*{min-width:0}.records-outbox-event-heading>span{display:inline-flex;align-items:baseline;gap:4px;max-width:100%}.records-outbox-events details{min-width:0}.records-outbox-events small,.records-help{color:var(--muted,#667085)}.records-outbox-events strong,.records-outbox-events small,.records-outbox-events p,.records-outbox-events code{overflow-wrap:anywhere}.records-purge-confirm{margin-top:10px}.records-purge-confirm label{display:grid;gap:4px;margin:8px 0}.records-purge-confirm input{width:100%;max-width:360px;min-width:0}
+  .records-changes,.records-outbox{margin:16px 0;padding:8px 12px;border-radius:var(--wc-radius,9px)}
+  .records-changes>summary,.records-outbox>summary,.records-outbox-events summary{min-height:var(--wc-control-h,44px);padding:8px 0;font-size:13px;font-weight:600;line-height:1.5}
+  .records-changes-summary,.records-outbox-summary{align-items:center;gap:12px;margin:12px 0 0}.records-changes-summary>span{flex:1 1 15rem;font-size:13px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+  .records-change-actions{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px;flex:0 1 20rem;max-width:100%;min-width:0}.records-change-actions:has(>button:only-child){flex-basis:9rem}
+  .records-explorer :is(.records-changes,.records-outbox) button:not(.records-ref-link){min-width:0;min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}.records-change-actions>button,.records-event-actions>button{width:100%}
+  .records-outbox-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;flex:1 1 22rem;min-width:0;margin:0}.records-outbox-metrics>div{display:grid;align-content:start;gap:4px;min-width:0}.records-outbox-metrics dt{font-size:12px;line-height:1.4;color:var(--muted);overflow-wrap:anywhere}.records-outbox-metrics dd{margin:0;font-size:13px;font-weight:500;line-height:1.5;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .records-outbox-summary>button{flex:0 0 9rem;width:9rem;justify-self:end}
+  :is(.records-changes,.records-outbox)>.records-help{margin:12px 0 0;font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+  .records-change-events,.records-outbox-events{gap:8px;margin:12px 0 0;padding:0;list-style:none}.records-change-events>li,.records-outbox-events>li{gap:6px;padding:12px;border:0;border-radius:var(--wc-radius,9px);background:var(--surface-subtle,#f7f8fa);font-size:13px;line-height:1.5}.records-change-events small,.records-outbox-events small{font-size:12px;line-height:1.5}.records-outbox-events p{margin:0}.records-outbox-events>li>button{justify-self:start;max-width:100%}
+  @container records-content (max-width:34rem){.records-changes-summary,.records-outbox-summary{display:grid;grid-template-columns:minmax(0,1fr)}.records-change-actions{width:100%}}
+  @container records-content (max-width:27rem){.records-outbox-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.records-outbox-summary>button{width:100%}}
+  .records-detail{gap:16px}.records-detail header small{font-size:12px;line-height:1.5;color:var(--muted)}.records-detail h3{margin:4px 0 0;font-size:18px;font-weight:600;line-height:1.3}
+  .records-explorer .records-detail header>button{min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600}
+  .records-detail>dl{grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));gap:12px;margin:0}.records-detail>dl>div{display:grid;align-content:start;gap:6px;padding:12px;border-radius:var(--wc-radius,9px);background:var(--surface,#fff)}
+  .records-detail>dl dt{font-size:12px;font-weight:600;line-height:1.4;color:var(--muted)}.records-detail>dl dd{margin:0;font-size:14px;line-height:1.5}.records-detail>dl>div>small{font-size:12px;line-height:1.4;color:var(--muted)}
+  .records-detail-meta{padding:12px;border-radius:var(--wc-radius,9px);background:var(--surface-subtle,#f7f8fa);font-size:12px;line-height:1.6}
+  .records-detail .records-relationship-impact h4{margin:0;font-size:13px;font-weight:600;line-height:1.5}.records-detail .records-relationship-impact li{font-size:13px;line-height:1.5}
+  .records-detail>details{padding:8px 12px;border:1px solid var(--border,#d0d5dd);border-radius:var(--wc-radius,9px)}.records-detail>details>summary{min-height:var(--wc-control-h,44px);padding:8px 0;font-size:13px;font-weight:600;line-height:1.5}.records-detail>details>pre{margin:8px 0 0;font-size:12px;line-height:1.5}
+  :is(.records-detail,.records-outbox,.records-purge) .records-delete-confirm{display:grid;gap:12px;padding:16px;border-color:var(--danger,#dc2626);border-radius:var(--wc-radius,9px);background:var(--danger-weak,#fef2f2)}:is(.records-detail,.records-outbox,.records-purge) .records-delete-confirm p{margin:0;font-size:13px;line-height:1.5}
+  .records-detail-delete-actions,.records-event-actions,.records-purge-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:min(100%,22rem);min-width:0}:is(.records-detail,.records-outbox,.records-purge) .records-delete-confirm button+button{margin-left:0}
+  .records-explorer .records-detail :is([data-action="records-delete-record"],.records-detail-delete-actions>button){min-width:0;min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+  .records-detail>[data-action="records-delete-record"]{justify-self:start;max-width:100%}
+  .records-explorer :is(.records-detail,.records-outbox,.records-purge) :is([data-action="records-delete-record"],[data-action="records-confirm-delete"],[data-action="records-retire-event"],[data-action="records-confirm-retire-event"],[data-action="records-purge"],[data-action="records-confirm-purge"]){border-color:var(--danger,#dc2626);background:var(--surface,#fff);color:var(--danger,#dc2626)}
+  .records-explorer :is(.records-detail,.records-outbox,.records-purge) :is([data-action="records-delete-record"],[data-action="records-confirm-delete"],[data-action="records-retire-event"],[data-action="records-confirm-retire-event"],[data-action="records-purge"],[data-action="records-confirm-purge"]):hover:not([aria-disabled=true]){border-color:var(--danger,#dc2626);background:var(--danger-weak,#fef2f2)}
+  .records-purge{display:grid;flex:1 0 100%;min-width:0}.records-purge>button{justify-self:start;max-width:100%}.records-purge-confirm{margin-top:0}
+  .records-purge-confirm label{gap:6px;min-width:0;max-width:32rem;margin:0;font-size:12px;font-weight:600;line-height:1.4;color:var(--muted)}
+  .records-explorer .records-purge input{box-sizing:border-box;width:100%;max-width:32rem;min-width:0;height:var(--wc-control-h,44px);min-height:var(--wc-control-h,44px);padding:0 10px;border-color:var(--border-strong,var(--border));border-radius:var(--wc-radius,9px);font:inherit;font-size:13px;font-weight:400}
+  .records-explorer .records-purge button{min-width:0;min-height:var(--wc-control-h,44px);padding:0 12px;border-radius:var(--wc-radius,9px);font-weight:600;line-height:1.3;white-space:normal;overflow-wrap:anywhere}
+  .records-purge-actions{width:min(100%,32rem)}.records-purge-actions>button{width:100%}
+  @container records-content (max-width:22rem){.records-purge-actions{grid-template-columns:minmax(0,1fr)}}
   @media(max-width:760px){.records-layout{grid-template-columns:1fr}.records-heading,.records-pack-summary{display:grid}.records-quota{display:grid}}
 `;

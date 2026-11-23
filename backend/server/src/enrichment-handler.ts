@@ -27,6 +27,7 @@ import {
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
   type GatedReadGrantResolver,
+  type ReadGrantChecker,
 } from './read-grant-checker.js';
 import type {
   Actor,
@@ -67,6 +68,8 @@ export interface EnrichmentRpcDeps {
    *  native MCP tool's door contract, gated to standing policy contracts. Optional;
    *  absent → the author-default checker (registry default) applies. */
   readGrantResolver?: GatedReadGrantResolver;
+  /** Current kernel dispatch authority, resolved from trusted StepMeta only. */
+  readGrantChecker?: ReadGrantChecker;
   /** D-161 P1 — origin provenance facet, SERVER-INJECTED (never read
    *  from the RPC `args`). The kernel `enrichment-upsert` dispatcher
    *  lifts the engine-supplied `stepMeta.actor` (= the run's
@@ -205,7 +208,7 @@ export const handleEnrichmentList = async (
   // `mcp_exposed` visibility.
   const readChecker =
     deps.trigger_source === 'mcp' && isEnrichmentTopic(args.topic)
-      ? (deps.readGrantResolver?.resolveForContract(deps.origin_contract_id)
+      ? (deps.readGrantChecker ?? deps.readGrantResolver?.resolveForContract(deps.origin_contract_id)
         ?? AUTHOR_DEFAULT_READ_GRANT_CHECKER)
       : undefined;
   if (readChecker && !readChecker.isTopicReadGranted(args.topic as EnrichmentTopic)) {

@@ -3,6 +3,7 @@ import {
   CALENDAR_EVENT_EDIT_LIMITS, CALENDAR_EVENT_GUEST_LIMITS,
   DAY_MS,
   RpcError,
+  savedWorkLinks,
   type CalendarCollectionCaps,
   type CalendarEventRef,
   type CalendarEventSnapshot,
@@ -11,6 +12,7 @@ import {
   type CalendarEventDeleteResult,
   type CalendarEventDeletionCheckRequest,
   type CalendarEventDeletionState,
+  isCalendarEventAlertMinutes,
 } from '@recued/contracts';
 import { resourceReviewHash, withResourceReview } from '../../resource-review.js';
 import { commitLocalTransaction } from '../../local-transaction.js';
@@ -56,12 +58,14 @@ export const getCalendarEvent = (deps: CalendarDispatcherDeps, input: CalendarEv
   const description = event.description ?? '';
   const truncated = byteLength(description) > CALENDAR_EVENT_EDIT_LIMITS.description;
   return {
+    mail_links: [...new Set(savedWorkLinks(description).filter(link => link.kind === 'mail').map(link => link.href))].slice(0, 100),
     event: {
       record_id: row.record_id, source_id, calendar_id: event.calendar_id,
       ...(event.calendar_name ? { calendar_name: event.calendar_name } : {}),
       summary: event.summary, description: truncated ? description.slice(0, 16_384) : description,
       ...(truncated ? { description_truncated: true as const } : {}),
       location: event.location ?? '', start_at: event.start_at, end_at: event.end_at, updated_at: event.updated_at,
+      ...(event.conference_url ? { conference_url: event.conference_url } : {}),
       timezone: event.timezone, is_all_day: event.is_all_day, status: event.status, is_recurring,
       ...(event.attendees?.length ? { attendees: event.attendees.slice(0, CALENDAR_EVENT_GUEST_LIMITS.count).map(attendee => ({
         email: attendee.email, ...(attendee.display_name ? { display_name: attendee.display_name } : {}),
@@ -84,10 +88,15 @@ export const validateCalendarEventPatch = (
   if (!patch || typeof patch !== 'object' || Array.isArray(patch) || Object.keys(patch).length === 0) {
     return invalid('Choose at least one event field to update.');
   }
-  const allowed = new Set(['summary', 'description', 'location', 'start_at', 'end_at']);
+  const allowed = new Set(['summary', 'description', 'location', 'start_at', 'end_at', 'marked_private', 'alert_minutes']);
   for (const [key, value] of Object.entries(patch)) {
     if (!allowed.has(key)) return invalid(`The event editor cannot change ${key}.`);
-    if (key === 'start_at' || key === 'end_at') {
+    // D-407 slice 4 — its private marking, and its one alert.
+    if (key === 'marked_private') {
+      if (typeof value !== 'boolean') return invalid('Choose whether the event is private.');
+    } else if (key === 'alert_minutes') {
+      if (value !== null && !isCalendarEventAlertMinutes(value)) return invalid('Choose an alert from the start up to four weeks before.');
+    } else if (key === 'start_at' || key === 'end_at') {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || !Number.isFinite(new Date(value).getTime())) {
         return invalid('Choose a valid event date and time.');
       }

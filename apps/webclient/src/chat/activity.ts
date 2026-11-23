@@ -35,6 +35,7 @@ import {
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
   defaultRedactionForKind,
   renderTransparencyTemplate,
+  tier1CallTitle,
   validateTransparencyEvent,
   type ChatDispatchReason,
   type ChatMessage,
@@ -44,7 +45,7 @@ import {
   type TransparencyStreamSettings,
 } from '@recued/contracts';
 
-import type { InFlightTurn } from './state.js';
+import type { InFlightTurn, PlanApprovalCard } from './state.js';
 
 /** One renderable activity row. `note` rows are Recued-voiced
  *  narrative lines; `tool` rows are dispatch provenance and carry the
@@ -59,6 +60,12 @@ export type ChatActivityRow =
        * carry these; in-flight projections simply omit them. */
       run_id?: string;
       dish_id?: string;
+      /** D-348 §7.8 — a change a standing permission let the call make without
+       * asking, by its receipt: its line offers Undo. */
+      local_receipt_id?: string;
+      /** D-402 slice F5 — the recipe a standing permission of the owner's chats ran some of
+       * this call's writes for without asking: its line offers "Stop allowing". */
+      stop_allowing_recipe_id?: string;
     };
 
 /** Both the ephemeral `InFlightToolCall` and the authoritative
@@ -67,12 +74,88 @@ export type ChatActivityRow =
 type ToolCallLike = Pick<
   ChatToolCall,
   | 'tool_name'
+  | 'args'
+  | 'recipe_name'
+  | 'awaiting_plan_id'
   | 'status'
   | 'reason'
   | 'detail'
   | 'run_id'
   | 'dish_id'
+  | 'stop_allowing_recipe_id'
 >;
+
+/** What a call did, in the words its card and its ask use (the owner, 2026-11-13: a line said
+ *  "used calendar.update ✓"). Each chat tool's title ("Search your mail", "Add a task") in the
+ *  tense the line needs: `doing` ("searching your mail"), `done` ("searched your mail"), `base`
+ *  ("search your mail"). A call that names an installed recipe, by the recipe's name: a run is
+ *  `title` "Weekly digest", `done` "ran “Weekly digest”"; a schedule or a stop is `title`
+ *  "Schedule ‘Weekly digest’", `done` "scheduled “Weekly digest”". `undefined` for a call with
+ *  neither, an app's or an inline recipe's, which keeps its name. */
+interface CallWords { readonly title: string; readonly base: string; readonly doing: string; readonly done: string }
+
+/** What names a call: its tool, the arguments that refine its title, and the recipe it ran. */
+interface CallNaming { readonly tool_name: string; readonly args?: unknown; readonly recipe_name?: string | undefined }
+
+/** The verbs the titles start with, in the two tenses a line needs. A title starting with any
+ *  other keeps the call's name (a test holds every chat tool's title to this list). */
+const VERB_FORMS: Readonly<Record<string, readonly [doing: string, done: string]>> = {
+  add: ['adding', 'added'], ask: ['asking', 'asked'], cancel: ['cancelling', 'cancelled'],
+  change: ['changing', 'changed'], edit: ['editing', 'edited'], forget: ['forgetting', 'forgot'],
+  look: ['looking', 'looked'], mark: ['marking', 'marked'], move: ['moving', 'moved'],
+  pause: ['pausing', 'paused'], read: ['reading', 'read'], record: ['recording', 'recorded'],
+  remove: ['removing', 'removed'], resume: ['resuming', 'resumed'], run: ['running', 'ran'],
+  save: ['saving', 'saved'], schedule: ['scheduling', 'scheduled'], search: ['searching', 'searched'],
+  stop: ['stopping', 'stopped'], tick: ['ticking', 'ticked'],
+};
+
+/** Tools of the chat's own that are no AI tool with a card, named here. */
+const CORE_TOOL_TITLES: Readonly<Record<string, string>> = {
+  'tools.search': 'Look for the right tool',
+};
+
+/** What a call that names a recipe does to it; any other names a recipe it runs. */
+const RECIPE_VERBS: Readonly<Record<string, 'schedule' | 'stop'>> = {
+  'recipe.schedule': 'schedule', 'recipe.stop': 'stop',
+};
+
+export const callWords = (call: CallNaming): CallWords | undefined => {
+  // A recipe by its name, where the line read its tool's ("used recued-core/weekly-digest ✓", or
+  // "ran a recipe ✓" for `recipe.run`). The server names only an installed recipe a call names.
+  const recipe = call.recipe_name?.trim();
+  if (recipe) {
+    const quoted = `“${recipe}”`;
+    const verb = Object.hasOwn(RECIPE_VERBS, call.tool_name) ? RECIPE_VERBS[call.tool_name]! : undefined;
+    if (verb === undefined) return { title: recipe, base: `run ${quoted}`, doing: `running ${quoted}`, done: `ran ${quoted}` };
+    // Its title is the call, not the recipe: "“Schedule ‘Weekly digest’” has now finished".
+    const [doing, done] = VERB_FORMS[verb]!;
+    return { title: `${verb === 'stop' ? 'Stop' : 'Schedule'} ‘${recipe}’`, base: `${verb} ${quoted}`,
+      doing: `${doing} ${quoted}`, done: `${done} ${quoted}` };
+  }
+  const title = tier1CallTitle(call.tool_name, call.args) ?? CORE_TOOL_TITLES[call.tool_name];
+  if (title === undefined) return undefined;
+  const base = title.charAt(0).toLowerCase() + title.slice(1);
+  const space = base.indexOf(' ');
+  const forms = VERB_FORMS[space === -1 ? base : base.slice(0, space)];
+  if (forms === undefined) return undefined;
+  const rest = space === -1 ? '' : base.slice(space);
+  return { title, base, doing: forms[0] + rest, done: forms[1] + rest };
+};
+
+/** A call named in a sentence of its own: its title, quoted ("“Change a calendar event” has now
+ *  finished"), or the recipe it ran ("“Weekly digest” has now finished"); a call with neither, its
+ *  name. */
+export const callName = (call: CallNaming): string => {
+  const words = callWords(call);
+  return words ? `“${words.title}”` : call.tool_name;
+};
+
+/** A call as a list names it, on a line of its own: "Change a calendar event", "Run “Weekly
+ *  digest”", "Schedule “Weekly digest”"; a call with neither a title nor a recipe, its name. */
+export const callLabel = (call: CallNaming): string => {
+  const words = callWords(call);
+  return words ? words.base.charAt(0).toUpperCase() + words.base.slice(1) : call.tool_name;
+};
 
 /** D-182 — a compact one-line form of a (possibly long / multi-line) error detail
  *  for the activity row: first line, ~160 chars, ellipsised. */
@@ -88,6 +171,7 @@ const REASON_WORDS: Readonly<Record<ChatDispatchReason, string>> = {
   not_implemented: 'it is not available yet',
   unknown_tool: 'there is no such tool',
   invalid_args: 'it was asked in a way it could not use',
+  identifier_evidence_missing: 'it needs the original source before using this value',
   channel_denied: 'it is not allowed here',
   kind_gated: 'it is not allowed here',
   classification_blocked: 'it is switched off',
@@ -98,6 +182,7 @@ const REASON_WORDS: Readonly<Record<ChatDispatchReason, string>> = {
   plan_cancelled: 'you cancelled it',
   run_cancelled: 'it was cancelled',
   not_asked_yet: 'it was left until you answer the approval before it',
+  unconfirmed_attempt: 'an earlier try of it has no confirmed result, so the record is checked first',
 };
 
 /** The first sentence of a refusal, without its full stop: a switched-off call's own words
@@ -111,10 +196,15 @@ const firstSentence = (detail: string): string => {
 /** Lower-case stylistic per the inline-stream tone (§ B.8.5); the
  *  closed-list dispatch reason reads as words. */
 const toolCallText = (call: ToolCallLike): string => {
-  if (call.status === 'started') return `running ${call.tool_name}...`;
-  if (call.status === 'ok') return `used ${call.tool_name} ✓`;
+  const words = callWords(call);
+  if (call.status === 'started') return words ? `${words.doing}...` : `running ${call.tool_name}...`;
+  if (call.status === 'ok') return words ? `${words.done} ✓` : `used ${call.tool_name} ✓`;
   // A switched-off call says what is off in its own refusal (D-346), which names the tool.
-  if (call.reason === 'classification_blocked' && call.detail !== undefined && call.detail.trim().length > 0) {
+  // When the refusal names the call itself ("'mail.search' is turned off…") and the call has a
+  // title, the title says it instead of the tool's id: "couldn't search your mail: it is switched
+  // off". A refusal naming something else (an op a recipe uses) keeps its own words.
+  if (call.reason === 'classification_blocked' && call.detail !== undefined && call.detail.trim().length > 0
+    && !(words && call.detail.trim().startsWith(`'${call.tool_name}'`))) {
     return compactDetail(firstSentence(call.detail));
   }
   // D-182 — for a run/tool FAILURE prefer the concise underlying error line (the
@@ -125,7 +215,7 @@ const toolCallText = (call: ToolCallLike): string => {
   const why = detail !== undefined && detail.length > 0
     ? compactDetail(detail)
     : REASON_WORDS[call.reason ?? 'execution_error'] ?? (call.reason ?? 'execution_error').replace(/_/g, ' ');
-  return `couldn't run ${call.tool_name}: ${why}`;
+  return `couldn't ${words ? words.base : `run ${call.tool_name}`}: ${why}`;
 };
 
 /** A call that stopped to wait reads as what it is NOW, not as the "✓" its
@@ -138,17 +228,20 @@ const waitedCallRow = (
   record: ChatToolCallRecord | undefined,
 ): Pick<ChatActivityRow & { kind: 'tool' }, 'text' | 'status'> | null => {
   if (record === undefined || (record.held_at === undefined && record.state !== 'held')) return null;
+  const words = callWords(call);
+  const base = words ? words.base : call.tool_name;
+  const ran = words ? words.base : `run ${call.tool_name}`;
   switch (record.state) {
-    case 'held': return { text: `waiting to hear back: ${call.tool_name}`, status: 'started' };
-    case 'running': return { text: `running ${call.tool_name} again...`, status: 'started' };
+    case 'held': return { text: `waiting to hear back: ${base}`, status: 'started' };
+    case 'running': return { text: words ? `${words.doing} again...` : `running ${call.tool_name} again...`, status: 'started' };
     case 'failed': return record.denied === true
-      ? { text: `didn't run ${call.tool_name}: you said no`, status: 'error' }
+      ? { text: `didn't ${ran}: you said no`, status: 'error' }
       // D-337 slice R — its approval expired: it never ran, and no one said no.
       : record.expired === true
-        ? { text: `didn't run ${call.tool_name}: no one answered in time`, status: 'error' }
-        : { text: `couldn't run ${call.tool_name}: it did not finish`, status: 'error' };
+        ? { text: `didn't ${ran}: no one answered in time`, status: 'error' }
+        : { text: `couldn't ${ran}: it did not finish`, status: 'error' };
     case 'interrupted': return {
-      text: `stopped part-way: ${call.tool_name}. Recued does not know what happened`, status: 'error',
+      text: `stopped part-way: ${base}. Recued does not know what happened`, status: 'error',
     };
     case 'succeeded': return null;
   }
@@ -159,11 +252,57 @@ const waitedCallRow = (
  *  is neither an error ("Needs attention") nor ongoing. */
 const notAskedRow = (call: ToolCallLike): Pick<ChatActivityRow & { kind: 'tool' }, 'text' | 'status'> | null =>
   call.status === 'error' && call.reason === 'not_asked_yet'
-    ? { text: `left until you answer the approval before it: ${call.tool_name}`, status: 'ok' }
+    ? { text: `left until you answer the approval before it: ${callWords(call)?.base ?? call.tool_name}`, status: 'ok' }
     : null;
 
-const toolCallRow = (call: ToolCallLike, record?: ChatToolCallRecord): ChatActivityRow => {
-  const waited = waitedCallRow(call, record) ?? notAskedRow(call);
+/** A plan-approval card, as a call waiting on it reads it. */
+type PlanCardLike = Pick<PlanApprovalCard, 'plan_id' | 'status' | 'lapsed' | 'replaced' | 'execution'>;
+
+/** The card a call that stopped for the owner's yes waits on: its own link, or, for a call an
+ *  older server recorded, the `plan_id=<id>` its detail begins with (`chat-orchestrator.ts`). */
+const awaitedPlanId = (call: ToolCallLike): string | undefined =>
+  call.awaiting_plan_id ?? /^plan_id=([^\s.]+)/.exec(call.detail ?? '')?.[1];
+
+/** D-329 — a call that stopped for the owner's yes reads as its card does. It read "couldn't
+ *  change a calendar event: it is waiting for your yes" while the card waited, and still did
+ *  under the card once it said the change was done (live, 2026-11-13). */
+const awaitedPlanRow = (
+  call: ToolCallLike,
+  plans: ReadonlyArray<PlanCardLike> | undefined,
+): Pick<ChatActivityRow & { kind: 'tool' }, 'text' | 'status'> | null => {
+  if (call.status !== 'error' || call.reason !== 'awaiting_approval') return null;
+  const words = callWords(call);
+  const base = words ? words.base : call.tool_name;
+  const ran = words ? words.base : `run ${call.tool_name}`;
+  const id = awaitedPlanId(call);
+  const card = id === undefined ? undefined : plans?.find((plan) => plan.plan_id === id);
+  if (card?.status === 'cancelled') {
+    return { text: `didn't ${ran}: ${card.replaced === true ? 'replaced by a newer version' : card.lapsed === true ? 'no one answered in time' : REASON_WORDS.plan_cancelled}`,
+      status: 'error' };
+  }
+  const receipt = card?.execution;
+  switch (receipt?.status) {
+    case 'completed': return { text: words ? `${words.done} ✓` : `used ${call.tool_name} ✓`, status: 'ok' };
+    case 'running': return { text: words ? `${words.doing}...` : `running ${call.tool_name}...`, status: 'started' };
+    case 'held': return { text: `waiting to hear back: ${base}`, status: 'started' };
+    case 'failed': return receipt.reason === 'run_cancelled'
+      ? { text: `didn't ${ran}: it was stopped`, status: 'error' }
+      : { text: `couldn't ${ran}: ${REASON_WORDS[receipt.reason]}`, status: 'error' };
+    case 'unknown': return { text: `stopped part-way: ${base}. Recued does not know what happened`, status: 'error' };
+    case undefined: break;
+  }
+  // Approved and not yet run, or still waiting (a card not loaded yet waits too): nothing failed.
+  return card?.status === 'approved'
+    ? { text: words ? `${words.doing}...` : `running ${call.tool_name}...`, status: 'started' }
+    : { text: `waiting for your yes: ${base}`, status: 'started' };
+};
+
+const toolCallRow = (
+  call: ToolCallLike,
+  record?: ChatToolCallRecord,
+  plans?: ReadonlyArray<PlanCardLike>,
+): ChatActivityRow => {
+  const waited = waitedCallRow(call, record) ?? notAskedRow(call) ?? awaitedPlanRow(call, plans);
   const progress = call.status === 'started' && record?.state === 'running' && record.progress
     ? ` · ${formatToolProgress(record.progress)}` : '';
   return {
@@ -172,6 +311,9 @@ const toolCallRow = (call: ToolCallLike, record?: ChatToolCallRecord): ChatActiv
     status: waited?.status ?? call.status,
     ...(call.run_id !== undefined ? { run_id: call.run_id } : {}),
     ...(call.dish_id !== undefined ? { dish_id: call.dish_id } : {}),
+    ...(record?.state === 'succeeded' && record.local_receipt !== undefined
+      ? { local_receipt_id: record.local_receipt.receipt_id } : {}),
+    ...(call.stop_allowing_recipe_id !== undefined ? { stop_allowing_recipe_id: call.stop_allowing_recipe_id } : {}),
   };
 };
 
@@ -259,14 +401,20 @@ export const projectInFlightActivity = (
 
 /** Activity rows for a completed message — the persisted `tool_calls`
  *  provenance on assistant rows. Empty for every other role and for
- *  turns that dispatched nothing. */
+ *  turns that dispatched nothing. A call that waits on an approval card reads as the card does
+ *  (`plans`, the conversation's cards). */
 export const projectMessageActivity = (
   message: ChatMessage,
   records?: Readonly<Record<string, ChatToolCallRecord>>,
+  plans?: ReadonlyArray<PlanCardLike>,
 ): ChatActivityRow[] => {
   if (message.role !== 'assistant') return [];
+  // A call with no run (a chat's own write) is found by its own row.
   return (message.tool_calls ?? []).map((call) =>
-    toolCallRow(call, call.run_id !== undefined ? records?.[call.run_id] : undefined));
+    toolCallRow(call, call.run_id !== undefined ? records?.[call.run_id]
+      : call.call_id !== undefined ? records?.[`call:${call.call_id}`]
+        ?? Object.values(records ?? {}).find((record) => record.message_id === call.call_id)
+        : undefined, plans));
 };
 
 /** One plain sentence per call this message made that waited and has since
@@ -281,15 +429,17 @@ export const projectSettledCallNotices = (
   return (message.tool_calls ?? []).flatMap((call) => {
     const record = call.run_id !== undefined ? records[call.run_id] : undefined;
     if (call.run_id === undefined || record === undefined || record.held_at === undefined) return [];
-    const text = record.state === 'succeeded' ? `Update: ${call.tool_name} has now finished.`
+    // A sentence of its own, so the call is named, by its title where it has one.
+    const name = callName(call);
+    const text = record.state === 'succeeded' ? `Update: ${name} has now finished.`
       : record.state === 'failed'
         ? record.denied === true
-          ? `Update: you said no, so ${call.tool_name} did not run.`
+          ? `Update: you said no, so ${name} did not run.`
           : record.expired === true
-            ? `Update: no one answered in time, so ${call.tool_name} did not run.`
-            : `Update: ${call.tool_name} did not finish.`
+            ? `Update: no one answered in time, so ${name} did not run.`
+            : `Update: ${name} did not finish.`
         : record.state === 'interrupted'
-          ? `Update: ${call.tool_name} stopped part-way. Recued does not know what happened.`
+          ? `Update: ${name} stopped part-way. Recued does not know what happened.`
           : null;
     return text === null ? [] : [{ run_id: call.run_id, text }];
   });

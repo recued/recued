@@ -196,6 +196,10 @@ export type CreateEventInput = Omit<
   send_invitations?: true;
 };
 
+/** D-407 slice 4 — a patch as a provider applies it: the canonical fields, with a private marking that can be taken
+ *  away (`false`), where the event read back carries only `true`. */
+export type CalendarProviderPatch = Omit<Partial<CanonicalEvent>, 'marked_private'> & { marked_private?: boolean };
+
 /** Payload for `updateEvent` — a partial patch on the canonical
  *  event, applied by the adapter to the provider. */
 export interface ProviderEventEditContext {
@@ -217,7 +221,8 @@ export interface UpdateEventInput {
    *  — adapters need it to build the provider path. */
   calendar_id: string;
   source_id: string;
-  patch: Partial<CanonicalEvent>;
+  /** D-407 slice 4 — `marked_private: false` takes the marking away; `reminders: []` leaves no alert. */
+  patch: CalendarProviderPatch;
   /** Scope for series edits. Default `'this_instance'`. */
   scope?: CalendarMutationScope;
 }
@@ -377,6 +382,16 @@ const CALENDAR_PROVIDER_LABELS: Readonly<Record<CalendarProviderKind, string>> =
   local: 'Recued, on this server',
 };
 
+const providerOf = (calendar: object): object | undefined =>
+  'provider' in calendar && typeof calendar.provider === 'object' && calendar.provider !== null ? calendar.provider : undefined;
+
+/** A calendar's provider kind (`gcal`, `graph`, `caldav`, `local`), read from its live provider; '' when it
+ *  does not say. */
+export const calendarProviderKindOf = (calendar: object): string => {
+  const provider = providerOf(calendar);
+  return provider !== undefined && 'kind' in provider && typeof provider.kind === 'string' ? provider.kind : '';
+};
+
 /** What the owner knows a calendar by, read from its live provider: the address
  *  its account signed in as and the provider, each '' when it does not say.
  *
@@ -385,11 +400,10 @@ const CALENDAR_PROVIDER_LABELS: Readonly<Record<CalendarProviderKind, string>> =
  *  the address too, because the name does not always match how the owner
  *  refers to one). */
 export const calendarAddressOf = (calendar: object): { address: string; provider: string } => {
-  const provider = 'provider' in calendar && typeof calendar.provider === 'object' && calendar.provider !== null
-    ? calendar.provider : undefined;
+  const provider = providerOf(calendar);
   const address = provider !== undefined && 'accountEmail' in provider && typeof provider.accountEmail === 'string'
     ? provider.accountEmail.trim() : '';
-  const kind = provider !== undefined && 'kind' in provider && typeof provider.kind === 'string' ? provider.kind : '';
+  const kind = calendarProviderKindOf(calendar);
   return {
     address,
     provider: Object.hasOwn(CALENDAR_PROVIDER_LABELS, kind) ? CALENDAR_PROVIDER_LABELS[kind as CalendarProviderKind] : '',

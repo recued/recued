@@ -160,6 +160,9 @@ export {
   type RemotePromptRecord,
   type RemoteNoticeHook,
   type RemoteNoticeDecoration,
+  type InboundSecret,
+  type InboundMessageRemoval,
+  type SecretAskState,
 } from './channels/remote.js';
 export {
   createEmailChannel,
@@ -178,6 +181,7 @@ export {
   parseAskLandingSubmission,
   resolveAskLandingVia,
   renderAskLandingHtml,
+  renderAskLandingRecoveryHtml,
   type AskLandingDetail,
   type AskLandingEditControl,
   type AskLandingRenderInput,
@@ -253,9 +257,10 @@ export interface NotificationBlockDeps {
   /** Record an answered ask in the durable activity log.
    *
    *  The block is a leaf and owns no audit store, so `backend/server`
-   *  injects this. It is called ONCE per ask, immediately after the
-   *  `open → answered` write wins — the once-only dedup point — so a
-   *  replayed or concurrent reply produces no second row.
+   *  injects this. Live replies call it once after the `open → answered` write wins.
+   *  Prepared decisions may replay the same record during boot recovery;
+   *  their host projector must use stable row identities. A losing or
+   *  replayed live reply never invokes it.
    *
    *  ⚠ Best-effort BY DESIGN, and the tradeoff is deliberate: at the call
    *  site the user's decision is ALREADY durable, and D-158 TR-4's
@@ -319,6 +324,13 @@ export interface NotificationBlockDeps {
   ) => Promise<{ readonly code: string; readonly message: string } | undefined>;
 }
 
+/** Host-only preparation: validate and return JSON, without changing held
+ *  state. Runs after reply admission under the same per-ask lock as plain
+ *  answers; a refused or losing reply never invokes it. */
+export interface SubmitAnswerOptions {
+  prepare?: (ask: Readonly<PendingAsk>) => Promise<Record<string, unknown>>;
+}
+
 /** The notification block's public operations. */
 export interface NotificationBlock {
   /** Host binding after the authenticated bridge WebSocket transport exists. */
@@ -368,8 +380,10 @@ export interface NotificationBlock {
    * enforce this ordering themselves. */
   restoreAskDeliveries(): Promise<void>;
   /** A bundle reply names an item ("2 done"). The result still goes through
-   * submitAnswer's authenticated-origin and first-answer checks. */
-  parseAskBundleReply(group_id: string, text: string, via: ChannelName): Promise<{ ask_id: string; option: string } | null>;
+   * submitAnswer's authenticated-origin and first-answer checks. A host with another valid route
+   * for the reply can classify without recording an unmatched-reminder warning. */
+  parseAskBundleReply(group_id: string, text: string, via: ChannelName,
+    options?: { record_unmatched?: boolean }): Promise<{ ask_id: string; option: string } | null>;
   listUnmatchedAskReplies(): Promise<UnmatchedAskReply[]>;
   /** A reminder reply that came after the reminder closed (`submitAnswer` said
    * `closed`) by a surface that cannot answer back joins the unmatched replies,
@@ -398,7 +412,7 @@ export interface NotificationBlock {
    *  reject — the answer is durably recorded and the boot sweep
    *  retries dispatch), with what it did: a valid reply to an ask that
    *  had already closed is `closed`, so the surface can say so. */
-  submitAnswer(reply: InboundReply): Promise<SubmitAnswerOutcome>;
+  submitAnswer(reply: InboundReply, options?: SubmitAnswerOptions): Promise<SubmitAnswerOutcome>;
 
   /** The server has begun stopping. From now on `submitAnswer` records the
    *  answer and leaves the rest — closing the prompt on every channel, running
@@ -417,7 +431,7 @@ export interface NotificationBlock {
    *  UX half). Serialized against `submitAnswer` for the same `ask_id`:
    *  a reply that wins the race is processed normally and the cancel
    *  degrades to a no-op (`'not_open'`). Never throws on state. */
-  cancelAsk(ask_id: string): Promise<'cancelled' | 'not_open'>;
+  cancelAsk(ask_id: string, options?: { readonly note?: string }): Promise<'cancelled' | 'not_open'>;
 
   /** Boot recovery sweep (I-2 / I-4). Re-delivers still-`open` asks and
    *  re-dispatches `answered`-but-unhandled asks. Idempotent. Intended
@@ -579,6 +593,22 @@ export const createNotificationBlock = (
     );
   }
   const serializer = createAskSerializer();
+  const recordAnswerAudit = async (ask: PendingAsk): Promise<void> => {
+    const answer = ask.answer;
+    if (!deps.recordAnswerAudit || !answer || !ask.answered_via) return;
+    try {
+      await deps.recordAnswerAudit({
+        ask_id: ask.ask_id,
+        ...(ask.delivery_group_id ? { reminder: true } : {}),
+        handler_kind: ask.handler_kind, handler_payload: ask.handler_payload,
+        option: answer.option, option_label: selectAskOption(ask, answer.option)?.label ?? answer.option,
+        ...(ask.message.title !== undefined ? { title: ask.message.title } : {}),
+        answered_at: answer.answered_at, answered_via: ask.answered_via,
+        ...(answer.prepared !== undefined ? { prepared: JSON.parse(JSON.stringify(answer.prepared)) as Record<string, unknown> } : {}),
+      });
+    } catch { /* The decision is durable; the host audit projection is best-effort. */ }
+  };
+
   /** Set by `beginStopping()`: answers are recorded, the boot sweep applies them. */
   let stopping = false;
   const deliveries = deps.deliveryStore ? createAskDeliveryController({ store: deps.deliveryStore,
@@ -879,7 +909,19 @@ export const createNotificationBlock = (
    *  idempotent per channel, so closing every delivered channel
    *  (including the one the answer came in on) is correct and is what
    *  resolves the card on the user's other devices (I-6). */
-  const closeOnAllChannels = async (ask: PendingAsk): Promise<void> => {
+  /** D-343 (the owner's day audit, 2026-11-15) — what an answered prompt says beneath what it asked, so
+   *  a message whose buttons are gone still says how it was answered ("Approved."), as one replaced
+   *  says "Replaced by a newer version.". Nothing for an ask with no recorded answer. */
+  const answeredNote = (ask: PendingAsk): string | undefined => {
+    const option = ask.answer?.option;
+    if (option === undefined) return undefined;
+    const label = (selectAskOption(ask, option)?.label ?? option).trim();
+    if (/^(?:approve|yes)$/iu.test(label)) return 'Approved.';
+    if (/^(?:deny|no)$/iu.test(label)) return 'Denied.';
+    if (/^allow in this chat$/iu.test(label)) return 'Allowed in this chat.';
+    return label === '' ? undefined : `Answered: ${label}.`;
+  };
+  const closeOnAllChannels = async (ask: PendingAsk, note?: string): Promise<void> => {
     if (ask.delivery_group_id) {
       if (!deliveries) throw new Error('Reminder delivery store is unavailable');
       await deliveries.withdraw(ask);
@@ -887,7 +929,7 @@ export const createNotificationBlock = (
     }
     for (const channel of channelsForAsk(ask)) {
       try {
-        await channel.closeAsk(ask.ask_id);
+        await channel.closeAsk(ask.ask_id, note);
       } catch {
         // best-effort — a stale prompt on an unreachable channel is
         // tolerable; the answer is already durably recorded.
@@ -902,7 +944,8 @@ export const createNotificationBlock = (
       await serializer.run(ask.ask_id, async () => {
         const current = await store.get(ask.ask_id);
         if (!current || current.status !== 'answered' || !current.answer || isProtectedAskKind(current.handler_kind)) return;
-        await closeOnAllChannels(current);
+        if (current.answer.prepared !== undefined) await recordAnswerAudit(current);
+        await closeOnAllChannels(current, answeredNote(current));
         try { await dispatchAnswer({ registry, store, ask: current }); }
         catch { /* Durable answer remains available for the next recovery. */ }
       });
@@ -965,8 +1008,8 @@ export const createNotificationBlock = (
     },
     async restoreAskDeliveries() { await deliveries?.restore(); },
     beginStopping() { stopping = true; },
-    async parseAskBundleReply(group_id, text, via) {
-      return await deliveries?.parseTextReply(group_id, text, via) ?? null;
+    async parseAskBundleReply(group_id, text, via, options) {
+      return await deliveries?.parseTextReply(group_id, text, via, options) ?? null;
     },
     async listUnmatchedAskReplies() { return await deliveries?.unmatched() ?? []; },
     async recordLateAskReply(ask_id, via, text) {
@@ -1219,7 +1262,7 @@ export const createNotificationBlock = (
       registry.register(kind, handler);
     },
 
-    async cancelAsk(ask_id) {
+    async cancelAsk(ask_id, options) {
       // Serialize with `submitAnswer` for this ask_id — the load → state
       // check → terminal write cannot interleave with an inbound reply,
       // so exactly one of {answer, cancel} wins and the loser observes
@@ -1234,13 +1277,13 @@ export const createNotificationBlock = (
           // Resolve the now-stale prompt on every delivered surface —
           // same close-broadcast the answered path runs (idempotent per
           // channel; best-effort inside `closeOnAllChannels`).
-          await closeOnAllChannels(ask);
+          await closeOnAllChannels(ask, options?.note);
         }
       });
       return outcome;
     },
 
-    async submitAnswer(reply) {
+    async submitAnswer(reply, options) {
       const candidate = await store.get(reply.ask_id);
       if (candidate?.delivery_group_id) await reminderReconciler?.beforeAnswer(reply.ask_id);
       // Serialize every reply for this ask_id — the load → dedup-check
@@ -1282,10 +1325,23 @@ export const createNotificationBlock = (
         // backstop for one that does not.
         if (ask.note_prompt === 'required' && note === undefined) return 'ignored';
 
+        // Preparation is data only. Nothing has changed the held operation
+        // if validation or the answer write fails. Freeze the persisted JSON
+        // representation before any channel I/O or answer-handler dispatch.
+        const prepared = options?.prepare === undefined ? undefined
+          : JSON.parse(JSON.stringify(await options.prepare(ask))) as Record<string, unknown>;
+        if (prepared !== undefined && (prepared === null || typeof prepared !== 'object' || Array.isArray(prepared))) {
+          throw new TypeError('Answer preparation must return a JSON object');
+        }
+        if (options?.prepare !== undefined) {
+          const lateRefusal = await deps.refuseAnswer?.(ask, reply.option);
+          if (lateRefusal !== undefined) throw new RpcError(lateRefusal.code, lateRefusal.message, 409);
+        }
         const answer: Answer = {
           option: reply.option,
           answered_at: now(),
           ...(note !== undefined ? { note } : {}),
+          ...(prepared !== undefined ? { prepared } : {}),
         };
         let participant: { owner: boolean } | undefined;
         if (ask.delivery_group_id) {
@@ -1305,8 +1361,17 @@ export const createNotificationBlock = (
           participant = { owner };
         }
         // `open → answered` — the durable, once-only dedup point (A.5).
-        if (participant) await store.recordAnswer(reply.ask_id, answer, reply.via, participant);
-        else await store.recordAnswer(reply.ask_id, answer, reply.via);
+        try {
+          if (participant) await store.recordAnswer(reply.ask_id, answer, reply.via, participant);
+          else await store.recordAnswer(reply.ask_id, answer, reply.via);
+        } catch (error) {
+          // Some adapters can report a failure after committing. Continue only
+          // when the exact decision (including prepared data) is durable.
+          let recorded: PendingAsk | null;
+          try { recorded = await store.get(reply.ask_id); } catch { throw error; }
+          if (recorded?.status !== 'answered' || recorded.answered_via !== reply.via
+            || JSON.stringify(recorded.answer) !== JSON.stringify(answer)) throw error;
+        }
 
         const answered: PendingAsk = {
           ...ask,
@@ -1323,32 +1388,14 @@ export const createNotificationBlock = (
         // Best-effort: the decision is already durable above, and rejecting
         // `submitAnswer` over an audit fault would report a recorded answer
         // back to the user as a failure (TR-4's forbidden failure).
-        if (deps.recordAnswerAudit !== undefined) {
-          try {
-            await deps.recordAnswerAudit({
-              ask_id: ask.ask_id,
-              ...(ask.delivery_group_id ? { reminder: true } : {}),
-              handler_kind: ask.handler_kind,
-              // FN-2 — travels UNINTERPRETED; the host extracts identity.
-              handler_payload: ask.handler_payload,
-              option: answer.option,
-              option_label:
-                selectAskOption(ask, answer.option)?.label ?? answer.option,
-              ...(ask.message.title !== undefined ? { title: ask.message.title } : {}),
-              answered_at: answer.answered_at,
-              answered_via: reply.via,
-            });
-          } catch {
-            /* audit is not the decision — never lose the answer over it. */
-          }
-        }
+        await recordAnswerAudit(answered);
         // ⛔ DURING A RESTART THE ANSWER IS RECORDED AND THE REST WAITS. It is
         // durably `answered` above, and the boot sweep (`recoverAnswered`)
         // closes the prompt on every channel and runs the handler for exactly
         // such an ask, so stopping here loses nothing (`beginStopping`).
         if (stopping) return 'answered';
         // Resolve the prompt on every delivered channel (A.2 step 7).
-        await closeOnAllChannels(answered);
+        await closeOnAllChannels(answered, answeredNote(answered));
         // Dispatch `on_answer` (A.2 step 8). A missing or throwing
         // handler leaves the ask `answered`; the boot sweep re-
         // dispatches it. The reply itself succeeded — `submitAnswer`

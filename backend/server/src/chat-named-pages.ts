@@ -49,10 +49,14 @@ export const namedPageAddresses = (message: string): string[] => {
  *  request pass is on, since opening a page asks nothing then; else those a tab already shows, by
  *  the tabs the Bridge lists now; none when it cannot list them. */
 export const readableNamedPages = async (addresses: readonly string[], deps: {
+  connectedBridges?: () => number;
   requestPassLive: () => boolean;
   listTabs: () => Promise<ReadonlyArray<{ url: string }> | undefined>;
 }): Promise<string[]> => {
   if (addresses.length === 0) return [];
+  // A request pass waives an ask, not the choice of browser/account. Leave
+  // multi-browser selection to the model and owner before the first read.
+  if (deps.connectedBridges && deps.connectedBridges() !== 1) return [];
   if (deps.requestPassLive()) return [...addresses];
   const tabs = await deps.listTabs().catch(() => undefined);
   if (tabs === undefined) return [];

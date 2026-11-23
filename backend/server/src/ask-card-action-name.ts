@@ -15,7 +15,7 @@
  *  costs the ask list nothing and can never fail it. */
 
 import { describeCatalogOperation, kernelOpBackingSlug } from '@recued/contracts';
-import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
+import { PREFLIGHT_GATHERED_HANDLER_KIND, PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
 import type { PendingAsk } from '@recued/notification';
 
 /** `<publisher>/<catalog>.<entity>.<action>` — a catalog operation's id. */
@@ -42,14 +42,24 @@ export const heldActionName = (action: string, getManifest: ActionManifestLookup
   return phrase === action ? undefined : phrase;
 };
 
+/** The payload naming an approval's held action: a call's own ask's, or the first member's of a
+ *  round's gathered approval, whose members share their action (D-177 §N.15.9). */
+const heldActionPayload = (ask: Pick<PendingAsk, 'handler_kind' | 'handler_payload'>): Record<string, unknown> | undefined => {
+  if (ask.handler_kind === PREFLIGHT_HANDLER_KIND) return ask.handler_payload;
+  if (ask.handler_kind !== PREFLIGHT_GATHERED_HANDLER_KIND || !Array.isArray(ask.handler_payload.members)) return undefined;
+  const [first] = ask.handler_payload.members as unknown[];
+  return first !== null && typeof first === 'object' && !Array.isArray(first) ? first as Record<string, unknown> : undefined;
+};
+
 /** Names the held action of a recipe's approval, or null. */
 export const createAskActionNamer = (deps: { readonly getManifest: ActionManifestLookup }) =>
   (ask: Pick<PendingAsk, 'handler_kind' | 'handler_payload'>): string | null => {
-    if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return null;
+    const payload = heldActionPayload(ask);
+    if (payload === undefined) return null;
     // An AI agent's raw op is the action its ask names, not `tool_slug`, and
     // the card shows that ask's text as written.
-    if (ask.handler_payload.raw_op_id !== undefined) return null;
-    const action = ask.handler_payload.tool_slug;
+    if (payload.raw_op_id !== undefined) return null;
+    const action = payload.tool_slug;
     if (typeof action !== 'string' || action.trim() === '') return null;
     try {
       return heldActionName(action.trim(), deps.getManifest) ?? null;

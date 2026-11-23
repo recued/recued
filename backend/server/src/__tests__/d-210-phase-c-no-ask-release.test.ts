@@ -23,9 +23,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Checkpoint } from '@recued/contracts';
 import {
   createAuditLogStore,
+  createCheckpointStore,
   createInMemoryCollection,
   type ActivityEntry,
   type AuditEntry,
+  type CheckpointStore,
 } from '@recued/storage';
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
 
@@ -50,6 +52,9 @@ import {
   type FormSubmissionStore,
 } from '../storage/reception-form-store.js';
 import { ensureReceptionSchema } from '../storage/reception-store.js';
+import { createSQLiteCollection } from '../sqlite-collection.js';
+import { createPreflightResumer } from '../preflight-resumer.js';
+import { createInboxRejectionJournal } from '../storage/reception-inbox-rejection-journal.js';
 
 const SUBMITTED_AT = 1_700_000_000_000;
 const RELEASED_AT = SUBMITTED_AT + 9_000;
@@ -418,17 +423,18 @@ describe('D-210 Phase C — inbox approve/reject on an ask-less hold', () => {
     const released: Array<{ kind: string; approved_at?: number }> = [];
     const answered: Array<{ ask_id: string; option: string }> = [];
     const checkpoint = intakeCheckpoint();
-    const anchor = askLessIntakeAnchor();
+    let anchor = askLessIntakeAnchor();
+    let consumed = false;
     const deps: ReceptionInboxDeps = {
       auditLog: {
         get: async (run_id: string) => (run_id === anchor.run_id ? anchor : null),
         logActivity: async () => {},
-        append: async () => {},
+        append: async (entry: AuditEntry) => { anchor = entry; },
       } as unknown as ReceptionInboxDeps['auditLog'],
       checkpointStore: {
-        get: async (id: string) => (id === HOLD ? checkpoint : null),
-        setArgOverrides: async () => {},
-        delete: async () => {},
+        get: async (id: string) => (id === HOLD && !consumed ? checkpoint : null),
+        setArgOverrides: async (_id: string, patch: Parameters<CheckpointStore['setArgOverrides']>[1]) => ({ ...checkpoint, ...patch }),
+        delete: async () => { consumed = true; },
       } as unknown as ReceptionInboxDeps['checkpointStore'],
       resolveArgEditSchema: () => ({ operation_id: 'op', fields: [] }),
       resolveSource: () => ({
@@ -440,6 +446,7 @@ describe('D-210 Phase C — inbox approve/reject on an ask-less hold', () => {
       }),
       isReceptionOrigin: () => true,
       subviewStore: {
+        rejectionJournal: createInboxRejectionJournal(createInMemoryCollection()),
         record: () => {},
         purgeOlderThan: () => 0,
         list: () => [],
@@ -452,6 +459,11 @@ describe('D-210 Phase C — inbox approve/reject on an ask-less hold', () => {
             ? { kind: 'approve', approved_at: decision.approved_at }
             : { kind: 'deny' },
         );
+        if (decision.kind === 'deny') {
+          await createNoAskRelease({ checkpointStore: deps.checkpointStore,
+            resumer: createPreflightResumer({ auditLog: deps.auditLog, getExecuteDeps: () => undefined }),
+          })(_cp, decision);
+        }
       },
       ...over,
     };
@@ -464,6 +476,38 @@ describe('D-210 Phase C — inbox approve/reject on an ask-less hold', () => {
 
     expect(result.released).toBe(true);
     expect(released).toEqual([{ kind: 'approve', approved_at: RELEASED_AT }]);
+  });
+
+  it('releases the consciously changed destination while preserving the stored hold until consumption', async () => {
+    const db = new Database(':memory:');
+    try {
+      const checkpointStore = createCheckpointStore(createSQLiteCollection<Checkpoint>(db, 'checkpoints'));
+      await checkpointStore.write(intakeCheckpoint({ approved_target: {
+        ingredient_slug: 'calendar', operation_id: 'calendar.create', connection_name: 'calendar-A',
+      } }));
+      const resumed: Checkpoint[] = [];
+      const { deps } = buildDeps({ checkpointStore,
+        resolveSource: () => ({ top_tier_kind: 'booking', source: { kind: 'scheduling_link', record_ref: 'booking-1' },
+          args: { connection_name: 'calendar-A' }, preview: { title: 'Booking' }, proposed_action: 'Create booking' }),
+        resolveArgEditSchema: () => ({ fields: [{ key: 'connection_name', label: 'Calendar', type: 'string', affects_target: true }] }),
+        releaseWithoutAsk: createNoAskRelease({ checkpointStore, resumer: {
+          resumeRun: async cp => {
+            expect(await checkpointStore.get(HOLD)).toMatchObject({ approved_target: {
+              ingredient_slug: 'calendar', operation_id: 'calendar.create', connection_name: 'calendar-A',
+            } });
+            expect((await checkpointStore.get(HOLD))?.arg_overrides).toBeUndefined();
+            resumed.push(structuredClone(cp));
+          },
+          denyRun: async () => { throw new Error('Unexpected denial'); },
+        } }),
+      });
+      expect(await handleReceptionInboxApprove(deps, { hold_id: HOLD, edits: { connection_name: 'calendar-B' } }, ADMIN))
+        .toMatchObject({ released: true, edited_keys: ['connection_name'] });
+      expect(resumed).toEqual([expect.objectContaining({ arg_overrides: { connection_name: 'calendar-B' },
+        approved_target: { ingredient_slug: 'calendar', operation_id: 'calendar.create', connection_name: 'calendar-B' },
+      })]);
+      expect(await checkpointStore.get(HOLD)).toBeNull();
+    } finally { db.close(); }
   });
 
   it('reject releases through the no-ask leg (the run must not stay awaiting forever)', async () => {
@@ -518,7 +562,8 @@ describe('D-210 Phase C — inbox approve/reject on an ask-less hold', () => {
     expect((await handleReceptionInboxReject(deps, { hold_id: HOLD }, ADMIN)).status).toBe('dismissed');
     expect(released).toEqual([{ kind: 'deny' }]);
     paused = false;
-    expect((await handleReceptionInboxApprove(deps, { hold_id: HOLD }, ADMIN)).released).toBe(true);
-    expect(released).toEqual([{ kind: 'deny' }, { kind: 'approve', approved_at: RELEASED_AT }]);
+    const pending = buildDeps({ isServerPaused: () => paused });
+    expect((await handleReceptionInboxApprove(pending.deps, { hold_id: HOLD }, ADMIN)).released).toBe(true);
+    expect(pending.released).toEqual([{ kind: 'approve', approved_at: RELEASED_AT }]);
   });
 });

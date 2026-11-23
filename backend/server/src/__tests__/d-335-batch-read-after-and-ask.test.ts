@@ -57,20 +57,23 @@ describe('D-335 slice AC — then_read: an action, then the part of the page its
     return ok({ ...SEARCH, html: results ?? '', truncated: false });
   };
 
-  it('clicks, waits for the part to show, reads it as an outline, and answers it beside the step', async () => {
-    const { result, requests, error } = await batch([{ do: 'click', ref: 'e7', then_read: '#results' }], respond());
+  it.each([false, true])('reads the shown part beside the step (combined wait/read: %s)', async (combined) => {
+    const { result, requests, error } = await batch([{ do: 'click', ref: 'e7', then_read: '#results' }], request =>
+      combined && request.action === 'wait_for_element'
+        ? ok({ ...SEARCH, found: true, waited_ms: 40, html: RESULTS, truncated: false }) : respond()(request));
     expect(error).toBeUndefined();
     expect(requests.map((r) => [r.action, r.args])).toEqual([
       ['click', { page: SEARCH.page, ref: 'e7', send_watch_ms: 5_000 }],
-      ['wait_for_element', { page: SEARCH.page, selector: '#results', until: 'shown', timeout_ms: 5_000 }],
-      ['inspect', { page: SEARCH.page, selector: '#results', ...PAGE_OUTLINE_READ }],
+      ['wait_for_element', { page: SEARCH.page, selector: '#results', until: 'shown', timeout_ms: 5_000,
+        capture_read: { ...PAGE_OUTLINE_READ, expected_url: SEARCH.url } }],
+      ...(combined ? [] : [['inspect', { page: SEARCH.page, selector: '#results', ...PAGE_OUTLINE_READ }]]),
     ]);
     const tab = (result!.tabs as Array<Record<string, unknown>>)[0]!;
     expect(tab.steps).toEqual(['1. on shop.example.org/search: clicked e7']);
     const reads = tab.reads as Array<Record<string, unknown>>;
     expect(reads).toHaveLength(1);
     expect(reads[0]).toMatchObject({ step: 1, then_read: '#results' });
-    expect(String(reads[0]!.outline)).toContain('[Lovelace’s notes](e20)');
+    expect(String(reads[0]!.outline)).toContain('[link: Lovelace’s notes](e20)');
   });
 
   it('a part that does not show stops the batch at its step, saying so', async () => {
@@ -79,6 +82,16 @@ describe('D-335 slice AC — then_read: an action, then the part of the page its
     expect(error?.code).toBe('DOM_CHECK_FAILED');
     expect(error?.message).toMatch(/^Stopped at step 1 of 2: within 5 seconds “#results” did not show, so its then_read had nothing to read\. /);
     expect(requests.map((r) => r.action)).toEqual(['click', 'wait_for_element']);
+  });
+
+  it('then_read_form text returns the whole response instead of shortening its lines', async () => {
+    const response = JSON.stringify({ receipt: 'R-42', detail: 'Full response '.repeat(30), accepted: true });
+    const { result, error } = await batch([{ do: 'click', ref: 'e7', then_read: '#results', then_read_form: 'text' }],
+      respond(`<pre id="results">${response}</pre>`));
+    expect(error).toBeUndefined();
+    const tab = (result!.tabs as Array<{ reads: Array<{ text: string; outline?: string }> }>)[0]!;
+    expect(tab.reads[0]!.text).toContain(response);
+    expect(tab.reads[0]!.outline).toBeUndefined();
   });
 
   it('a long part is cut at 4,000 characters, saying how to read the rest', async () => {
@@ -225,6 +238,46 @@ describe('D-335 slice AO — a wait on a page read before, untouched since', () 
       expect(error, label).toBeUndefined();
       expect(Date.now() - started, label).toBeGreaterThanOrEqual(1_000);
       expect(stepsOf(result)[steps.length - 2], label).toMatch(new RegExp(`^${String(steps.length - 1)}\\. on .+: waited 1 s$`));
+    }
+  });
+});
+
+// 2026-11-20 (the owner: "go ahead", a wait at the Bridge) — a Bridge that waits in the page itself answers the wait's one read
+// with `changed` (and `settled`): the server neither polls nor sleeps, after a click as well as before one.
+describe('a plain wait a Bridge waits out in the page', () => {
+  const AFTER = '<main><h1>Quotes</h1><p>You can never get a cup of tea large enough, said C.S. Lewis.</p></main>';
+  const stepsOf = (result: Record<string, unknown> | undefined) => (result!.tabs as Array<Record<string, unknown>>)[0]!.steps as string[];
+  const waiting = (answer: { changed: boolean; settled: boolean }, waits: DispatchRequest[]): Respond => (request) => {
+    if (request.action === 'click') return ok({ clicked: 1, ...SEARCH });
+    if (request.args.wait_change_ms !== undefined) {
+      waits.push(request);
+      return ok({ ...SEARCH, html: AFTER, truncated: false, ...answer });
+    }
+    return ok({ ...SEARCH, html: AFTER, truncated: false });
+  };
+
+  it('is one read that waits in the page, after a click too, and says the page changed and held still', async () => {
+    const waits: DispatchRequest[] = [];
+    const started = Date.now();
+    const { result, error } = await batch([{ do: 'click', ref: 'e7' }, { do: 'wait', seconds: 5 }, { do: 'read' }],
+      waiting({ changed: true, settled: true }, waits));
+    expect(error).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toMatchObject({ action: 'reread', args: { page: SEARCH.page, wait_change_ms: 5_000, ...PAGE_OUTLINE_READ }, timeout_ms: 15_000 });
+    expect(stepsOf(result)[1]).toMatch(/^2\. on .+: waited \d+(\.\d)? s: the page had changed since it was read, and held still$/);
+  });
+
+  it('says when the page did not change, and when it changed but was still changing', async () => {
+    for (const [answer, said] of [[{ changed: false, settled: false }, /; the page did not change after it was last read$/],
+      [{ changed: true, settled: false }, /: the page changed and was still changing$/]] as const) {
+      const waits: DispatchRequest[] = [];
+      const started = Date.now();
+      const { result, error } = await batch([{ do: 'wait', seconds: 4 }, { do: 'read' }], waiting(answer, waits));
+      expect(error).toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(waits).toHaveLength(1);
+      expect(stepsOf(result)[0]).toMatch(said);
     }
   });
 });

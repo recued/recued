@@ -456,13 +456,13 @@ describe('D-329 A — the hold\'s shape and words', () => {
       context: { raw_op: { op_id: 'work.create' }, tool_slug: 'work.create', risk_tier: 'write' },
     }).message.text.split('\n')[0];
     expect(opening({ channel: 'chat', actor: 'user_self', chat_session_id: 's', user_id: 'local' }))
-      .toBe('Your chat wants to add a task.');
+      .toBe('The AI in your chat wants to add a task.');
     expect(opening({ channel: 'messenger', actor: 'user_self', vendor: 'slack', from: 'U1' }))
-      .toBe('Your Slack chat wants to add a task.');
+      .toBe('The AI in your Slack chat wants to add a task.');
     expect(opening({ channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@example.com' }))
-      .toBe('Your email chat wants to add a task.');
+      .toBe('The AI in your email chat wants to add a task.');
     expect(opening({ channel: 'messenger', actor: 'user_self', vendor: 'carrier-pigeon', from: 'x' }))
-      .toBe('Your chat wants to add a task.');
+      .toBe('The AI in your chat wants to add a task.');
     // Under a contract, the chat is not the owner's: a household member's, or a customer's.
     expect(opening({ channel: 'messenger', actor: 'contracted_user', vendor: 'telegram', from: '42', contract_id: 'k' }))
       .toBe('An AI agent wants to add a task.');

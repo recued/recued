@@ -17,14 +17,14 @@ describe('D-182 — chat activity error line', () => {
     expect(toolText({
       tool_name: 'recipe.run', tier: 2, args: {}, status: 'error',
       reason: 'execution_error', detail: "cli tool 'whisper' was not found",
-    })).toBe("couldn't run recipe.run: cli tool 'whisper' was not found");
+    })).toBe("couldn't run a recipe: cli tool 'whisper' was not found");
   });
 
   it('another reason reads in words, not its slug (the detail is not surfaced)', () => {
     expect(toolText({
       tool_name: 'recipe.run', tier: 2, args: {}, status: 'error',
       reason: 'run_cancelled', detail: 'a long do-not-retry posture message …',
-    })).toBe("couldn't run recipe.run: it was cancelled");
+    })).toBe("couldn't run a recipe: it was cancelled");
   });
 
   // D-346 follow-up (2026-11-08) — a switched-off call reads its own first sentence, which
@@ -33,16 +33,21 @@ describe('D-182 — chat activity error line', () => {
     expect(toolText({
       tool_name: 'mail.search', tier: 1, args: {}, status: 'error', reason: 'classification_blocked',
       detail: "'mail.search' is turned off for you, so it did not run. To use it, turn it on under Self (you) → Ops on the Contracts page.",
-    })).toBe("'mail.search' is turned off for you, so it did not run");
+    })).toBe("couldn't search your mail: it is switched off");
+    // A refusal that names something other than the call keeps its own words: it says what is off.
+    expect(toolText({
+      tool_name: 'recipe.run', tier: 2, args: {}, status: 'error', reason: 'classification_blocked',
+      detail: "'core.crm.search' is turned off for you, so it did not run.",
+    })).toBe("'core.crm.search' is turned off for you, so it did not run");
     expect(toolText({
       tool_name: 'mail.search', tier: 1, args: {}, status: 'error', reason: 'classification_blocked',
-    })).toBe("couldn't run mail.search: it is switched off");
+    })).toBe("couldn't search your mail: it is switched off");
   });
 
   it('an execution_error without a detail falls back to the slug', () => {
     expect(toolText({
       tool_name: 'recipe.run', tier: 2, args: {}, status: 'error', reason: 'execution_error',
-    })).toBe("couldn't run recipe.run: it failed");
+    })).toBe("couldn't run a recipe: it failed");
   });
 
   it('a very long detail is truncated to one capped line', () => {
@@ -60,7 +65,7 @@ describe('D-182 — chat activity error line', () => {
       reason: 'not_asked_yet', detail: 'Not asked: an earlier call in this turn (recipe.run) is waiting …',
     })).find((r) => r.kind === 'tool');
     expect(row).toMatchObject({
-      text: 'left until you answer the approval before it: calendar.create',
+      text: 'left until you answer the approval before it: add a calendar event',
       // Nothing failed, so nothing "Needs attention"; nothing runs, so nothing is ongoing.
       status: 'ok',
     });

@@ -1,4 +1,5 @@
 import type { WebclientLocalStore } from '../../src/storage/local-store.js';
+import type { ArchiveRemoteBackup, ArchiveRemoteDestination } from '@recued/contracts';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 /** Seed only the opaque browser receipt. The loopback transport supplies its
@@ -19,7 +20,19 @@ export const restoreReadinessFixture = (mode: string | null, method: string): un
   const schedule = { cadence: 'daily', hour_utc: 2, minute_utc: 0, weekday_utc: 0 };
   if (method === 'server.archive.import_status') return { status: mode === 'accepted' ? 'waiting_for_restart' : 'completed' };
   if (method === 'server.archive.destinations') return { destinations: [{ ...destination, bucket: 'fixture-bucket', region: 'fixture', endpoint: 'https://storage.example.test', prefix: 'fixture' }] };
-  if (method === 'server.archive.backups') return { backups: [] };
+  if (method === 'server.archive.backups') {
+    const storage: ArchiveRemoteDestination = { ...destination, bucket: 'fixture-bucket', region: 'fixture', endpoint: 'https://storage.example.test', prefix: 'fixture' };
+    // Populated history uses the real route composition. The fixture never
+    // contacts storage or starts a backup, check, restore, or recovery test.
+    const copy: ArchiveRemoteBackup = { operation_id: ID, job_id: 'fixture-backup', destination: storage,
+      object_key: `fixture/recued-backups/${ID}.recued.archive`, created_at: now - 1000,
+      state: 'verified', keep_last: 5, bytes: 8000, sha256: 'b'.repeat(64), verified_at: now - 500 };
+    return { backups: mode === 'copies' ? [copy,
+      { ...copy, operation_id: '22222222-2222-4222-8222-222222222222', state: 'unconfirmed',
+        multipart_cleanup_pending: true, multipart_cleanup_issue: 'permission_denied' },
+      { ...copy, operation_id: '33333333-3333-4333-8333-333333333333', state: 'pruning', retention_pending: true },
+    ] satisfies ArchiveRemoteBackup[] : [] };
+  }
   if (method === 'server.archive.drills') return { drills: [] };
   if (method === 'server.archive.unattended.get') return mode === 'attention' ? { configured: false }
     : { configured: true, settings: { ...destination, enabled: true, keep_last: 5, schedule }, next_run_at: now + 3600_000 };

@@ -56,6 +56,7 @@ import {
   type GatedActionStore,
 } from '../gated-action-store.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
+import { createApprovalRestartContinuationStore } from '../storage/approval-restart-continuation-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import {
   createAnnotationStore,
@@ -375,6 +376,37 @@ describe('composeNotificationBlock', () => {
 });
 
 describe('recoverNotificationBlockAtBoot', () => {
+  // D-201 Slice 10R (10Q finding 17) — a row a restart kept outlives its
+  // checkpoint when the resume ended without running it; the boot drops it, and
+  // only it: a row whose checkpoint is still there is about to be resumed.
+  it('drops what a restart kept for an approved run whose checkpoint is gone, after the checkpoint sweep', async () => {
+    const order: string[] = [];
+    const db = new Database(':memory:');
+    try {
+      const continuations = createApprovalRestartContinuationStore(db);
+      continuations.put({ checkpoint_id: 'cp-live', run_id: 'run-1', gated_step_id: 'remove', value: null, later: [] });
+      continuations.put({ checkpoint_id: 'cp-gone', run_id: 'run-2', gated_step_id: 'remove', value: null, later: [] });
+      sweepAwaitingCheckpointsMock.mockImplementationOnce(async () => {
+        order.push('sweep');
+        expect(continuations.list().sort()).toEqual(['cp-gone', 'cp-live']);
+        return zeroSweepResult();
+      });
+      await recoverNotificationBlockAtBoot({
+        block: recoveryBlock(vi.fn(async () => undefined)),
+        checkpointStore: {
+          list: vi.fn(),
+          get: vi.fn(async (id: string) => (id === 'cp-live' ? { checkpoint_id: id } : null)),
+        } as unknown as CheckpointStore,
+        auditLog: stubAuditLog(),
+        approvalRestartContinuations: continuations,
+      });
+      expect(order).toEqual(['sweep']);
+      expect(continuations.list()).toEqual(['cp-live']);
+    } finally {
+      db.close();
+    }
+  });
+
   it('freezes interrupted dispatches at boot, and leaves answered asks to the running server', async () => {
     const order: string[] = [];
     const block = recoveryBlock(vi.fn(async () => {
@@ -554,6 +586,31 @@ describe('recoverNotificationBlockAtBoot', () => {
 describe('recoverPendingAsksOnceRunning (D-158 P3)', () => {
   const block = () => ({ recoverPendingAsks: vi.fn(async () => undefined) });
 
+  it('recovers inbox denials after boot, retries independently of ask failures, and cancels the timer', async () => {
+    vi.useFakeTimers();
+    const machine = createLifecycleStateMachine('booting');
+    const recoverInboxRejections = vi.fn(async () => {});
+    const warn = vi.fn();
+    const cancel = recoverPendingAsksOnceRunning({ lifecycle: { machine }, warn, recoverInboxRejections,
+      block: { recoverPendingAsks: async () => { throw new Error('ask store unavailable'); } },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(recoverInboxRejections).not.toHaveBeenCalled();
+      machine.transition('running');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(recoverInboxRejections).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('ask store unavailable'));
+      recoverInboxRejections.mockRejectedValueOnce(new Error('history store unavailable'));
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(recoverInboxRejections).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('history store unavailable'));
+      cancel();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(recoverInboxRejections).toHaveBeenCalledTimes(3);
+    } finally { cancel(); vi.useRealTimers(); }
+  });
+
   it('sweeps once, at the flip to running', () => {
     const b = block();
     const machine = createLifecycleStateMachine('booting');
@@ -599,6 +656,81 @@ describe('recoverPendingAsksOnceRunning (D-158 P3)', () => {
     expect(() => recoverPendingAsksOnceRunning({ block: {} as never, warn })).not.toThrow();
     await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
     expect(warn.mock.calls.map(([message]) => String(message)).join('\n')).toContain('store locked');
+  });
+});
+
+// D-201 Slice 10AV (10AS findings 9 and 29) — a death after an approved write.
+describe('D-201 Slice 10AV — the start after a death, for a run held for the owner', () => {
+  const heldRow = (approvedReturned: boolean) => ({
+    checkpoint_id: 'cp-1',
+    run_id: 'run-1',
+    gated_step_id: 'close',
+    value: approvedReturned ? { closed: true } : undefined,
+    later: [],
+    held: {
+      checkpoint: { checkpoint_id: 'cp-1', run_id: 'run-1', gated_step_id: 'close' } as never,
+      anchor: { run_id: 'run-1' } as never,
+      approved_returned: approvedReturned,
+      step_in_doubt: approvedReturned ? 'tell_owner' : 'close',
+    },
+  });
+  const claimed = async (actions: GatedActionStore, run: string, checkpoint: string) => {
+    const held = await actions.createHeld({
+      run_id: run, recipe_id: 'recipe-1', gated_step_id: 'close', checkpoint_id: checkpoint,
+    });
+    await actions.markDispatching(held.action_ref);
+    return held.action_ref;
+  };
+
+  it('settles an approved step a held run says came back from what it kept, before freezing the rest in doubt', async () => {
+    const db = new Database(':memory:');
+    cleanups.push(() => db.close());
+    let ref = 0;
+    const actions = createGatedActionStore(createInMemoryCollection<GatedActionRecord>(), {
+      newActionRef: () => `action-${++ref}`,
+      now: () => NOW,
+    });
+    const continuations = createApprovalRestartContinuationStore(db);
+    const returned = await claimed(actions, 'run-1', 'cp-1');
+    continuations.put(heldRow(true));
+    // Held at its own approved step: whether that went through is unknown.
+    const atTheClose = await claimed(actions, 'run-2', 'cp-2');
+    continuations.put({ ...heldRow(false), checkpoint_id: 'cp-2', run_id: 'run-2' });
+    // No row at all.
+    const bare = await claimed(actions, 'run-3', 'cp-3');
+    await recoverNotificationBlockAtBoot({
+      block: recoveryBlock(),
+      checkpointStore: stubCheckpointStore(),
+      auditLog: stubAuditLog(),
+      gatedActionStore: actions,
+      approvalRestartContinuations: continuations,
+    });
+    // Before 10AV: frozen in doubt, beside a held run that goes on past it.
+    expect(['succeeded', 'dispatched']).toContain((await actions.get(returned))?.status);
+    expect((await actions.get(returned))?.result).toEqual({ closed: true });
+    expect((await actions.get(atTheClose))?.status).toBe('in_doubt');
+    expect((await actions.get(bare))?.status).toBe('in_doubt');
+  });
+
+  it("raises no separate in-doubt ask for a run held for the owner's try again: its dead letter is the one recovery", async () => {
+    const block = recoveryBlock();
+    const held = commit({ commit_id: 'commit-held', request_id: 'run-held' });
+    const other = commit({ commit_id: 'commit-other', request_id: 'run-other' });
+    await raiseInDoubtForSweptCommits({
+      block,
+      sweptCommits: [held, other],
+      heldForTryAgain: (runId) => runId === 'run-held',
+    });
+    expect(raiseInDoubtAsksMock).toHaveBeenCalledWith(block, [other]);
+    // Only held ones: nothing raised.
+    raiseInDoubtAsksMock.mockClear();
+    await raiseInDoubtForSweptCommits({ block, sweptCommits: [held], heldForTryAgain: () => true });
+    expect(raiseInDoubtAsksMock).not.toHaveBeenCalled();
+    // A predicate that throws keeps the ask.
+    await raiseInDoubtForSweptCommits({
+      block, sweptCommits: [held], heldForTryAgain: () => { throw new Error('locked'); },
+    });
+    expect(raiseInDoubtAsksMock).toHaveBeenCalledWith(block, [held]);
   });
 });
 

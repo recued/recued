@@ -49,6 +49,7 @@ import {
   type PackListEntry,
   type PackToolStatus,
   type PacksToolStatusResult,
+  thingStepWords,
 } from '@recued/contracts';
 import { programDisplayName, programStopsRuns } from '../settings/pack-programs-controls.js';
 import type { PackConnectionsCallers } from '../settings/pack-connections-controls.js';
@@ -95,6 +96,8 @@ export interface RosterPack {
   /** D-321 W2 / S8 — the packs its recipes call that are not installed
    *  (`PackListEntry.missing_packs`). */
   missing_packs?: ReadonlyArray<{ ref: string; recipe_ids: ReadonlyArray<string> }>;
+  /** D-404 slice E — the types of thing it ships that the owner has none of in Yours. */
+  missing_things?: ReadonlyArray<{ readonly type_id: string; readonly type_name: string }>;
   /** D-145 PA10 — a foundation pack, auto-installed at every server boot rather
    *  than chosen. Carried so the row can SAY so: the owner who reported this saw
    *  four `Reception —` packs on a server they had installed nothing on, and the
@@ -321,6 +324,74 @@ export interface PackNeed {
 export const usesMissingLabel = (names: readonly string[]): string =>
   names.length === 1 ? `Needs ${names[0]}` : `Needs ${names.length} packs`;
 
+/** Installed, at this version or any other. */
+const rosterInstalled = (pack: RosterPack): boolean => pack.installed || pack.installed_any_version === true;
+
+/** D-321 S8 / W2 — each installed pack's used packs that are not installed, by name, from its roster row
+ *  (`missing_packs`). */
+export const usesMissingOf = (roster: ReadonlyArray<RosterPack>): Map<string, string[]> => new Map(roster
+  .filter((pack) => (pack.missing_packs?.length ?? 0) > 0)
+  .map((pack) => [pack.slug, pack.missing_packs!.map((missing) => {
+    const slug = parseDependsOn(missing.ref)?.pack ?? missing.ref;
+    return roster.find((row) => row.slug === slug)?.name ?? slug;
+  })]));
+
+/** D-404 slice E — each installed pack's types of thing the owner has none of, from its roster row. */
+export const thingsMissingOf = (
+  roster: ReadonlyArray<RosterPack>,
+): Map<string, ReadonlyArray<{ readonly type_id: string; readonly type_name: string }>> => new Map(roster
+  .filter((pack) => (pack.missing_things?.length ?? 0) > 0)
+  .map((pack) => [pack.slug, pack.missing_things!]));
+
+/** D-321 — each installed pack's connection slots that nothing backs yet, or (P3) whose every connection
+ *  had its sign-in turned down, by slug: the readiness block's own rule. `lists` (D-321 P4, each pack's own
+ *  sign-ins) when the server has them, else any connection of the service counts. */
+export const connectionNeedsOf = (
+  roster: ReadonlyArray<RosterPack>,
+  connections: Parameters<typeof connectionNeedsFromSignIns>[1],
+  lists: Parameters<typeof connectionNeedsFromSignIns>[0] | null,
+): Map<string, ConnectionNeeds> => {
+  const fromLists = lists === null ? null : connectionNeedsFromSignIns(lists, connections);
+  return new Map(roster.filter(rosterInstalled)
+    .map((pack) => [pack.slug, fromLists !== null
+      ? fromLists.get(pack.slug) ?? { unset: [], rejected: [] }
+      : {
+        unset: unsetConnectionSlots(pack, connections),
+        rejected: rejectedConnectionSlots(pack, connections),
+      }] as const)
+    .filter(([, needs]) => needs.unset.length > 0 || needs.rejected.length > 0));
+};
+
+/** What each installed pack's needs are read from: the roster's own (`usesMissing`, `thingsMissing`), and
+ *  the reads beside it, each empty until it answers. */
+export interface PackNeedsInputs {
+  readonly unrunnable: ReadonlySet<string>;
+  readonly programs: ReadonlyMap<string, readonly PackToolStatus[]>;
+  readonly connections: ReadonlyMap<string, ConnectionNeeds>;
+  readonly usesMissing: ReadonlyMap<string, readonly string[]>;
+  readonly thingsMissing: ReadonlyMap<string, ReadonlyArray<{ readonly type_id: string; readonly type_name: string }>>;
+}
+
+/** D-321 C4 / S8 — what the Packs page's "Needs attention" lists, and (D-405 slice 4) the Set up page's
+ *  packs: each installed pack's blocking badges, from the same maps the list draws. ONE rule for both. */
+export const packNeedsOf = (roster: ReadonlyArray<RosterPack>, inputs: PackNeedsInputs): PackNeed[] => roster
+  .filter(rosterInstalled)
+  .map((pack) => ({
+    slug: pack.slug,
+    name: pack.name ?? pack.slug,
+    labels: packBadges(
+      { slug: pack.slug },
+      undefined,
+      inputs.unrunnable,
+      inputs.programs,
+      inputs.connections,
+      inputs.usesMissing,
+      inputs.thingsMissing,
+    ).filter((badge) => badge.tone === 'danger').map((badge) => badge.label),
+    ...((inputs.usesMissing.get(pack.slug)?.length ?? 0) > 0 ? { missing: [...inputs.usesMissing.get(pack.slug)!] } : {}),
+  }))
+  .filter((need) => need.labels.length > 0);
+
 /** D-321 — an installed pack's connection slots that need the owner: none set
  *  up (`unset`), or every one's sign-in turned down (`rejected`, P3). */
 export interface ConnectionNeeds {
@@ -359,6 +430,10 @@ export const signInBadge = (rejected: readonly string[] | undefined): DiscoverBa
   };
 };
 
+/** "a Passport", "a Passport or a Visa", "a Passport, an ID card or a Visa". */
+const eitherOf = (named: readonly string[]): string =>
+  named.length <= 1 ? (named[0] ?? '') : `${named.slice(0, -1).join(', ')} or ${named[named.length - 1]!}`;
+
 export const packBadges = (
   /** What the badges read of a row: Needs attention gives a pack's slug alone. */
   r: Pick<CatalogPackRow, 'slug' | 'publisher_certified' | 'service_kind'>,
@@ -367,6 +442,8 @@ export const packBadges = (
   programs?: ReadonlyMap<string, readonly PackToolStatus[]>,
   connections?: ReadonlyMap<string, ConnectionNeeds>,
   usesMissing?: ReadonlyMap<string, readonly string[]>,
+  /** D-404 slice E — the types each installed pack ships that the owner has none of, by pack slug. */
+  thingsMissing?: ReadonlyMap<string, ReadonlyArray<{ readonly type_id: string; readonly type_name: string }>>,
 ): DiscoverBadge[] => {
   const out: DiscoverBadge[] = [];
   if (unrunnable?.has(r.slug) === true) {
@@ -396,6 +473,17 @@ export const packBadges = (
       label: usesMissingLabel(missing),
       tone: 'danger',
       title: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not installed, so the actions that use ${missing.length === 1 ? 'it' : 'them'} cannot run.`,
+    });
+  }
+  // D-404 slice E — it works on things in Yours, and the owner has none of any of them yet, so it
+  // does nothing. It needs ONE of them: Travel documents with a passport is not asked for a visa.
+  const things = thingsMissing?.get(r.slug) ?? [];
+  if (things.length > 0) {
+    const named = things.map((thing) => thingStepWords(thing.type_name).named);
+    out.push({
+      label: named.length === 1 ? `Needs ${named[0]!}` : 'Needs a thing in Yours',
+      tone: 'danger',
+      title: `This pack works on ${eitherOf(named)} in Yours, and there is none yet. Open the pack to add one.`,
     });
   }
   if (preInstall?.has(r.slug) === true) {
@@ -592,25 +680,18 @@ export const mountPackDiscovery = (
   /** D-321 S8 / W2 — each installed pack's used packs that are not installed,
    *  by name, from its roster row (`missing_packs`). */
   let usesMissingBySlug: ReadonlyMap<string, readonly string[]> = new Map();
+  /** D-404 slice E — each installed pack's types of thing the owner has none of, from its roster row. */
+  let thingsMissingBySlug: ReadonlyMap<string, ReadonlyArray<{ readonly type_id: string; readonly type_name: string }>> = new Map();
   let needsShown = '';
   const emitNeeds = (): void => {
     if (opts.onNeedsChange === undefined) return;
-    const needs = bundledRoster
-      .filter((pack) => pack.installed || pack.installed_any_version === true)
-      .map((pack) => ({
-        slug: pack.slug,
-        name: pack.name ?? pack.slug,
-        labels: packBadges(
-          { slug: pack.slug },
-          undefined,
-          unrunnableSlugs,
-          programsBySlug,
-          connectionNeedsBySlug,
-          usesMissingBySlug,
-        ).filter((badge) => badge.tone === 'danger').map((badge) => badge.label),
-        ...((usesMissingBySlug.get(pack.slug)?.length ?? 0) > 0 ? { missing: [...usesMissingBySlug.get(pack.slug)!] } : {}),
-      }))
-      .filter((need) => need.labels.length > 0);
+    const needs = packNeedsOf(bundledRoster, {
+      unrunnable: unrunnableSlugs,
+      programs: programsBySlug,
+      connections: connectionNeedsBySlug,
+      usesMissing: usesMissingBySlug,
+      thingsMissing: thingsMissingBySlug,
+    });
     const shown = JSON.stringify(needs);
     if (shown === needsShown) return;
     needsShown = shown;
@@ -660,22 +741,13 @@ export const mountPackDiscovery = (
   const refreshConnectionNeeds = (roster: ReadonlyArray<RosterPack>): void => {
     if (opts.listConnections === undefined) return;
     const mine = ++connectionsRead;
-    const installed = roster.filter((pack) => pack.installed || pack.installed_any_version === true);
     // D-321 P4 — each pack's own list, read beside the connections; a server
     // without the call (or a failed read) counts any connection of the service.
     const signins = opts.listSignIns?.().then((view) => view.signins, () => null) ?? Promise.resolve(null);
     void Promise.all([opts.listConnections(), signins]).then(
       ([{ connections }, lists]) => {
         if (mine !== connectionsRead) return;
-        const fromLists = lists === null ? null : connectionNeedsFromSignIns(lists, connections);
-        const next = new Map(installed
-          .map((pack) => [pack.slug, fromLists !== null
-            ? fromLists.get(pack.slug) ?? { unset: [], rejected: [] }
-            : {
-              unset: unsetConnectionSlots(pack, connections),
-              rejected: rejectedConnectionSlots(pack, connections),
-            }] as const)
-          .filter(([, needs]) => needs.unset.length > 0 || needs.rejected.length > 0));
+        const next = connectionNeedsOf(roster, connections, lists);
         const shown = JSON.stringify([...next]);
         if (shown === connectionNeedsShown) return;
         connectionNeedsShown = shown;
@@ -692,12 +764,8 @@ export const mountPackDiscovery = (
   ): ReadonlyArray<RosterPack> => {
     const roster = src?.packs ?? [];
     bundledRoster = roster;
-    usesMissingBySlug = new Map(roster
-      .filter((pack) => (pack.missing_packs?.length ?? 0) > 0)
-      .map((pack) => [pack.slug, pack.missing_packs!.map((missing) => {
-        const slug = parseDependsOn(missing.ref)?.pack ?? missing.ref;
-        return roster.find((row) => row.slug === slug)?.name ?? slug;
-      })]));
+    usesMissingBySlug = usesMissingOf(roster);
+    thingsMissingBySlug = thingsMissingOf(roster);
     installedInventory = src?.installed_versions ?? [];
     currentLookup = buildLookup(roster, src?.installed_versions);
     const ids = [
@@ -943,7 +1011,7 @@ export const mountPackDiscovery = (
     },
     title: (r) => r.name,
     description: (r) => r.description,
-    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs, programsBySlug, connectionNeedsBySlug, usesMissingBySlug),
+    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs, programsBySlug, connectionNeedsBySlug, usesMissingBySlug, thingsMissingBySlug),
     metaLine: packMeta,
     filterGroups: [
       { key: 'service_kind', label: 'Kind' },

@@ -2464,7 +2464,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
     "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, notes, reminders, and saving files into folders. It includes 13 ready-to-run workflows.",
-    "version": 10,
+    "version": 11,
     "bundled": true,
     "recipes": [],
     "contents": [
@@ -2513,7 +2513,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "remind-me-of",
-        "version": 3,
+        "version": 4,
         "visible": true
       },
       {
@@ -3042,8 +3042,8 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-scheduling",
     "publisher": "recued-core",
     "name": "Reception — Scheduling",
-    "description": "Use Reception — Scheduling in Recued. It includes 1 built-in action and 3 ready-to-run workflows. Actions that change data use Recued's approval controls.",
-    "version": 5,
+    "description": "Use Reception — Scheduling in Recued. It includes 1 built-in action and 4 ready-to-run workflows. Actions that change data use Recued's approval controls.",
+    "version": 6,
     "pre_install": true,
     "recipes": [
       {
@@ -3056,6 +3056,10 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       },
       {
         "slug": "reschedule-booking-managed",
+        "version": 1
+      },
+      {
+        "slug": "tell-booking-visitor",
         "version": 1
       }
     ],
@@ -10040,11 +10044,11 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "remind-me-of": {
     "recipe_id": "remind-me-of",
     "chat_exposed": true,
-    "version": 3,
+    "version": 4,
     "ttl": 60,
     "metadata": {
       "name": "Remind me",
-      "description": "Use “Remind me” in Recued. Set a one-time reminder: Recued tells you at that time, once, on every channel you set up. Work out the time from the current date and time in your context, on the user's clock. Pass it with its offset, and tell the user the time the answer gives.",
+      "description": "Use “Remind me” in Recued. Set a one-time reminder: Recued tells you at that time, once, on every channel you set up. Work out the time from the current date and time in your context, on the user's clock: it gives their time zone, so never ask for one. A day with no time is 9:00 AM. Pass it with its offset, and tell the user the time the answer gives.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -10064,7 +10068,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "remind_at": {
         "label": "Remind at",
         "type": "datetime",
-        "help": "When the reminder should ring, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected, and so is a time that has passed."
+        "help": "When the reminder should ring, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone, which your context gives — do NOT assume UTC, and do not ask for it. A day with no time is 9:00 AM that day. An offset-less value is rejected, and so is a time that has passed."
       }
     },
     "requires": [
@@ -12691,6 +12695,109 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         {
           "type": "table",
           "source": "step.changed_source_table"
+        }
+      ]
+    }
+  },
+  "tell-booking-visitor": {
+    "recipe_id": "tell-booking-visitor",
+    "chat_exposed": true,
+    "version": 1,
+    "ttl": 0,
+    "requires": [],
+    "metadata": {
+      "name": "Tell a booking's visitor about a change",
+      "description": "Use “Tell a booking's visitor about a change” in Recued. Emails the visitor who booked through your reception page about a change to their booking, such as a new time or a cancellation. Their address stays sealed in Recued, and it asks you before it sends.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "tags": [
+        "booking",
+        "reception",
+        "notify",
+        "visitor"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "booking_id": {
+        "label": "Booking",
+        "type": "string"
+      },
+      "message": {
+        "label": "What to tell the visitor",
+        "type": "string"
+      },
+      "subject": {
+        "label": "Subject",
+        "type": "string",
+        "default": "About your booking"
+      },
+      "sender_mail_instance": {
+        "label": "Send from (mail account slug)",
+        "type": "string",
+        "default": ""
+      }
+    },
+    "prefetch_steps": [],
+    "steps": [
+      {
+        "id": "ready",
+        "transform": "all",
+        "conditions": [
+          "{{config.booking_id}} is_not_empty",
+          "{{config.message}} is_not_empty"
+        ],
+        "fail_on": "{{step.ready}} equal false",
+        "fail_reason": "Name the booking and what to tell its visitor."
+      },
+      {
+        "id": "subject",
+        "transform": "default",
+        "value": "{{config.subject}}",
+        "fallback": "About your booking"
+      },
+      {
+        "id": "notify",
+        "op": "core.mail.notify-booking-visitor",
+        "args": {
+          "booking_id": "{{config.booking_id}}",
+          "sender_mail_instance": "{{config.sender_mail_instance}}",
+          "subject": "{{step.subject}}",
+          "body": "{{config.message}}"
+        }
+      },
+      {
+        "id": "told",
+        "transform": "default",
+        "value": "{{step.notify.notified}}",
+        "fallback": false
+      },
+      {
+        "id": "why_not",
+        "transform": "default",
+        "value": "{{step.notify.reason}}",
+        "fallback": ""
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Visitor told",
+            "value": "{{step.told}}"
+          },
+          {
+            "label": "Not sent because",
+            "value": "{{step.why_not}}"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
         }
       ]
     }

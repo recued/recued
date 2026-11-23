@@ -342,8 +342,9 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   /** D-210 §7 — notify a booking's visitor server-side. A sibling outbound send to
    *  `mail-send`, but the recipient (the visitor's SEALED email) is resolved by the
    *  dispatcher from the booking's own `reception_record_id`, never authored by
-   *  the caller and never returned. `write` + the outbound-send lift, so it holds at
-   *  the D-157 gate exactly like `mail-send` (the owner reviews the booking). */
+   *  the caller and never returned. `write`, so it asks like `mail-send` wherever a
+   *  write asks: in the owner's chat, unattended, at a door (D-177 §N.15.7; the
+   *  by-name send lift that also held it from the app is gone). */
   op('core.mail.notify-booking-visitor', 'mail', 'notify-booking-visitor', 'write', 'mail'),
   /** D-207 slice 3d — the general no-resend fence, lifted out of D-200.
    *
@@ -361,7 +362,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  Nothing here crosses the user's trust boundary — marking your own mail read,
    *  starring it, or filing it in your own folder is an INTERNAL warehouse-and-
    *  provider write, the same class as `calendar-update` or `annotation-upsert`,
-   *  which are all `write` and all stay silent at the owner ceiling. Adding one of
+   *  which are all `write`: silent when the owner runs them from the app, asked for by their
+   *  approval in the owner's chat like every write (D-177 §N.15.6). Adding one of
    *  these to the send set would prompt the owner for permission to mark their own
    *  mail read, on every run.
    *
@@ -405,8 +407,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  🔑 THE ARGUMENT IS THAT THIS OP HAS NO RECIPIENT. Every other member of
    *  `OUTBOUND_SEND_INGREDIENT_SLUGS` takes a per-call destination the recipe
    *  authors — `mail-send`'s `to`, `slack-post`'s channel, `peer-ask`'s target
-   *  server — and the lift exists so the owner can review THAT destination
-   *  before it leaves. This op's input is `{channels, text, title, link_url}`:
+   *  server — and the lift existed so the owner could review THAT destination
+   *  before it left (it is gone since D-177 §N.15.6: a send asks by its approval). This op's input is `{channels, text, title, link_url}`:
    *  no address, no target. `channels` can only NARROW to the channels the
    *  owner already enrolled and switched on (an unenrolled channel has no
    *  dispatcher and lands in `failed[]`), so the destination is the owner's own
@@ -602,6 +604,13 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // D-343 slice 2 — the owner's closing records (`episode.record`): what they did or skipped
   // on a day, kept as episodes. A write the owner approves; off for AI apps until granted.
   nativeOp('core.situation.record', 'situation', 'write', 'situation'),
+  // D-343 (§355) — the chat's change of an occasion made in Yours (`work.update`, kind
+  // occasion): its title, its date or whether it reminds. A write the owner approves; off for AI
+  // apps until granted, so an AI app that closes a day can be let move or mute one.
+  nativeOp('core.situation.occasion-update', 'situation', 'write', 'situation'),
+  // D-407 slice 1 — the chat's new occasion (`work.create`, kind occasion): its date, people, place, privacy, steps
+  // and reminders. A write the owner approves; off for AI apps until granted, as the change beside it.
+  nativeOp('core.situation.occasion-create', 'situation', 'write', 'situation'),
 
   // ── memory — the provenance / audit / annotation + links graph + timeline
   //    (CLAUDE.md: data.memory = audit/memory + provenance links + annotations).
@@ -916,6 +925,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.kitchen.draft.list', 'kitchen', 'kitchen-draft-list', 'read', 'recipe'),
   op('core.kitchen.draft.get', 'kitchen', 'kitchen-draft-get', 'read', 'recipe'),
   op('core.kitchen.draft.update', 'kitchen', 'kitchen-draft-update', 'write', 'recipe'),
+  // D-402 slice A5 — an AI app's job, kept for its draft, compiled into a draft that is Recued's.
+  op('core.kitchen.draft.from_job', 'kitchen', 'kitchen-draft-from-job', 'write', 'recipe'),
 
   // ── seller — core-owned commerce registry. Recipes can establish and read
   //    fixed-shape offers, but only Seller owns the DB/schema/menu/UI and the
@@ -1134,6 +1145,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.dom.inspect', 'dom', 'dom-inspect', 'read', 'browser'),
   op('core.dom.click', 'dom', 'dom-click', 'write', 'browser'),
   op('core.dom.tabs', 'dom', 'dom-tabs', 'read', 'browser'),
+  op('core.dom.bridges', 'dom', 'dom-bridges', 'read', 'browser'),
   op('core.dom.open', 'dom', 'dom-open', 'write', 'browser'),
   op('core.dom.wait', 'dom', 'dom-wait', 'read', 'browser'),
   op('core.dom.table', 'dom', 'dom-table', 'read', 'browser'),

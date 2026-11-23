@@ -193,3 +193,26 @@ describe('Connections hierarchical navigation contract', () => {
     });
   });
 });
+
+// D-405 slice 7 — a chat answer's "Connect your mail" carries the answer after the lane, and the page offers
+// the way back to it.
+describe('a lane opened from a chat answer', () => {
+  it('reads the answer after a mail, calendar or files lane, and nothing else changes', () => {
+    for (const lane of ['mail', 'calendar', 'file'] as const) {
+      expect(parseConnectionsAddress(parseShellRoute(`#connections/${lane}/return/chat/s1/m12`)))
+        .toEqual({ kind: 'lane', tab: lane, returnToChat: { sessionId: 's1', messageId: 'm12' } });
+    }
+    expect(connectionsAddressSelection(parseConnectionsAddress(parseShellRoute('#connections/mail/return/chat/s1/m12'))))
+      .toEqual({ tab: 'mail', detailSlug: null, enrollVendor: null });
+  });
+
+  it('⛔ an account is still an account, "return" too; a half or overlong tail, or another tab, is no way back', () => {
+    expect(parseConnectionsAddress(parseShellRoute('#connections/mail/return'))).toEqual({ kind: 'account', lane: 'mail', slug: 'return' });
+    expect(parseConnectionsAddress(parseShellRoute('#connections/mail/work-gmail'))).toEqual({ kind: 'account', lane: 'mail', slug: 'work-gmail' });
+    for (const tail of ['return/chat', 'return/chat/s1', 'return/chat/s1/m12/more', 'return/reception/s1/m12']) {
+      expect(parseConnectionsAddress(parseShellRoute(`#connections/mail/${tail}`))).not.toHaveProperty('returnToChat');
+    }
+    expect(parseConnectionsAddress(parseShellRoute('#connections/others/return/chat/s1/m12'))).toEqual({ kind: 'lane', tab: 'others' });
+    expect(parseConnectionsAddress(parseShellRoute('#connections/webhooks/return/chat/s1/m12'))).toEqual({ kind: 'lane', tab: 'webhooks' });
+  });
+});

@@ -352,6 +352,8 @@ export type ReceptionInboxRpcErrorCode =
    *  stops, so it cannot be approved until Resume (the owner's ruling of 2026-11-08). Denying
    *  still works. */
   | 'server_paused'
+  /** The rejection was not accepted; no dismissal history was written. */
+  | 'decision_not_recorded'
   /** Malformed request shape. */
   | 'bad_request';
 
@@ -367,6 +369,7 @@ const RECEPTION_INBOX_RPC_ERROR_CODE_MAP: Readonly<
 > = {
   permission_denied: true,
   hold_not_found: true,
+  decision_not_recorded: true,
   edit_not_allowed: true,
   edit_invalid: true,
   attachment_scan_pending: true,

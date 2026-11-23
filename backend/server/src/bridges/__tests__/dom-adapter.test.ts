@@ -206,6 +206,12 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
     SLUG, entry('click', '#save')), 'ACTION_DELIVERY_UNCERTAIN');
   });
 
+  it('preserves explicit scroll uncertainty even though scrolling is classified as a read', async () => {
+    await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status: 'error',
+      outputs: { screen: 2 }, error: { code: 'delivery_uncertain', message: 'Check the page before retrying.' } })),
+    'dom-scroll', { ...entry('screen'), action: 'scroll' }), 'ACTION_DELIVERY_UNCERTAIN');
+  });
+
   it.each(['error', 'ok'] as const)('treats a worker lifecycle interruption as uncertain despite an %s write status', async status => {
     await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status,
       error: { code: 'mv3_lifecycle_killed', message: 'The worker stopped before completion was confirmed.' } })),
@@ -661,11 +667,12 @@ describe('D-335 - core.dom.inspect', () => {
     const { adapter, dispatch } = setupAdapter({ manifest: inspectManifest,
       dispatch: async () => completed(okResult(answer)) });
     await expect(adapter(call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', selector: null })))
-      .resolves.toEqual(answer);
+      .resolves.toEqual({ ...answer, interaction_targets: { source: 'captured_dom', scope: 'region', source_complete: true,
+        items_complete: true, captured_editable_fields: 0, captured_clickable_controls: 0, items: [] } });
     expect(requests(dispatch)).toEqual([expect.objectContaining({
       // D-335 slice P — and how much to read: HTML goes to a model as it is, so 40,000 as before.
       action: 'inspect', args: { page: '7:ABC123', ref: 'e3', max_chars: 40_000, max_value_chars: 2_000 },
-      expects_output_keys: ['page', 'url', 'title', 'html', 'truncated'],
+      expects_output_keys: ['page', 'url', 'title', 'html', 'truncated', 'selector_matches', 'selected_index'],
       ingredient: expect.objectContaining({ slug: INSPECT, domain_allowlist: [TARGET_A] }),
     })]);
   });
@@ -714,7 +721,8 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
   it('sends one click bound to the page, naming the ref', async () => {
     const { adapter, dispatch } = setupAdapter({ manifest: click.manifest,
       dispatch: async () => completed(okResult({ clicked: true })) });
-    await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' }))).resolves.toEqual({ clicked: 1 });
+    await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' }))).resolves.toEqual({ clicked: 1,
+      page_observation: { state: 'unavailable', requested_page: '7:ABC123', reason: 'missing_html' } });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'click', args: { page: '7:ABC123', ref: 'e3' },
       expects_output_keys: ['clicked', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent', 'acted_on'] })]);
   });
@@ -724,7 +732,8 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
     const clicked = setupAdapter({ manifest: click.manifest,
       dispatch: async () => completed(okResult({ clicked: true, moved: true, ...landed, challenge: 'reCAPTCHA' })) });
     await expect(clicked.adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' })))
-      .resolves.toEqual({ clicked: 1, ...landed, challenge: 'reCAPTCHA' });
+      .resolves.toEqual({ clicked: 1, ...landed, challenge: 'reCAPTCHA',
+        page_observation: { state: 'unavailable', requested_page: landed.page, reason: 'missing_html' } });
     const typed = setupAdapter({ manifest: write.manifest,
       dispatch: async () => completed(okResult({ filled: true, challenge: 'hCaptcha' })) });
     await expect(typed.adapter(write.call({ target: TARGET_A, page: '7:ABC123', ref: 'e5', value: 'Grace' })))
@@ -736,7 +745,8 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
     const { adapter } = setupAdapter({ manifest: click.manifest,
       dispatch: async () => completed(okResult({ clicked: true, ...landed })) });
     await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3' })))
-      .resolves.toEqual({ clicked: 1, ...landed });
+      .resolves.toEqual({ clicked: 1, ...landed,
+        page_observation: { state: 'unavailable', requested_page: landed.page, reason: 'missing_html' } });
   });
 
   // D-335 slice U — with a key, the click op presses it in the element instead: the Bridge's `press`.
@@ -745,7 +755,8 @@ describe('D-335 - core.dom.click and core.dom.write by ref', () => {
     const { adapter, dispatch } = setupAdapter({ manifest: click.manifest,
       dispatch: async () => completed(okResult({ pressed: 'Enter', sent: true, moved: true, ...landed })) });
     await expect(adapter(click.call({ target: TARGET_A, page: '7:ABC123', ref: 'e3', key: 'enter' })))
-      .resolves.toEqual({ pressed: 'Enter', sent: true, moved: true, ...landed });
+      .resolves.toEqual({ pressed: 'Enter', sent: true, moved: true, ...landed,
+        page_observation: { state: 'unavailable', requested_page: landed.page, reason: 'missing_html' } });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'press', args: { page: '7:ABC123', ref: 'e3', key: 'Enter' },
       expects_output_keys: ['pressed', 'page', 'url', 'title', 'moved', 'challenge', 'problem', 'failed', 'sent', 'acted_on'] })]);
   });
@@ -877,10 +888,11 @@ describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot'
     const answer = { page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', found: true, waited_ms: 640 };
     const { adapter, dispatch } = setupAdapter({ manifest: wait.manifest, dispatch: async () => completed(okResult(answer)) });
     await expect(adapter(wait.call({ target: TARGET_A, page: PAGE, selector: '#saved', until: '', text: 'Saved',
-      timeout_seconds: 12 }))).resolves.toEqual(answer);
+      timeout_seconds: 12 }))).resolves.toEqual({ ...answer,
+        page_observation: { state: 'unavailable', requested_page: PAGE, reason: 'missing_html' } });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'wait_for_element',
       args: { page: PAGE, selector: '#saved', until: 'shown', text: 'Saved', timeout_ms: 12_000 },
-      expects_output_keys: ['page', 'url', 'title', 'found', 'waited_ms', 'failed', 'problem'], timeout_ms: 22_000 })]);
+      expects_output_keys: ['page', 'url', 'title', 'found', 'waited_ms', 'failed', 'problem', 'match_counts'], timeout_ms: 22_000 })]);
   });
 
   it('a wait is at most 30 seconds, and ten by default; its budget stays within the most a command may take', async () => {
@@ -908,7 +920,10 @@ describe('D-335 slice H - core.dom.wait, core.dom.table and core.dom.screenshot'
     const answer = { page: PAGE, url: 'https://app.example.com/deals', title: 'Deals', columns: ['Deal'], rows: [['Acme']],
       truncated: false };
     const { adapter, dispatch } = setupAdapter({ manifest: table.manifest, dispatch: async () => completed(okResult(answer)) });
-    await expect(adapter(table.call({ target: TARGET_A, page: PAGE, selector: '#deals', ref: '' }))).resolves.toEqual(answer);
+    await expect(adapter(table.call({ target: TARGET_A, page: PAGE, selector: '#deals', ref: '' }))).resolves.toEqual({ ...answer,
+      data_ref: expect.stringMatching(/^data:[a-f0-9-]{36}$/), data_source_complete: true,
+      data_hint: expect.any(Object),
+      data_columns: [{ field: 'Deal', label: 'Deal' }], data_fields: [{ field: 'Deal', types: ['string'] }] });
     expect(requests(dispatch)).toEqual([expect.objectContaining({ action: 'read_table', args: { page: PAGE, selector: '#deals' },
       expects_output_keys: ['page', 'url', 'title', 'columns', 'rows', 'truncated'] })]);
   });
@@ -1007,7 +1022,8 @@ describe('D-335 slice U - core.dom.scroll', () => {
   it('sends the screen asked for, else where to go, and answers the page and its screen of how many', async () => {
     const answer = { page: PAGE, url: 'https://app.example.com/feed', title: 'Feed', screen: 2, screens: 9 };
     const { adapter, dispatch } = setupAdapter({ manifest: scroll.manifest, dispatch: async () => completed(okResult(answer)) });
-    await expect(adapter(scroll.call({ target: TARGET_A, page: PAGE, to: 'next', screen: 0 }))).resolves.toEqual(answer);
+    await expect(adapter(scroll.call({ target: TARGET_A, page: PAGE, to: 'next', screen: 0 }))).resolves.toEqual({ ...answer,
+      page_observation: { state: 'unavailable', requested_page: PAGE, reason: 'missing_html' } });
     // A recipe always passes `to`: a screen it names wins.
     await adapter(scroll.call({ target: TARGET_A, page: PAGE, to: 'next', screen: 4 }));
     await adapter(scroll.call({ target: TARGET_A, page: PAGE, selector: '#inbox', to: 'bottom' }));

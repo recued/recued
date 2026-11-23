@@ -89,7 +89,7 @@ export const renderSavedFileSearch = (state: SavedFileState, input: string, acti
   if (state.unsupported) return `<p role="status">Update your Recued server to search saved files and load more results.
     <button type="button" class="data-button" ${action}="file-saved-check"${state.loading ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.loading ? 'Checking…' : 'Check again'}</button></p>`;
   const scope = `${state.archived ? 'archived saved file' : 'saved file'}${state.files.length === 1 ? '' : 's'}`;
-  return `<div data-saved-file-search>
+  return `<div class="data-file-search" data-saved-file-search>
     <label>Search file names <input class="data-input" type="search" maxlength="200"
       aria-label="Search saved files" ${action}="file-saved-query" value="${e(input)}"${locked ? ' disabled' : ''} /></label>
     <button type="button" class="data-button" ${action}="file-saved-search"${locked ? ' disabled' : ''}>Search files</button>

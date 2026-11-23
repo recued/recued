@@ -254,7 +254,24 @@ describe('D-181 slice 6b — composeMessengerLiveControl', () => {
     // The rendered text names the recipes + the busy lane.
     const text = blocks.find((b) => b.type === 'section') as { text: { text: string } };
     expect(text.text.text).toContain('detect-deal-risk-hubspot');
-    expect(text.text.text).toContain('local-heavy 2/2');
+    expect(text.text.text).toContain('Heavy work on your server 2/2');
+  });
+
+  it('names each run as the owner knows it, in the list and on its buttons (owner, 2026-11-13)', async () => {
+    const reg = stubRegistry({ snapshot: { entries: [
+      runEntry({ recipe_name: 'Deal risk check', step_id: 'score', step_name: 'Score the deal' }),
+      queuedEntry({ recipe_inline: true, intent: 'Chase overdue invoices', step_id: 'send' }),
+    ], lanes: [lane()] } });
+    const { control, fetchImpl } = compose({ registry: reg.registry });
+    await control.handleCommand('slack', 'slack', slackText('/recued running'));
+    const blocks = bodyOf(fetchImpl.mock.calls[0]![1]).blocks as Array<Record<string, unknown>>;
+    const text = (blocks.find((b) => b.type === 'section') as { text: { text: string } }).text.text;
+    expect(text).toContain('• Deal risk check · Score the deal — ');
+    expect(text).toContain('• One-off recipe “Chase overdue invoices” — ');
+    expect(text).not.toContain('detect-deal-risk-hubspot');
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    const labels = (actions.elements as Array<{ text: { text: string } }>).map((e) => e.text.text);
+    expect(labels).toEqual(expect.arrayContaining(['Kill Deal risk check', 'Cancel One-off recipe “Chase overdue invoices”']));
   });
 
   it('sends a plain "nothing running" message when the list is empty', async () => {

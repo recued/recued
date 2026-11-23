@@ -50,24 +50,15 @@ const NO_PAUSE: QualityGateSwitches = { all_paused: false, quality_paused: false
 // ════════════════════════════════════════════════════════════════
 
 describe('D-202 admitByOpRiskWithoutQualityLifts — strips ONLY the review lifts', () => {
-  it('RELAXES an owner outbound send to admit (the lift was the only ask)', () => {
-    // admitByOpRisk WITH the lift asks (the review surface)…
-    expect(
-      admitByOpRisk({
-        slug: 'mail-send',
-        risk_tier: 'write',
-        ceiling: 'admin',
-        source: OWNER,
-      }).verdict,
-    ).toBe('ask');
-    // …but WITHOUT the review lift the underlying authorization admits.
-    expect(
-      admitByOpRiskWithoutQualityLifts({
-        slug: 'mail-send',
-        risk_tier: 'write',
-        ceiling: 'admin',
-      }).verdict,
-    ).toBe('admit');
+  it('⛔ an owner send no longer has a review-only ask for quality to skip (D-177 §N.15.6)', () => {
+    // The send lift is gone: from the app (`admin`) the send admits outright, so nothing asks;
+    // in the owner's chat (`read`) it asks for AUTHORIZATION, which no quality delegation may
+    // skip (§12.1). Either way the two verdicts agree, so the D-202 skip has nothing to remove.
+    for (const ceiling of ['admin', 'read'] as const) {
+      const withLifts = admitByOpRisk({ slug: 'mail-send', risk_tier: 'write', ceiling, source: OWNER }).verdict;
+      const withoutQualityLifts = admitByOpRiskWithoutQualityLifts({ slug: 'mail-send', risk_tier: 'write', ceiling }).verdict;
+      expect(withoutQualityLifts).toBe(withLifts);
+    }
   });
 
   it('keeps a contracted outbound send at ask — write exceeds the LOW ceiling (§12.1)', () => {

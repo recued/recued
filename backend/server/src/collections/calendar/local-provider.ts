@@ -246,9 +246,17 @@ export const createLocalCalendarProvider = (
       // would then mint a duplicate booking). `created_at` is history and does
       // not move. `updated_at` is stamped here because this adapter IS the
       // provider: it is the one deciding the write happened.
+      // D-407 slice 4 — a marking taken away, or no alert left, leaves no field: the event read back carries
+      // `marked_private: true` and a non-empty `reminders` only.
+      const { marked_private: marking, reminders, ...fields } = input.patch;
+      const kept: Partial<CanonicalEvent> = {
+        ...(marking === undefined ? {} : marking ? { marked_private: true as const } : { marked_private: undefined }),
+        ...(reminders === undefined ? {} : { reminders: reminders.length > 0 ? reminders : undefined }),
+      };
       const merged: CanonicalEvent = {
         ...current,
-        ...input.patch,
+        ...fields,
+        ...kept,
         source_id: current.source_id,
         ical_uid: current.ical_uid,
         calendar_id: current.calendar_id,

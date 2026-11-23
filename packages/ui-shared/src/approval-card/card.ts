@@ -128,6 +128,8 @@ export interface AskCardModel {
     field: string;
     remember: boolean;
     expires_at: number;
+    /** D-402 slice H5 — the browser it is typed in, by the owner's name: a remembered one is that browser's. */
+    browser?: string;
   };
   /** D-188 — the owner paused the server and this approval's held action is one the pause
    *  stops, so it waits for Resume: the card says so above its buttons and offers only
@@ -160,6 +162,10 @@ export interface AskCardOptions {
    *  parent without detaching retained cards. */
   previousCard?: HTMLElement;
   busy?: boolean;
+  /** A give-secret request survives a host repaint; its value is never kept as a draft. */
+  secretBusy?: boolean;
+  secretRemember?: boolean;
+  secretError?: string | null;
   busyOptionId?: string;
   errorMessage?: string | null;
   /** Clock for the waiting-age label ({@link AskCardModel.created_at}).
@@ -226,6 +232,9 @@ const renderAskSecret = (
   doc: Document,
   model: AskCardModel,
   onSecret: AskCardHandlers['onSecret'],
+  busy: boolean,
+  error: string | null | undefined,
+  rememberPending: boolean,
 ): HTMLElement => {
   const prompt = model.secret_prompt!;
   const form = doc.createElement('form');
@@ -242,12 +251,14 @@ const renderAskSecret = (
   const label = doc.createElement('label');
   label.className = 'rx-ask-card-secret-label';
   label.setAttribute('for', id);
+  const inBrowser = prompt.browser !== undefined ? `, in “${prompt.browser}”` : '';
   label.textContent = prompt.kind === 'sign-in code'
-    ? `The sign-in code for ${prompt.site}`
-    : `Your ${prompt.kind} for ${prompt.site}, for the field “${prompt.field}”`;
+    ? `The sign-in code for ${prompt.site}${inBrowser}`
+    : `Your ${prompt.kind} for ${prompt.site}${inBrowser}, for the field “${prompt.field}”`;
   const input = doc.createElement('input');
   input.id = id;
   input.type = 'password';
+  input.disabled = busy;
   input.className = 'rx-ask-card-secret-input';
   // ⚠ MIRRORS THE SERVER'S `BROWSER_SECRET_MAX_CHARS`, which gives nothing longer.
   input.maxLength = 1_000;
@@ -264,25 +275,29 @@ const renderAskSecret = (
     row.className = 'rx-ask-card-secret-remember';
     remember = doc.createElement('input');
     remember.type = 'checkbox';
+    remember.disabled = busy;
+    remember.checked = busy && rememberPending;
     row.appendChild(remember);
-    row.appendChild(doc.createTextNode(` Remember it for this field on ${prompt.site}`));
+    row.appendChild(doc.createTextNode(` Remember it for this field on ${prompt.site}${inBrowser}`));
     form.appendChild(row);
   }
   const give = doc.createElement('button');
   give.type = 'submit';
   give.className = 'rx-ask-card-btn rx-ask-card-btn--approve';
   give.textContent = 'Use it';
+  if (busy) { give.setAttribute('aria-busy', 'true'); give.setAttribute('aria-disabled', 'true'); }
   const status = doc.createElement('div');
   status.className = 'rx-ask-card-secret-status';
   status.setAttribute('role', 'alert');
-  status.hidden = true;
+  status.hidden = !error;
+  status.textContent = error ?? '';
   form.appendChild(give);
   form.appendChild(status);
   const say = (text: string): void => {
     status.textContent = text;
     status.hidden = false;
   };
-  let sending = false;
+  let sending = busy;
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     if (sending) return;
@@ -292,6 +307,9 @@ const renderAskSecret = (
       return;
     }
     sending = true;
+    give.focus({ preventScroll: true });
+    input.disabled = true;
+    if (remember) remember.disabled = true;
     give.setAttribute('aria-busy', 'true');
     give.setAttribute('aria-disabled', 'true');
     status.hidden = true;
@@ -305,6 +323,8 @@ const renderAskSecret = (
         say('Recued could not give it. Try again.');
       } finally {
         sending = false;
+        input.disabled = false;
+        if (remember) remember.disabled = false;
         give.removeAttribute('aria-busy');
         give.removeAttribute('aria-disabled');
       }
@@ -1075,7 +1095,8 @@ export const renderAskCard = (
     card.appendChild(grant);
   }
   // D-335 slice Z — the secret's own field and button, above the one option (to stop the task).
-  if (model.secret_prompt !== undefined) card.appendChild(renderAskSecret(doc, model, handlers.onSecret));
+  if (model.secret_prompt !== undefined) card.appendChild(renderAskSecret(doc, model, handlers.onSecret,
+    options.busy === true || options.secretBusy === true, options.secretError, options.secretRemember === true));
   // D-188 — why approving waits, right above the buttons it explains.
   if (model.paused !== undefined) {
     const paused = doc.createElement('p');

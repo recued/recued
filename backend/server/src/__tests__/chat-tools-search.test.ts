@@ -544,6 +544,19 @@ describe('tools.search — what is installed but switched off for the owner', ()
   });
   const result = (res: unknown) => (res as { result: Record<string, unknown> }).result;
 
+  it('D-339 slice 12a — one that names its own place (a Body\'s numbers: the switch on every Body page) says that place', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner([]), {
+      enabled: true,
+      ownerTurnedOff: () => [{ entry: OFF_RECIPE, tab: 'Recipes', turn_on_under: 'Body numbers, on any Body\'s page in Yours' }, { entry: OFF_ACTION, tab: 'Ops' }],
+    });
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'rent' }, CTX));
+    // Whatever the search's order (by how well each matches).
+    expect(Object.fromEntries((res.turned_off as Array<{ recipe_slug: string; turn_on_under: string }>).map((row) => [row.recipe_slug, row.turn_on_under]))).toEqual(Object.fromEntries([
+      ['recued-core/weekly-rent-digest', 'Body numbers, on any Body\'s page in Yours'],
+      ['recued_op_recued-core.rentals.invoice.create', 'Self (you) → Ops on the Contracts page'],
+    ]));
+  });
+
   it('names a switched-off match with where its switch is, and does not offer a pack for it', async () => {
     const asked: unknown[] = [];
     const reg = wrapRegistryWithToolsSearch(mkInner([]), {

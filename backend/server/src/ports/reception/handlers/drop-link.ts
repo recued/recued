@@ -42,6 +42,8 @@
  *  recipe off-thread. */
 
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readLiveReceptionEndpoint } from '../endpoint-authority.js';
+import { admitDropBlob } from '../drop-admission.js';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
@@ -86,7 +88,7 @@ import {
 import type { ReceptionEndpointContext } from '../redacted-packet.js';
 import type { ReceptionKindHandler } from './types.js';
 import type { PublicEndpointRegistryStore } from '../../../storage/public-endpoint-registry-store.js';
-import type { DropBlobStore } from '../../../storage/reception-drop-store.js';
+import type { DropBlobInsertInput, DropBlobStore } from '../../../storage/reception-drop-store.js';
 import type { BlobStore } from '../../../storage/blob-store.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -627,6 +629,9 @@ export const createDropLinkPacketHandler = (
 
 export interface DropLinkUploadHandlerDeps {
   readonly getStore: () => PublicEndpointRegistryStore;
+  readonly getPepper: () => Buffer;
+  /** Trust the forwarded public scheme only behind the configured proxy. */
+  readonly trustForwardedProto?: boolean;
   readonly getDropBlobStore: () => DropBlobStore;
   readonly getBlobStore: () => BlobStore;
   readonly getDropLinkNonceStore: () => DropLinkNonceStore;
@@ -662,14 +667,15 @@ export const createDropLinkUploadHandler = (
       writeErrorPage(res, 'this drop link', 'Method not allowed.', 405);
       return;
     }
-    if (!verifyOrigin(req)) {
+    if (!verifyOrigin(req, deps.trustForwardedProto === true)) {
       writeErrorPage(res, 'this drop link', 'Upload blocked by origin policy.', 403);
       return;
     }
 
-    const row = deps.getStore().findById(endpoint_id);
+    const liveEndpoint = () => readLiveReceptionEndpoint(req, endpoint_id, 'drop_link', deps);
+    const row = liveEndpoint();
     if (!row) {
-      writeErrorPage(res, 'this drop link', 'Upload unavailable.', 503);
+      writeErrorPage(res, 'this drop link', 'This upload link is no longer available. Ask for a new link.', 410);
       return;
     }
     const config = parseDropLinkConfig(row.metadata);
@@ -678,6 +684,22 @@ export const createDropLinkUploadHandler = (
       return;
     }
     const display_name = config.display_name;
+
+    const persist = (input: DropBlobInsertInput): boolean => {
+      const result = admitDropBlob({ registry: deps.getStore(), drops: deps.getDropBlobStore(),
+        input, now: deps.now(), authorize: () => liveEndpoint() !== null });
+      if ('conflict' in result) {
+        if (result.conflict === 'not_authorized') {
+          writeErrorPage(res, display_name, 'This upload link is no longer available. Ask for a new link.', 410);
+        } else {
+          res.setHeader('Retry-After', '3600');
+          writeErrorPage(res, display_name, 'This drop link has hit its daily upload limit. Please try again tomorrow.', 429);
+        }
+        return false;
+      }
+      if (result.one_time_consumed) deps.invalidateRegistryCache?.(endpoint_id);
+      return true;
+    };
 
     const boundary = extractMultipartBoundary(req.headers['content-type']);
     if (!boundary) {
@@ -805,6 +827,10 @@ export const createDropLinkUploadHandler = (
       writeErrorPage(res, display_name, 'Upload missing a file part.', 400);
       return;
     }
+    if (!liveEndpoint()) {
+      writeErrorPage(res, display_name, 'This upload link is no longer available. Ask for a new link.', 410);
+      return;
+    }
     if (!nonceConsumed) {
       // Reached the end of the multipart payload without ever seeing
       // form_nonce — treat as a stale / crafted POST. The CAS blob is
@@ -827,7 +853,7 @@ export const createDropLinkUploadHandler = (
       // Mary's abuse inbox; return a 400 so the visitor sees the
       // failure but the substrate retains the row.
       try {
-        deps.getDropBlobStore().insert({
+        if (!persist({
           blob_id,
           endpoint_id,
           uploaded_at: now,
@@ -842,7 +868,7 @@ export const createDropLinkUploadHandler = (
           content_hash: '',
           storage_path: '',
           processing_outcome: 'rejected_filename',
-        });
+        })) return;
       } catch {
         /* swallow */
       }
@@ -934,7 +960,7 @@ export const createDropLinkUploadHandler = (
     // Persist the metadata row regardless of outcome. Mary's abuse
     // inbox reads rejected outcomes for review; engine reactive
     // trigger fires only on `'pending'`.
-    deps.getDropBlobStore().insert({
+    if (!persist({
       blob_id,
       endpoint_id,
       uploaded_at: now,
@@ -950,7 +976,7 @@ export const createDropLinkUploadHandler = (
       storage_path: blob.relative_path,
       scan_status: 'unscanned',
       processing_outcome: outcome,
-    });
+    })) return;
 
     // Signed `drop_blob.received` audit row per § N.3 (one per upload).
     try {
@@ -983,37 +1009,6 @@ export const createDropLinkUploadHandler = (
     if (magicMismatch) {
       writeErrorPage(res, display_name, 'Uploaded file type did not match what was declared.', 415);
       return;
-    }
-
-    // Codex review P1 #3 fold (2026-05-13) — when `link_kind === 'one_time'`
-    // the endpoint MUST be revoked on a successful upload so the visitor
-    // can't GET a fresh form_nonce + replay the bearer for a second
-    // file. The revoke is gated on a clean upload (validation passed
-    // + magic-byte match) so rejected attempts don't burn the link.
-    // Revoke is idempotent at the registry (a second call with the
-    // same endpoint_id stays a no-op). Audit failure on revoke is
-    // surfaced via the registry store's own audit hook; the substrate
-    // doesn't double-audit here.
-    if (config.link_kind === 'one_time') {
-      try {
-        deps.getStore().revoke({
-          endpoint_id,
-          now,
-          reason: 'one_time_drop_consumed',
-        });
-        // § Must Hold I-5 — drop the visitor-facing registry-cache entry
-        // immediately. The store row is now revoked, but the dispatcher
-        // gates every request on the in-memory registry cache; without
-        // this invalidate a second visitor reads the stale enabled entry
-        // for up to REGISTRY_CACHE_STALENESS_MS (60s) and uploads a
-        // second blob onto a `one_time` link. Runs only after revoke
-        // succeeds (so a revoke throw leaves the cache untouched).
-        deps.invalidateRegistryCache?.(endpoint_id);
-      } catch {
-        // Revoke failure must not block the success page — the blob
-        // is already persisted. Operators see the failure in the
-        // registry-store error path.
-      }
     }
 
     const successMessage = config.success_message ?? DROP_LINK_DEFAULT_SUCCESS_MESSAGE;

@@ -25,6 +25,7 @@
 
 import { createFileAttachmentLifecycle } from './file-attachment-lifecycle.js';
 import type Database from 'better-sqlite3';
+import { REQUEST_EVIDENCE_LIMITS, type RequestEvidenceWindow } from '../chat-request-evidence.js';
 import {
   chatToolCallFromMetadata, createChatToolCallStore, settleChatToolCall,
   type ChatToolCallStore, type ChatToolCallSettlement, type StoredChatToolCall,
@@ -68,6 +69,7 @@ import {
   executionSourceContractId,
 } from '@recued/contracts';
 import { chatFixesOf, chatSourceCitationsOf, type ChatFix, type ChatSourceCitation, installOffersOf, type InstallOffer } from '@recued/contracts';
+import { chatCalendarRefsOf, chatMailRefsOf, type ChatCalendarRef, type ChatMailRef } from '@recued/contracts';
 import type { ChatAnswerSource, ChatNotice } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
@@ -251,6 +253,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
       FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
     );
   `);
+  // Retired 2026-11-18 (the owner: the brief only summarises, and nothing reads a request before a turn). The
+  // per-turn reading kept one encrypted record per owner turn here; nothing has read them since `9eeac1277`.
+  db.exec('DROP TABLE IF EXISTS chat_assignment_scopes');
 
   // § Contract Tightening — one row per turn. The bulk message
   // payload (`content_encrypted`) is sub_dek-encrypted at rest; the
@@ -385,7 +390,9 @@ export const ensureChatSchema = (db: Database.Database): void => {
   if (!messageCols.has('turn_id')) {
     db.exec('ALTER TABLE chat_messages ADD COLUMN turn_id TEXT');
   }
-  // Schedule outcomes select one turn without traversing the conversation's history.
+  // Schedule outcomes and owner evidence select one turn without traversing
+  // the conversation's history. Create this only after the legacy turn_id
+  // migration; SQLite can also scan the timestamp ordering in reverse.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_chat_messages_session_turn
     ON chat_messages(session_id, turn_id, ts DESC, message_id DESC) WHERE turn_id IS NOT NULL`);
   // How many messages this session held when the owner last looked at it.
@@ -476,10 +483,12 @@ export const ensureChatSchema = (db: Database.Database): void => {
       execution_updated_at       INTEGER,
       hold_run_id                TEXT,
       hold_lapsed_at             INTEGER,
+      hold_replaced_at           INTEGER,
       value_labels_encrypted     TEXT,
       memory_conflicts_encrypted TEXT,
       hold_always_allow          TEXT,
       hold_always_allow_note     TEXT,
+      hold_group                 TEXT,
       FOREIGN KEY (session_id) REFERENCES chat_sessions (session_id) ON DELETE CASCADE,
       FOREIGN KEY (message_id) REFERENCES chat_messages (message_id) ON DELETE SET NULL
     );
@@ -527,6 +536,8 @@ export const ensureChatSchema = (db: Database.Database): void => {
   // D-329 — a Tier-1 write's proposal and the hold whose ask it answers.
   if (!planCols.has('hold_run_id')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_run_id TEXT');
   if (!planCols.has('hold_lapsed_at')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_lapsed_at INTEGER');
+  // D-343 — when a newer version of the same call replaced the hold (`hold.replaced_at`).
+  if (!planCols.has('hold_replaced_at')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_replaced_at INTEGER');
   // D-329 — the names of the records a proposal's args name (`value_labels`).
   if (!planCols.has('value_labels_encrypted')) db.exec('ALTER TABLE chat_plans ADD COLUMN value_labels_encrypted TEXT');
   // D-336 slice G — the notes in memory a held save meets.
@@ -534,6 +545,8 @@ export const ensureChatSchema = (db: Database.Database): void => {
   // D-341 — the label of the trigger's pre-approval the hold's ask offers, for the card.
   if (!planCols.has('hold_always_allow')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_always_allow TEXT');
   if (!planCols.has('hold_always_allow_note')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_always_allow_note TEXT');
+  // D-177 §N.15.9 — the round's group a held write was asked in, once, with the others of its kind.
+  if (!planCols.has('hold_group')) db.exec('ALTER TABLE chat_plans ADD COLUMN hold_group TEXT');
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_chat_plans_retry_origin
       ON chat_plans (session_id, retry_of_plan_id, created_at);
@@ -695,8 +708,9 @@ const aadForMessage = (session_id: string, message_id: string): Uint8Array =>
     `recued/v1/chat/message/${session_id}/${message_id}`,
   );
 
-/** The separately encrypted fields of a message row. D-338 adds `notice`. */
-type ChatMessageField = 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations' | 'notice';
+/** The separately encrypted fields of a message row. D-338 adds `notice`; D-406 the picked emails (`mail_refs`) and
+ *  calendar events (`calendar_refs`). */
+type ChatMessageField = 'candidates' | 'tool_calls' | 'reply_to' | 'source_citations' | 'notice' | 'mail_refs' | 'calendar_refs';
 
 const aadForMessageField = (
   field: ChatMessageField,
@@ -1303,6 +1317,26 @@ const messageFromRow = async (
       )));
     } catch (error) { if (error instanceof ChatVaultLockedError) throw error; }
   }
+  // D-406 — the emails the owner picked, decrypted and read back through the shared reader.
+  let mail_refs: ChatMailRef[] = [];
+  const storedMailRefs = parseMessageMetadataObject(row.metadata_blob).mail_refs_encrypted;
+  if (typeof storedMailRefs === 'string') {
+    try {
+      mail_refs = chatMailRefsOf(JSON.parse(await decodeChatMessageFieldFromStorage(
+        storedMailRefs, 'mail_refs', { session_id: row.session_id, message_id: row.message_id }, getKey,
+      )));
+    } catch (error) { if (error instanceof ChatVaultLockedError) throw error; }
+  }
+  // D-406 (Q4) — and the calendar events, the same way.
+  let calendar_refs: ChatCalendarRef[] = [];
+  const storedCalendarRefs = parseMessageMetadataObject(row.metadata_blob).calendar_refs_encrypted;
+  if (typeof storedCalendarRefs === 'string') {
+    try {
+      calendar_refs = chatCalendarRefsOf(JSON.parse(await decodeChatMessageFieldFromStorage(
+        storedCalendarRefs, 'calendar_refs', { session_id: row.session_id, message_id: row.message_id }, getKey,
+      )));
+    } catch (error) { if (error instanceof ChatVaultLockedError) throw error; }
+  }
   let reply_to: ChatReplyReference | undefined;
   const storedReply = parseMessageMetadataObject(row.metadata_blob).reply_to_encrypted;
   if (typeof storedReply === 'string') {
@@ -1327,6 +1361,8 @@ const messageFromRow = async (
   }
   const answered_without_model = role === 'assistant'
     ? answeredWithoutModelOf(parseMessageMetadataObject(row.metadata_blob).answered_without_model) : undefined;
+  const reached_round_limit = role === 'assistant'
+    && parseMessageMetadataObject(row.metadata_blob).reached_round_limit === true;
   return {
     id: row.message_id,
     session_id: row.session_id,
@@ -1343,6 +1379,8 @@ const messageFromRow = async (
     ...(tool_call ? { tool_call } : {}),
     ...(provenance ? { provenance } : {}),
     ...(attachments ? { attachments } : {}),
+    ...(mail_refs.length > 0 ? { mail_refs } : {}),
+    ...(calendar_refs.length > 0 ? { calendar_refs } : {}),
     ...(reply_to ? { reply_to } : {}),
     ...(data_diagnosis ? { data_diagnosis } : {}),
     ...(data_diagnosis_resolution
@@ -1353,6 +1391,7 @@ const messageFromRow = async (
     ...(source_citations.length > 0 ? { source_citations } : {}),
     ...(notice ? { notice } : {}),
     ...(answered_without_model ? { answered_without_model } : {}),
+    ...(reached_round_limit ? { reached_round_limit: true as const } : {}),
     contributor: CHAT_CONTRIBUTOR_SET.has(
       row.contributor as ChatSessionContributor,
     )
@@ -1417,6 +1456,12 @@ export interface AppendMessageInput {
   source_lifecycle?: RecallSourceLifecycle;
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
+  /** D-406 — the emails the owner picked for this message, with the sender, subject and date the server read.
+   *  Encrypted as the message's text is: they name the owner's mail. */
+  mail_refs?: readonly ChatMailRef[];
+  /** D-406 (Q4) — the calendar events the owner picked, with the title and start the server read. Encrypted the
+   *  same way: they name the owner's calendar. */
+  calendar_refs?: readonly ChatCalendarRef[];
   /** Host-validated reference only; previews are resolved from retained rows. */
   reply_to?: ChatReplyReference;
   /** D-323 — the marketplace offers the turn's last `tools.search` returned.
@@ -1433,6 +1478,8 @@ export interface AppendMessageInput {
   notice?: ChatNotice;
   /** D-338 — an assistant row written without a model call. */
   answered_without_model?: { from?: ChatAnswerSource };
+  /** 2026-11-21 — an assistant row whose turn ended at its round limit (`ChatMessage.reached_round_limit`). */
+  reached_round_limit?: true;
   /** The turn writing this row. Optional so a caller outside a turn (or an
    *  older one not yet passing it) writes NULL rather than a fabricated id. */
   turn_id?: string;
@@ -1495,6 +1542,12 @@ export const deriveChatMessageRecallEligibility = (
     ? CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT
     : CHAT_MESSAGE_RECALL_ELIGIBILITY.UNAUTHENTICATED_CHAT;
 };
+
+/** The aliases a turn kept that a row from `source` may carry: all of them where the owner's recall
+ *  reads the row, none elsewhere (a Telegram conversation's, an AI app's), where `appendMessage`
+ *  refuses any. D-343, 2026-11-15: a Telegram turn's answer passed them unasked and was lost. */
+export const recallCandidatesFor = <T>(source: unknown, candidates: readonly T[]): readonly T[] =>
+  deriveChatMessageRecallEligibility(source) === CHAT_MESSAGE_RECALL_ELIGIBILITY.OWNER_AUTHENTICATED_CHAT ? candidates : [];
 
 /** One tool row the packet may ADVERTISE as recallable. Deliberately carries
  *  the rendered row and nothing derived: the tool name is parsed where it is
@@ -1735,6 +1788,8 @@ export interface ChatStore {
     session_ids?: readonly string[];
   }): Promise<ChatRecallSourcePage>;
   listMessages(session_id: string): Promise<ChatMessage[]>;
+  /** Owner-only same-session evidence. Bounded before decryption; no legacy or contract rows. */
+  readRequestEvidenceWindow?(session_id: string, turn_id: string, anchored_turn_ids: readonly string[]): Promise<RequestEvidenceWindow>;
   /** The most recent `limit` conversational messages, oldest-first.
    *
    *  ⛔ WHY THIS EXISTS AS A SEPARATE READ. `buildChatTail` runs on EVERY turn
@@ -2392,6 +2447,9 @@ export const createChatStore = (
       | undefined;
     return row?.value !== '0';
   };
+  // One running-note style since 2026-11-19: the owner retired Consolidated ("1, then 2"), whose note kept every
+  // file it cited whole, so its fold freed nothing past 80% (internal benchmarks
+  // `brief-release-and-carry-2026-11-18`). A server that stored its old `rolling_brief_strategy` row ignores it.
   const setRollingBriefEnabled = (enabled: boolean): boolean => {
     setConfigStmt.run({ key: CHAT_ROLLING_BRIEF_KEY, value: enabled ? '1' : '0' });
     return enabled;
@@ -2895,6 +2953,15 @@ export const createChatStore = (
     const reply_to_encrypted = reply_to ? await encodeChatMessageFieldForStorage(
       JSON.stringify(reply_to), 'reply_to', identity, getKey,
     ) : undefined;
+    // D-406 — checked again here: a store keeps only what the reader accepts.
+    const mail_refs = chatMailRefsOf(input.mail_refs ?? []);
+    const mail_refs_encrypted = mail_refs.length > 0 ? await encodeChatMessageFieldForStorage(
+      JSON.stringify(mail_refs), 'mail_refs', identity, getKey,
+    ) : undefined;
+    const calendar_refs = chatCalendarRefsOf(input.calendar_refs ?? []);
+    const calendar_refs_encrypted = calendar_refs.length > 0 ? await encodeChatMessageFieldForStorage(
+      JSON.stringify(calendar_refs), 'calendar_refs', identity, getKey,
+    ) : undefined;
     // D-338 — a notice keeps its title and messenger beside it, encrypted as its
     // text is; the marker for an answer given without a model is a label, kept plain.
     const notice = input.role === 'notice' ? chatNoticeOf(input.notice) : undefined;
@@ -2904,6 +2971,7 @@ export const createChatStore = (
     ) : undefined;
     const answered_without_model = input.role === 'assistant'
       ? answeredWithoutModelOf(input.answered_without_model) : undefined;
+    const reached_round_limit = input.role === 'assistant' && input.reached_round_limit === true;
     const sources = input.role === 'assistant' ? chatSourceCitationsOf(input.source_citations) : [];
     const source_citations_encrypted = sources.length ? await encodeChatMessageFieldForStorage(
       JSON.stringify(sources), 'source_citations', identity, getKey,
@@ -2931,17 +2999,21 @@ export const createChatStore = (
         ? JSON.stringify(input.attachments)
         : null,
       metadata_blob: scheduledSource || input.data_diagnosis || input.tool_call || reply_to_encrypted || source_citations_encrypted || install_offers.length > 0
-        || fixes.length > 0 || notice_encrypted || answered_without_model
+        || fixes.length > 0 || notice_encrypted || answered_without_model || reached_round_limit || mail_refs_encrypted
+        || calendar_refs_encrypted
         ? JSON.stringify({
             ...(scheduledSource ? { execution_source: scheduledSource } : {}),
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
             ...(input.tool_call ? { tool_call: input.tool_call } : {}),
             ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
+            ...(mail_refs_encrypted ? { mail_refs_encrypted } : {}),
+            ...(calendar_refs_encrypted ? { calendar_refs_encrypted } : {}),
             ...(source_citations_encrypted ? { source_citations_encrypted } : {}),
             ...(install_offers.length > 0 ? { install_offers } : {}),
             ...(fixes.length > 0 ? { fixes } : {}),
             ...(notice_encrypted ? { notice_encrypted } : {}),
             ...(answered_without_model ? { answered_without_model } : {}),
+            ...(reached_round_limit ? { reached_round_limit: true } : {}),
           })
         : null,
       contributor,
@@ -2999,6 +3071,8 @@ export const createChatStore = (
       ...(input.attachments && input.attachments.length > 0
         ? { attachments: input.attachments.map(attachmentLifecycle.describe) }
         : {}),
+      ...(mail_refs.length > 0 ? { mail_refs } : {}),
+      ...(calendar_refs.length > 0 ? { calendar_refs } : {}),
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
@@ -3008,6 +3082,7 @@ export const createChatStore = (
       ...(sources.length > 0 ? { source_citations: sources } : {}),
       ...(notice ? { notice } : {}),
       ...(answered_without_model ? { answered_without_model } : {}),
+      ...(reached_round_limit ? { reached_round_limit: true as const } : {}),
       contributor,
       ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       ts,
@@ -3022,6 +3097,79 @@ export const createChatStore = (
   const listMessages = async (session_id: string): Promise<ChatMessage[]> => {
     const rows = listMessagesStmt.all({ session_id }) as MessageRow[];
     return withReplyPreviews(await Promise.all(rows.map((row) => messageFromRow(row, getKey))));
+  };
+
+  const evidenceScope = `session_id = @session_id AND target_server = 'self'
+    AND recall_eligibility = 'chat:owner_authenticated' AND recall_contract_id IS NULL
+    AND (source_lifecycle = 'finalized' OR (turn_id = @current_turn AND source_lifecycle = 'pending'))`;
+  const evidenceOwner = db.prepare(`SELECT turn_id, ts, message_id FROM chat_messages
+    WHERE ${evidenceScope} AND turn_id = @turn_id AND role = 'user' ORDER BY ts, message_id LIMIT 1`);
+  const evidenceRecent = db.prepare(`SELECT turn_id FROM chat_messages
+    WHERE ${evidenceScope} AND role = 'user' AND turn_id IS NOT NULL
+      AND (ts, message_id) <= (@ts, @message_id)
+    ORDER BY ts DESC, message_id DESC LIMIT @limit`);
+  const evidenceRows = db.prepare(`SELECT message_id, role, target_server, ts,
+      length(content_encrypted) + COALESCE(length(tool_calls_blob), 0)
+        + COALESCE(length(CAST(metadata_blob AS BLOB)), 0) AS stored_bytes
+    FROM chat_messages WHERE ${evidenceScope} AND turn_id = @turn_id
+    ORDER BY ts, message_id LIMIT @limit`);
+  // Read only the columns this evidence path uses. Attachments, reply previews,
+  // citations and other auxiliary blobs never add hidden decryption work.
+  const evidenceContent = db.prepare(`SELECT message_id, session_id, turn_id, role, ts, target_server,
+      content_encrypted, tool_calls_blob, metadata_blob, contributor,
+      '{}' AS picker_at_send_blob, 'recued' AS model_used_provider, 'evidence' AS model_used_model_id,
+      source_lifecycle, NULL AS candidates_encrypted, NULL AS provenance_blob, NULL AS attachments_blob
+    FROM chat_messages WHERE ${evidenceScope} AND message_id = @message_id`);
+  const readRequestEvidenceWindow = async (session_id: string, turn_id: string,
+    anchored_turn_ids: readonly string[]): Promise<RequestEvidenceWindow> => {
+    const limits = REQUEST_EVIDENCE_LIMITS;
+    const params = { session_id, current_turn: turn_id };
+    const current = evidenceOwner.get({ ...params, turn_id }) as { ts: number; message_id: string } | undefined;
+    if (!current) return { messages: [], incomplete: true, excluded_reply_turn_ids: [] };
+    const recent = evidenceRecent.all({ ...params, ...current, limit: limits.recentTurns + 1 }) as { turn_id: string }[];
+    const selected = [...new Set([turn_id, ...anchored_turn_ids.slice(0, limits.turns - 1),
+      ...recent.slice(0, limits.recentTurns).map(r => r.turn_id)])];
+    let incomplete = selected.length > limits.turns || recent.length > limits.recentTurns;
+    let bytes = 0, rows = 0;
+    const messages: ChatMessage[] = [], excluded = new Set<string>();
+    for (const id of selected.slice(0, limits.turns)) {
+      const owner = evidenceOwner.get({ ...params, turn_id: id }) as { ts: number; message_id: string } | undefined;
+      if (!owner || owner.ts > current.ts || owner.ts === current.ts && owner.message_id > current.message_id) {
+        incomplete = true; continue;
+      }
+      const remaining = Math.min(limits.rowsPerTurn, limits.rows - rows);
+      if (remaining <= 0) { incomplete = true; break; }
+      const candidates = evidenceRows.all({ ...params, turn_id: id, limit: remaining + 1 }) as {
+        message_id: string; role: string; target_server: string; ts: number; stored_bytes: number;
+      }[];
+      // A partial turn cannot establish that none of its omitted tools was recall.
+      if (candidates.length > remaining) { incomplete = true; excluded.add(id); }
+      for (const row of candidates.slice(0, remaining)) {
+        rows++;
+        if (row.stored_bytes > limits.recordBytes * 2 || bytes + row.stored_bytes > limits.storageBytes) {
+          incomplete = true; excluded.add(id); continue;
+        }
+        bytes += row.stored_bytes;
+        const raw = evidenceContent.get({ ...params, message_id: row.message_id }) as MessageRow | undefined;
+        if (!raw) { incomplete = true; excluded.add(id); continue; }
+        // Only tool-call metadata is needed; do not decrypt source citations or reply previews.
+        const call = chatToolCallFromMetadata(raw.metadata_blob);
+        raw.metadata_blob = null;
+        const message = await messageFromRow(raw, getKey);
+        if (raw.tool_calls_blob !== null && message.tool_calls === undefined) {
+          incomplete = true; excluded.add(id);
+        }
+        // Preserve the process-aware state computed from the actual stored record.
+        if (call) message.tool_call = call;
+        if (!message.content || Buffer.byteLength(message.content, 'utf8') > limits.recordBytes) {
+          incomplete = true; excluded.add(id); continue;
+        }
+        if (message.role === 'tool' && !call && !message.id.endsWith(':result')) excluded.add(id);
+        messages.push(message);
+      }
+    }
+    messages.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return { messages, incomplete, excluded_reply_turn_ids: [...excluded] };
   };
 
   /** One page of a conversation, newest-last, plus whether older rows exist.
@@ -3745,6 +3893,7 @@ export const createChatStore = (
       return prepared.files.length ? prepared.files.map(f => f.attachment) : [...attachments];
     }).immediate(),
     listMessages,
+    readRequestEvidenceWindow,
     listMessagePage,
     scanHistoryMessagesPage,
     markSessionSeen,

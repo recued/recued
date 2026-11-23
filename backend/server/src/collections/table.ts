@@ -96,6 +96,11 @@ export interface CollectionTable {
    *  range + pagination. Results ordered by `received_at DESC` so
    *  the most-recent records surface first. */
   list(query: CollectionListQuery): CollectionRecord[];
+  /** D-406 — a record's place in its thread in this table: 1-based, oldest first (received, then record id),
+   *  and the thread's size. A record with no thread id is its thread alone (1 of 1); null for an unknown id.
+   *  ⛔ One query on the `thread_id` index, by its literal path: `list`'s bound-path filter
+   *  (`json_extract(hot_fields, ?)`) cannot use the index, and this runs on every `mail.read`. */
+  threadPlace(record_id: string): { index: number; total: number } | null;
   /** Host evidence adapters use a fixed FTS expression and a stable keyset.
    * Unlike relevance search this can exhaust candidates before retention. */
   bodyEvidencePage?(input: { expression: string; after?: string; limit?: number }): CollectionRecord[];
@@ -1136,10 +1141,6 @@ export const createCollectionTable = (
     }
     return stmt;
   };
-  const ftsDeleteRowStmt = db.prepare(
-    `DELETE FROM ${ftsName} WHERE key = ?`,
-  );
-
   const upsert = (record: CollectionRecord): CollectionRecord | null => {
     validateRecord(record);
     const priorRow = getStmt.get(record.record_id) as Row | undefined;
@@ -1184,7 +1185,8 @@ export const createCollectionTable = (
     if (!row) return null;
     const record = rowToRecord(row);
     deleteStmt.run(record_id);
-    ftsDeleteRowStmt.run(record_id);
+    // Through the index's key map: a `DELETE … WHERE key = ?` here scanned the whole index (`@recued/fts`).
+    ftsDeleteRecord(db, ftsName, record_id);
     reportDelta(-record.size_bytes);
     return record;
   };
@@ -1589,6 +1591,20 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     return out.map(rowToRecord);
   };
 
+  const threadPlace = (record_id: string): { index: number; total: number } | null => {
+    const row = db.prepare(`SELECT received_at, json_extract(hot_fields, '$.thread_id') AS tid FROM ${tableName} WHERE record_id = ?`)
+      .get(record_id) as { received_at: number; tid: unknown } | undefined;
+    if (row === undefined) return null;
+    if (typeof row.tid !== 'string' || row.tid.trim().length === 0) return { index: 1, total: 1 };
+    const counts = db.prepare(`
+      SELECT COUNT(*) AS total,
+        SUM(CASE WHEN received_at < @at OR (received_at = @at AND record_id < @id) THEN 1 ELSE 0 END) AS earlier
+      FROM ${tableName}
+      WHERE json_extract(hot_fields, '$.thread_id') = @tid
+    `).get({ at: row.received_at, id: record_id, tid: row.tid }) as { total: number; earlier: number | null };
+    return { index: (counts.earlier ?? 0) + 1, total: Math.max(1, counts.total) };
+  };
+
   const countByAddress = (field: string, value: string): number => {
     // ⚠ The field is now INTERPOLATED into the SQL text (that is what makes it
     // indexable), so this validation is load-bearing rather than hygiene.
@@ -1700,7 +1716,8 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
         bytes_freed += row.size_bytes;
         if (row.blob_hash) blob_hashes_freed.push(row.blob_hash);
         deleteStmt.run(row.record_id);
-        ftsDeleteRowStmt.run(row.record_id);
+        // One key-map lookup a record. The scan this replaced ran once per pruned record, all in this transaction.
+        ftsDeleteRecord(db, ftsName, row.record_id);
       }
     });
     pruneTx(rows);
@@ -1733,6 +1750,7 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     checkSpelling: (query: string): FtsWordCheck[] => checkQuerySpelling(db, ftsName, query),
     countByAddress,
     neighbours,
+    threadPlace,
     ensureAddressIndex,
     ensureHotFieldIndex,
     findByHotFieldIn,

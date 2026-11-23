@@ -22,7 +22,11 @@ import {
   WRITE_RULES_RULE_ATTR,
   WRITE_RULES_SUGGESTION_ATTR,
   WRITE_RULES_USES_ATTR,
+  WRITE_RULES_CANCEL_ATTR,
+  WRITE_RULES_LIVE_REFRESH_MS,
+  WRITE_RULES_PANEL_BROADCAST_KINDS,
 } from '../contracts/write-rules-panel.js';
+import { WEBCLIENT_DEFAULT_SUBSCRIPTIONS } from '../realtime/subscriber.js';
 
 interface FakeEl {
   tagName: string;
@@ -78,7 +82,8 @@ const rule: WriteRuleRow = {
   created_at: NOW, expires_at: NOW + 10 * 86_400_000, max_uses: 100, uses_remaining: 97,
 };
 
-const mount = (lists: { suggestions?: WriteRuleSuggestionRow[]; rules?: WriteRuleRow[] } = {}) => {
+const mount = (lists: { suggestions?: WriteRuleSuggestionRow[]; rules?: WriteRuleRow[] } = {},
+  subscribe?: (kind: string, listener: (event: { holder: string; change: string }) => void) => () => void) => {
   const host = element('div');
   const state = { suggestions: lists.suggestions ?? [suggestion], rules: lists.rules ?? [rule] };
   const accept = vi.fn(async (args: { key_hash: string; ttl_ms?: number; max_uses?: number }) => {
@@ -87,15 +92,17 @@ const mount = (lists: { suggestions?: WriteRuleSuggestionRow[]; rules?: WriteRul
   });
   const dismiss = vi.fn(async (args: { key_hash: string }) => { state.suggestions = []; return args; });
   const revoke = vi.fn(async (args: { rule_id: string }) => { state.rules = []; return { rule: { ...rule, revoked_at: NOW } }; });
+  const listRules = vi.fn(async () => ({ rules: state.rules }));
   const panel = mountWriteRulesPanel({
     host: host as never,
     document: { createElement: element } as never,
     listSuggestions: async () => ({ suggestions: state.suggestions }),
-    listRules: async () => ({ rules: state.rules }),
+    listRules,
     accept, dismiss, revoke,
     listContracts: async () => ({ contracts: [{ contract_id: 'ct-claude', display_name: 'Claude Desktop' }] }),
+    ...(subscribe !== undefined ? { subscribe: subscribe as never } : {}),
   });
-  return { host, panel, accept, dismiss, revoke };
+  return { host, panel, accept, dismiss, revoke, listRules };
 };
 
 describe('D-329 §3.4 — the write rules panel', () => {
@@ -161,5 +168,68 @@ describe('D-329 §3.4 — the write rules panel', () => {
     expect(h.revoke).toHaveBeenCalledWith({ rule_id: 'rule-1' });
     await h.panel.whenLoaded();
     expect(all(h.host, WRITE_RULES_RULE_ATTR)).toHaveLength(0);
+  });
+});
+
+describe('D-402 — the panel reads again when a pre-approval changes anywhere', () => {
+  it('a trigger\'s change, or a caller\'s ended ("Stop allowing" ends its rules too), reads once for a burst; a caller\'s use reads nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      let listener: ((event: { holder: string; change: string }) => void) | undefined;
+      const unsubscribe = vi.fn();
+      const subscribe = vi.fn((_kind: string, fn: (event: { holder: string; change: string }) => void) => { listener = fn; return unsubscribe; });
+      const h = mount({}, subscribe);
+      await h.panel.whenLoaded();
+      expect(subscribe.mock.calls.map(([kind]) => kind)).toEqual(['contract.preapproval_changed']);
+      expect(h.listRules).toHaveBeenCalledTimes(1);
+      listener!({ holder: 'trigger', change: 'granted' });
+      listener!({ holder: 'trigger', change: 'used' });
+      await vi.advanceTimersByTimeAsync(WRITE_RULES_LIVE_REFRESH_MS);
+      expect(h.listRules).toHaveBeenCalledTimes(2);
+      // A run of the owner's chats spending its "Always" changes nothing listed here.
+      listener!({ holder: 'caller', change: 'used' });
+      listener!({ holder: 'caller', change: 'granted' });
+      await vi.advanceTimersByTimeAsync(WRITE_RULES_LIVE_REFRESH_MS);
+      expect(h.listRules).toHaveBeenCalledTimes(2);
+      listener!({ holder: 'caller', change: 'ended' });
+      await vi.advanceTimersByTimeAsync(WRITE_RULES_LIVE_REFRESH_MS);
+      expect(h.listRules).toHaveBeenCalledTimes(3);
+      listener!({ holder: 'trigger', change: 'ended' });
+      h.panel.dispose();
+      await vi.advanceTimersByTimeAsync(WRITE_RULES_LIVE_REFRESH_MS);
+      expect(h.listRules).toHaveBeenCalledTimes(3);
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a change while the owner fills in a rule\'s bounds waits, keeping what they typed, and is read once they cancel', async () => {
+    vi.useFakeTimers();
+    try {
+      let listener: ((event: { holder: string; change: string }) => void) | undefined;
+      const h = mount({}, (_kind, fn) => { listener = fn; return () => undefined; });
+      await h.panel.whenLoaded();
+      all(h.host, WRITE_RULES_ACCEPT_ATTR)[0]!.click();
+      all(h.host, WRITE_RULES_DAYS_ATTR)[0]!.value = '7';
+      listener!({ holder: 'trigger', change: 'granted' });
+      await vi.advanceTimersByTimeAsync(WRITE_RULES_LIVE_REFRESH_MS);
+      expect(h.listRules).toHaveBeenCalledTimes(1);
+      expect(all(h.host, WRITE_RULES_DAYS_ATTR)[0]!.value).toBe('7');
+      all(h.host, WRITE_RULES_CANCEL_ATTR)[0]!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.listRules).toHaveBeenCalledTimes(2);
+      // Cancelled with nothing waiting, it reads nothing more.
+      all(h.host, WRITE_RULES_ACCEPT_ATTR)[0]!.click();
+      all(h.host, WRITE_RULES_CANCEL_ATTR)[0]!.click();
+      await vi.advanceTimersByTimeAsync(WRITE_RULES_LIVE_REFRESH_MS);
+      expect(h.listRules).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the kinds it reads again on are ones the web client names (one it does not name never arrives)', () => {
+    for (const kind of WRITE_RULES_PANEL_BROADCAST_KINDS) expect(WEBCLIENT_DEFAULT_SUBSCRIPTIONS).toContain(kind);
   });
 });

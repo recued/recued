@@ -32,7 +32,7 @@ test('opens over Today with a tab for each stream, each saying whether it is on,
 test('saves only what changed, and its tab follows on and off', async ({ page }) => {
   const dialog = await open(page);
   const daily = dialog.getByRole('tabpanel', { name: 'Daily · On' });
-  await daily.getByLabel('Time', { exact: true }).fill('06:45');
+  await daily.getByLabel('Starts preparing at', { exact: true }).fill('06:45');
   await daily.getByLabel('Coming up', { exact: true }).check();
   await daily.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog.getByText('Daily stream saved.', { exact: true })).toBeVisible();
@@ -106,10 +106,10 @@ test('a server from before reminders and private items offers neither, and a sav
   await page.getByRole('button', { name: 'Daily stream', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Daily stream' });
   const daily = dialog.getByRole('tabpanel', { name: 'Daily · On' });
-  await expect(daily.getByLabel('Time', { exact: true })).toHaveValue('07:00');
+  await expect(daily.getByLabel('Starts preparing at', { exact: true })).toHaveValue('07:00');
   await expect(daily.getByLabel('Reminders from Yours', { exact: true })).toBeHidden();
   await expect(daily.getByLabel('Include private items', { exact: true })).toBeHidden();
-  await daily.getByLabel('Time', { exact: true }).fill('06:45');
+  await daily.getByLabel('Starts preparing at', { exact: true }).fill('06:45');
   await daily.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog.getByText('Daily stream saved.', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.__stream.saves)).toEqual([{ stream: 'daily', settings: { time: '06:45' } }]);
@@ -157,7 +157,7 @@ test('holds Close the day under the tabs, sent where the daily stream goes', asy
 
 test('says once that changes are not saved before it closes, and closes on the second Close', async ({ page }) => {
   const dialog = await open(page);
-  await dialog.getByRole('tabpanel', { name: 'Daily · On' }).getByLabel('Time', { exact: true }).fill('06:15');
+  await dialog.getByRole('tabpanel', { name: 'Daily · On' }).getByLabel('Starts preparing at', { exact: true }).fill('06:15');
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(dialog.getByText('Your changes are not saved. Save them, or Close again to leave without them.', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => window.__stream.closed)).toBe(0);

@@ -1291,6 +1291,8 @@ describe('D-137 Trio #A Codex P2a — calendar.search uses CalendarCollectionTab
         source_id: 'src-1',
         received_at: 100,
         hot: { calendar_id: 'primary', summary: 'Standup', start_at: 1, end_at: 2 },
+        // A snapshot always carries its event; D-407 Q8 reads its private marking from it.
+        event: { calendar_id: 'primary', summary: 'Standup', start_at: 1, end_at: 2 },
       },
     ]);
     const calendarCollection = {

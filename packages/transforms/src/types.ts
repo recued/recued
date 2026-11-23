@@ -24,6 +24,9 @@ export interface EnrichmentRowSnapshot {
 }
 
 export interface TransformContext {
+  /** Optional host policy for arithmetic item references/results. Ordinary
+   * recipe hosts retain the existing coercion rules when it is absent. */
+  numericExpressionValue?: (value: unknown) => number;
   resolve: (ref: string) => unknown;
   evaluate: (condition: string | Condition) => boolean;
   now: () => Date;
@@ -61,7 +64,7 @@ export interface TransformContext {
   piiKnownValues?: () => PiiKnownValueSource | undefined;
 }
 
-export type ReduceOp = 'sum' | 'count' | 'avg' | 'min' | 'max';
+export type ReduceOp = 'sum' | 'count' | 'avg' | 'min' | 'max' | 'first' | 'last';
 export type MathOp = 'add' | 'subtract' | 'multiply' | 'divide' | 'modulo' | 'abs' | 'ceil' | 'floor';
 export type DateUnit = 'days' | 'hours' | 'minutes' | 'seconds';
 export type SortDirection = 'asc' | 'desc';

@@ -184,7 +184,7 @@ const makeFakeSplash = () => {
     getRecoveryCounter: () => recoveryCounter,
     listenerCount: () =>
       Object.values(listeners).reduce((total, set) => total + set.size, 0),
-    fireField: (kind: 'server-url' | 'pairing-code', value: string): void => {
+    fireField: (kind: 'server-url' | 'pairing-code' | 'browser-name', value: string): void => {
       const fieldEl = {
         getAttribute: (name: string) =>
           name === 'data-bridge-pair-code-input-field' ? kind : null,
@@ -623,13 +623,14 @@ const buildWorker = (
 /** Mounts the host over a worker and waits for its first answer. */
 const mountOver = async (
   pairing: BridgePairingClient | BridgeWorkerPairing,
-  extra: { seed?: { serverUrl?: string; pairingCode?: string } } = {},
+  extra: { seed?: { serverUrl?: string; pairingCode?: string }; displayName?: string } = {},
 ) => {
   const fake = makeFakeSplash();
   const host = mountBridgePairCodeInputHost({
     splashElement: fake.splash,
     pairing,
     ...(extra.seed ? { seed: extra.seed } : {}),
+    ...(extra.displayName ? { displayName: extra.displayName } : {}),
   });
   await host.ready;
   return { fake, host };
@@ -855,6 +856,42 @@ describe('mountBridgePairCodeInputHost — a pairing code alone pairs', () => {
       serverId: 'srv-7',
       instanceId: 'inst-1',
     });
+  });
+});
+
+describe('D-402 slice H1b — the pair form asks for the browser\'s name', () => {
+  const pairWith = async (name: string | undefined) => {
+    const fetchFake = buildFakeFetch(200, { token: 'tok-bridge', serverId: 'srv-99' });
+    const w = buildWorker({ fetch: fetchFake });
+    const { fake, host } = await mountOver(w.worker, { displayName: 'Chrome on macOS' });
+    const shown = fake.getHtml();
+    host.setFieldValue('serverUrl', 'http://localhost:3001');
+    host.setFieldValue('recoveryKey', realRecoveryKey);
+    if (name !== undefined) host.setFieldValue('browserName', name);
+    await host.submit();
+    return { shown, sent: (fetchFake.calls[0].body as { displayName?: string }).displayName };
+  };
+  it('starts as the device label, which pairs the browser as it is', async () => {
+    const { shown, sent } = await pairWith(undefined);
+    expect(shown).toContain('Name this browser');
+    expect(shown).toContain('data-bridge-pair-code-input-field="browser-name"');
+    expect(shown).toContain('value="Chrome on macOS"');
+    expect(sent).toBe('Chrome on macOS');
+  });
+  it('a name typed into the field, as a person types it, is the one sent', async () => {
+    const fetchFake = buildFakeFetch(200, { token: 'tok-bridge', serverId: 'srv-99' });
+    const w = buildWorker({ fetch: fetchFake });
+    const { fake, host } = await mountOver(w.worker, { displayName: 'Chrome on macOS' });
+    host.setFieldValue('serverUrl', 'http://localhost:3001');
+    host.setFieldValue('recoveryKey', realRecoveryKey);
+    fake.fireField('browser-name', 'Personal');
+    await host.submit();
+    expect((fetchFake.calls[0].body as { displayName?: string }).displayName).toBe('Personal');
+  });
+  it('pairs under the owner\'s name; an emptied name pairs under the device label; a long one is cut at 64', async () => {
+    expect((await pairWith('  Work  ')).sent).toBe('Work');
+    expect((await pairWith('   ')).sent).toBe('Chrome on macOS');
+    expect((await pairWith('x'.repeat(80))).sent).toBe('x'.repeat(64));
   });
 });
 

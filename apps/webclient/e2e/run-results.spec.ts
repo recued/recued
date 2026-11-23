@@ -919,7 +919,7 @@ test('Run handoff reuses recorded undo review without approving a reverse change
   await page.waitForFunction(() => window.__app?.ready === true);
   const host = page.locator('[data-local-update-undo]').first();
   await host.getByRole('button', { name: 'Review undo', exact: true }).click();
-  await expect(host.getByRole('heading', { name: 'Review reverse changes' })).toBeFocused();
+  await expect(host.getByRole('heading', { name: 'Undo this change?' })).toBeFocused();
   await expect(host.locator('[data-local-update-undo-preview]')).toContainText('First row');
   await expect(page.getByRole('link', { name: 'Back to Recipe', exact: true })).toHaveAttribute('href', '#recipes/autorun-live-1');
   expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.review'))).toBe(1);

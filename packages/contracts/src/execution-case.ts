@@ -26,6 +26,8 @@
  *  #13/#23).
  */
 
+import type { BrowserActSecret } from './browser-act.js';
+
 // ────────────────────────────────────────────────────────────────
 // §4.1 — Outcome report
 // ────────────────────────────────────────────────────────────────
@@ -1339,6 +1341,16 @@ export interface ExecutionBrowserFlowStep {
   element: { role: string; label: string; selector?: string };
   value?: string;
   secret?: true;
+  /** D-402 slice A1 — the kind of secret the step itself named (slice Z's `secret` word), so a
+   *  recipe types it by its kind: a sign-in code is asked for at its step and never remembered,
+   *  which a guessed "password" would get wrong. Slice G — else, for text typed into a protected
+   *  field, the kind the page says the field takes, as the Bridge reads it (0.0.13: a password or a
+   *  sign-in code). Absent for a card, and from an older Bridge, whose `protected` flag is one flag
+   *  for several kinds. */
+  secret_kind?: BrowserActSecret;
+  /** D-402 slice G — the protected field was a payment card's (Bridge 0.0.13). No kind of secret
+   *  types a card, so a recipe asks for its text at each run, saying why (§4 rule 15). */
+  card?: true;
   /** The suggestion picked, for a pick. */
   pick?: string;
   /** The key pressed, for a press. */

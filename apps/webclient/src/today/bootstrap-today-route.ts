@@ -1,3 +1,4 @@
+import { reconcileNativeField as renderAroundDueField } from '../shell/reconcile-native-field.js';
 /** The `#today` route — Today as its own surface rather than a Data tab.
  *
  *  Today aggregates tasks, commitments and calendar across sources; it is not
@@ -15,14 +16,19 @@
  *  mount the next route, and it NEVER clears `contentRoot` — a route that
  *  paints into the shared container leaves itself behind and the next route
  *  renders underneath it (the defect `bootstrap-stats-route` records). */
-import type { SituationDismissal } from '@recued/contracts';
-import { renderToday, TODAY_CLOSE_DAY_ACTION, TODAY_CREATE_ACTION, TODAY_STREAM_ACTION, TODAY_VIEW_STYLES } from '../data/today-view.js';
+import type { SituationDismissal, SourceRegistration } from '@recued/contracts';
+import { TASK_BLOCKERS_STYLES } from '@recued/ui-shared';
+import { createTaskBlockers } from '../data/task-blockers.js';
+import type { TaskBlockerNavigation } from '../data/task-blocker-navigation.js';
+import { renderToday, TODAY_CLOSE_DAY_ACTION, TODAY_CREATE_ACTION, TODAY_OCCASION_NEXT_NONE, TODAY_OCCASION_NEXT_SAVE, TODAY_STREAM_ACTION, TODAY_VIEW_STYLES } from '../data/today-view.js';
 import { openStreamDialog, STREAM_PANEL_STYLES } from './stream-panel.js';
 import type { TodaySphereFilter } from '../data/today-view.js';
 import {
   createTodayController, type TodayCallers, type TodayController,
 } from './today-controller.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { createTodayReminders, TODAY_REMINDER_FOCUS } from './reminders.js';
+import type { TodayReminderNavigation } from './reminder-navigation.js';
 
 export const TODAY_ROUTE_HOST_ATTR = 'data-recued-today-route';
 export const TODAY_ROUTE_STYLES_MARKER = 'data-recued-today-route-styles';
@@ -33,8 +39,12 @@ export const TODAY_ROUTE_ACTION_ATTR = 'data-recued-today-action';
 /** How often Today re-reads purely because the clock moved. One minute — the
  *  smallest unit any of its copy renders ("in 3 minutes", "overdue"). */
 export const TODAY_CLOCK_INTERVAL_MS = 60_000;
+/** D-407 slice 2 — the boxes of "When is the next one?", each naming its occasion. */
+const OCCASION_NEXT_FIELDS = ['data-today-occasion-next-on', 'data-today-occasion-next-time'] as const;
 
 export interface BootstrapTodayRouteOptions {
+  reminderNavigation?: TodayReminderNavigation;
+  taskBlockerNavigation?: TaskBlockerNavigation;
   container: HTMLElement;
   callers: TodayCallers;
   now?: () => number;
@@ -65,50 +75,6 @@ export interface TodayRoute {
 const errMessage = (err: unknown): string =>
   err instanceof Error && err.message ? err.message : 'Something went wrong.';
 
-/** Replace the siblings along the due field's path without disconnecting any
- * ancestor. Native date controls keep partial segments outside `value`; even
- * reinserting the same input resets which segment receives the next keystroke.
- * A different path shape is handled by keeping the editor in its current place. */
-const renderAroundDueField = (
-  current: Element, next: Element, due: HTMLInputElement, nextDue: HTMLInputElement,
-): boolean => {
-  const path = (leaf: Element, host: Element): Element[] => {
-    const nodes: Element[] = [];
-    for (let node: Element | null = leaf; node !== host; node = node.parentElement) {
-      if (node === null) return [];
-      nodes.unshift(node);
-    }
-    return nodes;
-  };
-  const before = path(due, current); const after = path(nextDue, next);
-  if (before.length === 0 || before.length !== after.length
-    || before.some((node, index) => node.tagName !== after[index]!.tagName)) return false;
-  const attributes = (target: Element, source: Element): void => {
-    for (const attr of Array.from(target.attributes)) {
-      if (target === due && attr.name === 'value') continue;
-      if (!source.hasAttribute(attr.name)) target.removeAttribute(attr.name);
-    }
-    for (const attr of Array.from(source.attributes)) {
-      if (target === due && attr.name === 'value') continue;
-      if (target.getAttribute(attr.name) !== attr.value) target.setAttribute(attr.name, attr.value);
-    }
-  };
-  for (let index = 0; index < before.length; index++) {
-    const parent = index === 0 ? current : before[index - 1]!;
-    const nextParent = index === 0 ? next : after[index - 1]!;
-    const branch = before[index]!; const nextBranch = after[index]!;
-    attributes(parent, nextParent);
-    for (const node of Array.from(parent.childNodes)) if (node !== branch) parent.removeChild(node);
-    let following = false;
-    for (const node of Array.from(nextParent.childNodes)) {
-      if (node === nextBranch) { following = true; continue; }
-      parent.insertBefore(node, following ? null : branch);
-    }
-  }
-  attributes(due, nextDue);
-  return true;
-};
-
 export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRoute => {
   const doc = opts.container.ownerDocument ?? globalThis.document;
   let disposed = false;
@@ -120,25 +86,43 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     if (style) {
       style.setAttribute(TODAY_ROUTE_STYLES_MARKER, '');
       style.textContent = `${TODAY_VIEW_STYLES}
+        ${TASK_BLOCKERS_STYLES}
         ${STREAM_PANEL_STYLES}
-        [${TODAY_ROUTE_HOST_ATTR}] { max-width: var(--wc-content-max, 1080px); margin: 0 auto; padding: 16px; }
+        [${TODAY_ROUTE_HOST_ATTR}] { max-width: var(--wc-content-max, 1080px); margin: 0 auto; padding: var(--wc-page-pad, 24px); }
         [${TODAY_ROUTE_HOST_ATTR}] .today-view { max-width: none; margin-top: 0; }
       `;
       doc?.head?.appendChild?.(style);
     }
   }
   const root = doc.createElement('div');
+  /** D-407 slice 2 — what the owner typed in "When is the next one?", by occasion id. */
+  const occasionDrafts = new Map<string, { on: string; time: string }>();
   root.setAttribute(TODAY_ROUTE_HOST_ATTR, '');
   opts.container.appendChild(root);
 
   let generation = 0;
   let pending: Promise<void> = Promise.resolve();
-  let sourcesOpen: boolean | undefined;
-  let sphereFilter: TodaySphereFilter = 'all';
+  const returnOrigin = opts.taskBlockerNavigation?.restoreToday();
+  const reminderOrigin = opts.reminderNavigation?.restoreToday();
+  let reminderRestorePending = reminderOrigin !== undefined;
+  let interaction = 0;
+  let restorePending = returnOrigin !== undefined;
+  let sourcesOpen: boolean | undefined = reminderOrigin?.sourcesOpen ?? returnOrigin?.sourcesOpen;
+  let sphereFilter: TodaySphereFilter = reminderOrigin?.sphere ?? returnOrigin?.sphere ?? 'all';
+  let dependencySources: readonly SourceRegistration[] = [];
   let deferredViewPaint = false;
+  const taskBlockers = createTaskBlockers({ get: opts.callers.workEntityGetCaller, sources: () => dependencySources,
+    initialExpanded: reminderOrigin?.expanded ?? returnOrigin?.expanded,
+    open: async target => {
+      if (controller.edit() || controller.busy()) throw new Error('Finish or cancel the current change before opening a dependency.');
+      if (opts.taskBlockerNavigation) opts.taskBlockerNavigation.open({ ...target, expanded: taskBlockers.expanded(), sphere: sphereFilter,
+        sourcesOpen, scrollTop: opts.container.scrollTop });
+      else if (doc.defaultView) doc.defaultView.location.hash = `#data/task/${encodeURIComponent(target.dependency)}`;
+    } });
 
   const render = (): void => {
     if (disposed) return;
+    const blockerFocus = taskBlockers.captureFocus();
     // Preserve the sources disclosure across a repaint — the snapshot changing
     // is not a reason to collapse something the owner opened.
     sourcesOpen = root.querySelector?.<HTMLDetailsElement>('.today-sources')?.open ?? sourcesOpen;
@@ -168,12 +152,13 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     const heldSources = held?.tagName === 'SUMMARY';
     const heldNotice = held?.hasAttribute('data-today-task-notice') === true;
     const heldError = held?.hasAttribute('data-today-task-error') === true;
+    const heldReminderKey = held?.getAttribute(TODAY_REMINDER_FOCUS);
     const html = renderToday(
       controller.snapshot(),
       controller.refreshing(),
       TODAY_ROUTE_ACTION_ATTR,
       sourcesOpen,
-      opts.callers.openCreateOverlay !== undefined,
+      opts.callers.openCreateOverlay !== undefined && reminders.canClaimEmpty(),
       {
         canComplete: opts.callers.taskMarkDoneCaller !== undefined,
         canReschedule: opts.callers.workEntityUpsertCaller !== undefined,
@@ -187,12 +172,24 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         canOpenStream: opts.callers.stream !== undefined,
         closingDay: controller.closingDay(),
         undoDismissal: controller.undoDismissal(),
+        occasionDrafts,
+        canAnswerOccasionNext: opts.callers.occasionNextCaller !== undefined,
       },
       sphereFilter,
+      reminders.render(TODAY_ROUTE_ACTION_ATTR),
     );
     const due = root.querySelector<HTMLInputElement>(`[${TODAY_ROUTE_ACTION_ATTR}="today-task-due"]`);
     deferredViewPaint = false;
-    if (due !== null) {
+    // D-407 slice 2 — a "When is the next one?" box being typed in stays in place, as the task editor's date does:
+    // a native date keeps its half-typed segments outside `value`.
+    const occasionField = due === null ? OCCASION_NEXT_FIELDS.find(name => held?.hasAttribute(name)) : undefined;
+    if (occasionField !== undefined && held) {
+      const next = doc.createElement('div');
+      for (const attr of Array.from(root.attributes)) next.setAttribute(attr.name, attr.value);
+      next.innerHTML = html;
+      const counterpart = Array.from(next.querySelectorAll(`[${occasionField}]`)).find(node => node.getAttribute(occasionField) === held.getAttribute(occasionField));
+      if (!counterpart || !renderAroundDueField(root, next, held, counterpart)) root.innerHTML = html;
+    } else if (due !== null) {
       const next = doc.createElement('div');
       for (const attr of Array.from(root.attributes)) next.setAttribute(attr.name, attr.value);
       next.innerHTML = html;
@@ -210,6 +207,21 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         if (updated) updated.textContent = 'Finish or cancel rescheduling to show the latest results.';
       }
     } else root.innerHTML = html;
+    taskBlockers.mount(root);
+    if (blockerFocus) { taskBlockers.focus(blockerFocus); return; }
+    if (reminders.restoreFocus(root, heldReminderKey)) return;
+    if (reminderRestorePending && reminderOrigin && controller.snapshot()?.complete && reminders.current()) {
+      reminderRestorePending = false;
+      if (!held && interaction === 0) {
+        reminders.restoreFocus(root, reminderOrigin.focus);
+        if (doc.activeElement?.getAttribute(TODAY_REMINDER_FOCUS) === reminderOrigin.focus) opts.container.scrollTop = reminderOrigin.scrollTop;
+        else (doc.activeElement as HTMLElement | null)?.scrollIntoView?.({ block: 'nearest' });
+      }
+    }
+    if (restorePending && returnOrigin && controller.snapshot()?.complete) {
+      restorePending = false;
+      if (!held) { taskBlockers.focus(returnOrigin); opts.container.scrollTop = returnOrigin.scrollTop; }
+    }
     if (held === null) return;
     if (held === due && doc.activeElement === due) return;
     const find = (selector: string, match: (el: HTMLElement) => boolean): HTMLElement | null =>
@@ -238,7 +250,9 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
   };
 
   const controller: TodayController = createTodayController({
-    callers: opts.callers,
+    callers: { ...opts.callers, workEntitySourceListCaller: opts.callers.workEntitySourceListCaller ? async () => {
+      const response = await opts.callers.workEntitySourceListCaller!(); dependencySources = response.sources; return response;
+    } : undefined },
     now: opts.now ?? (() => Date.now()),
     render: () => { render(); },
     isDisposed: () => disposed,
@@ -251,10 +265,17 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     actionAttr: TODAY_ROUTE_ACTION_ATTR,
     errMessage,
   });
+  const reminders = createTodayReminders({ callers: opts.callers.reminderCallers,
+    now: opts.now ?? Date.now,
+    changed: render, blocked: () => controller.edit() !== null || controller.busy(),
+  });
 
   const load = async (): Promise<void> => {
     const mine = ++generation;
-    await controller.load(() => !disposed && mine === generation);
+    taskBlockers.refresh();
+    await Promise.all([controller.load(() => !disposed && mine === generation).then(() => {
+      if (!disposed && mine === generation) render();
+    }), reminders.load()]);
     if (disposed || mine !== generation) return;
     render();
     // Drain AFTER the paint, never during — a broadcast that arrived mid-read
@@ -278,11 +299,24 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       ?.closest?.(`[${TODAY_ROUTE_ACTION_ATTR}]`) as HTMLElement | null;
     const action = target?.getAttribute(TODAY_ROUTE_ACTION_ATTR);
     if (!action) return;
+    if (action === 'today-reminder-open') {
+      const click = ev as MouseEvent;
+      if (click.ctrlKey || click.metaKey || click.shiftKey || click.altKey || click.button && click.button !== 0) return;
+      ev.preventDefault();
+      const id = target?.getAttribute('data-today-reminder-id'), href = target?.getAttribute('href');
+      if (!id || !href || !reminders.beforeOpen()) return;
+      if (opts.reminderNavigation) opts.reminderNavigation.open({ id, focus: `open:${id}`, scrollTop: opts.container.scrollTop,
+        sphere: sphereFilter, sourcesOpen, expanded: taskBlockers.expanded() });
+      else if (doc.defaultView) doc.defaultView.location.hash = href;
+      return;
+    }
     // Carry the owner's activated control through the repaint in WebKit too.
     // A programmatic refresh must retain the field the owner is editing.
     if (ev.isTrusted && target?.tagName === 'BUTTON') {
       target.focus?.({ preventScroll: true });
     }
+    if (reminders.handle(action, target?.getAttribute('data-today-reminder-id') ?? '', target?.getAttribute('data-today-reminder-preset') ?? undefined)) return;
+    if (reminders.busy()) return;
     if (action === 'refresh-today') {
       if (!controller.refreshing()) pending = load();
       return;
@@ -314,6 +348,13 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         .then(href => { if (href && !disposed && doc.defaultView) doc.defaultView.location.hash = href; });
       return;
     }
+    // D-407 slice 2 — "When is the next one?": the date typed beside it, or "No next one".
+    if (action === TODAY_OCCASION_NEXT_SAVE || action === TODAY_OCCASION_NEXT_NONE) {
+      const id = target?.getAttribute('data-today-occasion-id') ?? '';
+      const read = (name: string) => [...root.querySelectorAll<HTMLInputElement>(`[${name}]`)].find(node => node.getAttribute(name) === id)?.value ?? '';
+      void controller.answerOccasionNext(id, action === TODAY_OCCASION_NEXT_NONE ? null : read(OCCASION_NEXT_FIELDS[0]), read(OCCASION_NEXT_FIELDS[1]));
+      return;
+    }
     if (action === 'today-situation-restore') { void controller.restoreSituation(target?.getAttribute('data-today-dismissal') ?? ''); return; }
     // The link still navigates; this only tells the learner it was opened.
     if (action === 'today-situation-open') {
@@ -328,6 +369,13 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     const target = ev.target as HTMLInputElement | null;
     if (target?.getAttribute(TODAY_ROUTE_ACTION_ATTR) === 'today-task-due') {
       controller.setEditValue(target.value);
+    }
+    // D-407 slice 2 — kept for the next repaint.
+    const [onField, timeField] = OCCASION_NEXT_FIELDS;
+    const id = target?.getAttribute(onField) ?? target?.getAttribute(timeField);
+    if (target && id) {
+      const draft = occasionDrafts.get(id) ?? { on: '', time: '' };
+      occasionDrafts.set(id, target.hasAttribute(onField) ? { ...draft, on: target.value } : { ...draft, time: target.value });
     }
   };
 
@@ -362,6 +410,10 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
   root.addEventListener('click', onClick);
   root.addEventListener('input', onInput);
   root.addEventListener('keydown', onKeyDown);
+  const interacted = () => { interaction++; };
+  root.addEventListener('pointerdown', interacted);
+  root.addEventListener('keydown', interacted);
+  root.addEventListener('focusin', interacted);
   root.addEventListener('change', event => { const target = event.target as HTMLSelectElement | null;
     if (target?.hasAttribute('data-today-sphere') && ['all', 'personal', 'professional', 'unsorted'].includes(target.value)) {
       sphereFilter = target.value as TodaySphereFilter; render(); root.querySelector<HTMLSelectElement>('[data-today-sphere]')?.focus();
@@ -398,7 +450,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     else pending = load();
   };
   const unsubscribers = opts.subscribe === undefined ? []
-    : [opts.subscribe('warehouse', onLive), opts.subscribe('memory', onLive)];
+    : [opts.subscribe('warehouse', onLive), opts.subscribe('memory', onLive), opts.subscribe('notification.notify', onLive)];
 
   render();
   pending = load();
@@ -408,6 +460,8 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     dispose: () => {
       streamDialog?.close(true);
       disposed = true;
+      taskBlockers.dispose();
+      reminders.dispose();
       for (const off of unsubscribers) off();
       root.removeEventListener('click', onClick);
       root.removeEventListener('input', onInput);
@@ -417,7 +471,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       root.remove();
     },
     // A task write in flight must retain its owner across a route change.
-    hasInFlightWork: () => controller.busy() || streamDialog?.panel.hasInFlightWork() === true,
+    hasInFlightWork: () => controller.busy() || reminders.busy() || streamDialog?.panel.hasInFlightWork() === true,
     // ⛔ ALWAYS STARTS A NEW READ — it does NOT skip while one is running.
     // Superseding is the point: `load()` takes a fresh generation, so the
     // in-flight read is retired and can no longer repaint rows the newer one
@@ -427,7 +481,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     refresh: () => { pending = load(); },
     getRecoveryContextFreshness: () => {
       const snap = controller.snapshot();
-      return disposed || deferredViewPaint || controller.refreshing() || snap === null || snap.issues.length > 0
+      return disposed || deferredViewPaint || controller.refreshing() || snap === null || snap.issues.length > 0 || !taskBlockers.current() || !reminders.current()
         ? 'unavailable' : 'current';
     },
     whenLoaded: () => pending,

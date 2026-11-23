@@ -522,6 +522,10 @@ summary:focus-visible {
    owner's list of sites Recued must never use. */
 .sites-card {
   display: grid;
+  /* One column no wider than the card. An `auto` column grows to its widest row: Keep signed in's form, its
+     controls in one line, made the card wider than Chrome's side panel at its default width, and the card's
+     `overflow: hidden` cut off each site's Remove and the right of its text (D-347 follow-up 25). */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -549,11 +553,24 @@ summary:focus-visible {
   display: none;
 }
 
+/* Keep signed in's line saying a site signed the owner out anyway (D-347 follow-up 26): its words and weight carry
+   it, no new hue (tokens.css: success and warning carry meaning by glyph, label and weight). */
+.sites-signed-out {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .sites-row,
 .sites-add {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* A form's controls go on as many lines as a narrow side panel needs, rather than past its card. A site's row
+   stays one line: its name wraps, its Remove stays beside it. */
+.sites-add {
+  flex-wrap: wrap;
 }
 
 /* Keep signed in's days and hours show under their choice only: the rule above beats `hidden`. */
@@ -606,6 +623,38 @@ summary:focus-visible {
 .disconnect-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+/* A listed site's Remove, an × (D-347 follow-up 30): no border to see until it is pointed at or focused, and its whole
+   28 px square the target (WCAG 2.2 asks at least 24). The border is there, transparent, for the focus ring to colour,
+   and Windows' forced colours draw it. */
+.sites-remove {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--bridge-radius);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.sites-remove:hover:not(:disabled) {
+  background: var(--surface-sunk);
+  color: var(--fg);
+}
+
+.sites-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Where a site just removed stood: what its removal did, then its Undo. */
+.sites-undo .sites-name {
+  color: var(--fg-muted);
 }
 
 /* The Disconnect under the server's status: the button, then the question it asks first. */

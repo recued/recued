@@ -141,7 +141,7 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
       },
     };
   };
-  const assertActivationAuthority = (origin: PreapprovalOrigin, request: PreparePreapproval): void => {
+  const assertActivationAuthority = (origin: PreapprovalOrigin, request: Pick<PreparePreapproval, 'activation'>): void => {
     deps.authority.validateActivationPermission(origin, request.activation);
     if (origin.mode === 'contract' && request.activation.kind !== 'one_shot') {
       // Legacy automation rows have no original-contract owner. A schedule op
@@ -262,7 +262,15 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
       if (!deps.storage.isReady() || !deps.executionCapabilities().activation_kinds.includes('one_shot')) {
         throw new RpcError('preapproval_unsupported', 'The reviewed execution runtime is unavailable.', 503);
       }
-      const source = await deps.storage.repository.continuationSource(args.proposal_id, responder);
+      let source: Awaited<ReturnType<PreapprovalStorage['repository']['continuationSource']>>;
+      try { source = await deps.storage.repository.continuationSource(args.proposal_id, responder); }
+      catch (error) {
+        if (!(error instanceof RpcError) || error.code !== 'preapproval_expired') throw error;
+        const prior = await deps.storage.repository.retiredParentContinuation(args, responder);
+        if (!prior) throw error;
+        assertActivationAuthority(prior.origin, args);
+        return prior.result;
+      }
       const parent = source.plan;
       if (parent.request.subject.kind !== 'recipe') throw new RpcError('preapproval_unsupported', 'This execution needs a separate review.', 409);
       const request: PreparePreapproval = { idempotency_key: args.idempotency_key,

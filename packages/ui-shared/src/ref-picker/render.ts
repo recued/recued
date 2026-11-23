@@ -35,6 +35,8 @@ export const REF_PICKER_VALUE_ATTR = 'data-ref-picker-value';
 export const REF_PICKER_RECOVERY_ATTR = 'data-ref-picker-recovery';
 export const REF_PICKER_RECOVERY_MESSAGE_ATTR = 'data-ref-picker-recovery-message';
 export const REF_PICKER_RETRY_ATTR = 'data-ref-picker-retry';
+/** Host controls that retain the query when pointer focus leaves the input. */
+export const REF_PICKER_KEEP_QUERY_ATTR = 'data-ref-picker-keep-query';
 
 const listId = (pickerId: string): string => `ref-picker-list-${pickerId}`;
 
@@ -126,7 +128,7 @@ export const renderRefPickerResultRows = (
     ? statusRow(config.truncatedText ?? DEFAULT_TRUNCATED, ' ref-picker-status--truncated')
     : '';
   if (state.options.length === 0) {
-    return (state.retryableError === null ? statusRow(config.emptyText ?? DEFAULT_EMPTY) : '')
+    return (state.retryableError === null ? statusRow(state.emptyText ?? config.emptyText ?? DEFAULT_EMPTY) : '')
       + truncatedRow;
   }
   return state.options
@@ -175,10 +177,11 @@ const renderHiddenFormField = (
   config: RefPickerRenderConfig,
 ): string => {
   const value = e(state.selectedId ?? '');
+  const target = config.formRefTarget ? ` data-form-ref-target="${e(config.formRefTarget)}"` : '';
   if (config.formFieldName !== undefined) {
     return [
       `<input type="hidden" data-form-field="${e(config.formFieldName)}"`,
-      ` data-form-type="ref" ${REF_PICKER_VALUE_ATTR}`,
+      ` data-form-type="ref" ${REF_PICKER_VALUE_ATTR}${target}`,
       ` value="${value}" />`,
     ].join('');
   }
@@ -187,7 +190,7 @@ const renderHiddenFormField = (
     return [
       `<input type="hidden" data-form-array-item="${e(field)}"`,
       ` data-form-array-index="${e(String(index))}"`,
-      ` data-form-type="ref" ${REF_PICKER_VALUE_ATTR}`,
+      ` data-form-type="ref" ${REF_PICKER_VALUE_ATTR}${target}`,
       ` value="${value}" />`,
     ].join('');
   }

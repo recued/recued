@@ -41,6 +41,8 @@ import type { LocalUpdateInverse } from '../../local-update-undo-context.js';
 import { reverseLocalUpdate } from '@recued/recipes';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
+import { createCalendarMailLinkIndex } from './calendar-mail-links.js';
+import { EXCHANGE_OUTSIDE_ID_SQL } from './exchange-invite-uid.js';
 
 import {
   FTS_REINDEX_PAGE,
@@ -149,6 +151,13 @@ export const calendarRuleLearned = (before: CanonicalEvent, after: CanonicalEven
   changed.length === 1 && changed[0] === 'recurrence_rule' && after.recurrence_rule !== undefined
   && (before.recurrence_rule === undefined || before.recurrence_rule.startsWith('GRAPH:'));
 
+/** D-407 Q8 — a private marking Recued newly reads is no change to the event either: the first scan
+ *  after the update lists each event its calendar marks private with the marking it always had. The
+ *  owner marking one private at the provider changes its `updated_at` too, so that is still a change,
+ *  and so is a marking taken off. */
+export const calendarMarkingLearned = (before: CanonicalEvent, after: CanonicalEvent, changed: readonly string[]): boolean =>
+  changed.length === 1 && changed[0] === 'marked_private' && before.marked_private === undefined && after.marked_private === true;
+
 export const calendarEventChanges = (before: CanonicalEvent, after: CanonicalEvent): string[] => {
   const a = JSON.parse(JSON.stringify(before)) as Record<string, unknown>;
   const b = JSON.parse(JSON.stringify(after)) as Record<string, unknown>;
@@ -241,10 +250,17 @@ export interface CalendarSearchMatch {
   record_id: string;
   /** D-336 (spec §56) — the provider's own id, the one a write takes (`calendar.update`). */
   source_id: string;
+  /** When the warehouse first stored the event, kept across replaces: with `record_id`, the row's identity.
+   *  ⛔ `collection.searchAll` dropped it, and "Add records" refuses a match without one ("Invalid
+   *  identity"), so on a real server no event could be added from a search; the browser specs' server
+   *  sent one (D-406, found by the release drive 2026-11-20). */
+  received_at: number;
   hot: CalendarRecordHotFields;
   rank: number;
   body?: string;
   body_truncated?: boolean;
+  /** D-407 Q8 — the event's own calendar marks it private (`CanonicalEvent.marked_private`). */
+  marked_private?: true;
 }
 
 export interface CalendarCollectionTable {
@@ -277,6 +293,8 @@ export interface CalendarCollectionTable {
    *  (current + prior payloads + inline body + etag), so a reader gets
    *  `prior` without a second round-trip per event. */
   listSnapshots(query: CalendarListQuery): CalendarRowSnapshot[];
+  /** Indexed explicit links to one mailbox-qualified email, newest changes first. */
+  listMailLinks(target: import('@recued/contracts').SavedWorkAddress, limit: number): CalendarRowSnapshot[];
   /** FTS5 search over summary + description + location. */
   search(query: CalendarSearchQuery): CalendarSearchMatch[];
   /** Each plain word of a search checked against this calendar's index — see
@@ -286,6 +304,10 @@ export interface CalendarCollectionTable {
    *  midnight, or an end not after the start (`calendar-days.ts`). Rows
    *  written before every write was held to the rule (2026-10-07). */
   listAllDayOffDays(): CalendarRowSnapshot[];
+  /** Rows whose UID is still Exchange's id for a meeting from outside
+   *  (`inviteUidFromExchangeId`): Outlook events stored before the Graph
+   *  mapping read the invite's UID out of it (2026-11-22). */
+  listExchangeOutsideIds(): CalendarRowSnapshot[];
 
   /** Metadata-only exact participant aggregate. Matches any supplied canonical
    * or merged email as organizer/attendee, excludes cancelled events, and
@@ -370,7 +392,7 @@ export interface CreateCalendarTableOptions {
 
 /** Per-event and whole-result-set body caps — the calendar twins of
  *  `SEARCH_BODY_MAX_CHARS` / `SEARCH_BODY_TOTAL_CHARS` in `collections/table.ts`. */
-const CALENDAR_BODY_MAX_CHARS = 2000;
+export const CALENDAR_BODY_MAX_CHARS = 2000;
 const CALENDAR_BODY_TOTAL_CHARS = 12000;
 
 interface Row {
@@ -701,6 +723,7 @@ export const createCalendarTable = (
     recordLocalMutation(db, 'local_calendar', review, inverse);
   };
 
+  const mailLinks = createCalendarMailLinkIndex(db, tableName);
   const upsert = (input: CalendarUpsertInput): CalendarRowSnapshot | null => {
     validateUpsert(input);
     const now = input.now ?? Date.now();
@@ -761,6 +784,7 @@ export const createCalendarTable = (
       prior_payload,
     });
 
+    mailLinks.replace(record_id, event.description ?? '');
     if (body_inline !== null && body_inline !== '') {
       ftsIndexRecord(db, ftsName, record_id, ftsTextFor(event, body_inline));
     } else {
@@ -909,6 +933,11 @@ export const createCalendarTable = (
     return rows.map(rowToSnapshot);
   };
 
+  const listExchangeOutsideIds = (): CalendarRowSnapshot[] => {
+    const rows = db.prepare(`SELECT * FROM ${tableName} WHERE ${EXCHANGE_OUTSIDE_ID_SQL}`).all() as Row[];
+    return rows.map(rowToSnapshot);
+  };
+
   const search = (query: CalendarSearchQuery): CalendarSearchMatch[] => {
     const limit = calendarListLimit(query.limit);
     // FTS5 MATCH parses its argument as a query expression, so a raw query
@@ -1002,9 +1031,11 @@ export const createCalendarTable = (
         return {
           record_id: m.key,
           source_id: row.source_id,
+          received_at: row.received_at,
           hot: rowHotFields(row),
           rank: m.rank,
           ...body,
+          ...((JSON.parse(row.record_payload) as CanonicalEvent).marked_private === true ? { marked_private: true as const } : {}),
         };
       })
       .filter((x): x is CalendarSearchMatch => x !== null);
@@ -1097,6 +1128,7 @@ export const createCalendarTable = (
   };
 
   const dropSchema = (): void => {
+    mailLinks.drop();
     dropFtsTable(db, ftsName);
     db.exec(`DROP TABLE IF EXISTS ${tableName}`);
   };
@@ -1110,6 +1142,7 @@ export const createCalendarTable = (
     stat,
     list,
     listSnapshots,
+    listMailLinks: (target, limit) => mailLinks.list(target, limit).map(row => rowToSnapshot(row as Row)),
     search,
     checkSpelling: (query: string): FtsWordCheck[] => checkQuerySpelling(db, ftsName, query),
     summarizeParticipant,
@@ -1118,6 +1151,7 @@ export const createCalendarTable = (
     eventCount,
     upcomingCount,
     listAllDayOffDays,
+    listExchangeOutsideIds,
     overlapCount,
     pruneOlderThan,
     dropSchema,

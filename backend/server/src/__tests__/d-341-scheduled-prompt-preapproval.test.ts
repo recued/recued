@@ -443,9 +443,10 @@ describe('D-341 — the chat\'s approval card offers "Always allow for this sche
       answerHeldPlanAsk: async (_run_id: string, option: string) => { answers.push(option); return 'ignored' as const; },
     } as unknown as ChatRpcDeps;
     await expect(handlePlanApprove(deps, { plan_id: 'plan-1', always_allow: true })).rejects.toMatchObject({
-      code: 'bad_request', message: expect.stringContaining('does not offer to always allow it; say yes once instead'),
+      code: 'bad_request', message: expect.stringContaining(`no longer offers "${ALWAYS}"; say yes once instead`),
     });
-    expect(answers).toEqual(['allow_trigger']);
+    // The second answer by its card's name: the answerer sends the one the open ask offers.
+    expect(answers).toEqual(['allow_offered']);
   });
 
   it('a plain card, with no hold, refuses it and stays as it is', async () => {
@@ -482,13 +483,13 @@ describe('D-341 — the card\'s answerer gives "allow_trigger" only to an ask th
   it('offered, it answers it after the owner\'s change is written; not offered, nothing is written or answered', async () => {
     const offered = blockWith(['approve', 'allow_trigger', 'deny']);
     const changes: string[] = [];
-    expect(await createHeldPlanAskAnswerer(offered.block)('run-1', 'allow_trigger', async () => { changes.push('written'); }))
+    expect(await createHeldPlanAskAnswerer(offered.block)('run-1', 'allow_offered', async () => { changes.push('written'); }))
       .toBe('answered');
     expect(offered.submitted).toEqual(['allow_trigger']);
     expect(changes).toEqual(['written']);
 
     const plain = blockWith(['approve', 'deny']);
-    expect(await createHeldPlanAskAnswerer(plain.block)('run-1', 'allow_trigger', async () => { changes.push('again'); }))
+    expect(await createHeldPlanAskAnswerer(plain.block)('run-1', 'allow_offered', async () => { changes.push('again'); }))
       .toBe('ignored');
     expect(plain.submitted).toEqual([]);
     expect(changes).toEqual(['written']);

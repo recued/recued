@@ -1,8 +1,8 @@
 import { setImmediate } from 'node:timers/promises';
 import {
-  assetDateAt, calendarDayMs, dueSpan, eventSpanIn, evaluateAssetRuleClock, getMailFactBuiltinType, nextAnnualDate, occasionNextDate, isDateOnlyDue, contactExcludedFromProactive, isContactAnnualDate,
+  assetDateAt, calendarDayMs, dueSpan, eventSpanIn, evaluateAssetRuleClock, getMailFactBuiltinType, nextAnnualDate, occasionNextDate, occasionTimeOn, occasionWaitingForNext, isDateOnlyDue, contactExcludedFromProactive, isContactAnnualDate,
   shiftAssetDate, type Asset, type ContactRecord, type MailFactThing, type Occasion, type SituationFact, type SituationPlace, type SituationQuery, type SituationRef, type Sphere,
-  type WorkEntity,
+  type WorkEntity, type AssetReading, type BodyGoal, type BodyGoalProgress,
 } from '@recued/contracts';
 import { ASSET_TABLE, BOOKING_TABLE, COMMITMENT_TABLE, NOTE_TABLE, TASK_TABLE, type WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
@@ -18,12 +18,17 @@ import { createTripDetailsStore, tripFromSource } from '../storage/trip-details-
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { declaredOccasionId } from './declared-occasions.js';
+/** D-407 slice 2 — the kind of an occasion's "When is the next one?" item. Today asks it in a section of its own. */
+export const OCCASION_NEXT_KIND = 'occasion_next';
 import { assetRuleTimings, isTravelDocument, isVisa } from './asset-rule-timing.js';
 import { situationAssetDetails } from './asset-details.js';
+import { bodyGoalProgress } from './body-goals.js';
+import { bodyRangeStates, bodyRangeStateTitle } from './body-range-states.js';
 import { rememberAssetDetailsRead } from './asset-projection-provenance.js';
 import { placeCountry } from './country-place.js';
 import { ruleStatement } from './rule-titles.js';
-import { ASSET_SEARCH_TERMS, PURSUIT_CLASS_ID } from '@recued/contracts';
+import { bookingInviteUid, occasionOwningEvent, occasionOwningInvite } from './occasion-calendar-sync.js';
+import { ASSET_SEARCH_TERMS, BODY_CLASS_ID, BODY_RANGES_SETTING, PURSUIT_CLASS_ID } from '@recued/contracts';
 import { assetSearchTermsFromJson, readAssetTypeSearchTerms } from '../asset-search-terms.js';
 
 const PAGE = 500;
@@ -55,7 +60,12 @@ export interface SituationSourcesDeps {
    * fallback is an exact normalized label, never an invented city. */
   place?: (value: string) => SituationPlace | undefined;
   sphere?: (ref: SituationRef, source_key: string) => Sphere | undefined;
+  /** D-339 slice 15 — a Body reading's days in Records (`asset-reading-days.ts`), as Yours reads them, so
+   *  a body goal's progress here is the one its page shows. Absent: the reading's own history. */
+  readingDays?(asset: Asset, field: string, limit: number, since: number): ReadonlyArray<AssetReading & { day: string }> | undefined;
 }
+/** D-339 slice 17 — a range state holds while it holds: re-read each time, it has no end of its own. */
+const RANGE_STATE_OPEN_END = 8.64e15;
 export const buildSituationSources = (deps: SituationSourcesDeps): SituationSource[] => {
   const now = deps.now ?? Date.now;
   const occurrences = createAssetOccurrenceStore(deps.db);
@@ -63,9 +73,22 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   const trips = createTripDetailsStore(deps.db);
   const proposals = createProactiveProposalStore(deps.db);
   const history = createProactiveHistoryStore(deps.db, proposals);
+  // D-407 slice 4c — an occasion's own event names its occasion, so the two are one situation, one line in Today.
+  const ownerOf = occasionOwningEvent(deps.db);
+  // D-407 slice 5 (§10.2, U2) — the booking an emailed invite made joins the occasion holding the invite's event.
+  const ownerOfInvite = occasionOwningInvite(deps.db);
   /** D-343 slice 5 (§5) — the days of the last week, on the owner's clock, that they recorded doing or
    * skipping a pursuit, newest first, as its weekday and date ("Thu 2026-11-05"); a day with both is
    * done. None recorded: nothing, since a day they did not record is unknown, never one they missed. */
+  /** D-339 slice 15 — a body goal's progress from its Body, for the pursuit's details. A Body that cannot
+   *  be read leaves the goal showing what it keeps. */
+  const goalProgressOf = (pursuit: Asset) => (goal: BodyGoal): BodyGoalProgress | undefined => {
+    try {
+      const body = deps.work.readAsset(goal.asset_id);
+      return bodyGoalProgress(pursuit, goal, body, (field, limit, since) => (body ? deps.readingDays?.(body, field, limit, since) : undefined)
+        ?? deps.work.assetReadingHistory(goal.asset_id, field, limit, since), now(), deps.timeZone());
+    } catch { return undefined; }
+  };
   const recordedDays = (id: string): SituationFact['recorded'] => {
     const zone = deps.timeZone(); const first = shiftAssetDate(assetDateAt(now(), zone), { amount: 6, unit: 'days' }, -1);
     const days = new Map<string, 'done' | 'skipped'>();
@@ -154,6 +177,10 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
           item.when = { from: row.slot_start_at, to: row.slot_end_at }; item.act_by = row.slot_start_at; item.valid_until = row.slot_end_at;
         }
         if (row.counterparty_contact_id) item.people.push(row.counterparty_contact_id);
+        // D-407 slice 5 (U2) — one appointment with the occasion that holds the same invite's event.
+        const invite = bookingInviteUid(row.source_extension_blob);
+        const inviteOwner = invite === undefined ? undefined : ownerOfInvite(invite);
+        if (inviteOwner) item.subjects.push({ collection: 'occasion', id: inviteOwner });
         item.trip = trips.get(ref) ?? tripFromSource(ref, row.source_extension_blob);
         if (item.trip?.travellers.length) item.people = item.trip.travellers;
       } else if (row._kind === 'note') {
@@ -249,6 +276,17 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       if (occasion.muted || occasion.source_active === false || occasion.people.some(id => {
         const contact = deps.contacts?.getByContactIdResolved(id) ?? deps.contacts?.get(id); return contact && contactExcludedFromProactive(contact);
       })) return;
+      // D-407 slice 2 — one that comes back whenever the last one says, past and with no next date: asked "When is the
+      // next one?" on each day read until it is answered. Its privacy is the occasion's (`privateRecord`).
+      const waiting = occasionWaitingForNext(occasion, today);
+      if (waiting !== undefined) {
+        const next = fact({ collection: 'occasion', id: occasion.id, field: 'next' }, `When is the next one? · ${occasion.title}`, OCCASION_NEXT_KIND, occasion.updated_at);
+        next.when = span(calendarDayMs(today)!); next.when_day = today; next.act_by = next.when.from;
+        next.subjects = [{ collection: 'occasion', id: occasion.id }]; next.people = occasion.people; next.place = occasion.where;
+        next.evidence = [{ collection: 'occasion', id: occasion.id }];
+        result.push(scope(next, `occasion:${occasion.id}`, occasion.sphere));
+        return;
+      }
       const on = occasionNextDate(occasion, today); if (!on) return;
       const when = span(calendarDayMs(on)!);
       if (history.suppressed({ ...occasion, when }, suppressions)) return;
@@ -273,7 +311,12 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
         const country = placeCountry(occasion.where);
         if (country) item.trip = { subject: ref, travellers: [], destination_country: country };
         item.evidence = [{ ...ref, field: `rules.${rule.id}` }, ...(occasion.source ? [occasion.source] : [])];
-        if (clock.due_on) { item.when = span(calendarDayMs(clock.due_on)!); item.when_day = clock.due_on; }
+        if (clock.due_on) {
+          // D-407 slice 2 (Q2) — on its own day, one with a time of day is at that time ("10:30 Dr. Lee"), for an hour.
+          const at = clock.due_on === on ? occasionTimeOn(occasion, on) : undefined;
+          if (at !== undefined) item.when = { from: at, to: at + 3_600_000 };
+          else { item.when = span(calendarDayMs(clock.due_on)!); item.when_day = clock.due_on; }
+        }
         if (clock.act_by) item.act_by = span(calendarDayMs(clock.act_by)!).from;
         if (commitment && context?.grants.isVerbOpGranted('core.work-entity.read') && context.grants.isCollectionReadGranted('commitment')) item.represents = { collection: 'commitment', id: commitment.id };
         else if (rule.id === 'date' && occasion.source) item.represents = occasion.source;
@@ -345,7 +388,7 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       const base = fact(subject, asset.name, 'asset', asset.updated_at);
       base.subjects = [subject]; base.people = asset.holder_contact ? [asset.holder_contact] : [];
       // Every item this asset produces carries its own fields, whatever its class.
-      base.details = situationAssetDetails(asset);
+      base.details = situationAssetDetails(asset, goalProgressOf(asset));
       if (query.surface === 'tool' || query.surface === 'prefetch' && context?.citeAssetDetails === true) rememberAssetDetailsRead(asset, base.details, now());
       if (isTravelDocument(asset)) base.travel_document = {
         ...(asset.holder_contact ? { holder: asset.holder_contact } : {}), issued_on: asset.dates.issued_on, expires_on: asset.dates.expires_on,
@@ -384,6 +427,20 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
         if (clock.question) item.missing = true;
         result.push(scope(item, `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
       }
+      // D-339 slice 17 — a reading outside the owner's own range is a state, as the summary's are: shown while
+      // it holds, at the top of Today and in the daily stream. Worked out on this read, never written.
+      if (asset.class_id === BODY_CLASS_ID) {
+        const history = (field: string, limit: number, since: number) => deps.readingDays?.(asset, field, limit, since)
+          ?? deps.work.assetReadingHistory(asset.id, field, limit, since);
+        for (const state of bodyRangeStates(asset, history, now(), deps.timeZone())) {
+          const field = `readings.${state.field}`;
+          result.push(scope({ ...base, ref: { ...subject, field }, kind: 'asset_state', title: bodyRangeStateTitle(state, asset.name),
+            context: { root: { kind: 'field' as const, asset_id: asset.id, group: 'readings' as const, field: state.field } },
+            when: { from: state.reading.as_of, to: RANGE_STATE_OPEN_END }, consequence: 'routine',
+            evidence: [{ ...subject, field }, { ...subject, field: `settings.${BODY_RANGES_SETTING}` }] },
+          `work:${asset.source_id}`, asset.sphere_override ?? asset.sphere));
+        }
+      }
       // D-342 §5 — for the read that asks for them, a pursuit is itself an item: what the owner is
       // working toward, with its own fields, beside the window. Nothing else reads it so.
       // D-343 slice 5 — with the days of the last week the owner recorded it, done or skipped.
@@ -417,6 +474,9 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
   const pursuits = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE class_id=? AND status IN ('active','lent')
     AND deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`);
   const changed = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE updated_at>?`);
+  // D-339 slice 17 — a Body with the owner's own ranges: its range states are worked out on read, so no clock finds it.
+  const rangedBodies = deps.db.prepare(`SELECT id FROM ${ASSET_TABLE} WHERE class_id=? AND status IN ('active','lent')
+    AND deleted_at IS NULL AND sync_state IN ('live','stale_unreachable') AND json_extract(data_blob,'$.settings.${BODY_RANGES_SETTING}') IS NOT NULL`);
   const assetNames = deps.db.prepare(`SELECT id,name,class_id,json_quote(json_extract(data_blob,'$.attributes.${ASSET_SEARCH_TERMS}')) AS terms
     FROM ${ASSET_TABLE} WHERE deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`);
   assets.textMatcher = query => {
@@ -449,6 +509,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       if (query.changed_since !== undefined) for (const row of changed.all(query.changed_since) as { id: string }[]) ids.add(row.id);
       // D-342 §5 — the owner's active pursuits, whatever the window: they have no clock to find them by.
       if (query.include_pursuits === true) for (const row of pursuits.all(PURSUIT_CLASS_ID) as { id: string }[]) ids.add(row.id);
+      // D-339 slice 17 — and every Body with ranges, whatever the window; the prefetch finds a Body by its name.
+      if (query.surface !== 'prefetch') for (const row of rangedBodies.all(BODY_CLASS_ID) as { id: string }[]) ids.add(row.id);
       return ids;
     },
     // A trip check lists its travellers' visas, so they are read whatever the window.
@@ -481,6 +543,8 @@ export const buildSituationSources = (deps: SituationSourcesDeps): SituationSour
       item.people = row.event.attendees?.flatMap(person => person.email ? [person.email] : []) ?? [];
       item.trip = trips.get(item.ref) ?? undefined;
       if (item.trip?.travellers.length) item.people = item.trip.travellers;
+      const owner = ownerOf(slug, row.event.source_id);
+      if (owner) item.subjects.push({ collection: 'occasion', id: owner });
       result.push(scope(item, `calendar:${slug}:${row.hot.calendar_id}`));
     };
     if (only) {

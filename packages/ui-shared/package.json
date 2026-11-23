@@ -43,5 +43,8 @@
     "build": "tsc --build",
     "generate:tokens": "node scripts/generate-tokens-css.mjs",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "marked": "^18.1.2"
   }
 }

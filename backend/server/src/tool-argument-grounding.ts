@@ -41,6 +41,7 @@
  *  GROUND the placeholder, and a model echoing a placeholder back is the
  *  failure being caught, not an excuse for it. */
 import { isCsvSchemaArgument } from './csv-schema-grounding.js';
+import { parseBrowserDataStep } from '@recued/contracts';
 const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\[.+\]$/, 'bracketed placeholder'],
   [/^\{\{.+\}\}$/, 'template placeholder'],
@@ -67,9 +68,11 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
  *  must not ground it, because echoing one back IS the failure. */
 const RESERVED_DOMAIN = /@(example|test|invalid|localhost)\.(com|org|net|test)$/i;
 
-const IDENTIFIER_FIELDS =
+/** The argument fields whose values name someone or something. D-348 pins a call's values in
+ *  these fields (`chain-signature.ts`), so both read one list. */
+export const IDENTIFIER_FIELDS =
   /^(email|address|to|cc|bcc|from|sender|recipient|.*_id|id|entity_id|contact_id|deal_id|slug|handle|username|phone)$/i;
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const OPAQUE_ID_SHAPE = /^[a-z][a-z0-9]*([_-][a-z0-9]+)*[_-]\d{3,}$/i;
 
 /** ⛔ Short and structural values are EXCLUDED, not counted as grounded. A
@@ -93,6 +96,57 @@ const SKIP_LEAVES = /^(recipe_id|tool|name|kind|type|status|channel|surface)$/;
  *  a step whose kind is `go`, an http or https value. Every other `address` stays an identifier,
  *  so a mail address is still checked, and so is a `go` to anything that is not a web address. */
 const BROWSER_BATCH_TOOL = /(^|\/|__)act-on-web-page$/;
+/** Browser selectors/search text are local syntax. Pure data literals belong
+ * to the bounded interpreter. Actual identities, routing and typed form values
+ * retain ordinary grounding. Global identifier rules still match the substrate
+ * scorer; these exemptions require the host's Tier-2 binding schema. */
+const isBrowserLanguageValue = (schema: unknown, args: unknown, path: string, value: string,
+  validPlans: WeakMap<object, boolean>): boolean => {
+  if (!args || typeof args !== 'object') return false;
+  // The marker comes from actual core.dom.act op binding in host catalog
+  // projection. Tool names and model-authored argument markers are insufficient.
+  const properties = schema && typeof schema === 'object' ? (schema as { properties?: unknown }).properties : undefined;
+  if (!properties || typeof properties !== 'object') return false;
+  const direct = (properties as Record<string, unknown>)[path];
+  if (direct && typeof direct === 'object'
+    && ['selector', 'text'].includes(String((direct as Record<string, unknown>)['x-recued-browser-argument']))) return true;
+  const at = /^([A-Za-z0-9_]+)\[(\d+)\](.*)$/.exec(path);
+  if (!at) return false;
+  const property = properties && typeof properties === 'object' ? (properties as Record<string, unknown>)[at[1]!] : undefined;
+  const items = property && typeof property === 'object' ? (property as { items?: unknown }).items : undefined;
+  if (!items || typeof items !== 'object' || (items as Record<string, unknown>)['x-recued-browser-data'] !== true) return false;
+  const steps = (args as Record<string, unknown>)[at[1]!];
+  const step: unknown = Array.isArray(steps) ? steps[Number(at[2])] : undefined;
+  if (!step || typeof step !== 'object' || Array.isArray(step)) return false;
+  const data = step as Record<string, unknown>;
+  const suffix = at[3]!;
+  if (data.do === 'data') {
+    if (!validPlans.has(data)) validPlans.set(data, parseBrowserDataStep(data).ok);
+    if (!validPlans.get(data)) return false;
+    if (/^\.(?:select|return)\[\d+\]$/.test(suffix)) return true;
+    const operation = /^\.pipeline\[(\d+)\]\.(.+)$/.exec(suffix);
+    if (!operation) return false;
+    const op = (data.pipeline as Record<string, unknown>[])[Number(operation[1])]!;
+    const parameter = operation[2]!;
+    if (/^(?:id|field|output_field|group_as|key|with_key)$/.test(parameter)
+      || /^(?:fields|columns|left_keys|right_keys|keys)\[\d+\]$/.test(parameter)
+      || /^(?:conditions|fields)\[\d+\]\.field$/.test(parameter) || /^aggregate\..+\.field$/.test(parameter)
+      || op.transform === 'rename' && /^mapping\..+/.test(parameter)) return true;
+    if (['filter', 'find', 'partition'].includes(String(op.transform))
+      && /^(?:value|conditions\[\d+\]\.value)(?:\.|\[|$)/.test(parameter)) return true;
+    if (['map', 'project'].includes(String(op.transform)) && /^expression(?:\.|\[|$)/.test(parameter) && value.includes('{{')) return true;
+    // Descriptive constants are authored. A newly invented identity constant
+    // must not acquire source authority simply by returning it from a data op.
+    return !isIdentifier(path, value);
+  }
+  if (typeof data.do !== 'string') return false;
+  if (/^\.(?:selector|then_read)$/.test(suffix)) return ['type', 'click', 'press', 'submit', 'wait', 'read', 'table', 'scroll', 'hover', 'download', 'upload', 'go', 'back', 'reload'].includes(data.do);
+  if (/^\.(?:success_when|fail_when)\.(?:shows|gone|text)$/.test(suffix)) return ['type', 'click', 'press', 'submit', 'wait'].includes(data.do);
+  if (suffix === '.find' && data.do === 'read' || suffix === '.question' && data.do === 'ask') return true;
+  if (suffix === '.text') return ['type', 'click', 'press', 'submit', 'wait', 'scroll', 'hover', 'download', 'upload'].includes(data.do);
+  return data.do === 'collect' && (/^\.(?:items|next\.(?:selector|text)|where\.(?:field|equals)|dedupe_by\[\d+\])$/.test(suffix)
+    || /^\.fields\..+/.test(suffix));
+};
 const isBrowserGoAddress = (tool: string | undefined, args: unknown, path: string, value: string): boolean => {
   if (tool === undefined || !BROWSER_BATCH_TOOL.test(tool) || !/^https?:\/\//i.test(value.trim())) return false;
   const at = /^steps\[(\d+)\]\.address$/.exec(path);
@@ -173,7 +227,27 @@ export interface UngroundedArgument {
   value: string;
   /** Which rule fired — a placeholder-pattern label, or `ungrounded`. */
   why: string;
+  /** D-343 (the owner's day, 2026-11-14) — an ungrounded identifier's near twin in the packet: a
+   *  value of its length, one or two characters apart. The model miscopied a pursuit's ~90-character
+   *  id by one character, and spent two model calls (and a refusal) finding it again. Only ever a
+   *  value the model was itself shown. */
+  near?: string;
 }
+
+/** The packet's one token of `value`'s length one or two characters from it, for an identifier long
+ *  enough that a miscopy is likelier than an invention; undefined when there is none, or several. */
+const nearTwinIn = (value: string, packet: string): string | undefined => {
+  if (value.length < 20) return undefined;
+  const twins = new Set<string>();
+  for (const [token] of packet.matchAll(/[A-Za-z0-9_.:-]+/gu)) {
+    if (token.length !== value.length || token === value) continue;
+    let apart = 0;
+    for (let i = 0; i < token.length && apart <= 2; i += 1) if (token[i] !== value[i]) apart += 1;
+    if (apart <= 2) twins.add(token);
+    if (twins.size > 1) return undefined;
+  }
+  return twins.size === 1 ? [...twins][0] : undefined;
+};
 
 const leaves = (node: unknown, path = ''): Array<[string, string]> => {
   if (typeof node === 'string') return [[path, node]];
@@ -201,6 +275,15 @@ const isIdentifier = (path: string, value: string): boolean =>
   || EMAIL_SHAPE.test(value)
   || OPAQUE_ID_SHAPE.test(value)
   || RESERVED_DOMAIN.test(value);
+
+/** Identifier values explicitly carried in the arguments of a host-verified
+ * completed action. Freeform text, receipt metadata and result payloads do not
+ * acquire identifier authority merely by accompanying that action. This is a
+ * grounding-corpus projection, not a tool result or an authorization grant. */
+export const identifierArgumentValues = (args: unknown): readonly string[] =>
+  [...new Set(leaves(args)
+    .filter(([path, value]) => isCheckable(path, value) && IDENTIFIER_FIELDS.test(leafOf(path)))
+    .map(([, value]) => value))];
 
 /** ⛔ A COMPOSED QUERY IS NOT A FABRICATION. Calibrating this check against
  *  6500 live model tool calls surfaced exactly one false-positive shape, three
@@ -461,10 +544,11 @@ const isLiteralWordText = (path: string, value: string): boolean => !isIdentifie
 export const ungroundedArgumentsInCall = (
   args: unknown,
   packet: string,
-  context?: { tool: string; packet: string },
+  context?: { tool: string; packet: string; argument_schema?: unknown },
 ): UngroundedArgument[] => {
   const lower = packet.toLowerCase();
   const found: UngroundedArgument[] = [];
+  const validBrowserPlans = new WeakMap<object, boolean>();
   for (const [path, value] of leaves(args)) {
     if (!isCheckable(path, value)) continue;
     // See `isInsideInlineRecipe`: inside a recipe DEFINITION, a template ref is
@@ -475,7 +559,8 @@ export const ungroundedArgumentsInCall = (
       continue;
     }
     // See `isBrowserGoAddress`: the page a browser step goes to.
-    if (isBrowserGoAddress(context?.tool, args, path, value)) continue;
+    if (isBrowserGoAddress(context?.tool, args, path, value)
+      || isBrowserLanguageValue(context?.argument_schema, args, path, value, validBrowserPlans)) continue;
     const form = PLACEHOLDER_PATTERNS.find(([re]) => re.test(value))?.[1];
     if (form === 'schema field as value' && context
       && isCsvSchemaArgument(context.tool, args, path, value, context.packet)) continue;
@@ -484,7 +569,8 @@ export const ungroundedArgumentsInCall = (
     if (form !== undefined) {
       found.push({ path, value, why: form });
     } else if (isIdentifier(path, value) && !isGrounded(value, lower)) {
-      found.push({ path, value, why: 'ungrounded' });
+      const near = nearTwinIn(value, packet);
+      found.push({ path, value, why: 'ungrounded', ...(near !== undefined ? { near } : {}) });
     }
   }
   return found;
@@ -538,8 +624,12 @@ export const ungroundedArgumentsDetail = (
       + ' tool calls, that call has not returned yet: wait for its result, then send this call'
       + ` again with the real value. Do not substitute a guess for ${one ? 'the placeholder' : 'a placeholder'}.`;
   }
-  return `Not dispatched: ${list} — ${one ? 'that value was' : 'those values were'} not in`
-    + ' anything you have been given. Run the step that returns'
+  // D-343 — a miscopy of a value it was shown: name the value, so the retry needs no lookup.
+  const twins = found.filter((f) => f.near !== undefined)
+    .map((f) => ` \`${f.path}\`: the evidence has ${JSON.stringify(f.near)}, a character or two from it; if that is the one, send it.`).join('');
+  return `Not dispatched: ${list} — ${one ? 'that value was' : 'those values were'}`
+    + ` not found in eligible source evidence for this call.${twins} This does not mean the identifier is invalid.`
+    + ' An original user request or a lookup/recall result can supply the evidence. Run the step that returns'
     + ` ${one ? 'it' : 'them'} first, wait for the result, then`
     + ' call this tool with the value from that result. Do not guess an'
     + ' identifier, and do not send a placeholder.';

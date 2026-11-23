@@ -89,7 +89,9 @@ describe('D-343 slice 1 — the chat changes a booking', () => {
   });
   it('says the visitor was not told when a reception booking is moved or cancelled, and only then', async () => {
     const f = harness();
-    const NOTE = 'Its visitor booked it through the user\'s reception page and has not been told. Say so.';
+    const NOTE = 'Its visitor booked it through the user\'s reception page and has not been told. Say so, and ask the user whether '
+      + 'to tell them. If they want to, call "tools.search" for "tell a booking\'s visitor about a change" and run it with this '
+      + 'booking\'s id and a short message for the visitor; it asks the user before it sends.';
     const visit = await f.book('Consultation', { reception_record_id: 'submission-1' });
     expect(await f.update({ kind: 'booking', id: visit.id, starts_at: '2026-11-12T10:00+00:00' }, approved)).toMatchObject({ result: { note: NOTE } });
     expect(await f.update({ kind: 'booking', id: visit.id, state: 'cancelled' }, approved)).toMatchObject({ result: { note: NOTE } });

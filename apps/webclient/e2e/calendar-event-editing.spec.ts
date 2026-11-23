@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { clickActionGlyph } from './helpers/action-glyph.js';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 import { installCalendarEventFixture, type CalendarEventFixtureMode } from './helpers/calendar-event-fixture.js';
+import { installSearchEverywhereFixture } from './helpers/search-everywhere-fixture.js';
 
 installFullAppHooks();
 // The browser is away from the event's zone: every edit must still use LA.
@@ -48,6 +49,28 @@ test('previews overlaps while editing without replacing the focused time input o
   await preview.getByText('Show 9 more saved events', { exact: true }).click();
   await expect(preview.locator('.calendar-overlap-events > li:visible')).toHaveCount(12);
   await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
+});
+
+test('saves a pointer click when overlap results arrive before the pointer is released', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => window.__calendarOverlap.holdNext());
+  await page.getByRole('button', { name: 'Edit event', exact: true }).click();
+  await field(page, 'summary').fill('Save during overlap check');
+  await expect.poll(() => page.evaluate(() => window.__calendarOverlap.pending())).toBe(true);
+  await page.evaluate(() => window.__calendarEvent.holdNextSave());
+  const save = page.getByRole('button', { name: 'Save changes', exact: true });
+  await save.scrollIntoViewIfNeeded();
+  const bounds = await save.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => window.__calendarOverlap.release());
+  await expect(page.getByRole('region', { name: 'Other events at this time', exact: true })).toContainText('Design review');
+  await page.mouse.up();
+  await expect(page.getByRole('button', { name: 'Saving…', exact: true })).toBeFocused();
+  expect(await page.evaluate(() => window.__calendarEvent.writes.length)).toBe(1);
+  await page.evaluate(() => window.__calendarEvent.releaseSave());
+  await expect(page.getByRole('button', { name: 'Edit event', exact: true })).toBeVisible();
 });
 
 test('retires old overlap results and permits saving when an advisory read fails', async ({ page }) => {
@@ -164,6 +187,8 @@ test('creates an event in the chosen connected calendar and returns to its agend
   await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#data/calendar'));
+  await page.getByRole('searchbox', { name: 'Search this week', exact: true }).fill('Customer');
+  await expect(page.locator('#calendar-search-status')).toHaveText('1 matching saved event in this week.');
   await page.getByRole('button', { name: 'New event', exact: true }).click();
   const form = page.getByRole('region', { name: 'New event', exact: true });
   await expect(form.getByLabel('Title', { exact: true })).toBeFocused();
@@ -218,6 +243,7 @@ test('creates an event in the chosen connected calendar and returns to its agend
     start_at: Date.parse('2026-11-05T07:00:00Z'), end_at: Date.parse('2026-11-05T08:00:00Z'), timezone: 'Asia/Tokyo', is_all_day: false });
   await page.getByRole('button', { name: '← Back', exact: true }).click();
   await expect(page.getByLabel('Agenda start date')).toHaveValue('2026-11-05');
+  await expect(page.getByRole('searchbox', { name: 'Search this week', exact: true })).toHaveValue('');
   await expect(page.getByRole('button', { name: /Project planning/ })).toBeVisible();
 });
 
@@ -366,7 +392,8 @@ test('preserves a failed draft and guards Back and collection navigation until i
   await expect(page.getByRole('button', { name: 'Saving…', exact: true })).toBeFocused();
   await page.evaluate(() => window.__calendarEvent.releaseSave(true));
   await expect(page.getByRole('alert')).toContainText('interrupted');
-  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Check saved event', exact: true })).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeDisabled();
   await expect(field(page, 'summary')).toHaveValue('Keep my draft');
   page.once('dialog', dialog => { void dialog.dismiss(); });
   await page.evaluate(() => window.__app.setHash('#chat'));
@@ -378,7 +405,7 @@ test('preserves a failed draft and guards Back and collection navigation until i
   await page.keyboard.press('Tab');
   await expect(page.getByRole('button', { name: 'Keep editing', exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
-  await expect(field(page, 'description')).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Check saved event', exact: true })).toBeFocused();
   await expect(field(page, 'description')).toHaveValue('Draft notes to keep.');
   await page.locator('[data-recued-data-route-tab="task"]').click();
   await expect(page.getByRole('alertdialog')).toBeVisible();
@@ -467,6 +494,129 @@ test.describe('Seven-day agenda', () => {
     await page.waitForFunction(() => window.__app?.ready === true);
   };
 
+  for (const mode of ['week', 'month'] as const) test(`broadens ${mode} search into Universal Search and keeps the calendar context on Back`, async ({ page }, testInfo) => {
+    if (mode === 'month') await page.setViewportSize({ width: 390, height: 844 });
+    await openAgenda(page); await installSearchEverywhereFixture(page); await page.evaluate(() => window.__app.setHash('#data/calendar'));
+    const agenda = page.getByRole('region', { name: 'Calendar agenda', exact: true });
+    if (mode === 'month') await agenda.getByRole('button', { name: 'Month', exact: true }).click();
+    const search = agenda.getByRole('searchbox', { name: `Search this ${mode}`, exact: true });
+    const everywhere = agenda.getByRole('button', { name: 'Search everywhere', exact: true }); await expect(everywhere).toBeDisabled();
+    await agenda.getByLabel(mode === 'month' ? 'Selected date' : 'Agenda start date', { exact: true }).fill('2026-10-25');
+    await agenda.locator('summary').click(); await agenda.getByRole('checkbox', { name: 'work', exact: true }).uncheck();
+    await search.fill('first fragment'); await search.fill('Customer');
+    await expect(agenda.locator('#calendar-search-status')).toHaveText(`1 matching saved event in this ${mode}.`);
+    expect(await page.evaluate(() => window.__searchEverywhereFixture.calls)).toEqual([]);
+    if (mode === 'month') await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('calendar-search-everywhere-phone.png') });
+    const action = agenda.getByRole('button', { name: 'Search everywhere for Customer', exact: true }); await action.focus(); await action.press('Enter');
+    const global = page.getByRole('searchbox', { name: 'Search everything', exact: true }); await expect(global).toHaveValue('Customer'); await expect(global).toBeFocused();
+    await expect(page.locator('[data-search-record]')).toContainText('Global result for Customer');
+    expect(await page.evaluate(() => window.__searchEverywhereFixture.calls.filter(call => call.method === 'collection.searchAll'))).toEqual([{ method: 'collection.searchAll', args: { query: 'Customer' } }]);
+    await global.fill(''); await expect(page.getByRole('region', { name: 'Recent searches', exact: true }).locator('.rq-recent-run')).toHaveText(['Customer']);
+    await page.goBack(); await expect(search).toHaveValue('Customer');
+    await expect(agenda.getByLabel(mode === 'month' ? 'Selected date' : 'Agenda start date', { exact: true })).toHaveValue('2026-10-25');
+    await agenda.locator('summary').click();
+    await expect(agenda.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
+    await expect(agenda.getByRole('button', { name: mode === 'month' ? 'Month' : 'Agenda', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.evaluate(() => window.__calendarEvent.writes)).toEqual([]);
+  });
+
+  test('keeps an event draft when broader search is cancelled and fences its delayed reply after choosing to leave', async ({ page }) => {
+    await openAgenda(page); await installSearchEverywhereFixture(page); await page.evaluate(() => window.__app.setHash('#data/calendar'));
+    const agenda = page.getByRole('region', { name: 'Calendar agenda', exact: true });
+    await agenda.getByRole('searchbox', { name: 'Search this week', exact: true }).fill('Customer');
+    await expect(agenda.locator('#calendar-search-status')).toHaveText('1 matching saved event in this week.');
+    await agenda.getByRole('button', { name: 'New event', exact: true }).click();
+    const form = page.getByRole('region', { name: 'New event', exact: true }); await form.getByLabel('Title', { exact: true }).fill('Keep this draft');
+    const action = agenda.getByRole('button', { name: 'Search everywhere for Customer', exact: true }); await action.click();
+    await expect(form.getByRole('button', { name: 'Keep editing', exact: true })).toBeFocused();
+    expect(await page.evaluate(() => window.__searchEverywhereFixture.calls)).toEqual([]);
+    await form.getByRole('button', { name: 'Keep editing', exact: true }).click(); await expect(form.getByLabel('Title', { exact: true })).toHaveValue('Keep this draft');
+    await page.evaluate(() => { window.__searchEverywhereFixture.holdNext = true; }); await action.click();
+    await form.getByRole('button', { name: 'Discard draft', exact: true }).click();
+    const global = page.getByRole('searchbox', { name: 'Search everything', exact: true }); await expect(global).toHaveValue('Customer');
+    await expect.poll(() => page.evaluate(() => window.__searchEverywhereFixture.pending)).toBe(true);
+    await global.fill('Another request'); await expect(page.locator('[data-search-record]')).toContainText('Global result for Another request');
+    await page.evaluate(() => window.__searchEverywhereFixture.release());
+    await expect(global).toHaveValue('Another request'); await expect(page.locator('[data-search-record]')).toContainText('Global result for Another request');
+    await global.fill(''); await expect(page.getByRole('region', { name: 'Recent searches', exact: true }).locator('.rq-recent-run')).toHaveText(['Another request', 'Customer']);
+    expect(await page.evaluate(() => [window.__calendarEvent.creates.length, window.__calendarEvent.writes.length])).toEqual([0, 0]);
+  });
+
+  test('searches titles and locations literally, counts multi-day events once and clears without changing calendars', async ({ page }) => {
+    await openAgenda(page); await page.evaluate(() => window.__app.setHash('#data/calendar'));
+    const agenda = page.getByRole('region', { name: 'Calendar agenda', exact: true });
+    await expect(agenda.getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
+    const reads = await page.evaluate(() => window.__calendarAgenda.reads.length);
+    const search = agenda.getByRole('searchbox', { name: 'Search this week', exact: true });
+    const status = agenda.locator('#calendar-search-status');
+    await search.fill('  CUSTOMER  '); await expect(status).toHaveText('1 matching saved event in this week.');
+    await expect(agenda.getByRole('button', { name: /Customer planning/ })).toBeVisible();
+    await expect(agenda.getByRole('button', { name: /Planning slot/ })).toHaveCount(0);
+    await search.fill('meeting room 2'); await expect(status).toHaveText('1 matching saved event in this week.');
+    await expect(agenda.getByRole('button', { name: /Customer planning/ })).toBeVisible();
+    await search.fill('.*'); await expect(status).toHaveText('0 matching saved events in this week.');
+    await expect(agenda).toContainText('No matching saved events in this week.');
+    await search.fill('<img src=x>'); await expect(status).toHaveText('0 matching saved events in this week.');
+    await expect(agenda.locator('img')).toHaveCount(0);
+    await search.fill('Team retreat'); await expect(status).toHaveText('1 matching saved event in this week.');
+    await expect(agenda.locator('.calendar-agenda-event').filter({ hasText: 'Team retreat' })).toHaveCount(3);
+    await agenda.locator('summary').click(); await agenda.getByRole('checkbox', { name: 'work', exact: true }).uncheck();
+    await clickActionGlyph(page, agenda.getByRole('button', { name: 'Clear search', exact: true }));
+    await expect(search).toBeFocused(); await expect(search).toHaveValue('');
+    await expect(agenda.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
+    await expect(agenda.getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
+    expect(await page.evaluate(() => window.__calendarAgenda.reads.length)).toBe(reads);
+    expect(await page.evaluate(() => window.__calendarEvent.writes)).toEqual([]);
+  });
+
+  test('keeps search selection and composing input intact when an asynchronous calendar read finishes', async ({ page }) => {
+    await openAgenda(page); await page.evaluate(() => window.__app.setHash('#data/calendar'));
+    const agenda = page.getByRole('region', { name: 'Calendar agenda', exact: true });
+    await expect(agenda.getByRole('button', { name: /Customer planning/ })).toBeVisible();
+    const previousAllDay = await page.evaluate(() => window.__calendarAgenda.reads.filter(read => read.slug === 'work' && read.allDay).length);
+    await page.evaluate(() => window.__calendarAgenda.holdNext('work'));
+    await agenda.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__calendarAgenda.pending())).toBe(true);
+    const search = agenda.getByRole('searchbox', { name: 'Search this week', exact: true });
+    await search.fill('Customer'); await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(2, 6, 'backward'));
+    await expect(agenda.locator('#calendar-search-status')).toContainText('Results may be incomplete.');
+    await expect(search).toBeFocused();
+    expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd, element.selectionDirection])).toEqual([2, 6, 'backward']);
+    const input = await search.elementHandle();
+    await search.dispatchEvent('compositionstart', { data: 'planning' }); await search.fill('Customer planning');
+    await page.evaluate(() => window.__calendarAgenda.release());
+    await expect.poll(() => page.evaluate(() => window.__calendarAgenda.reads.filter(read => read.slug === 'work' && read.allDay).length)).toBeGreaterThan(previousAllDay);
+    expect(await input!.evaluate(element => element.isConnected && element === document.activeElement)).toBe(true);
+    await expect(search).toHaveValue('Customer planning');
+    await search.dispatchEvent('keydown', { key: 'Escape', isComposing: true }); await expect(search).toHaveValue('Customer planning');
+    await search.dispatchEvent('compositionend', { data: 'planning' });
+    await expect(agenda.locator('#calendar-search-status')).toHaveText('1 matching saved event in this week.');
+    await expect(search).toBeFocused(); await search.press('Escape'); await expect(search).toHaveValue('');
+    await expect(agenda.getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
+  });
+
+  test('retains search and calendar selection through event history and focuses search when an edit removes the match', async ({ page }) => {
+    await openAgenda(page); await page.evaluate(() => window.__app.setHash('#data/calendar'));
+    const agenda = page.getByRole('region', { name: 'Calendar agenda', exact: true });
+    await expect(agenda.getByRole('button', { name: /Customer planning/ })).toBeVisible();
+    await agenda.locator('summary').click(); await agenda.getByRole('checkbox', { name: 'work', exact: true }).uncheck();
+    const search = agenda.getByRole('searchbox', { name: 'Search this week', exact: true }); await search.fill('Customer');
+    await expect(agenda.locator('#calendar-search-status')).toHaveText('1 matching saved event in this week.');
+    const event = agenda.getByRole('button', { name: /Customer planning/ }); await event.click();
+    await expect(page.locator('.calendar-event')).toBeVisible(); await page.goBack();
+    await expect(search).toHaveValue('Customer'); await expect(event).toBeFocused();
+    await expect(agenda.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
+    await page.goForward(); await expect(page.locator('.calendar-event')).toBeVisible();
+    await page.getByRole('button', { name: 'Edit event', exact: true }).click(); await field(page, 'summary').fill('Launch review');
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await page.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(search).toHaveValue('Customer'); await expect(search).toBeFocused();
+    await expect(agenda.locator('#calendar-search-status')).toHaveText('0 matching saved events in this week.');
+    await agenda.getByRole('button', { name: 'Clear search', exact: true }).click();
+    await expect(agenda.getByRole('button', { name: /Launch review/ })).toBeVisible();
+    expect(await page.evaluate(() => window.__calendarEvent.writes)).toHaveLength(1);
+  });
+
   test('browses a paged week, filters calendars and returns from editing to the same date and event', async ({ page }, testInfo) => {
     await openAgenda(page);
     await page.evaluate(() => window.__app.setHash('#data/calendar'));
@@ -478,10 +628,10 @@ test.describe('Seven-day agenda', () => {
     expect(await page.evaluate(() => window.__calendarAgenda.reads.some(read => read.offset === 100))).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('agenda-desktop.png') });
 
-    await agenda.getByRole('button', { name: 'Next week', exact: true }).click();
+    await clickActionGlyph(page, agenda.getByRole('button', { name: 'Next week', exact: true }));
     await expect(agenda.getByRole('button', { name: /Remote planning/ })).toBeVisible();
     await expect(agenda.getByLabel('Agenda start date')).toHaveValue('2026-11-04');
-    await agenda.getByRole('button', { name: 'Previous week', exact: true }).click();
+    await clickActionGlyph(page, agenda.getByRole('button', { name: 'Previous week', exact: true }));
     await expect(agenda.getByRole('button', { name: /Customer planning/ })).toBeVisible();
     await agenda.getByLabel('Agenda start date').fill('2026-10-25');
     await expect(agenda.getByRole('button', { name: /Team retreat/ })).toHaveCount(1);
@@ -553,6 +703,173 @@ test.describe('Seven-day agenda', () => {
     await expect(agenda.getByLabel('Agenda start date')).toHaveValue('2026-11-04');
     await expect(agenda.getByRole('button', { name: /Remote planning/ })).toHaveCount(1);
     await expect(agenda.getByRole('button', { name: /Customer planning/ })).toHaveCount(0);
+  });
+});
+
+test.describe('Calendar month', () => {
+  test.use({ timezoneId: 'America/Los_Angeles' });
+  const calendar = (page: Page) => page.getByRole('region', { name: 'Calendar agenda', exact: true });
+  const cell = (page: Page, day: string) => page.locator(`[data-calendar-month-cell="${day}"]`);
+  const date = (page: Page, day: string) => cell(page, day).locator('.calendar-month-date');
+  const selected = (page: Page) => page.locator('[data-calendar-month-selection]');
+  const openMonth = async (page: Page) => {
+    await page.clock.setFixedTime(new Date('2026-10-28T12:00:00Z'));
+    await installCalendarEventFixture(page, 'timed', true);
+    await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#data/calendar'));
+    await calendar(page).getByRole('button', { name: 'Month', exact: true }).click();
+    await expect(date(page, '2026-10-29')).toHaveAttribute('aria-label', /103 saved events$/);
+  };
+
+  test('searches the whole month on a phone, exposes matching-day counts and returns to the matching event', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 }); await openMonth(page);
+    const search = calendar(page).getByRole('searchbox', { name: 'Search this month', exact: true });
+    await search.fill('Planning slot 103');
+    await expect(calendar(page).locator('#calendar-search-status')).toHaveText('1 matching saved event in this month.');
+    await expect(date(page, '2026-10-29')).toHaveAttribute('aria-label', /1 matching saved event$/);
+    await expect(date(page, '2026-10-28')).toHaveAttribute('aria-pressed', 'true');
+    const event = calendar(page).locator('.calendar-agenda-event').filter({ hasText: 'Planning slot 103' }); await expect(event).toBeVisible();
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('calendar-month-search-phone.png') });
+    await date(page, '2026-10-29').click();
+    await expect(calendar(page).locator('[data-calendar-agenda-focus="search-day:2026-10-29"]')).toBeFocused();
+    await search.fill('Customer'); await expect(calendar(page).locator('#calendar-search-status')).toHaveText('1 matching saved event in this month.');
+    await calendar(page).locator('summary').click(); await calendar(page).getByRole('checkbox', { name: 'work', exact: true }).uncheck();
+    const customer = calendar(page).locator('.calendar-agenda-event').filter({ hasText: 'Customer planning' }); await customer.click();
+    await expect(page.locator('.calendar-event')).toBeVisible(); await page.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(search).toHaveValue('Customer'); await expect(customer).toBeFocused();
+    await expect(calendar(page).getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
+    await calendar(page).getByRole('button', { name: 'Clear search', exact: true }).click(); await expect(search).toBeFocused();
+    await expect(selected(page)).toBeVisible(); await expect(date(page, '2026-10-29')).toHaveAttribute('aria-label', /103 saved events$/);
+    expect(await page.evaluate(() => window.__calendarEvent.writes)).toEqual([]);
+  });
+
+  test('keeps partial-search counts honest, retains search across month navigation and ignores older range replies', async ({ page }) => {
+    await openMonth(page); await page.evaluate(() => window.__calendarAgenda.fail('work'));
+    await calendar(page).getByRole('button', { name: 'Refresh', exact: true }).click(); await expect(calendar(page).getByRole('alert')).toContainText('unavailable');
+    const search = calendar(page).getByRole('searchbox', { name: 'Search this month', exact: true }); await search.fill('Remote');
+    await expect(calendar(page).locator('#calendar-search-status')).toContainText('0 matching saved events in this month so far. Results may be incomplete.');
+    await expect(calendar(page)).not.toContainText('No matching saved events in this month.');
+    await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click(); await expect(search).toHaveValue('Remote');
+    await expect(calendar(page).locator('.calendar-agenda-range')).toHaveText('November 2026');
+    await expect(calendar(page).getByRole('alert')).toContainText('unavailable');
+    await page.evaluate(() => window.__calendarAgenda.fail(null)); await calendar(page).getByRole('button', { name: 'Reload calendar', exact: true }).click();
+    await expect(calendar(page).locator('#calendar-search-status')).toHaveText('1 matching saved event in this month.');
+    await expect(date(page, '2026-11-06')).toHaveAttribute('aria-label', /1 matching saved event$/);
+    await page.evaluate(() => window.__calendarAgenda.holdNext('work')); await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__calendarAgenda.pending())).toBe(true); await search.fill('Customer');
+    await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect(calendar(page).locator('.calendar-agenda-range')).toHaveText('January 2027');
+    await page.evaluate(() => window.__calendarAgenda.release());
+    await expect(search).toHaveValue('Customer'); await expect(calendar(page).locator('#calendar-search-status')).toHaveText('0 matching saved events in this month.');
+    await expect(calendar(page).locator('.calendar-agenda-event')).toHaveCount(0);
+  });
+
+  test('pages a complete month, bounds dense-day previews and opens its full agenda without another read', async ({ page }, testInfo) => {
+    await openMonth(page);
+    await expect(calendar(page).locator('.calendar-agenda-range')).toHaveText('October 2026');
+    await expect(page.locator('.calendar-month-date')).toHaveCount(31);
+    await expect(cell(page, '2026-10-29').getByRole('button', { name: /Planning slot/ })).toHaveCount(3);
+    await date(page, '2026-10-28').focus();
+    await page.screenshot({ path: testInfo.outputPath('calendar-month-desktop.png'), fullPage: true });
+    const reads = await page.evaluate(() => window.__calendarAgenda.reads);
+    expect(reads.filter(read => read.slug === 'local' && !read.allDay && read.from === Date.parse('2026-10-01T07:00:00Z')).map(read => read.offset)).toEqual([0, 100]);
+    expect(reads.some(read => read.allDay && read.from === Date.parse('2026-10-01T00:00:00Z') && read.before === Date.parse('2026-11-01T00:00:00Z'))).toBe(true);
+    await cell(page, '2026-10-29').getByRole('button', { name: /Show all saved events/ }).click();
+    await expect(selected(page).getByRole('heading')).toBeFocused();
+    await expect(selected(page).getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
+    expect(await page.evaluate(() => window.__calendarAgenda.reads.length)).toBe(reads.length);
+    await selected(page).getByRole('button', { name: 'Back to month', exact: true }).click();
+    await expect(date(page, '2026-10-29')).toBeFocused();
+  });
+
+  test('keeps all-day dates and overnight events correct across the November DST boundary', async ({ page }) => {
+    await openMonth(page); await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect(date(page, '2026-11-01')).toHaveAttribute('aria-label', /2 saved events$/);
+    await expect(date(page, '2026-11-02')).toHaveAttribute('aria-label', /1 saved event$/);
+    await expect(date(page, '2026-11-03')).toHaveAttribute('aria-label', /0 saved events$/);
+    await date(page, '2026-11-01').click();
+    await expect(selected(page).getByRole('button', { name: /Team retreat/ })).toContainText('All day');
+    await expect(selected(page).getByRole('button', { name: /Overnight handover/ })).toContainText('Continues');
+    await date(page, '2026-11-03').click();
+    await expect(selected(page)).toContainText('No saved events.');
+    await expect(selected(page).getByRole('button', { name: /Team retreat/ })).toHaveCount(0);
+    const reads = await page.evaluate(() => window.__calendarAgenda.reads);
+    expect(reads.some(read => !read.allDay && read.from === Date.parse('2026-11-01T07:00:00Z') && read.before === Date.parse('2026-12-01T08:00:00Z'))).toBe(true);
+  });
+
+  test('supports keyboard month boundaries, leap days and Today on a phone', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 }); await openMonth(page);
+    await expect(cell(page, '2026-10-28').locator('.calendar-month-event')).not.toBeVisible();
+    await date(page, '2026-10-28').focus();
+    await page.screenshot({ path: testInfo.outputPath('calendar-month-phone.png'), fullPage: true });
+    await date(page, '2026-10-31').focus(); await page.keyboard.press('ArrowRight');
+    await expect(date(page, '2026-11-01')).toBeFocused(); await expect(date(page, '2026-11-01')).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('ArrowDown'); await expect(date(page, '2026-11-08')).toBeFocused();
+    await page.keyboard.press('PageUp'); await expect(date(page, '2026-10-08')).toBeFocused();
+    await calendar(page).getByLabel('Selected date', { exact: true }).fill('2028-02-29');
+    await expect(page.locator('.calendar-month-date')).toHaveCount(29);
+    await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect(calendar(page).getByLabel('Selected date', { exact: true })).toHaveValue('2028-03-29');
+    await calendar(page).getByRole('button', { name: 'Today', exact: true }).click();
+    await expect(calendar(page).getByLabel('Selected date', { exact: true })).toHaveValue('2026-10-28');
+    await expect(date(page, '2026-10-28')).toHaveAttribute('aria-current', 'date');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+
+  test('restores the month, calendar selection, event focus and scroll through Back and Forward', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 }); await openMonth(page);
+    const sources = calendar(page).locator('details[data-calendar-agenda-sources]');
+    await sources.locator('summary').click(); await sources.getByRole('checkbox', { name: 'work', exact: true }).uncheck();
+    const event = cell(page, '2026-10-28').getByRole('button', { name: /Customer planning/ });
+    await event.scrollIntoViewIfNeeded();
+    const scroll = page.locator('[data-recued-webclient-content]'), position = await scroll.evaluate(node => node.scrollTop);
+    expect(position).toBeGreaterThan(0); await event.click(); await expect(page.locator('.calendar-event')).toContainText('Customer planning');
+    await page.getByRole('button', { name: '← Back', exact: true }).click();
+    await expect(event).toBeFocused(); await expect(calendar(page).getByRole('button', { name: 'Month', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(sources.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
+    await expect(calendar(page).getByRole('button', { name: 'Refresh', exact: true })).toBeVisible();
+    expect(await scroll.evaluate(node => node.scrollTop)).toBe(position);
+    await event.click(); await expect(page.locator('.calendar-event')).toBeVisible();
+    await page.goBack(); await expect(event).toBeFocused();
+    await page.goForward(); await expect(page.locator('.calendar-event')).toBeVisible();
+    await page.goBack(); await expect(event).toBeFocused();
+    await expect(sources.getByRole('checkbox', { name: 'work', exact: true })).not.toBeChecked();
+    expect(await scroll.evaluate(node => node.scrollTop)).toBe(position);
+  });
+
+  test('marks partial counts, keeps ready events usable and drops late replies from an older month', async ({ page }) => {
+    await openMonth(page); await page.evaluate(() => window.__calendarAgenda.fail('work'));
+    await calendar(page).getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(calendar(page).getByRole('alert')).toContainText('unavailable');
+    await expect(date(page, '2026-10-29')).toHaveAttribute('aria-label', /103 saved events so far; count incomplete$/);
+    await expect(cell(page, '2026-10-30').locator('.calendar-month-count')).toHaveText('?');
+    await date(page, '2026-10-29').click(); await expect(selected(page).getByRole('button', { name: /Planning slot/ })).toHaveCount(103);
+    await page.evaluate(() => window.__calendarAgenda.fail(null));
+    await calendar(page).getByRole('button', { name: 'Reload calendar', exact: true }).click();
+    await expect(date(page, '2026-10-29')).toHaveAttribute('aria-label', /103 saved events$/);
+    await page.evaluate(() => window.__calendarAgenda.holdNext('work'));
+    await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__calendarAgenda.pending())).toBe(true);
+    await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect(calendar(page).locator('.calendar-agenda-range')).toHaveText('December 2026');
+    await page.evaluate(() => window.__calendarAgenda.release());
+    await expect(date(page, '2026-12-06')).toHaveAttribute('aria-label', /0 saved events$/);
+    await expect(calendar(page).getByRole('button', { name: /Remote planning/ })).toHaveCount(0);
+  });
+
+  test('uses the selected month day when starting a new event and keeps Agenda available', async ({ page }) => {
+    await openMonth(page); await calendar(page).getByRole('button', { name: 'Next month', exact: true }).click();
+    await expect(date(page, '2026-11-06')).toHaveAttribute('aria-label', /1 saved event$/);
+    await date(page, '2026-11-06').click(); await calendar(page).getByRole('button', { name: 'New event', exact: true }).click();
+    const form = page.getByRole('region', { name: 'New event', exact: true });
+    expect((await form.getByLabel('Starts', { exact: true }).inputValue()).slice(0, 10)).toBe('2026-11-06');
+    await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await calendar(page).getByRole('button', { name: 'Agenda', exact: true }).click();
+    await expect(calendar(page).getByLabel('Agenda start date')).toHaveValue('2026-11-06');
+    await expect(page.locator('[data-calendar-month]')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__calendarEvent.creates)).toEqual([]);
   });
 });
 

@@ -308,7 +308,10 @@ const submit = async (input: {
     deriveBinding: deriveReceptionIntakeRecipePairBinding,
   });
 
-  const registry = { findById: (id: string) => id === ENDPOINT_ID ? { metadata: config } : null };
+  const registry = {
+    findById: (id: string) => id === ENDPOINT_ID ? { metadata: config } : null,
+    verifyBearer: () => ({ kind: 'ok', endpoint: { kind: 'intake_form', metadata: config } }),
+  };
   const endpoint: ReceptionEndpointContext = {
     endpoint_id: ENDPOINT_ID,
     kind: 'intake_form_packet',
@@ -328,6 +331,7 @@ const submit = async (input: {
   const postRes = fakeRes();
   await createIntakeFormSubmitHandler({
     getStore: () => registry as never,
+    getPepper: () => Buffer.alloc(32),
     getSubmissionStore: () => submissionStore as never,
     getFormNonceStore: () => nonceStore,
     getFormSubmissionPiiKey: () => deriveFormSubmissionPiiKeyFromSubDek(

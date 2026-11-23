@@ -352,6 +352,8 @@ export const createEventTriggerDispatcher = (
     reason: string,
     // D-346 follow-up — what the run needed, so the notice says how to fix it.
     needs?: readonly RunNeed[],
+    // D-402 slice E4b — the failing run, so a hand-off's notice can carry it on in Chat.
+    run_id?: string,
   ): 'not_a_failure' | 'continue' | 'stop' => {
     const unit = unitOf(trigger);
     // `recordError` both appends and returns the new length, so the count
@@ -366,6 +368,7 @@ export const createEventTriggerDispatcher = (
       prior_consecutive_failures: count - 1,
       threshold: errorCap,
       needs,
+      run_id,
     });
     if (report.not_a_failure) {
       // Undo the append: a tripped guard is not evidence the trigger is broken,
@@ -549,7 +552,7 @@ export const createEventTriggerDispatcher = (
         deps.store.update(trigger.trigger_id, { last_fired_at: now() });
         await logFired(trigger, event, runId, 'total_refusal');
         const verdict = handleFailure(trigger, undefined, true,
-          'This run attempted items and every one was refused.');
+          'This run attempted items and every one was refused.', undefined, runId);
         if (verdict === 'stop') await disableTrigger(trigger, 'total_refusal');
         return false;
       }
@@ -594,7 +597,8 @@ export const createEventTriggerDispatcher = (
       }
       const needs = (err as { run_needs?: unknown } | null)?.run_needs;
       const verdict = handleFailure(trigger, code, false, failure.userMessage,
-        Array.isArray(needs) ? needs as readonly RunNeed[] : undefined);
+        Array.isArray(needs) ? needs as readonly RunNeed[] : undefined,
+        typeof failedRunId === 'string' ? failedRunId : undefined);
       await logFired(
         trigger,
         event,

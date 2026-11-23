@@ -340,6 +340,7 @@ import type {
   InstallGrantSelection,
   InstallScopeWho,
   MailTemplateInstallChoice,
+  PackWebhookDoorChoice,
   PackDependencyInstallScope,
   PackListEntry,
   PacksResolveResult,
@@ -374,6 +375,7 @@ import {
   isPackServiceKind,
   packCopyFor,
   parseDependsOn,
+  thingStepWords,
 } from '@recued/contracts';
 import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import type { BadgeTone } from '@recued/ui-shared/primitives';
@@ -427,7 +429,7 @@ import {
   resolveInstallDialogAccess,
   resolveInstallDialogAudience,
 } from './packs-install-dialog.js';
-import type { InstallMailTemplateChoice, InstallPreview, InstallWebhookChoice } from './packs-install-dialog.js';
+import type { InstallMailTemplateChoice, InstallPreview, InstallWebhookChoice, InstallWebhookDoorChoice } from './packs-install-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 // Slice C — cross-pack recipe collision detection. Pure function over
 // the panel's `packs` array; recomputed on every render (cheap: bounded
@@ -651,6 +653,10 @@ export const PACKS_DETAIL_NEEDS_UPDATE_ATTR = 'data-recued-packs-needs-update';
 /** D-321 W2 — the "Packs it uses" section, each used pack's line (its slug),
  *  and that line's state: `not_installed`, `needs` or `ready`. */
 export const PACKS_DETAIL_USES_ATTR = 'data-recued-packs-uses';
+/** D-404 slice E — the block naming the things in Yours an installed pack works on, none yet. */
+export const PACKS_DETAIL_THINGS_ATTR = 'data-recued-packs-things';
+/** D-404 slice E — one "Add a <type>" link in it; the value is the type id. */
+export const PACKS_DETAIL_ADD_THING_ATTR = 'data-recued-packs-add-thing';
 export const PACKS_DETAIL_USES_PACK_ATTR = 'data-recued-packs-uses-pack';
 export const PACKS_DETAIL_USES_STATE_ATTR = 'data-recued-packs-uses-state';
 /** D-333 — Edit in Kitchen, on a pack made there (value = the pack's slug). */
@@ -771,6 +777,9 @@ export type PacksInstallCaller = (args: {
   /** D-315 §5.2 — which template stays on where a recipe's template reads the
    *  same mail as one already on. Omitted when the preview named none. */
   mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice>;
+  /** D-201 Slice 10AF — the owner's answer to each switch a publisher change
+   *  raised. Omitted when the preview raised none. */
+  webhook_door_choices?: ReadonlyArray<PackWebhookDoorChoice>;
 }) => Promise<{ result: BulkPackInstallResultLike }>;
 
 /** D-145 PA10 follow-on Slice B — `packs.uninstall` caller seam. The
@@ -859,6 +868,8 @@ export type PacksInstallBySlugCaller = (args: {
   dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
   /** D-315 — see {@link PacksInstallCaller}. */
   mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice>;
+  /** D-201 Slice 10AF — see {@link PacksInstallCaller}. */
+  webhook_door_choices?: ReadonlyArray<PackWebhookDoorChoice>;
 }) => Promise<{ result: BulkPackInstallResultLike }>;
 
 export type PacksPanelState = 'loading' | 'ready' | 'error';
@@ -1287,6 +1298,9 @@ const COPY = {
   needs_update_heading: 'Needs update',
   needs_update_note: 'This Pack no longer works on this server. Nothing it does will work until you update it.',
   // D-321 W2 — the packs a pack's actions call, each in its own state.
+  // D-404 slice E — an installed pack with nothing in Yours to work on.
+  things_heading: 'Things in Yours',
+  things_any: 'One of them is enough.',
   uses_heading: 'Packs it uses',
   uses_note: 'The packs this pack’s actions call. One that is not ready stops the actions waiting on it.',
   uses_not_installed: 'Not installed',
@@ -1434,6 +1448,9 @@ export const mountPacksPanel = (
   /** D-315 §5.2 — the owner's keep choice for each template a recipe brings
    *  that meets one already on: choice key → which stays on. Absent ⇒ the recipe's. */
   const dialogMailTemplateKeep = new Map<string, Map<string, 'recipe' | 'existing'>>();
+  /** D-201 Slice 10AF — the owner's answer to each webhook door switch a
+   *  publisher change raised: choice key → open or closed. Absent ⇒ as left. */
+  const dialogWebhookDoors = new Map<string, Map<string, 'open' | 'closed'>>();
   /** D-346 C — the Install…s in progress, innermost last: for each, the pack whose
    *  dialog it left (`from`) and the pack it opened (`to`). `from`'s dialog opens
    *  again when `to`'s install finishes or its dialog is cancelled; any other
@@ -1469,6 +1486,7 @@ export const mountPacksPanel = (
         ...(chosen !== undefined ? { chosen_connection: chosen } : {}),
         also_unticked: [...dialogAlsoUnticked.get(slug) ?? []], also_connections: also,
         webhook_picks: [...dialogWebhookPicks.get(slug) ?? []], template_keep: [...dialogMailTemplateKeep.get(slug) ?? []],
+        webhook_doors: [...dialogWebhookDoors.get(slug) ?? []],
       } });
     } catch (error) {
       permissionRepairStarting = false;
@@ -1488,6 +1506,7 @@ export const mountPacksPanel = (
     dialogAlsoUnticked.delete(slug);
     dialogWebhookPicks.delete(slug);
     dialogMailTemplateKeep.delete(slug);
+    dialogWebhookDoors.delete(slug);
   };
   /** D-247 D15 — the server-resolved install preview, cached against the
    *  MANIFEST OBJECT it was derived from rather than the slug alone. A detail
@@ -2654,6 +2673,12 @@ export const mountPacksPanel = (
       deleteError = null;
       pendingUninstallPromise = null;
     }
+    // D-201 Slice 10AJ (10AI finding 3) — a preview that raised door switches
+    // read each door's state, which the owner can change on the webhook's card
+    // meanwhile: it is read again, so the dialog shows the doors as they are.
+    if ((dialogInstallPreview.get(slug)?.preview.webhook_publisher_changes?.length ?? 0) > 0) {
+      dialogInstallPreview.delete(slug);
+    }
     dialogOpenFor = slug;
     historyDialog = purpose === 'history';
     dialogError = null;
@@ -3027,6 +3052,29 @@ export const mountPacksPanel = (
     });
   };
 
+  /** D-201 Slice 10AF — each recipe the open install brings from another
+   *  publisher, its door switch set to the owner's answer, else as left. */
+  const webhookDoorChoicesFor = (
+    pack: PackListEntry & { manifest: BulkPackManifest },
+  ): Array<InstallWebhookDoorChoice & { readonly picked: boolean }> | undefined => {
+    const entries = installPreviewFor(pack.slug, pack.manifest)?.webhook_publisher_changes;
+    if (entries === undefined || entries.length === 0) return undefined;
+    const doors = dialogWebhookDoors.get(pack.slug);
+    return entries.map((entry) => {
+      const key = `${entry.pack_slug}\u0000${entry.recipe_id}`;
+      const picked = doors?.get(key);
+      return { key, entry, door: picked ?? entry.door, picked: picked !== undefined };
+    });
+  };
+
+  const pickWebhookDoorInternal = (key: string, door: 'open' | 'closed'): void => {
+    if (dialogOpenFor === null || installing) return;
+    const doors = dialogWebhookDoors.get(dialogOpenFor) ?? new Map<string, 'open' | 'closed'>();
+    doors.set(key, door);
+    dialogWebhookDoors.set(dialogOpenFor, doors);
+    render();
+  };
+
   const pickMailTemplateInternal = (key: string, keep: 'recipe' | 'existing'): void => {
     if (dialogOpenFor === null || installing) return;
     const keeps = dialogMailTemplateKeep.get(dialogOpenFor) ?? new Map<string, 'recipe' | 'existing'>();
@@ -3137,6 +3185,16 @@ export const mountPacksPanel = (
       : [])
       .filter((choice) => choice.entry.twin !== undefined)
       .map((choice) => ({ recipe_id: choice.entry.recipe_id, variable: choice.entry.variable, keep: choice.keep }));
+    // D-201 Slice 10AF — the owner's answer to each door switch it raised.
+    // D-201 Slice 10AJ (10AI finding 3) — only a switch the owner set: one left
+    // as shown sends nothing, so the door keeps the state it has when the
+    // install runs. The state shown was sent as an answer, so a door the owner
+    // closed after the dialog read it opened again.
+    const webhookDoorChoices = (target.manifest !== undefined
+      ? webhookDoorChoicesFor(target as PackListEntry & { manifest: BulkPackManifest }) ?? []
+      : [])
+      .filter((choice) => choice.picked)
+      .map((choice) => ({ pack_slug: choice.entry.pack_slug, recipe_id: choice.entry.recipe_id, door: choice.door }));
     const permissionPreview = installPreviewFor(submittingSlug, target.manifest);
     const reviewedPermissions = vendorPermissionReview(permissionPreview);
     const permissionsLoading = opts.runInstallPreview !== undefined && permissionPreview === undefined;
@@ -3174,6 +3232,7 @@ export const mountPacksPanel = (
               ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
               ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
               ...(mailTemplateChoices.length > 0 ? { mail_template_choices: mailTemplateChoices } : {}),
+              ...(webhookDoorChoices.length > 0 ? { webhook_door_choices: webhookDoorChoices } : {}),
             })
           : await (opts.runInstall as PacksInstallCaller)({
               manifest: target.manifest,
@@ -3191,6 +3250,7 @@ export const mountPacksPanel = (
               ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
               ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
               ...(mailTemplateChoices.length > 0 ? { mail_template_choices: mailTemplateChoices } : {}),
+              ...(webhookDoorChoices.length > 0 ? { webhook_door_choices: webhookDoorChoices } : {}),
             });
         if (disposed) return;
         if (!response.result.ok) {
@@ -3725,6 +3785,11 @@ export const mountPacksPanel = (
         return choices !== undefined ? { mailTemplates: choices } : {};
       })(),
       onPickMailTemplate: (key, keep) => pickMailTemplateInternal(key, keep),
+      ...((): { webhookDoorChoices?: InstallWebhookDoorChoice[] } => {
+        const choices = webhookDoorChoicesFor(pack);
+        return choices !== undefined ? { webhookDoorChoices: choices } : {};
+      })(),
+      onPickWebhookDoor: (key, door) => pickWebhookDoorInternal(key, door),
       ...((): { mailFactSources?: InstallPreview['mail_fact_sources'] } => {
         const sources = installPreviewFor(pack.slug, pack.manifest)?.mail_fact_sources;
         return sources !== undefined && sources.length > 0 ? { mailFactSources: sources } : {};
@@ -4407,6 +4472,41 @@ export const mountPacksPanel = (
       needs.appendChild(uses);
       needsShown += 1;
     }
+    // D-404 slice E — it works on things in Yours and the owner has none of any of them, so it does
+    // nothing yet: the page says so, with Yours' form for each type, as its badge does.
+    if (installed && (pack.missing_things?.length ?? 0) > 0) {
+      const things = doc.createElement('section');
+      things.setAttribute(PACKS_DETAIL_THINGS_ATTR, '');
+      const heading = doc.createElement('h4');
+      heading.className = 'pp-heading';
+      heading.textContent = COPY.things_heading;
+      things.appendChild(heading);
+      const names = pack.missing_things!.map((thing) => thing.type_name);
+      const note = doc.createElement('p');
+      note.className = 'packs-detail-note';
+      note.textContent = names.length === 1
+        ? thingStepWords(names[0]!).lead
+        : `No ${names.slice(0, -1).join(', ')} or ${names[names.length - 1]!} in Yours yet. ${COPY.things_any}`;
+      things.appendChild(note);
+      const links = doc.createElement('p');
+      links.className = 'packs-detail-note';
+      pack.missing_things!.forEach((thing, i) => {
+        if (i > 0) {
+          const dot = doc.createElement('span');
+          dot.textContent = ' · ';
+          links.appendChild(dot);
+        }
+        const add = doc.createElement('a');
+        add.className = 'rx-link';
+        add.setAttribute(PACKS_DETAIL_ADD_THING_ATTR, thing.type_id);
+        add.setAttribute('href', serializeShellRoute('yours', 'new', thing.type_id));
+        add.textContent = thingStepWords(thing.type_name).link;
+        links.appendChild(add);
+      });
+      things.appendChild(links);
+      needs.appendChild(things);
+      needsShown += 1;
+    }
     if (needsShown > 0) wrapper.appendChild(needs);
 
     // ── Tabs ─────────────────────────────────────────────────────────
@@ -4933,8 +5033,11 @@ export const mountPacksPanel = (
     for (const dependency of pack.manifest?.dependencies ?? []) {
       if (dependency.type === 'pack') use(dependency.slug);
     }
+    // A Records pack's recipes are stored under its generated `records-<hash>` id, never its slug,
+    // so its own are also those its manifest lists (found by D-404 slice E's live run, 2026-11-19).
+    const ownRecipeIds = new Set((pack.recipe_refs ?? []).map((ref) => ref.slug));
     for (const entry of installedRecipes ?? []) {
-      if (entry.pack_slug !== pack.slug) continue;
+      if (entry.pack_slug !== pack.slug && !ownRecipeIds.has(entry.recipe_id)) continue;
       for (const ref of entry.recipe.depends_on ?? []) {
         const parsed = parseDependsOn(ref);
         if (parsed !== null) use(parsed.pack, entry.recipe_id);
@@ -5037,6 +5140,9 @@ export const mountPacksPanel = (
         dialogAlsoUnticked.set(slug, new Set(draft.also_unticked));
         dialogWebhookPicks.set(slug, new Map(draft.webhook_picks));
         dialogMailTemplateKeep.set(slug, new Map(draft.template_keep));
+        // D-201 Slice 10AO (10AM finding 14) — and the door switches the owner
+        // set. Each is sent only where the preview, read again, still raises it.
+        dialogWebhookDoors.set(slug, new Map(draft.webhook_doors ?? []));
         dialogInstallPreview.delete(slug); dialogVendorPermissionsReviewed.delete(slug);
         permissionRepairNotice = repair.verified ? `The read-only access check passed for ${repair.name}. Review the refreshed vendor permissions before installing.`
           + (repair.reconnect_collections?.length ? ' Review connected Mail and Calendar accounts: ' + repair.reconnect_collections.map(use => use.label).join(', ') + '.' : '') : undefined;

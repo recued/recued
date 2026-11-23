@@ -213,6 +213,12 @@ const STATES: State[] = [
     shows: (page) => page.getByRole('button', { name: 'Approve undo' }),
   },
   {
+    name: 'Chat › Review undo on a call\'s line',
+    at: '?chat=session&local_mutation_receipt=line#chat/session/chat_1',
+    open: press(/^Review undo/),
+    shows: (page) => page.getByRole('button', { name: 'Approve undo' }),
+  },
+  {
     name: 'Chat › Live control',
     at: '?chat=session&live=interrupted#chat/session/chat_1',
     open: async (page) => { await page.locator(`[${LIVE_CONTROL_TOGGLE}]`).first().click(); },

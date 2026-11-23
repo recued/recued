@@ -51,6 +51,7 @@ import {
   readProviderStringContinuation,
 } from '../../provider-pagination-guard.js';
 
+import { inviteUidFromExchangeId } from './exchange-invite-uid.js';
 import { calendarSyncFailureOf, listedWindow } from './provider.js';
 import type {
   CalendarProvider,
@@ -189,7 +190,9 @@ export interface GraphCalEvent {
   isOrganizer?: boolean;
   responseStatus?: GraphCalAttendee['status'];
   id: string;
-  /** Graph spells this `iCalUId` (capital U, lower d). */
+  /** Graph spells this `iCalUId` (capital U, lower d). ⚠ Exchange's meeting
+   *  id in hex, not an iCalendar UID: one from an outside invite wraps the
+   *  invite's UID (`inviteUidFromExchangeId`). */
   iCalUId?: string;
   /** Present on `@removed` delta entries only — absent on live events. */
   '@removed'?: { reason: string };
@@ -201,6 +204,9 @@ export interface GraphCalEvent {
   end?: GraphCalDateTime;
   isAllDay?: boolean;
   isCancelled?: boolean;
+  /** D-407 Q8 — `private` and `confidential` hide the event's details from those the calendar is
+   *  shared with; `personal` only labels it. */
+  sensitivity?: 'normal' | 'personal' | 'private' | 'confidential';
   organizer?: { emailAddress?: GraphCalEmailAddress };
   attendees?: GraphCalAttendee[];
   recurrence?: GraphCalRecurrence | null;
@@ -373,7 +379,9 @@ export const canonicalizeGraphEvent = (
 
   const canonical: CanonicalEvent = {
     source_id: event.id,
-    ical_uid: event.iCalUId ?? event.id,
+    // ⛔ The invite's UID where Exchange's id wraps one: the booking and the
+    // recipes that tell events apart join by it (live 2026-11-22).
+    ical_uid: inviteUidFromExchangeId(event.iCalUId) ?? event.iCalUId ?? event.id,
     calendar_id: calendarId,
     ...(calendarName ? { calendar_name: calendarName } : {}),
     summary: event.subject ?? '',
@@ -386,6 +394,7 @@ export const canonicalizeGraphEvent = (
     ...(organizer ? { organizer } : {}),
     ...(attendees && attendees.length > 0 ? { attendees } : {}),
     status: mapStatus(event),
+    ...(event.sensitivity === 'private' || event.sensitivity === 'confidential' ? { marked_private: true as const } : {}),
     ...(recurrenceRule ? { recurrence_rule: recurrenceRule } : {}),
     ...(event.seriesMasterId
       ? { recurring_event_id: event.seriesMasterId }
@@ -1093,9 +1102,11 @@ export const createGraphCalProvider = (
         type: 'required',
       }));
     }
-    if (input.reminders && input.reminders.length > 0) {
-      body.isReminderOn = true;
-      body.reminderMinutesBeforeStart = input.reminders[0].minutes;
+    // D-407 slice 4 — private at Outlook, and its one alert as given: an empty list is none, absent Outlook's default.
+    if (input.marked_private) body.sensitivity = 'private';
+    if (input.reminders !== undefined) {
+      body.isReminderOn = input.reminders.length > 0;
+      if (input.reminders.length > 0) body.reminderMinutesBeforeStart = input.reminders[0]!.minutes;
     }
     return body;
   };
@@ -1126,6 +1137,12 @@ export const createGraphCalProvider = (
         },
         type: 'required',
       }));
+    }
+    // D-407 slice 4 — the private marking set or taken away, and its one alert.
+    if (patch.marked_private !== undefined) body.sensitivity = patch.marked_private ? 'private' : 'normal';
+    if (patch.reminders !== undefined) {
+      body.isReminderOn = patch.reminders.length > 0;
+      if (patch.reminders.length > 0) body.reminderMinutesBeforeStart = patch.reminders[0]!.minutes;
     }
     return body;
   };
@@ -1322,8 +1339,10 @@ export const createGraphCalProvider = (
           ? 'The organizer manages this event’s details.' : undefined;
       const richNotes = current.body?.contentType?.toLowerCase() !== 'text' || current.isOnlineMeeting === true;
       const multipleLocations = (current.locations?.length ?? 0) > 1;
-      const editable_fields: Array<'summary' | 'description' | 'location' | 'start_at' | 'end_at'> = reason ? []
-        : ['summary', 'start_at', 'end_at', ...(!richNotes ? ['description' as const] : []), ...(!multipleLocations ? ['location' as const] : [])];
+      const editable_fields: Array<'summary' | 'description' | 'location' | 'start_at' | 'end_at' | 'marked_private' | 'alert_minutes'> = reason ? []
+        : ['summary', 'start_at', 'end_at', ...(!richNotes ? ['description' as const] : []), ...(!multipleLocations ? ['location' as const] : []),
+          // D-407 slice 4 — its private marking (`sensitivity`) and its one alert.
+          'marked_private', 'alert_minutes'];
       const notices = ['Changes are saved to this Outlook calendar.',
         current.attendees?.length ? 'Outlook handles attendee updates.' : '',
         richNotes ? 'Edit rich notes and online-meeting details in Outlook; they are kept when saving other fields.' : '',

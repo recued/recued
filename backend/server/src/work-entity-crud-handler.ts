@@ -1,3 +1,5 @@
+import { NoteEditConflictError, noteEditRevision } from './note-edit-revision.js';
+import { handleWorkEntityLinkedFrom } from './work-entity-linked-from.js';
 /** D-174 #22 — rpc handlers for `work_entity.{list,get,upsert,delete}`.
  *
  *  The webclient Data route's warehouse-CRUD surface over the four
@@ -52,6 +54,7 @@ import {
 
 import type { WsClient } from './ws-server.js';
 import { handleWorkEntitySearch } from './work-entity-search.js';
+import { handleWorkEntityProjectAttention } from './work-entity-project-attention.js';
 import { handleWorkEntityProjectItems } from './work-entity-project-items.js';
 import { commitmentCounterparties } from './work-entity-contact-labels.js';
 import {
@@ -83,6 +86,8 @@ export interface WorkEntityCrudRpcDeps {
   /** The owner's zone: a DATE-ONLY due's day is read in it by the Tasks
    *  filter (overdue once that day is over). Absent ⇒ UTC. */
   timeZone?: () => string;
+  /** Read clock, injectable for deterministic attention windows. */
+  now?: () => number;
   /** Validity-filtered polymorphic reads (the recipe-side read path). */
   resolver: WorkEntityResolver;
   /** Event-emitting write path — the SAME dispatcher instance the
@@ -90,6 +95,12 @@ export interface WorkEntityCrudRpcDeps {
    *  enrichment cascade at boot), so pair-RPC writes fan the canonical
    *  warehouse events. */
   dispatchers: WorkEntityDispatchers;
+  /** Stored reads only. Incoming links never fetch from a provider. */
+  sourceRecords?: {
+    get(platform: 'mail' | 'calendar', slug: string, id: string): import('@recued/contracts').CollectionRecord | null;
+    getIncarnation(platform: 'mail' | 'calendar', slug: string): string | null;
+    linkedCalendar?: (target: import('@recued/contracts').SavedWorkAddress, limit: number, offset: number) => import('@recued/contracts').LinkedCalendarPage;
+  };
   /** D-192 P5 — work-graph edges: `get` responses carry the row's live
    *  relationship edges when wired. Optional (older composition / no
    *  edge substrate → the field stays absent). */
@@ -101,6 +112,13 @@ export interface WorkEntityCrudRpcDeps {
     getByContactIdResolved(
       contact_id: string,
     ): { contact_id?: string; name?: string; email: string } | null;
+    /** Optional on display-only adapters; the native store supplies these for
+     * merge-aware incoming links without provider reads or extra composition. */
+    get?: import('./storage/contact-store.js').ContactStore['get'];
+    resolveCanonicalEmail?: import('./storage/contact-store.js').ContactStore['resolveCanonicalEmail'];
+    resolvedContactIds?: import('./storage/contact-store.js').ContactStore['resolvedContactIds'];
+    addressSet?: import('./storage/contact-store.js').ContactStore['addressSet'];
+
   };
 }
 
@@ -143,6 +161,7 @@ const edgeToView = (
  *  `bad_request` / `not_found` shape. Unknown errors propagate so test
  *  failures surface cleanly. */
 const mapCrudError = (method: string, err: unknown): never => {
+  if (err instanceof NoteEditConflictError) throw new RpcError('conflict', err.message);
   if (err instanceof WorkEntityNotFoundError) {
     throw new RpcError('not_found', `${method}: ${err.message}`);
   }
@@ -481,6 +500,7 @@ export const handleWorkEntityGet = async (
         : undefined;
     return {
       entity,
+      ...(entity._kind === 'note' && deps.store.readNote(entity.id) ? { note_edit_revision: noteEditRevision(entity) } : {}),
       ...(kind === 'commitment' ? { counterparty_labels: commitmentCounterparties([entity], deps.contactDisplay) } : {}),
       ...(source_freshness !== undefined ? { source_freshness } : {}),
       ...(relationship_edges !== undefined ? { relationship_edges } : {}),
@@ -700,7 +720,9 @@ export const handleWorkEntityCommitmentClose = async (
 };
 
 type WorkEntityCrudMethods =
+  | 'work_entity.project.attention'
   | 'work_entity.project.items'
+  | 'work_entity.linked_from'
   | 'work_entity.search'
   | 'work_entity.list'
   | 'work_entity.get'
@@ -718,7 +740,9 @@ export const makeWorkEntityCrudHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
+      'work_entity.project.attention',
       'work_entity.project.items',
+      'work_entity.linked_from',
       'work_entity.search',
       'work_entity.list',
       'work_entity.get',
@@ -729,6 +753,14 @@ export const makeWorkEntityCrudHandlers = (
       'work_entity.delete',
     ],
     handlers: {
+      'work_entity.linked_from': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleWorkEntityLinkedFrom(deps, args);
+      },
+      'work_entity.project.attention': async (args, client) => {
+        requireRegisteredClient(client);
+        return handleWorkEntityProjectAttention(deps, args);
+      },
       'work_entity.project.items': async (args, client) => {
         requireRegisteredClient(client);
         return handleWorkEntityProjectItems(deps, args);

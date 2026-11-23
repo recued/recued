@@ -291,6 +291,9 @@ export interface CatalogSessionGrantHooks {
       /** Slice D — re-verifies a `'scoped'` consumption's 5.d containment at
        *  the store (the 5.a build constraint); exact/batch/open ignore it. */
       destination_emails?: ReadonlyArray<string>;
+      /** D-177 N.15 — the op the match named (`resolution.operation_id`),
+       *  which a `'kind'` row re-verifies at the store; the others ignore it. */
+      operation_id?: string;
     },
   ): boolean;
   /** D-177 catalog batch (N.10) — atomically claim the NAMED member of a
@@ -355,6 +358,15 @@ import type {
   ExchangeFireHandler,
 } from './fire-exchange-output.js';
 
+/** D-201 Slice 10R — one step a stopped run finished after its gated step,
+ *  as it came out: skipped, or its value (absent when it was `undefined`).
+ *  `ExecutionContext.resumeFrom.replayed_steps`. */
+export interface ReplayedStep {
+  readonly step_id: string;
+  readonly skipped: boolean;
+  readonly value?: unknown;
+}
+
 export interface ExecutionContext {
   /** Host-only opt-in snapshot after defaults/continuity, before any step.
    * Never read from recipe JSON. A failed observer cannot change execution. */
@@ -368,6 +380,10 @@ export interface ExecutionContext {
     phase: 'trigger' | 'prefetch' | 'sequential';
     iteration_indices: number[];
   };
+  /** D-402 slice D5b — the turn of each `foreach` the engine is in, outermost first, on every run (the
+   *  addressing above only on a reviewed one). Each step run inside gets it as
+   *  `StepMeta.iteration_indices`. Engine-only, never read from a recipe. */
+  foreachIndices?: readonly number[];
   /** Host-private durable invocation control. These functions are never read
    * from recipe JSON, execution context data, tool args or resume markers. */
   reviewedExecution?: {
@@ -785,6 +801,14 @@ export interface ExecutionContext {
    *  the owner's policy leaves the ask waivable (`never`, or `ask` before the lift). The host spends
    *  a use when it admits. Absent ⇒ these ops ask, as before. */
   triggerPreapprovals?: TriggerPreapprovalHooks;
+  /** D-348 slice 5 — the rule the owner accepted for the request a chat run was made for: a catalog
+   *  op on it goes ahead without asking, under the same conditions as `triggerPreapprovals`. The
+   *  host spends a use when it admits. Absent ⇒ these ops ask, as before. */
+  chainRules?: import('@recued/contracts').ChainRuleHooks;
+  /** D-339 slice 12a — a read held at its own `always` (a Body's numbers) that the owner lets this
+   *  run's caller make without asking: their chats' "Allow" on a Body's page. Asked in the ask branch
+   *  only, after the stand-ins above (none covers an `always` hold). Absent ⇒ every such read asks. */
+  heldReads?: import('@recued/contracts').HeldReadHooks;
   /** D-136 P7.E — origin of the recipe execution. Surfaced on
    *  `StepMeta.trigger_source` so kernel storage adapters that read
    *  enrichment data can apply policy gates (e.g. `mcp_exposed:
@@ -867,6 +891,9 @@ export interface ExecutionContext {
    *  session. Unset on dbless / unit paths (no store) → the override layer is
    *  skipped and the connection-keyed floor stands unchanged. */
   contractScan?: ScanFn;
+  /** D-402 slice C — a trial run of a draft recipe: every catalog operation that writes asks, as an
+   *  owner's "always ask" one does, whatever would stand in for it. */
+  trial?: true;
   /** D-120 Phase 3 — provenance link sink. When wired, the engine
    *  emits one `EmittedLink` per side-effecting ingredient step's
    *  resolved `data.<col>.<id>` reference (filtered through
@@ -969,6 +996,33 @@ export interface ExecutionContext {
      *  `CHECKPOINT_STEP_NOT_FOUND` error (the recipe drifted out from
      *  under the checkpoint between pause and resume). */
     gated_step_id: string;
+    /** D-201 Slice 10N — the gated step already ran, before a restart stopped
+     *  the run: the value it left in `step.<gated_step_id>`. It stands in for
+     *  the step's call, so the approved operation is not sent again, and the
+     *  run goes on from there (a plain step's `fail_on` and `stop_when` still
+     *  apply). Wrapped, since the value may itself be null. D-201 Slice 10BH —
+     *  for a `foreach` step only once it finished, asked for before any of its
+     *  items ran (`loopAskedBeforeAnyItemRan`), with no egress bound or resource
+     *  review on the resume: its value, each item's result, stands in for the
+     *  loop. Its items' `skip_when` and `fail_on` were read item by item before
+     *  the stop and are not read again; its `stop_when` is read once over the
+     *  whole value (10BN). Any other loop is refused, unless it was skipped.
+     *  D-201 Slice 10BU (10BS finding 2) — `skipped`: the step was skipped
+     *  before the stop (at the answer). It stays skipped, its `stop_when`
+     *  unread, as a later step's recorded skip does: a loop was replayed as one
+     *  that ran. D-201 Slice 10BZ (10BX finding 6) — and a step that ran is not
+     *  asked its `skip_when` again either: read over what had changed since, a
+     *  plain step that ran was skipped, and later steps read null. */
+    replayed_result?: { readonly value: unknown; readonly skipped?: true };
+    /** D-201 Slice 10R — the steps after the gated one that had finished
+     *  before the same stop, in the order they ran. Each stands in for its
+     *  step as it came out, so nothing the stopped run already sent is sent
+     *  again: a value is stored as the step's result without the call (a
+     *  `foreach` included, whose value is its whole result), a skip is a skip,
+     *  and the step's `skip_when` is not asked again. The run goes on from the
+     *  first step not listed. Only the host resumer sets it, beside
+     *  `replayed_result`, from its own record of that stop. */
+    replayed_steps?: readonly ReplayedStep[];
     /** Exact foreach item/progress when the gate was raised mid-loop. */
     foreach_progress?: ForeachCheckpointProgress;
     /** Exact chunked-request budget approved for the resumed dispatch. In a
@@ -981,9 +1035,12 @@ export interface ExecutionContext {
      *  the resumed gated step's `StepMeta.preflight_approved_target`; the
      *  catalog gate honors `preflight_admitted` only when the re-resolved
      *  `(ingredient, operation, connection)` matches it, re-raising a fresh
-     *  ask on drift (fail closed). Absent ⇒ the catalog gate does not honor
-     *  the position-only admission (it re-asks); the simple-form gate stays
-     *  position-bound regardless. */
+     *  ask on drift (fail closed). Absent ⇒ no gate honors the position-only
+     *  admission: the catalog gate, the commit Gateway's simple-form gate and
+     *  the host's ingredient gate each re-ask unless the approved target names
+     *  the step's tool. (This said the simple-form gate stayed position-bound;
+     *  it was made target-bound by the same D-165 follow-on, and D-201 Slice 10W
+     *  relies on all three re-asking.) */
     approved_target?: PreflightApprovedTarget;
     /** D-173 N.5 — editable args at the approval gate. The consumed
      *  `Checkpoint.arg_overrides` (when the admin-only

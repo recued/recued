@@ -1,3 +1,5 @@
+import { ensureWorkBodyLinkSchema, registerWorkBodyLinkFunction, workBodyLinkOwners, type WorkBodyLinkQuery } from './work-entity-body-links.js';
+import { NoteEditConflictError, noteEditRevision } from '../note-edit-revision.js';
 /** D-145 PA1 — Canonical work entity storage (`task` / `note` /
  *  `commitment` / `project`) + Source registry + note access ledger.
  *
@@ -19,6 +21,7 @@ import {
   FTS_REINDEX_PAGE,
   checkQuerySpelling,
   createFtsTable,
+  appendRecord as ftsAppendRecord,
   deleteRecord as ftsDeleteRecord,
   indexRecord as ftsIndexRecord,
   search as ftsSearch,
@@ -284,6 +287,7 @@ const closeAssetSummaryFieldScope = (db: Database.Database, scope: AssetSummaryF
  *  caller happened to use. Re-registration safely replaces in better-sqlite3,
  *  so calling it twice is a no-op. */
 const registerWorkEntitySqlFunctions = (db: Database.Database): void => {
+  registerWorkBodyLinkFunction(db);
   db.function('js_lower', { deterministic: true }, (value: unknown) =>
     typeof value === 'string' ? value.toLowerCase() : '');
   db.function('asset_summary_history_fields', { deterministic: true }, (blob: unknown, status: unknown, sync: unknown, deleted: unknown) => {
@@ -859,6 +863,7 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     reindexWorkEntityFts(db);
   }
 
+  ensureWorkBodyLinkSchema(db);
   repairWorkEntityTextDates(db, Date.now());
   reindexAssetSearchText(db, Date.now());
 };
@@ -886,7 +891,8 @@ const reindexAssetSearchText = (db: Database.Database, now: number): void => {
 /** The D-308 ledger id of the one-off repair of dates stored as text. */
 export const WORK_ENTITY_TEXT_DATES_REPAIR_ID = 'work-entity-text-dates-v1';
 /** The one-off re-index of asset shared values and keyword metadata. */
-export const ASSET_SEARCH_TEXT_REINDEX_ID = 'asset-search-text-v2';
+/** v3 (2026-11-18, D-404): a type's name is one of its keywords, so every asset is indexed again once. */
+export const ASSET_SEARCH_TEXT_REINDEX_ID = 'asset-search-text-v3';
 
 export type WorkEntityDateKind = 'task' | 'commitment' | 'project' | 'booking';
 
@@ -1243,6 +1249,7 @@ export interface TaskWriteInput extends WorkEntitySourceIdentityInput {
 
 export interface NoteWriteInput extends WorkEntitySourceIdentityInput {
   id?: string;
+  expected_revision?: string;
   title?: string;
   body: string;
   last_user_action_at?: number;
@@ -1368,7 +1375,7 @@ export interface WorkEntityListQuery {
   parent_project_id?: string;
   limit?: number;
   offset?: number;
-  /** Task/booking search. Applied by SQL before pagination. */
+  /** Task/note/booking/commitment search. Applied by SQL before pagination. */
   search?: string;
   /** Asset-only class scope (D-342), applied before pagination and count: `only` keeps the
    *  assets of this class, `except` every other one, an unclassified asset included. */
@@ -1562,9 +1569,9 @@ const buildListWhere = (
       );
       params.push(...q.booking_lifecycle_states);
     }
-  } else if ((!taskFilters && !commitmentFilters && q.search.length > 0) || q.booking_lifecycle_states.length > 0) {
+  } else if ((!taskFilters && !commitmentFilters && !noteFilters && q.search.length > 0) || q.booking_lifecycle_states.length > 0) {
     throw new WorkEntityValidationError(
-      'search requires tasks, bookings or commitments; booking_lifecycle_states requires bookings',
+      'search requires tasks, notes, bookings or commitments; booking_lifecycle_states requires bookings',
       q.search.length > 0 ? 'search' : 'booking_lifecycle_states',
     );
   }
@@ -1573,7 +1580,7 @@ const buildListWhere = (
     clauses.push(`(js_lower(statement) LIKE ? ESCAPE '\\' OR js_lower(id) LIKE ? ESCAPE '\\' OR js_lower(COALESCE(counterparty_contact_id, '')) LIKE ? ESCAPE '\\')`);
     params.push(pattern, pattern, pattern);
   }
-  if (taskFilters && q.search.length > 0) {
+  if ((taskFilters || noteFilters) && q.search.length > 0) {
     const pattern = `%${escapeLike(q.search.toLowerCase())}%`;
     clauses.push(`(js_lower(title) LIKE ? ESCAPE '\\' OR js_lower(COALESCE(body, '')) LIKE ? ESCAPE '\\')`);
     params.push(pattern, pattern);
@@ -2511,7 +2518,9 @@ export interface WorkEntityStore {
     value: AssetReading | AssetCondition | null; source: Asset['field_sources'][string] }>;
   writeAssetObservations(input: { binding_id: string; actor_ref: string; recipe_hash?: string;
     readings?: Record<string, AssetReading>; observations?: Record<string, Omit<AssetCondition, 'source'>> }, now?: number, runId?: string): { asset: Asset; changed_fields: string[]; prior?: Asset };
-  assetReadingHistory(asset_id: string, field: string, limit?: number): AssetReading[];
+  /** Newest first, at most `limit`; with `since`, only samples as of it or later (D-339 slice 7b: a
+   * page's 30 days, read by the primary key's range, however often its source writes). */
+  assetReadingHistory(asset_id: string, field: string, limit?: number, since?: number): AssetReading[];
   /** Fresh histories for distinct asset/field pairs, including empty results.
    * Each pair keeps the individual read's newest-first order and limit. */
   assetReadingHistories(requests: readonly { asset_id: string; field: string }[], limit?: number): Map<string, Map<string, AssetReading[]>>;
@@ -2535,6 +2544,7 @@ export interface WorkEntityStore {
     emails: readonly string[];
   }): WorkEntityContactRelationshipSummary;
   // ── tasks ──────────────────────────────────────────────────────
+  listBodyLinkOwners(query: WorkBodyLinkQuery): Array<{ kind: 'task' | 'note'; id: string }>;
   writeTask(input: TaskWriteInput, now?: number): Task;
   /** Atomic create-if-absent for a caller-derived stable local task id. The
    * existing row is returned unchanged; callers verify their idempotency
@@ -2669,6 +2679,8 @@ export interface WorkEntityStore {
     source_record_id: string,
   ): WorkEntity | null;
   countByKind(kind: WorkEntityKind, query?: WorkEntityListQuery): number;
+  /** Synchronous local reads sharing one SQLite snapshot; never call a provider. */
+  readSnapshot<T>(read: () => T): T;
   /** Generic by-kind list across all Sources (or one when
    *  `query.source_id` is set). Returns rows tagged with `_kind`. */
   listByKind(kind: WorkEntityKind, query?: WorkEntityListQuery): WorkEntity[];
@@ -3585,9 +3597,14 @@ export const createWorkEntityStore = (
     return { asset: written, changed_fields, prior: asset };
   })();
   const readingHistoryLimit = (limit: number) => Math.min(10000, Math.max(1, limit));
-  const assetReadingHistory: WorkEntityStore['assetReadingHistory'] = (id, field, limit = 100) =>
-    (db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? ORDER BY as_of DESC LIMIT ?')
-      .all(id, field, readingHistoryLimit(limit)) as Array<{ value: string }>).map(row => JSON.parse(row.value) as AssetReading);
+  const assetReadingHistory: WorkEntityStore['assetReadingHistory'] = (id, field, limit = 100, since) => {
+    const rows = (since === undefined
+      ? db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? ORDER BY as_of DESC LIMIT ?')
+        .all(id, field, readingHistoryLimit(limit))
+      : db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? AND as_of>=? ORDER BY as_of DESC LIMIT ?')
+        .all(id, field, since, readingHistoryLimit(limit))) as Array<{ value: string }>;
+    return rows.map(row => JSON.parse(row.value) as AssetReading);
+  };
   type ReadingHistories = ReturnType<WorkEntityStore['assetReadingHistories']>;
   interface SummaryHistoryReader { fields: AssetSummaryFieldScope; read(requests: readonly { asset_id: string; field: string }[]): ReadingHistories; close(): void }
   let summaryHistoryReader: SummaryHistoryReader | undefined;
@@ -3897,8 +3914,10 @@ export const createWorkEntityStore = (
       + `USING fts5(key UNINDEXED, blob_text, tokenize='${WORK_ENTITY_FTS_TOKENIZER}')`,
     );
     db.prepare(`DELETE FROM ${SCRATCH_FTS_TABLE}`).run();
+    // Appended, not indexed by key: the table is emptied before and after, and a key map for it would be a table in
+    // the user's database (`@recued/fts` keeps one per index it replaces rows in).
     texts.forEach((text, i) => {
-      ftsIndexRecord(db, SCRATCH_FTS_TABLE, `i.${i}`, text);
+      ftsAppendRecord(db, SCRATCH_FTS_TABLE, `i.${i}`, text);
     });
     const hits = ftsSearch(db, SCRATCH_FTS_TABLE, {
       query: match,
@@ -4111,8 +4130,12 @@ export const createWorkEntityStore = (
   };
 
   // ── notes ───────────────────────────────────────────────────────
-  const writeNote: WorkEntityStore['writeNote'] = (input, now = Date.now()) => {
+  const writeNote: WorkEntityStore['writeNote'] = (input, now = Date.now()) => db.transaction(() => {
     validateNoteInput(input);
+    if (input.expected_revision !== undefined) {
+      const current = input.id ? readNote(input.id) : null;
+      if (!current || !/^[a-f0-9]{64}$/u.test(input.expected_revision) || noteEditRevision(current) !== input.expected_revision) throw new NoteEditConflictError();
+    }
     const id = input.id ?? newId();
     const created_at = input.created_at ?? now;
     const updated_at = input.updated_at ?? now;
@@ -4179,7 +4202,7 @@ export const createWorkEntityStore = (
     if (!written) throw new Error(`writeNote: row ${id} missing post-insert`);
     indexWorkEntity('note', written);
     return written;
-  };
+  }).immediate();
 
   const readNote: WorkEntityStore['readNote'] = (id) => {
     const row = db.prepare(`SELECT * FROM ${NOTE_TABLE} WHERE id = ?`).get(id) as
@@ -5009,6 +5032,7 @@ export const createWorkEntityStore = (
     return apply.immediate();
   };
   const store: WorkEntityStore = {
+    listBodyLinkOwners: query => workBodyLinkOwners(db, query),
     summarizeContactRelationships,
     writeTask,
     ensureTask,
@@ -5066,6 +5090,7 @@ export const createWorkEntityStore = (
     localIdBySourceIdentity,
     readBySourceIdentity,
     countByKind,
+    readSnapshot: read => db.transaction(read).deferred(),
     listByKind,
     listRecordIdentitiesForSource,
     searchIdsByText,

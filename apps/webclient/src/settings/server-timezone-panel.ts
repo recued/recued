@@ -25,6 +25,7 @@
  *
  *  Spec: internal design notes D-269 REV 3 / REV 4 / REV 5 / REV 7 / REV 9. */
 
+import { mountTimezonePicker, TIMEZONE_PICKER_STYLES, type TimezonePicker } from '../timezone-picker.js';
 import {
   renderActionLabel,
   twoClockPreview,
@@ -125,6 +126,7 @@ export const mountServerTimeZonePanel = (
   let draftZone: string | null = null;
   let unconfirmedSave = false;
   let clocks: TwoClockView | null = null;
+  let zonePicker: TimezonePicker | undefined;
   let loadGeneration = 0;
   let initialRead: Promise<void> | null = null;
   type FocusKey = 'zone' | 'save' | 'fixed' | 'follows_host' | 'saving' | 'retry' | 'loading' | 'check' | 'checking';
@@ -276,6 +278,7 @@ export const mountServerTimeZonePanel = (
       // every fake in the tree grow a method to accommodate one file. Found by
       // the composition-root test, not by this panel's own: its fake had
       // `replaceChildren` because I wrote both.
+      zonePicker?.dispose(); zonePicker = undefined;
       opts.host.innerHTML = '';
 
       opts.host.appendChild(el('h3', 'Timezone'));
@@ -341,12 +344,24 @@ export const mountServerTimeZonePanel = (
           opts.host.querySelector?.<HTMLInputElement>(`[${SERVER_TZ_ZONE_INPUT_ATTR}]`)?.focus?.({ preventScroll: true });
         });
         wrap.appendChild(input);
-        wrap.appendChild(el('span', ` ${label} — ${hint}`));
+        const copy = el('span');
+        copy.className = 'server-timezone-mode-copy';
+        const name = el('span', label);
+        name.className = 'server-timezone-mode-name';
+        copy.appendChild(name);
+        const help = el('span', ` ${hint}`);
+        help.className = 'server-timezone-mode-hint';
+        copy.appendChild(help);
+        wrap.appendChild(copy);
         opts.host.appendChild(wrap);
       }
 
       if (mode === 'fixed') {
-        const field = el('p');
+        const field = el('div');
+        field.className = 'server-timezone-editor';
+        const label = el('label');
+        label.className = 'server-timezone-field';
+        label.appendChild(el('span', 'Server timezone'));
         const input = doc.createElement('input');
         input.type = 'text';
         input.placeholder = 'America/Los_Angeles';
@@ -361,7 +376,8 @@ export const mountServerTimeZonePanel = (
           retireRestoredDraft();
         });
         controls.set('zone', input);
-        field.appendChild(input);
+        label.appendChild(input);
+        field.appendChild(label);
 
         const btn = doc.createElement('button');
         btn.type = 'button';
@@ -382,16 +398,20 @@ export const mountServerTimeZonePanel = (
         });
         field.appendChild(btn);
         opts.host.appendChild(field);
+        zonePicker = mountTimezonePicker({ document: doc, host: label, input, label: 'Server timezone', now, locale: opts.locale,
+          retained: [snapshot?.setting.zone, snapshot?.host_zone, snapshot?.resolved_zone].filter((value): value is string => typeof value === 'string') });
         // ⚠ Names the id form rather than a friendly label. "Pacific Time" maps
         // to three different IANA zones, so a common name cannot round-trip to
         // the one value being set — and the id is what the owner will see echoed
         // back, including when an abbreviation resolved to somewhere they did not
         // expect.
-        opts.host.appendChild(el(
+        const help = el(
           'p',
-          'Use an IANA zone id, like Europe/London or Asia/Tokyo. '
+          'Search by city or timezone ID, or enter an ID like Europe/London or Asia/Tokyo. '
           + 'Daylight saving is handled for you.',
-        ));
+        );
+        help.className = 'server-timezone-help';
+        opts.host.appendChild(help);
       }
 
       editorControls = new Map(controls);
@@ -440,6 +460,7 @@ export const mountServerTimeZonePanel = (
     }
 
     if (snapshot) {
+      zonePicker?.retain([snapshot.setting.zone, snapshot.host_zone, snapshot.resolved_zone].filter((value): value is string => typeof value === 'string'));
       const clockHost = el('div');
       renderClocks(clockHost);
       feedbackHost.appendChild(clockHost);
@@ -533,7 +554,7 @@ export const mountServerTimeZonePanel = (
     isSaving: () => !disposed && saving,
     hasUnsavedChanges: () => !disposed && (unconfirmedSave || (snapshot !== null && !matchesSavedSetting())),
     refresh,
-    dispose: () => { disposed = true; checking = false; loadGeneration += 1; initialRead = null; },
+    dispose: () => { zonePicker?.dispose(); zonePicker = undefined; disposed = true; checking = false; loadGeneration += 1; initialRead = null; },
   };
 };
 
@@ -542,6 +563,7 @@ export const mountServerTimeZonePanel = (
  *  actually means, and an unstyled two-clock preview is two identical-looking
  *  sentences — the comparison the panel is for. */
 export const SERVER_TIMEZONE_PANEL_STYLES = `
+${TIMEZONE_PICKER_STYLES}
 [${SERVER_TZ_PANEL_ATTR}] :is([${SERVER_TZ_SAVE_ATTR}], [${SERVER_TZ_RETRY_ATTR}], [${SERVER_TZ_CHECK_ATTR}]) { display:inline-flex; align-items:center; justify-content:center; gap:6px; }
 [${SERVER_TZ_PANEL_ATTR}] button > svg { flex-shrink:0; }
 [${SERVER_TZ_PANEL_ATTR}] {

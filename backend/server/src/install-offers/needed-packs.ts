@@ -20,6 +20,7 @@
 
 import {
   INSTALL_OFFER_LIMIT,
+  chatHintKeyOfOffer,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ExecutionSource,
@@ -54,6 +55,9 @@ export interface NeededPackOffersDeps {
   readonly enabled: () => boolean;
   /** Every installed pack's slug, read per call. */
   readonly installedPackSlugs: () => ReadonlySet<string>;
+  /** D-405 slice 3 — whether the owner said "Not now" to this hint (`chatHintKeyOfOffer`): never offered
+   *  then, as with the owner's switch (P7) the refusal is answered without it. */
+  readonly hidden?: (key: string) => boolean;
   readonly waitMs?: number;
 }
 
@@ -78,6 +82,7 @@ export const createNeededPackOffers = (deps: NeededPackOffersDeps): NeededPackOf
       if (installed.has(slug)) continue;
       const row = catalogue.packs.find((pack) => pack.slug === slug && pack.publisher_id === publisher);
       if (row === undefined || !row.publisher_certified) continue;
+      if (deps.hidden?.(chatHintKeyOfOffer({ kind: 'pack', slug: row.slug })) === true) continue;
       offers.push({ kind: 'pack', slug: row.slug, name: row.name, publisher: row.publisher_id, recipes: [] });
     }
     return offers;

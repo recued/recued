@@ -11,18 +11,34 @@ import {
   findControl,
   outlinePage,
   PAGE_FIND_MAX_LINES,
-  PAGE_FIND_SECTION_LINES,
   PAGE_FIND_SECTIONS,
   PAGE_OUTLINE_LINE_CHARS,
   PAGE_OUTLINE_PART_CHARS,
+  PAGE_COVER_NOTE_TAIL,
   PAGE_TEXT_PART_CHARS,
   parseInspectHtml,
 } from '../bridges/page-outline.js';
+
+import { browserFieldEvidence } from '../bridges/browser-field-evidence.js';
 
 const URL_ = 'https://en.example.org/wiki/Ada';
 const lines = (html: string, url = URL_) => outlinePage(html, { url }).text.split('\n');
 
 describe('D-335 slice O — the Bridge\'s HTML, parsed', () => {
+  it('excludes structural placeholders from outlines, text, controls and field evidence', () => {
+    const visible = '<p>Visible</p><input ref="e2" name="public" value="Ada">';
+    const placeholders = '<p data-recued-structural-only><p>Hidden</p></p>'
+      + '<input data-recued-structural-only ref="e99" name="private" value="secret">'
+      + '<script data-recued-structural-only></script><meta data-recued-structural-only>';
+    const html = `<body>${placeholders}${visible}</body>`;
+    expect(outlinePage(html, { url: URL_ })).toEqual(outlinePage(`<body>${visible}</body>`, { url: URL_ }));
+    expect(browserFieldEvidence(html, { whole: true, truncated: false }))
+      .toEqual(browserFieldEvidence(`<body>${visible}</body>`, { whole: true, truncated: false }));
+    const preserved = parseInspectHtml(html, true);
+    expect(JSON.stringify(preserved)).not.toMatch(/Hidden|secret|private|e99/);
+    expect(JSON.stringify(preserved)).toContain('structuralOnly');
+  });
+
   it('reads its escaped text and attributes, void elements and booleans, and tolerates what it never writes', () => {
     const root = parseInspectHtml('<body><p class="a b">x &lt;y&gt; &amp; "z"<br>w</p><input ref="e1" value="a &quot;b&quot;" disabled><a href="#q">q</a> 1 < 2</body>');
     const body = root.children[0] as { tag: string; children: Array<{ kind: string; tag?: string; text?: string; attrs?: Record<string, unknown> }> };
@@ -38,6 +54,21 @@ describe('D-335 slice O — the Bridge\'s HTML, parsed', () => {
 });
 
 describe('D-335 slice O — one line per block, what can be acted on as [label](ref)', () => {
+  it('distinguishes identically named links and buttons without changing lookup names or page text', () => {
+    const out = outlinePage('<main><p>Use <a ref="e24" href="/login">Login</a> first.</p>'
+      + '<p><button ref="e25">Login</button></p><p><input ref="e26" type="email" aria-label="Email"></p>'
+      + '<p><span ref="e27" role="button">Continue</span></p>'
+      + '<p><span ref="e28" role="link">Docs</span></p><p><button ref="e29" role="link">Help</button></p>'
+      + '<p><button ref="e30" disabled>Cancel</button></p></main>', { url: URL_ });
+    expect(out.shown).toEqual(['Use [link: Login](e24) first.', '[button: Login](e25)', '[input type="email": Email](e26)',
+      '[span role="button": Continue](e27)', '[span role="link": Docs](e28)', '[button role="link": Help](e29)', '[button: Cancel disabled](e30)']);
+    expect(findControl(out.controls, 'Login', 'link')).toMatchObject({ ref: 'e24', control: { names: ['Login'] } });
+    expect(findControl(out.controls, 'Login', 'button')).toMatchObject({ ref: 'e25', control: { names: ['Login'] } });
+    expect(findControl(out.controls, 'Continue', 'button')).toMatchObject({ ref: 'e27' });
+    expect(findControl(out.controls, 'Help', 'link')).toMatchObject({ ref: 'e29' });
+    expect(out.lines[0]!.plain).toBe('Use Login first.');
+  });
+
   it('headings, paragraphs, nested lists, a quote, and a table row of cells', () => {
     expect(lines('<body><h1>Ada</h1><p>Mathematician.</p><ul><li>One<ul><li>Inner</li></ul></li><li>Two</li></ul>'
       + '<blockquote>Said.</blockquote><table><tbody><tr><th>Born</th><td>10 December 1815</td></tr></tbody></table></body>'))
@@ -52,35 +83,44 @@ describe('D-335 slice O — one line per block, what can be acted on as [label](
       + '<div><textarea ref="e5" placeholder="Note">Hello</textarea></div>'
       // Side by side in one block, they share its line.
       + '<div><button ref="e6">Send</button><span ref="e7" role="button" tabindex="0">Close</span></div></body>'))
-      .toEqual(['See [the page](e1).', '[search box "Search for" = "ada"](e2 #q)', '[checkbox "Remember me" checked](e3)',
-        '[list "Country" = "Japan": France | Japan](e4)', '[text area "Note" = "Hello"](e5)', '[Send](e6) [Close](e7)']);
+      .toEqual(['See [link: the page](e1).', '[input type="search": Search for = "ada"](e2 #q)', '[input type="checkbox": Remember me checked](e3)',
+        '[select: Country = "Japan": France | Japan](e4)', '[textarea: Note = "Hello"](e5)', '[button: Send](e6) [span role="button": Close](e7)']);
+  });
+
+  it('keeps all selected labels in a multiple select, including grouped options', () => {
+    const html = '<main><select ref="e1" multiple aria-label="Tags"><option value="a" selected>Alpha</option>'
+      + '<optgroup label="Other"><option value="b" selected>Beta</option><option value="c">Gamma</option></optgroup></select></main>';
+    const out = outlinePage(html);
+    expect(out.text).toBe('[select multiple: Tags = ["Alpha","Beta"]: Alpha | Beta | Gamma](e1)');
+    expect(out.controls).toMatchObject([{ ref: 'e1', kind: 'list', names: ['Tags'] }]);
+    expect(findControl(out.controls, 'Tags')).toMatchObject({ ref: 'e1' });
   });
 
   it('a long list is cut with its line, and its block names every option', () => {
     const countries = Array.from({ length: 30 }, (_, i) => `<option>Country ${String(i + 1)}</option>`).join('');
     const outline = outlinePage(`<body><div><select ref="e1" aria-label="Country">${countries}</select></div></body>`, { url: URL_ });
     // Slice AU — one link, cut in its label's middle: its first options and its last.
-    expect(outline.text).toMatch(/^\[list "Country": Country 1 \| Country 2 \| [^\]]*…[^\]]*Country 29 \| Country 30\]\(e1\)…\(b1\)$/);
+    expect(outline.text).toMatch(/^\[select: Country: Country 1 \| Country 2 \| [^\]]*…[^\]]*Country 29 \| Country 30\]\(e1\)…\(b1\)$/);
     expect(outline.blocks.get('b1')).toMatch(/Country 29 \| Country 30\]\(e1\)$/);
   });
 
   it('a field or a button names its own id, for a step by selector; a link\'s own id stays out', () => {
     expect(lines('<body><div><input ref="e1" id="email" type="email" aria-label="Email"><button ref="e2" id="go">Go</button>'
       + '<a ref="e3" id="up_45789" href="https://h.n/vote">vote</a><input ref="e4" id="2col:x" aria-label="Odd"></div></body>'))
-      .toEqual(['[email field "Email"](e1 #email) [Go](e2 #go) [vote](e3) [text field "Odd"](e4)']);
+      .toEqual(['[input type="email": Email](e1 #email) [button: Go](e2 #go) [link: vote](e3) [input: Odd](e4)']);
   });
 
   it('a link to a part of the same page names its #id; a link elsewhere does not', () => {
     expect(lines('<body><ul><li><a ref="e1" href="https://en.example.org/wiki/Ada#Early_life">Early life</a></li>'
       + '<li><a ref="e2" href="#Work">Work</a></li><li><a ref="e3" href="https://en.example.org/wiki/Byron#Life">Byron</a></li></ul></body>'))
-      .toEqual(['- [Early life](e1 #Early_life)', '- [Work](e2 #Work)', '- [Byron](e3)']);
+      .toEqual(['- [link: Early life](e1 #Early_life)', '- [link: Work](e2 #Work)', '- [link: Byron](e3)']);
   });
 
   it('things side by side get the space the page shows, but none inside brackets; a citation reads [1]', () => {
     expect(lines('<body><table><tbody><tr><td>668 points by <a ref="e1" href="https://h.n/u">josemrb</a><span><a ref="e2" href="https://h.n/i">2 hours ago</a></span></td></tr>'
       + '<tr><td><a ref="e3" href="https://h.n/s">Sshole</a><span> (<a ref="e4" href="https://h.n/f">sshhole.com</a>)</span></td></tr></tbody></table>'
       + '<p>Lovelace<sup><a ref="e5" href="#cite_note-1"><span>[</span>1<span>]</span></a></sup></p></body>'))
-      .toEqual(['| 668 points by [josemrb](e1) [2 hours ago](e2)', '| [Sshole](e3) ([sshhole.com](e4))', 'Lovelace [[1]](e5 #cite_note-1)']);
+      .toEqual(['| 668 points by [link: josemrb](e1) [link: 2 hours ago](e2)', '| [link: Sshole](e3) ([link: sshhole.com](e4))', 'Lovelace [link: [1]](e5 #cite_note-1)']);
   });
 
   it('a space the Bridge dropped from an element of its own is a space again, but none after an opening bracket or before a closing mark', () => {
@@ -89,25 +129,25 @@ describe('D-335 slice O — one line per block, what can be acted on as [label](
       + '<p>(<abbr title="born">b.</abbr><span></span>1894) <a ref="e1" href="https://x.org/k">Kulikovsky</a><span></span>– 1958</p>'
       + '<h2>Did you know<span></span>...</h2><p>wo<wbr>rd (<span></span>x)</p>'
       + '<p>Find sources: <a ref="e2" href="https://x.org/s">"Go"<span></span>programming language</a></p></body>'))
-      .toEqual(['| First appeared | January 20, 2012; 14 years ago', '(b. 1894) [Kulikovsky](e1) – 1958', '## Did you know...', 'word (x)',
-        'Find sources: ["Go" programming language](e2)']);
+      .toEqual(['| First appeared | January 20, 2012; 14 years ago', '(b. 1894) [link: Kulikovsky](e1) – 1958', '## Did you know...', 'word (x)',
+        'Find sources: [link: "Go" programming language](e2)']);
   });
 
   it('a row stays one line around a link in a center or div; a list or paragraph in a cell makes its own lines', () => {
     expect(lines('<body><table><tbody><tr><td>1.</td><td><center><a ref="e1" href="https://h.n/v"><div title="upvote"></div></a></center></td>'
       + '<td><a ref="e2" href="https://h.n/s">Story</a></td></tr>'
       + '<tr><td>Known for</td><td><ul><li>Engines</li><li>Notes</li></ul></td></tr></tbody></table></body>'))
-      .toEqual(['| 1. | [upvote](e1) | [Story](e2)', 'Known for', '- Engines', '- Notes']);
+      .toEqual(['| 1. | [link: upvote](e1) | [link: Story](e2)', 'Known for', '- Engines', '- Notes']);
   });
 
   it('a picture shows the start of its description, so its caption beside it is not what a cut takes; its block holds it whole', () => {
     const outline = outlinePage('<body><table><tbody><tr><td><a ref="e1" href="https://x.org/f"><img alt="Augusta Ada King, Countess of Lovelace, daguerrotype portrait circa 1843"></a>'
       + '<div><a ref="e2" href="https://x.org/d">Daguerreotype</a> of Lovelace (c. 1843)</div></td></tr></tbody></table></body>', { url: URL_ });
     // Slice T — the mark is where the description was shortened, so the caption reads as whole.
-    expect(outline.text).toBe('| [[image: Augusta Ada King, Countess of Lovelace,…(b1)]](e1) [Daguerreotype](e2) of Lovelace (c. 1843)');
+    expect(outline.text).toBe('| [link: [image: Augusta Ada King, Countess of Lovelace,…(b1)]](e1) [link: Daguerreotype](e2) of Lovelace (c. 1843)');
     // Slice Q — the line in full, and the page's text, have the description whole.
-    expect(outline.blocks.get('b1')).toBe('[[image: Augusta Ada King, Countess of Lovelace, daguerrotype portrait circa 1843]](e1) '
-      + '[Daguerreotype](e2) of Lovelace (c. 1843)');
+    expect(outline.blocks.get('b1')).toBe('[link: [image: Augusta Ada King, Countess of Lovelace, daguerrotype portrait circa 1843]](e1) '
+      + '[link: Daguerreotype](e2) of Lovelace (c. 1843)');
     expect(outline.lines[0]!.plain).toBe('| [image: Augusta Ada King, Countess of Lovelace, daguerrotype portrait circa 1843] Daguerreotype of Lovelace (c. 1843)');
   });
 
@@ -126,7 +166,7 @@ describe('D-335 slice O — one line per block, what can be acted on as [label](
     expect(lines(`<body><div ref="e1" tabindex="0"><h2>About</h2><p>${text}</p><a ref="e2" href="https://g.h/x">Readme</a></div></body>`)
       .slice(0, 3)).toEqual(['[region](e1)', '## About', expect.stringMatching(/^A paragraph of the repository page\. .*…\(b1\)$/)]);
     // A card with a title and a line stays one link.
-    expect(lines('<body><a ref="e1" href="https://x.org/c"><div><h3>Card</h3><p>One line.</p></div></a></body>')).toEqual(['[Card One line.](e1)']);
+    expect(lines('<body><a ref="e1" href="https://x.org/c"><div><h3>Card</h3><p>One line.</p></div></a></body>')).toEqual(['[link: Card One line.](e1)']);
   });
 });
 
@@ -139,15 +179,15 @@ describe('D-335 slice O — a line cut at 100 characters, kept whole for block',
     const outline = outlinePage(`<body><p>${a} <a ref="e2" href="https://x.org/m">middle link</a> ${b}</p></body>`, { url: URL_ });
     // 60 characters of its start, 40 of its end; the link the cut passed over is in the block.
     expect(outline.text).toBe(`${'alpha '.repeat(10).trim()}…mega ${'omega '.repeat(6).trim()}…(b1)`);
-    expect(outline.blocks.get('b1')).toContain('[middle link](e2)');
+    expect(outline.blocks.get('b1')).toContain('[link: middle link](e2)');
   });
 
   it('a long quote keeps its author: the line\'s end shows, the quote\'s middle is cut', () => {
     const quote = 'The world as we have created it is a process of our thinking. It cannot be changed without changing our thinking.';
     const outline = outlinePage(`<body><div><span>“${quote}”</span><span>by <small>Albert Einstein</small> `
       + '<a ref="e3" href="/author/Albert-Einstein">(about)</a></span></div></body>', { url: URL_ });
-    expect(outline.text).toMatch(/^“The world as we have created it is a process.*….*our thinking\.”by Albert Einstein \[\(about\)\]\(e3\)…\(b1\)$/);
-    expect(outline.blocks.get('b1')).toBe(`“${quote}”by Albert Einstein [(about)](e3)`);
+    expect(outline.text).toMatch(/^“The world as we have created it is a process.*….*our thinking\.”by Albert Einstein \[link: \(about\)\]\(e3\)…\(b1\)$/);
+    expect(outline.blocks.get('b1')).toBe(`“${quote}”by Albert Einstein [link: (about)](e3)`);
   });
   // Slice AU — cut in its middle: the start and the end show, so a late link and the line's last words
   // are there to act on and read.
@@ -155,11 +195,11 @@ describe('D-335 slice O — a line cut at 100 characters, kept whole for block',
     const long = `${'word '.repeat(30)}<a ref="e9" href="https://x.org/late">late link</a> and more.`;
     const outline = outlinePage(`<body><p>${long}</p><p>Short.</p></body>`, { url: URL_ });
     const [cut, short] = outline.text.split('\n');
-    expect(cut).toMatch(/^word( word)*…(word )+\[late link\]\(e9\) and more\.…\(b1\)$/);
+    expect(cut).toMatch(/^word( word)*…(word )+\[link: late link\]\(e9\) and more\.…\(b1\)$/);
     // The text it shows, its links' words counted, the one `…` between: within the line length.
-    expect(cut!.replace(/…\(b1\)$/, '').replace(/\[([^\]]*)\]\(e\d+\)/g, '$1').length).toBeLessThanOrEqual(PAGE_OUTLINE_LINE_CHARS + 1);
+    expect(cut!.replace(/…\(b1\)$/, '').replace(/\[link: ([^\]]*)\]\(e\d+\)/g, '$1').length).toBeLessThanOrEqual(PAGE_OUTLINE_LINE_CHARS + 1);
     expect(short).toBe('Short.');
-    expect(outline.blocks.get('b1')).toMatch(/word \[late link\]\(e9\) and more\.$/);
+    expect(outline.blocks.get('b1')).toMatch(/word \[link: late link\]\(e9\) and more\.$/);
   });
 
   it('preformatted text is one line in the outline and keeps its line breaks in full', () => {
@@ -277,7 +317,7 @@ describe('D-335 slice Q — the page as text, contents that name lines, a headin
     const store = createPageReadStore();
     store.outline(page, read('<body><nav><a ref="e1" href="https://x.org/">Home</a></nav>'
       + '<main><h1>Ada</h1><p>She wrote the notes.</p></main><footer>Privacy policy</footer></body>'));
-    expect(store.part(page, 1, 'outline')!.text).toBe('[Home](e1)\n# Ada\nShe wrote the notes.\nPrivacy policy');
+    expect(store.part(page, 1, 'outline')!.text).toBe('[link: Home](e1)\n# Ada\nShe wrote the notes.\nPrivacy policy');
     expect(store.part(page, 1, 'text')).toMatchObject({ text: '# Ada\nShe wrote the notes.', from: 2, to: 3, total: 4, hasMain: true });
     // An article is the main content when it is the page's one.
     const article = createPageReadStore();
@@ -302,28 +342,55 @@ describe('D-335 slice Q — the page as text, contents that name lines, a headin
     const outline = outlinePage('<body><ul><li><a ref="e1" href="#Work">Work</a></li><li><a ref="e2" href="#Legacy">Legacy</a></li></ul>'
       + '<h2 id="Work"><a ref="e3" href="#Work">Work</a></h2><p>Notes.</p>'
       + '<h2><span id="Legacy">Legacy</span></h2><p>Day.</p><p>See <a ref="e4" href="#cite-1">[1]</a>.</p></body>', { url: URL_ });
-    expect(outline.text.split('\n')).toEqual(['- [Work](e1 #Work, line 3)', '- [Legacy](e2 #Legacy, line 5)',
+    expect(outline.text.split('\n')).toEqual(['- [link: Work](e1 #Work, line 3)', '- [link: Legacy](e2 #Legacy, line 5)',
       // A heading's link to itself, and a link to anything but a heading, name no line.
-      '## [Work](e3 #Work)', 'Notes.', '## Legacy', 'Day.', 'See [[1]](e4 #cite-1).']);
+      '## [link: Work](e3 #Work)', 'Notes.', '## Legacy', 'Day.', 'See [link: [1]](e4 #cite-1).']);
     // Counted among the page's kept lines: a read of one part adds after them.
     expect(outlinePage('<body><a ref="e1" href="#Work">Work</a><h2 id="Work">Work</h2></body>', { url: URL_, firstLine: 41 }).text)
-      .toBe('[Work](e1 #Work, line 42)\n## Work');
+      .toBe('[link: Work](e1 #Work, line 42)\n## Work');
   });
 
-  it('a heading found comes with the start of its section, up to the next heading of its rank, for the first few found', () => {
+  it('a heading found includes its whole section and nested headings, with refs and no duplicate matches', () => {
     const store = createPageReadStore();
-    const rows = Array.from({ length: PAGE_FIND_SECTION_LINES + 3 }, (_, i) => `<li>Entry ${String(i + 1)}</li>`).join('');
+    const rows = Array.from({ length: 11 }, (_, i) => `<li>Entry ${String(i + 1)}</li>`).join('');
     store.outline(page, read(`<body><h2>See also</h2><ul>${rows}</ul><h2>Notes</h2><p>A note on see also.</p>`
       + '<h3>Short</h3><p>One.</p><h3>Next</h3></body>'));
-    const lines = store.find(page, 'see also')!.lines.split('\n');
-    expect(lines.slice(0, PAGE_FIND_SECTION_LINES + 1)).toEqual(['line 1: ## See also',
-      ...Array.from({ length: PAGE_FIND_SECTION_LINES }, (_, i) => `  line ${String(i + 2)}: - Entry ${String(i + 1)}`)]);
-    expect(lines.slice(PAGE_FIND_SECTION_LINES + 1)).toEqual([`line ${String(PAGE_FIND_SECTION_LINES + 6)}: A note on see also.   (under "Notes")`]);
+    const found = store.find(page, 'see also')!;
+    expect(found).toMatchObject({ complete: true, truncated: false });
+    expect(found.lines.split('\n')).toEqual(['line 1: ## See also',
+      ...Array.from({ length: 11 }, (_, i) => `  line ${String(i + 2)}: - Entry ${String(i + 1)}`),
+      'line 14: A note on see also.   (under "Notes")']);
     // A section ends at the next heading of its rank or above.
-    expect(store.find(page, 'Short')!.lines).toBe(`line ${String(PAGE_FIND_SECTION_LINES + 7)}: ### Short\n  line ${String(PAGE_FIND_SECTION_LINES + 8)}: One.`);
+    expect(store.find(page, 'Short')!.lines).toBe('line 15: ### Short\n  line 16: One.');
     const many = createPageReadStore();
     many.outline(page, read(`<body>${'<h2>Part</h2><p>Body.</p>'.repeat(PAGE_FIND_SECTIONS + 2)}</body>`));
-    expect(many.find(page, 'part')!.lines.split('\n').filter((line) => line.startsWith('  line'))).toHaveLength(PAGE_FIND_SECTIONS);
+    expect(many.find(page, 'part')).toMatchObject({ complete: false, next: 7 });
+    store.outline(page, read('<main><h2>Submitted Values</h2>' + rows
+      + '<h3>Choices</h3><p>cb1 cb2 rd3</p><a ref="e3" href="/saved">Open saved</a>'
+      + '<h2>Other section</h2><p>Not a submitted value</p></main>'));
+    const choices = store.find(page, 'Submitted Values|Choices')!;
+    expect(choices).toMatchObject({ complete: true, matches: 2 });
+    expect(choices.lines).toContain('cb1 cb2 rd3');
+    expect(choices.lines).toContain('[link: Open saved](e3)');
+    expect(choices.lines.match(/### Choices/g)).toHaveLength(1);
+    expect(choices.lines).not.toContain('Other section');
+  });
+
+  it('a section that exceeds the response budget reports a continuation separately from source truncation', () => {
+    const store = createPageReadStore();
+    store.outline(page, read('<main><h2>Results</h2>'
+      + Array.from({ length: 400 }, (_, i) => `<p>Result ${i}: ${'x'.repeat(70)}</p>`).join('') + '</main>'));
+    const found = store.find(page, 'Results')!;
+    expect(found).toMatchObject({ complete: false, truncated: false, next: expect.any(Number) });
+    expect(found.lines.length).toBeLessThanOrEqual(PAGE_OUTLINE_PART_CHARS);
+    const next = found.next!;
+    expect(found.lines).not.toContain(`line ${next}:`);
+    expect(store.part(page, next)!.text).toContain(`Result ${next - 2}:`);
+    store.outline(page, read('<h2>Results</h2><p>One result.</p>', true, true));
+    expect(store.find(page, 'Results')).toMatchObject({ complete: false, truncated: true });
+    store.outline(page, read('<h2>Results</h2><p>One result.</p>'));
+    store.markLoading(page, true);
+    expect(store.find(page, 'Results')).toMatchObject({ complete: false, truncated: false });
   });
 });
 
@@ -374,7 +441,7 @@ describe('D-335 slice R — frames in the outline', () => {
     expect(outline.text.split('\n')).toEqual(['Top.',
       '(Frame "Contact form" from forms.example: its content is a page of its own, 7:DOC9; inspect that page to read it or act in it.)',
       '(Frame "Card" from pay.example: the Browser Bridge cannot read it.)',
-      'Inside the frame.', '[Inner](e4)']);
+      'Inside the frame.', '[button type="button": Inner](e4)']);
     // A note is never cut, and the page's text says it too.
     expect(outline.lines[1]!.plain).toBe(outline.lines[1]!.text);
     expect(outline.lines[1]!.block).toBeUndefined();
@@ -384,7 +451,7 @@ describe('D-335 slice R — frames in the outline', () => {
     const draft = 'A long draft of the message that goes on and on. '.repeat(8);
     const [first] = outlinePage(`<body><iframe title="Editor"><body ref="e3" contenteditable="true"><p>${draft}</p><p>More.</p></body></iframe></body>`,
       { url: URL_ }).text.split('\n');
-    expect(first).toMatch(/^\[text editor = "A long draft of the message.*\]\(e3\)…\(b1\)$/);
+    expect(first).toMatch(/^\[body contenteditable="true": "A long draft of the message.*\]\(e3\)…\(b1\)$/);
   });
 });
 
@@ -397,7 +464,7 @@ describe('D-335 slice U — an open dialog', () => {
     const outline = outlinePage(SHOP);
     expect(outline.text.split('\n')).toEqual([
       '(A dialog is open at line 5: “Cookie choices”. Answer it or close it first: what is behind it cannot be used until then.)',
-      '# Shop', 'Some text.', '[Buy](e1)', '## Cookie choices', 'We use cookies.', '[Accept](e2)']);
+      '# Shop', 'Some text.', '[button: Buy](e1)', '## Cookie choices', 'We use cookies.', '[button: Accept](e2)']);
     // The page's text has it too, and it counts as main content.
     expect(outline.lines[0]).toMatchObject({ main: true, block: undefined });
   });
@@ -411,6 +478,27 @@ describe('D-335 slice U — an open dialog', () => {
 
   it('a read of one part says nothing of it, leaving it to the read of the whole page', () => {
     expect(outlinePage(SHOP, { firstLine: 40 }).text.split('\n')[0]).toBe('# Shop');
+  });
+  // 2026-11-22 (the owner: "build the 'show the blocker' version") — what covers the page though the page marks it
+  // hidden, which the Bridge marks `data-recued-cover`: the first line says so, and what is behind it is not chosen
+  // by name, as behind a dialog.
+  it('a cover the Bridge marks: the first line says something covers the page; what is behind it is blocked', () => {
+    const outline = outlinePage('<body><main><a ref="e1" href="/a">Story</a></main><div data-recued-cover><p>Advertisement</p>'
+      + '<p>You can close this ad in 5 seconds.</p><button ref="e2">Close</button></div></body>');
+    expect(outline.text.split('\n')).toEqual([`(Something covers this page at line 3: “Advertisement”. ${PAGE_COVER_NOTE_TAIL})`,
+      '[link: Story](e1)', 'Advertisement', 'You can close this ad in 5 seconds.', '[button: Close](e2)']);
+    expect(outline.controls.find(control => control.ref === 'e1')?.blocked).toBe(true);
+    expect(outline.controls.find(control => control.ref === 'e2')?.blocked).toBeUndefined();
+    // A page's own attribute of that name never reaches the outline: the Bridge writes only the attributes it keeps.
+    expect(PAGE_COVER_NOTE_TAIL).toContain('wait if it says when');
+  });
+
+  // 2026-11-22 (the owner: "do the two followups") — under Google's vignette ad its own note names the cover, with how
+  // to close it (dom-adapter.ts): the outline says nothing of it, and what the cover shows starts the outline.
+  it('a cover under Google\'s vignette ad: no line for it, its own words first', () => {
+    const html = '<body><div data-recued-cover><p>Advertisement</p></div></body>';
+    expect(outlinePage(html, { url: 'https://x.example/a#google_vignette' }).text.split('\n')).toEqual(['Advertisement']);
+    expect(outlinePage(html, { url: 'https://x.example/a#offer' }).text.split('\n')[0]).toMatch(/^\(Something covers this page/);
   });
 });
 
@@ -433,7 +521,7 @@ describe('D-335 slice Y — an element named by its text, found among the contro
   };
 
   it('every control, in page order, with its kind and every name the page gives it', () => {
-    expect(controls()).toEqual([
+    expect(controls()).toMatchObject([
       { ref: 'e1', kind: 'search box', names: ['Search Wikipedia', 'Search for'], field: 'id:q' },
       { ref: 'e2', kind: 'button', names: ['Search'] },
       // D-345 slice E — a link with the address it leads to.
@@ -447,7 +535,7 @@ describe('D-335 slice Y — an element named by its text, found among the contro
       { ref: 'e10', kind: 'button', names: ['Log in'] },
       { ref: 'e11', kind: 'tab', names: ['Settings'] },
       { ref: 'e12', kind: 'link', names: ['Your profile', '[image: Ada Lovelace]', 'Ada Lovelace'], href: 'https://x.org/me' },
-    ]);
+    ].map(control => ({ ...control, landmark: 'main' })));
   });
 
   it('by any of its names, ignoring case, spacing, quotes, and a label\'s colon or star', () => {
@@ -481,10 +569,10 @@ describe('D-335 slice Y — an element named by its text, found among the contro
     const wrapped = outlinePage('<body><form><label>Email <input ref="e1" id="email" name="email" type="email"></label>'
       + '<label>Country <select ref="e2" name="country"><option>France</option><option>Japan</option></select></label>'
       + '<input ref="e3" name="passwd" type="password"></form></body>', { url: URL_ });
-    // The outline is as before: the label's words a line's text, the field by its name.
-    expect(wrapped.text.split('\n')[0]).toBe('Email [email field "email"](e1 #email) Country [list: France | Japan](e2) '
-      + '[password field "passwd"](e3)');
-    expect(wrapped.controls).toEqual([
+    // The surrounding label stays; a fallback name equal to #email is redundant.
+    expect(wrapped.text.split('\n')[0]).toBe('Email [input type="email"](e1 #email) Country [select: France | Japan](e2) '
+      + '[input type="password": passwd](e3)');
+    expect(wrapped.controls).toMatchObject([
       { ref: 'e1', kind: 'email field', names: ['Email', 'email'], field: 'name:email' },
       // A list's options are not words of its label.
       { ref: 'e2', kind: 'list', names: ['Country', 'country'], field: 'name:country' },
@@ -495,8 +583,8 @@ describe('D-335 slice Y — an element named by its text, found among the contro
   });
 
   it('several at the best level are several; none, with the controls that share a word with it', () => {
-    expect(refOf('Save')).toEqual({ several: [{ ref: 'e7', kind: 'button', names: ['Save'] }, { ref: 'e8', kind: 'button', names: ['Save'] }] });
-    expect(refOf('Sign up')).toEqual({ none: [{ ref: 'e3', kind: 'link', names: ['Sign in'], href: 'https://x.org/login' }] });
+    expect(refOf('Save')).toMatchObject({ several: [{ ref: 'e7', kind: 'button', names: ['Save'], landmark: 'main' }, { ref: 'e8', kind: 'button', names: ['Save'], landmark: 'main' }] });
+    expect(refOf('Sign up')).toMatchObject({ none: [{ ref: 'e3', kind: 'link', names: ['Sign in'], href: 'https://x.org/login', landmark: 'main' }] });
     expect(refOf('Settings', 'button')).toEqual({ none: [] });
     expect(controlsSaid(controls())).toBe('the search box “Search Wikipedia” (e1), the button “Search” (e2), the link “Sign in” (e3), '
       + 'the link “Create account” (e4), the email field “Email *” (e5), the checkbox “Remember me” (e6), and 6 more');

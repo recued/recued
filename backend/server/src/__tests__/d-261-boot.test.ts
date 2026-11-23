@@ -86,22 +86,9 @@ const rpc = <T>(socket: WebSocket, method: string, args: unknown = {}): Promise<
   socket.on('message', receive); socket.send(JSON.stringify({ type: 'rpc', request_id, method, args }));
 });
 const boot = async (dir: string, bearer: string) => {
-  // ⚠ A RESERVED PORT IS NOT A HELD PORT, and this window is the whole spawn +
-  //   boot (~20s under tsx when this was written). Measured 2026-09-16 while chasing a
-  //   different flake: if anything takes this port in between, the server logs
-  //   `path listener bind failed … EADDRINUSE` and EXITS CODE 4, which the poll
-  //   below reports as "Foreground boot exited" with that line in the trace. So
-  //   it is self-diagnosing, which is why it is documented rather than rebuilt.
-  //   ⛔ It is also narrower than it looks: the reservation takes `127.0.0.1`
-  //   while the server binds `0.0.0.0`, and under BSD `SO_REUSEADDR` a wildcard
-  //   bind succeeds over a held loopback one — verified, a loopback squatter did
-  //   NOT block the boot. ⇒ The reservation proves the port was free; it does
-  //   not keep it free. If this ever becomes a real flake the fix is `--port 0`
-  //   plus parsing the port back out of the bound log (which carries it, and
-  //   `compose-listeners.ts` supports a configured 0), not a wider reservation.
-  const reserve = createServer(); await new Promise<void>(done => reserve.listen(0, '127.0.0.1', done));
-  const address = reserve.address(); if (!address || typeof address === 'string') throw new Error('No fixture port');
-  const port = address.port; await new Promise<void>(done => reserve.close(() => done()));
+  // The 2026-11-13 full sweep hit EADDRINUSE between releasing a reserved
+  // port and binding the child server. Let the child own OS allocation, then
+  // use its completed LAN-listener receipt, never an unheld reservation.
   // ⛔ THE BOOT MUST OWN ITS INSTALL, NOT THE MACHINE'S. `bin.ts serve` takes an
   // early-boot update lease at `updateLeasePathFor(resolveUpdateBinaryPath(env))`,
   // and on every channel but `docker-thin` that resolves to `process.execPath` —
@@ -121,13 +108,14 @@ const boot = async (dir: string, bearer: string) => {
   // contention above is gone there; `docker-thin` keeps these boots taking one.
   const binDir = join(dir, 'bin'); mkdirSync(binDir, { recursive: true });
   const child = spawn(process.execPath, [...await serverEntry(), 'serve',
-    '--db', join(dir, 'realm.db'), '--config', join(dir, 'config.toml'), '--port', String(port)], {
+    '--db', join(dir, 'realm.db'), '--config', join(dir, 'config.toml'), '--port', '0'], {
     cwd: root, env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'backend/server/tsconfig.json'),
       RECUED_LLM_API_KEY: '', RECUED_LLM_SLOT2_API_KEY: '', RECUED_BOOT_TRACE: '1',
       RECUED_DISTRIBUTION_CHANNEL: 'docker-thin', RECUED_BIN_DIR: binDir }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
   let output = '';
+  let port: number | undefined;
   child.stdout!.on('data', bytes => { output += String(bytes); });
   child.stderr!.on('data', bytes => { output += String(bytes); });
   await new Promise<void>((ready, reject) => {
@@ -155,7 +143,12 @@ const boot = async (dir: string, bearer: string) => {
     // three boots a case performs.
     const timer = setTimeout(() => { clearInterval(poll); reject(new Error(`Foreground boot timed out: ${output.slice(-6000)}`)); }, 240_000);
     const poll = setInterval(() => {
-      if (output.includes('[listener] path listener bound')) { clearTimeout(timer); clearInterval(poll); ready(); }
+      const bound = [...output.matchAll(/\[listener\] path listener bound\s*\{([^}]{1,1000})\}/g)]
+        .find(match => /\blistener:\s*['"]lan['"]/.test(match[1]!));
+      const actual = Number(/\bport:\s*(\d+)/.exec(bound?.[1] ?? '')?.[1]);
+      if (Number.isSafeInteger(actual) && actual > 0 && actual <= 65535) {
+        port = actual; clearTimeout(timer); clearInterval(poll); ready();
+      }
       else if (child.exitCode !== null) { clearTimeout(timer); clearInterval(poll); reject(new Error(`Foreground boot exited: ${output.slice(-6000)}`)); }
     }, 25);
   });

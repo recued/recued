@@ -155,6 +155,15 @@ export interface ActiveExecutionEntry {
   run_id?: string;
   recipe_id: string;
   dish_id?: string;
+  /** The installed recipe's name as the owner knows it ("Weekly digest"): for a run of one loaded
+   *  by id from the recipe store. Absent for a recipe passed in with the run (`recipe_inline`) and
+   *  on an older server. Display only: Live control and the messenger's list read it, and the
+   *  agent turn (`promptContext`) does not. */
+  recipe_name?: string;
+  /** The run's recipe was passed in with it, not loaded from the store: written for this run by an
+   *  AI, an app, the owner's draft or one of the server's own flows. Its id and `intent` are its
+   *  caller's, and either may be an installed recipe's, so it is never named as one. */
+  recipe_inline?: true;
   /** Bounded, host-derived description of what the live run is doing. These
    *  fields are safe to project into an agent turn: they describe declared
    *  recipe form only and never include config, vault, context, or outputs. */
@@ -162,6 +171,9 @@ export interface ActiveExecutionEntry {
   risk?: RiskTier;
   effect?: string;
   step_id?: string;
+  /** What that step does, as its approval names it ("Send mail"), from its ingredient's manifest.
+   *  Absent between steps and for a step with no name. Display only, as `recipe_name`. */
+  step_name?: string;
   /** The lane this entry occupies / waits on; absent for a detached-job. */
   lane?: ExecutionLane;
   state: ActiveExecutionState;
@@ -185,6 +197,41 @@ export interface ActiveExecutionEntry {
   current_op?: { op: string; started_at: number; pid: number };
   kill: KillDescriptor;
 }
+
+/** A running entry's recipe as the owner reads it: an installed one by its name ("Weekly digest"),
+ *  one passed in with the run as a one-off by the name it came with (`One-off recipe “…”`), never
+ *  as an installed one whatever its id; an entry an older server sent, by its id as before. It read
+ *  "daily-brief · summarize" (owner, 2026-11-13: "do naming Live control's running recipes
+ *  properly"). */
+export const activeEntryRecipeTitle = (
+  entry: Pick<ActiveExecutionEntry, 'recipe_id' | 'recipe_name' | 'recipe_inline' | 'intent'>,
+): string => {
+  if (entry.recipe_inline === true) return `One-off recipe “${entry.intent?.trim() || entry.recipe_id}”`;
+  return entry.recipe_name?.trim() || entry.recipe_id;
+};
+
+/** A running entry as Live control and the messenger's list name it: its recipe
+ *  (`activeEntryRecipeTitle`) and what the step it is on does ("Weekly digest · Send mail"). An
+ *  entry an older server sent keeps its step's id ("daily-brief · summarize"). */
+export const activeEntryTitle = (
+  entry: Pick<ActiveExecutionEntry, 'recipe_id' | 'recipe_name' | 'recipe_inline' | 'intent' | 'step_id' | 'step_name'>,
+): string => {
+  const recipe = activeEntryRecipeTitle(entry);
+  const named = entry.recipe_name !== undefined || entry.recipe_inline === true;
+  const step = named ? entry.step_name?.trim() : entry.step_id;
+  return step ? `${recipe} · ${step}` : recipe;
+};
+
+/** Who started a running entry, in words: Live control, Logs and the messenger's list showed the
+ *  code ("attended" / "unattended"). Read off a widened value, so one a newer server sends is left
+ *  out rather than shown. */
+export const activeEntryOriginWords = (origin: string): string | undefined =>
+  origin === 'attended' ? 'started by you' : origin === 'unattended' ? 'started on its own' : undefined;
+
+/** A lane, in words: the lists showed its code ("local-heavy 2/2"). An unknown lane reads as
+ *  plain "work". */
+export const executionLaneWords = (lane: string): string =>
+  lane === 'local-heavy' ? 'Heavy work on your server' : lane === 'external-io' ? 'Calls to other services' : 'Work';
 
 /** A snapshot of one lane's occupancy for the server-status line + the live
  *  list (D-181 §4/§12). */

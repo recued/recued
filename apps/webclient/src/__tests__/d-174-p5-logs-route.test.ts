@@ -307,6 +307,7 @@ const mountRoute = (overrides: {
   ) => void;
   onHashSync?: Parameters<typeof bootstrapLogsRoute>[0]['onHashSync'];
   subscribe?: LogsRouteSubscribe;
+  stopAllowingCaller?: Parameters<typeof bootstrapLogsRoute>[0]['stopAllowingCaller'];
 } = {}) => {
   const doc = makeFakeDocument();
   if (overrides.replaceState !== undefined || overrides.pushState !== undefined) {
@@ -354,6 +355,7 @@ const mountRoute = (overrides: {
       ? { onHashSync: overrides.onHashSync }
       : {}),
     ...(overrides.subscribe !== undefined ? { subscribe: overrides.subscribe } : {}),
+    ...(overrides.stopAllowingCaller !== undefined ? { stopAllowingCaller: overrides.stopAllowingCaller } : {}),
   });
   return { doc, root, route, listCaller, getCaller };
 };
@@ -361,6 +363,17 @@ const mountRoute = (overrides: {
 const clickLogsAction = (shell: FakeEl, action: string): void => {
   const target = { closest: () => ({
     getAttribute: (name: string) => name === 'data-recued-logs-action' ? action : null,
+  }) };
+  for (const listener of shell.listeners.get('click') ?? []) {
+    listener({ target, preventDefault: vi.fn() } as unknown as Event);
+  }
+};
+
+/** D-402 slice F5 — a click on "Stop allowing" and its confirm: the action and the card's key. */
+const clickStopAllowing = (shell: FakeEl, action: string, key: string): void => {
+  const target = { closest: () => ({
+    getAttribute: (name: string) => (name === 'data-recued-logs-action' ? action
+      : name === 'data-recued-logs-stop-allowing-key' ? key : null),
   }) };
   for (const listener of shell.listeners.get('click') ?? []) {
     listener({ target, preventDefault: vi.fn() } as unknown as Event);
@@ -1410,6 +1423,55 @@ describe('D-174 P5 - Runs route', () => {
     form.route.dispose();
   });
 
+  it('D-402 slice F5 — a caller\'s: this run\'s own "Yes" ended with it; an "Always" names who, and "Stop allowing" ends it from here', async () => {
+    const NONE = { preapprovals: 0, site_passes: 0, session_grants: 0, delegations: 0, write_rules: 0 };
+    const stopAllowingCaller = vi.fn(async () => ({ ended: { ...NONE, preapprovals: 1 } }));
+    const run = { ...runDetail('succeeded', 'allowed'), preapproved: [
+      { preapproval_id: 'cpa_once', trigger_kind: 'caller', op: 'notes.create', writes: 1, caller: { kind: 'owner_chat' as const },
+        caller_name: 'your chats', recipe_id: 'add-note', this_run: true },
+      { preapproval_id: 'cpa_always', trigger_kind: 'caller', op: 'notes.create', writes: 2,
+        caller: { kind: 'ai_app' as const, contract_id: 'k-claude' }, caller_name: 'Claude Desktop', recipe_id: 'add-note' },
+    ] };
+    const rig = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run })), stopAllowingCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    const html = (): string => rig.root.children[0]?.innerHTML ?? '';
+    expect(html()).toContain('Ran without asking, as you approved this run before it started:');
+    expect(html()).toContain('Ran without asking, as you allowed “Always” for Claude Desktop:');
+    // This run's own ended with it: nothing stays on for it, and it reads as no trigger's.
+    expect(html().split('data-run-preapproved-this-run')[1]!.split('</div>')[0]).not.toContain('stays on');
+    expect(html()).not.toContain('as you allowed ahead');
+    const KEY = 'ai_app:k-claude|add-note';
+    const shell = rig.root.children[0]!;
+    clickStopAllowing(shell, 'stop-allowing', KEY);
+    expect(html()).toContain('It asks again from now on.');
+    expect(stopAllowingCaller).not.toHaveBeenCalled();
+    clickStopAllowing(shell, 'stop-allowing-confirm', KEY);
+    await vi.waitFor(() => expect(html()).toContain('Ended 1 standing approval. It asks again from now on.'));
+    expect(stopAllowingCaller).toHaveBeenCalledWith({ caller: { kind: 'ai_app', contract_id: 'k-claude' }, recipe_id: 'add-note' });
+    rig.route.dispose();
+
+    // A refusal says why, and the button is there to try again.
+    const refused = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run })),
+      stopAllowingCaller: vi.fn(async () => { throw new Error('collection.contract.stopAllowing: Recued is busy'); }) });
+    await refused.route.whenLoaded();
+    await refused.route.openRun('run-1');
+    const refusedShell = refused.root.children[0]!;
+    clickStopAllowing(refusedShell, 'stop-allowing', KEY);
+    clickStopAllowing(refusedShell, 'stop-allowing-confirm', KEY);
+    await vi.waitFor(() => expect(refused.root.children[0]?.innerHTML ?? '').toContain('Recued could not end it: Recued is busy'));
+    expect(refused.root.children[0]?.innerHTML ?? '').toContain('data-recued-logs-action="stop-allowing"');
+    refused.route.dispose();
+
+    // Without the call: where to end it instead.
+    const plain = mountRoute({ getCaller: vi.fn<RunsGetCaller>(async () => ({ run })) });
+    await plain.route.whenLoaded();
+    await plain.route.openRun('run-1');
+    expect(plain.root.children[0]?.innerHTML ?? '').toContain('End it under Contracts');
+    expect(plain.root.children[0]?.innerHTML ?? '').not.toContain('data-recued-logs-action="stop-allowing"');
+    plain.route.dispose();
+  });
+
   it('opens an inbound #logs run_id on initial mount', async () => {
     const getCaller = vi.fn<RunsGetCaller>(async () => ({
       run: runDetail('succeeded', 'allowed'),
@@ -1798,7 +1860,7 @@ describe('D-181 slice 5b — Runs Active section', () => {
     expect(html).toContain(LOGS_ROUTE_ACTIVE_ROW_ATTR);
     expect(html).toContain(LOGS_ROUTE_LANES_ATTR);
     // Lane occupancy + oldest-wait formatting.
-    expect(html).toContain('local-heavy 2/2');
+    expect(html).toContain('Heavy work on your server 2/2');
     expect(html).toContain('oldest 12m');
     // The run entry exposes a Kill button bound to its run_id; the queued call
     // exposes Cancel + Promote bound to its queued_call_id.
@@ -1817,6 +1879,23 @@ describe('D-181 slice 5b — Runs Active section', () => {
       'aria-label="Cancel media/transcode (call-7)"',
     );
 
+    rig.route.dispose();
+  });
+
+  it('names Active work as Live control does: the recipe by its name, the step by what it does', async () => {
+    const rig = mountActive({ activeResponse: {
+      entries: [
+        runEntry({ recipe_name: 'Normalize documents', step_name: 'Convert to text' }),
+        queuedEntry({ recipe_inline: true, intent: 'Transcode the clip', step_name: 'Transcode media' }),
+      ],
+      lanes: [lane()],
+    } });
+    await rig.route.whenLoaded();
+    const html = rig.html();
+    expect(html).toContain('Normalize documents · Convert to text');
+    expect(html).toContain('aria-label="Kill Normalize documents · Convert to text (run-active-1)"');
+    expect(html).toContain('One-off recipe “Transcode the clip” · Transcode media');
+    expect(html).not.toContain('docs/normalize-document · parse');
     rig.route.dispose();
   });
 
@@ -2619,6 +2698,28 @@ describe('D-186 slice C — Runs Active passes section', () => {
     expect(html).toContain('one call'); // exact mode label
     expect(html).toContain('hubspot.deal.update via hubspot-1');
     expect(html).toContain('1/1 uses left');
+    rig.route.dispose();
+  });
+
+  it('D-177 N.15 — shows a kind pass by its words, not its internal op', async () => {
+    const rig = mountPasses({
+      grants: [sessionGrantView({
+        contract_id: 'ct_kind',
+        display_name: 'Allowed in this chat — Add a task',
+        grant_mode: 'kind',
+        permits: { ingredient_ids: ['recued:tier1'], operation_ids: ['work.create:task'] },
+        member_count: undefined,
+        uses_remaining: 80,
+        max_uses: 100,
+      })],
+    });
+    await rig.route.whenLoaded();
+    const html = rig.html();
+    expect(html).toContain('Allowed in this chat — Add a task');
+    expect(html).toContain('one kind');
+    expect(html).toContain('80/100 uses left');
+    expect(html).not.toContain('work.create');
+    expect(html).not.toContain('recued:tier1');
     rig.route.dispose();
   });
 

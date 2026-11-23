@@ -28,6 +28,7 @@ import {
   mountFormResponseRecipeSeedRoute,
   mountRecipeEditorRoute,
   RECIPE_CHANGES_ATTR,
+  RECIPE_CHANGES_NOTES_ATTR,
 } from '../mount-recipe-editor-route.js';
 import {
   findFormResponseAutomations,
@@ -1236,6 +1237,21 @@ describe('mountRecipeEditorRoute — changes kept in Kitchen (D-333)', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(callers.update).toHaveBeenCalledWith('w1', 4, expect.stringContaining('Daily brief, changed again'));
       expect(callers.create).not.toHaveBeenCalled();
+      handle.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('D-402 slice E4c — changes Recued made from the chat say so, with its notes', async () => {
+    vi.useFakeTimers();
+    try {
+      const note = 'When shop.example.com shows “Out of stock”, the recipe now goes on the way your AI took in the chat.';
+      const { root, handle } = mountWithChanges({ found: work({ notes: [note],
+        made_from: { kind: 'chat_request', session_id: 'chat-1', turn_id: 't-1' } }) });
+      await vi.advanceTimersByTimeAsync(0);
+      const textIn = (el: FakeElement): string => [el.textContent, ...el.children.map(textIn)].join('');
+      expect(bar(root)?.hidden).toBe(false);
+      expect(textIn(bar(root)!)).toContain('Recued made these changes from your chat.');
+      expect(textIn(findByAttr(bar(root)!, RECIPE_CHANGES_NOTES_ATTR)!)).toBe(note);
       handle.dispose();
     } finally { vi.useRealTimers(); }
   });

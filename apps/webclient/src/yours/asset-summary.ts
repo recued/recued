@@ -1,5 +1,6 @@
 import type { Asset, YoursAssetSummary } from '@recued/contracts';
 import { assetObservationFieldName } from './asset-observation-editor.js';
+import { nameInSentence } from './reading-words.js';
 
 export const mountAssetSummary = (host: HTMLElement, asset: Asset, summary?: YoursAssetSummary,
   recordFact?: (fact: YoursAssetSummary['missing'][number]) => void) => {
@@ -21,14 +22,14 @@ export const mountAssetSummary = (host: HTMLElement, asset: Asset, summary?: You
       for (const fact of rows) {
         const [kind, field, extra] = fact.path.split('.'); const title = field ? assetObservationFieldName(field) : fact.path;
         const name = `${title}${kind === 'readings' ? ' reading' : kind === 'observations' ? ' condition' : ''}`;
-        const text = fact.reason === 'unknown' ? name : `${fact.reason === 'future' ? 'Current' : 'Confirmed'} ${name[0]!.toLowerCase()}${name.slice(1)}`;
+        const text = fact.reason === 'unknown' ? name : `${fact.reason === 'future' ? 'Current' : 'Confirmed'} ${nameInSentence(name)}`;
         const item = doc.createElement('li'); list.append(item);
         const map = kind === 'dates' ? asset.dates : kind === 'readings' ? asset.readings : kind === 'observations' ? asset.observations : undefined;
         if (recordFact && asset.sync_state === 'live' && asset.deleted_at == null && ['active', 'lent'].includes(asset.status)
           && map && field && !extra && Object.hasOwn(map, field)) {
           const button = doc.createElement('button'); button.type = 'button'; button.textContent = text;
           button.dataset.yoursFocus = `missing:${asset.id}:${fact.path}`;
-          button.setAttribute('aria-label', `Record ${text[0]!.toLowerCase()}${text.slice(1)} for ${asset.name}`);
+          button.setAttribute('aria-label', `Record ${nameInSentence(text)} for ${asset.name}`);
           button.addEventListener('click', () => recordFact(fact)); item.append(button);
         } else item.textContent = text;
       }

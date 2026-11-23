@@ -47,6 +47,99 @@ export interface PromptSchedule {
   run_request_scope?: string;
   /** A current clock-driven admission failure. Cleared by a successful admission or timing/control change. */
   scheduling_issue?: { code: 'queue_unconfirmed'; since_at: number } | null;
+  /** Absent on older servers. A separate clock revision keeps skips from invalidating queued work. */
+  skip_state?: PromptScheduleSkipState;
+  /** Absent on older servers; history is read only and scoped to this prompt. */
+  run_history_available?: true;
+  /** Supports reviewed, per-prompt bulk controls with durable results. */
+  bulk_control_available?: true;
+  /** Absent on older servers or non-recurring prompts; null means no timed pause. */
+  timed_pause?: { until_at: number; first_run_at: number } | null;
+}
+
+export const PROMPT_SCHEDULE_BULK_MAX = 200;
+export type PromptScheduleBulkAction = { kind: 'pause' | 'resume' } | { kind: 'pause_until'; local_time: string };
+export interface PromptScheduleBulkPreviewRequest { schedule_ids: string[]; action: PromptScheduleBulkAction }
+export interface PromptScheduleBulkReviewItem {
+  schedule_id: string;
+  schedule?: PromptSchedule;
+  status: 'ready' | 'unchanged' | 'unavailable';
+  message: string;
+  review_token?: string;
+  until_at?: number;
+  first_run_at?: number;
+  queued_runs?: number;
+}
+export interface PromptScheduleBulkPreview { action: PromptScheduleBulkAction; items: PromptScheduleBulkReviewItem[] }
+export interface PromptScheduleBulkApplyRequest {
+  request_id: string;
+  action: PromptScheduleBulkAction;
+  items: { schedule_id: string; review_token: string }[];
+}
+export interface PromptScheduleBulkOutcome {
+  schedule_id: string;
+  status: 'applied' | 'failed' | 'needs_review';
+  message: string;
+  replayed?: true;
+}
+export interface PromptScheduleBulkResult { items: PromptScheduleBulkOutcome[] }
+
+export interface PromptSchedulePauseRequest { schedule_id: string; expected_revision: number; until_at: number }
+export interface PromptSchedulePausePreview extends PromptSchedulePauseRequest { first_run_at: number; time_zone: string }
+export interface PromptSchedulePauseResult {
+  schedule: PromptSchedule;
+  expected_revision: number;
+  applied_revision: number;
+  disposition: 'applied' | 'replayed';
+}
+
+export interface PromptScheduleRun {
+  occurrence_id: string;
+  turn_id: string | null;
+  revision: number;
+  trigger: 'scheduled' | 'manual';
+  due_at: number;
+  queued_at: number | null;
+  /** The saved timezone for this occurrence, including runs before a schedule edit. */
+  time_zone: string;
+  outcome: PromptScheduleRunOutcome;
+}
+export interface PromptScheduleRunsRequest { schedule_id: string; cursor?: string }
+export interface PromptScheduleRunsPage {
+  schedule_id: string;
+  session_id: string;
+  /** Newest recorded occurrences first; at most ten per page. */
+  runs: PromptScheduleRun[];
+  next_cursor: string | null;
+}
+
+export interface PromptScheduleSkipState {
+  revision: number;
+  next?: { run_at: number };
+  skipped?: { skip_id: string; run_at: number; following_run_at: number; undo_available: boolean };
+}
+export interface PromptScheduleSkipRequest {
+  schedule_id: string;
+  expected_revision: number;
+  expected_skip_revision: number;
+  run_at: number;
+}
+export interface PromptScheduleUndoSkipRequest {
+  schedule_id: string;
+  expected_revision: number;
+  expected_skip_revision: number;
+  skip_id: string;
+}
+export interface PromptScheduleSkipPreview extends PromptScheduleSkipRequest {
+  following_run_at: number;
+  time_zone: string;
+}
+export interface PromptScheduleSkipResult {
+  schedule: PromptSchedule;
+  action: 'skip_next' | 'undo_skip';
+  expected_skip_revision: number;
+  skip_revision: number;
+  disposition: 'applied' | 'replayed';
 }
 
 export interface PromptScheduleTiming {

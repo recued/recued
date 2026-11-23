@@ -142,9 +142,13 @@ const setUp = async (fixture: Fixture) => {
   await fixture.reset(`${base}/owner`);
   await fixture.grant(ingredient);
   await fixture.openBackground(`${base}/picture`);
+  await fixture.discovered(`${base}/picture`);
   const send = async (action: BridgeAction, args: Record<string, unknown>, expects: readonly string[]) => {
     const command: BridgeCommand = { command_id: randomUUID(), recipe_run_id: 'page-capture', step_id: action, ingredient,
-      action, target_domain_pattern: target, args, expects_output_keys: [...expects], timeout_ms: 30_000,
+      // Full-suite scheduling can delay Chrome's first real capture. This fixture checks pixels,
+      // permissions and restoration; retain a bounded command without making 30 s a latency gate.
+      action, target_domain_pattern: target, args, expects_output_keys: [...expects],
+      timeout_ms: action === 'screenshot_page' ? 60_000 : 30_000,
       idempotency_key: randomUUID() };
     return (await fixture.ordinaryCommand(command)).result;
   };
@@ -223,6 +227,7 @@ describe('D-335 slice R — a screenshot in a frame and in a web component, in r
     await fixture.reset(`${base}/owner`);
     await fixture.grant(ingredient);
     await fixture.openBackground(`${base}/framed`);
+    await fixture.discovered(`${base}/framed`);
     const send = async (action: BridgeAction, args: Record<string, unknown>, expects: readonly string[]) => (await fixture.ordinaryCommand({
       command_id: randomUUID(), recipe_run_id: 'page-capture', step_id: action, ingredient, action,
       target_domain_pattern: '*://*/*', args, expects_output_keys: [...expects], timeout_ms: 30_000,
@@ -276,6 +281,7 @@ describe('D-335 slice S — a screen of a long page, in real Chrome', () => {
     await fixture.reset(`${base}/owner`);
     await fixture.grant(ingredient);
     await fixture.openBackground(`${base}${path}`);
+    await fixture.discovered(`${base}${path}`);
     const send = async (action: BridgeAction, args: Record<string, unknown>, expects: readonly string[]) => (await fixture.ordinaryCommand({
       command_id: randomUUID(), recipe_run_id: 'page-capture', step_id: action, ingredient, action,
       target_domain_pattern: `${base}/*`, args, expects_output_keys: [...expects], timeout_ms: 30_000,
@@ -367,6 +373,7 @@ describe('D-335 slice U — a page scrolled a screen at a time, and left there, 
     await fixture.reset(`${base}/owner`);
     await fixture.grant(ingredient);
     await fixture.openBackground(`${base}${path}`);
+    await fixture.discovered(`${base}${path}`);
     const send = async (action: BridgeAction, args: Record<string, unknown>, expects: readonly string[]) => (await fixture.ordinaryCommand({
       command_id: randomUUID(), recipe_run_id: 'page-scroll', step_id: action, ingredient, action,
       target_domain_pattern: `${base}/*`, args, expects_output_keys: [...expects], timeout_ms: 30_000,

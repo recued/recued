@@ -208,6 +208,18 @@ describe('delete', () => {
 });
 
 describe('list — filtering + pagination', () => {
+  it('applies mailbox filters before the limit and keeps them across a cursor inside a timestamp tie', () => {
+    const at = 1_700_000_000_000;
+    for (let n = 1; n <= 12; n++) table.upsert(makeRecord({ record_id: `mail-${String(n).padStart(2, '0')}`, received_at: at,
+      hot_fields: { direction: n % 3 === 0 ? 'outbound' : 'inbound', is_read: n % 2 === 0,
+        is_flagged: n % 2 !== 0, has_attachments: n % 2 !== 0 } }));
+    const query = { platform: 'mail' as const, slug: 'work',
+      filters: { direction: 'inbound', is_read: false, is_flagged: true, has_attachments: true }, limit: 2 };
+    const first = table.list(query); expect(first.map(row => row.record_id)).toEqual(['mail-11', 'mail-07']);
+    const last = first.at(-1)!;
+    const second = table.list({ ...query, before: { received_at: last.received_at, record_id: last.record_id } });
+    expect(second.map(row => row.record_id)).toEqual(['mail-05', 'mail-01']);
+  });
   it('pages by date and id after a row: a burst of one date is neither repeated nor skipped', () => {
     const own = createCollectionTable({ db, platform: 'mail', slug: 'burst' });
     const at = 1_700_000_000_000;

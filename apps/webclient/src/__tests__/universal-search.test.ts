@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CollectionSearchGroup } from '@recued/contracts';
+import type { CollectionSearchGroup, WorkEntitySearchGroup } from '@recued/contracts';
 
 import {
   renderUniversalSearch,
@@ -14,6 +14,67 @@ import {
 
 const NOW = 1_800_000_000_000;
 const base = { actionAttr: 'data-act' };
+
+describe('chat messages in universal search', () => {
+  const chat = { session_id: 'chat/one', message_id: 'old #message', ts: NOW, role: 'user' as const,
+    title: '<img> Planning', snippet: 'The needle is in this older message <img src=x>.' };
+  const state = { query: 'needle', matches: [], pages: 1, incomplete: false, loading: false };
+  it('counts chat-only hits and provides an escaped exact-message link with its title, role and matching text', () => {
+    const html = renderUniversalSearch({ ...base, query: 'needle', groups: [], marketplaceOffered: true,
+      chatSearch: { ...state, matches: [chat], next_cursor: { ts: NOW, message_id: chat.message_id } },
+      didYouMean: { query: 'need', corrections: [{ typed: 'needle', word: 'need', records: 1 }] } });
+    expect(html).toContain('1+ in 1 place');
+    expect(html).toContain('href="#chat/session/chat%2Fone/answer/old%20%23message"');
+    expect(html).toContain('&lt;img&gt; Planning'); expect(html).toContain('You ·');
+    expect(html).toContain('<mark>needle</mark>'); expect(html).not.toContain('<img');
+    expect(html).not.toContain('No matches'); expect(html).not.toContain('Did you mean');
+    expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+  });
+  it('does not report an empty search or offer the cloud while chat scans are pending, failed or incomplete', () => {
+    for (const extra of [{ loading: true }, { error: 'Chat search unavailable' },
+      { next_cursor: { ts: NOW, message_id: 'm1' } }, { incomplete: true }]) {
+      const html = renderUniversalSearch({ ...base, query: 'needle', groups: [], marketplaceOffered: true,
+        chatSearch: { ...state, ...extra } });
+      expect(html).toContain('Chat message search results');
+      expect(html).not.toContain('No matches in the searched sources');
+      expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+    }
+    const html = renderUniversalSearch({ ...base, query: 'needle', groups: [], marketplaceOffered: true,
+      chatSearch: { ...state, unsupported: true } });
+    expect(html).toContain('Update your Recued server to search chat messages here.');
+    expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+  });
+});
+
+describe('saved drafts in universal search', () => {
+  const draft = { draft_id: 'mad_00000000-0000-4000-8000-000000000001', incarnation: 'test', revision: 1,
+    subject: '<img src=x onerror=bad()> Quote', sender_mail_instance: 'work', to: ['person@example.test'],
+    bcc: ['private@example.test'], origin_contract_id: null, created_at: NOW, updated_at: NOW };
+  it('counts a draft-only match, escapes recipient previews and suppresses unrelated corrections and cloud offers', () => {
+    const html = renderUniversalSearch({ ...base, query: 'quote', groups: [], marketplaceOffered: true,
+      didYouMean: { query: 'quiet', corrections: [{ typed: 'quote', word: 'quiet', records: 1 }] },
+      draftSearch: { query: 'quote', matches: [draft], next_cursor: draft.draft_id, loading: false } });
+    expect(html).toContain('1+ in 1 place');
+    expect(html).toContain(`data-search-draft-id="${draft.draft_id}"`);
+    expect(html).toContain('Bcc: private@example.test');
+    expect(html).toContain('&lt;img'); expect(html).not.toContain('<img');
+    expect(html).not.toContain('No matches'); expect(html).not.toContain('Did you mean');
+    expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+  });
+  it('keeps unfinished or failed draft scans distinct from an empty search', () => {
+    for (const state of [{ loading: true }, { loading: false, error: 'Drafts unavailable' }]) {
+      const html = renderUniversalSearch({ ...base, query: 'quote', groups: [], marketplaceOffered: true,
+        draftSearch: { query: 'quote', matches: [], next_cursor: null, ...state } });
+      expect(html).toContain('Saved draft search results');
+      expect(html).not.toContain('No matches');
+      expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+    }
+    const html = renderUniversalSearch({ ...base, query: 'quote', groups: [], marketplaceOffered: true,
+      draftSearch: { query: 'quote', matches: [], next_cursor: null, loading: false, unsupported: true } });
+    expect(html).toContain('Update your Recued server to search saved mail drafts here.');
+    expect(html).not.toContain(`data-act="${SEARCH_MARKETPLACE_ACTION}"`);
+  });
+});
 
 describe('assets in universal search', () => {
   const assets = { query: 'passport', matches: [], total: 0, offset: 0, more: false, loading: false };
@@ -89,12 +150,116 @@ describe('universal search renders groups, never a merged ranking', () => {
     expect(html).toContain('3 in 2 places');
   });
 
+  // An event's `received_at` is when the warehouse first stored it, not its date. Calendar matches carry one since
+  // 2026-11-20 ("Add records" checks it as the record's identity); its row must not read it as the event's age.
+  it('labels a mail row with its age and a calendar row with none, though both carry received_at', () => {
+    const stored = NOW - 3 * 86_400_000;
+    const html = renderUniversalSearch({
+      ...base, query: 'kestrel',
+      groups: [group('inbox', 'mail', [row({ record_id: 'm1', received_at: stored })]),
+               group('work', 'calendar', [row({ record_id: 'e1', hot_fields: { summary: 'Kestrel review' }, received_at: stored })])],
+    }, NOW);
+    expect(html.match(/class="rq-row-when"/g)).toHaveLength(1);
+    expect(html).toContain('<span class="rq-row-when">3d ago</span>');
+    expect(html).toContain('Kestrel review');
+  });
+
   it('marks a group that has more, and offers a way in', () => {
     const html = renderUniversalSearch({
       ...base, query: 'k', groups: [group('inbox', 'mail', [row()], { more: true })],
     }, NOW);
     expect(html).toContain('universal-search-open-group');
     expect(html).toContain('More in inbox');
+  });
+});
+
+describe('work search highlights', () => {
+  const workGroup = (over: Partial<WorkEntitySearchGroup['matches'][number]> = {}): WorkEntitySearchGroup => ({
+    kind: 'note', offset: 0, more: true, matches: [{ id: 'note/&1', title: 'RENEWAL <img src=x onerror=alert(1)>',
+      excerpt: '…Cafe\u0301 renewal 🧾 deadline. <script>unsafe()</script>…', source_id: 'recued.note', source_label: 'Recued',
+      updated_at: NOW, stale: true, source_incomplete: true, pending_write: true, ...over }],
+  });
+
+  it('highlights original title and excerpt text while escaping markup and preserving the destination and source warnings', () => {
+    const html = renderUniversalSearch({ ...base, query: 'renewal cafe deadline', groups: [], workGroups: [workGroup()] }, NOW);
+    expect(html).toContain('<mark>RENEWAL</mark> &lt;img');
+    expect(html).toContain('…<mark>Cafe\u0301</mark> <mark>renewal</mark> 🧾 <mark>deadline</mark>. &lt;script&gt;unsafe()&lt;/script&gt;…');
+    expect(html).not.toMatch(/<(?:img|script)\b/);
+    expect(html).toContain('data-search-work-id="note/&amp;1"');
+    expect(html).toContain('data-search-work-kind="note"');
+    expect(html).toContain('may be out of date');
+    expect(html).toContain('source partly synced');
+    expect(html).toContain('waiting for source confirmation');
+    expect(html).toContain('More notes');
+  });
+
+  it('keeps the full server-selected excerpt and does not fabricate body matches for a title-only hit', () => {
+    const excerpt = 'Opening ' + 'details '.repeat(21) + 'at the end.';
+    const html = renderUniversalSearch({ ...base, query: 'renewal', groups: [], workGroups: [workGroup({ excerpt })] }, NOW);
+    expect(html).toContain(`<span class="rq-row-excerpt">${excerpt}</span>`);
+    expect(html).toContain('<mark>RENEWAL</mark>');
+    const empty = renderUniversalSearch({ ...base, query: 'renewal', groups: [], workGroups: [workGroup({ excerpt: '' })] }, NOW);
+    expect(empty).not.toContain('class="rq-row-excerpt"');
+  });
+});
+
+describe('collection search excerpts', () => {
+  const excerpt = (query: string, body: string | undefined, extra: Record<string, unknown> = {}) => {
+    const html = renderUniversalSearch({ ...base, query,
+      groups: [group('inbox', 'mail', [row({ body, ...extra })])],
+    }, NOW);
+    return { html, excerpt: html.match(/class="rq-row-excerpt">([\s\S]*?)<\/span>/)?.[1] ?? '' };
+  };
+
+  it('shows a late matching passage instead of the opening boilerplate', () => {
+    const body = 'Routine account background and introductory text. '.repeat(8)
+      + 'The renewal deadline is 30 November.';
+    const shown = excerpt('renewal', body);
+    expect(shown.excerpt).toContain('<mark>renewal</mark> deadline is 30 November.');
+    expect(shown.excerpt).toMatch(/^…/);
+    expect(shown.excerpt.replace(/<\/?mark>/g, '').length).toBeLessThanOrEqual(162);
+    expect(shown.html).toContain('data-search-record="r1"');
+  });
+
+  it('prefers a passage containing different query terms over repeated isolated hits', () => {
+    const body = 'Renewal renewal renewal. ' + 'Unrelated introductory material. '.repeat(12)
+      + 'The RENEWAL deadline is Friday. ' + 'Closing background. '.repeat(12);
+    const shown = excerpt('renewal deadline', body);
+    expect(shown.excerpt).toContain('<mark>RENEWAL</mark> <mark>deadline</mark> is Friday.');
+    expect(shown.excerpt).not.toContain('Renewal renewal renewal');
+    expect(shown.excerpt).toMatch(/^….*…$/);
+  });
+
+  it('highlights the original Unicode text without splitting combining marks or emoji', () => {
+    const body = '😀 Introductory background. '.repeat(10) + 'Meet at the Cafe\u0301 for 續約. 😀';
+    const shown = excerpt('CAFÉ 續約', body);
+    expect(shown.excerpt).toContain('<mark>Cafe\u0301</mark>');
+    expect(shown.excerpt).toContain('<mark>續約</mark>');
+    expect(shown.excerpt.replace(/<\/?mark>/g, '')).not.toMatch(/[\uD800-\uDFFF]/u);
+  });
+
+  it('escapes matched and surrounding text before adding highlight markup', () => {
+    const shown = excerpt('renewal <img.*>', 'A <img src=x onerror=alert(1)> renewal <script>bad()</script>.');
+    expect(shown.excerpt).toContain('&lt;<mark>img</mark>');
+    expect(shown.excerpt).toContain('<mark>renewal</mark>');
+    expect(shown.excerpt).toContain('&lt;script&gt;');
+    expect(shown.html).not.toContain('<img');
+    expect(shown.html).not.toContain('<script>');
+  });
+
+  it('retains a plain opening excerpt when a match is absent from the available body', () => {
+    const shown = excerpt('renewal', 'Only the opening of this record is available.', { body_truncated: true, partial_match: true });
+    expect(shown.excerpt).toBe('Only the opening of this record is available.…');
+    expect(shown.excerpt).not.toContain('<mark>');
+    expect(shown.html).toContain('some terms');
+    expect(shown.html).toContain('more content');
+    expect(excerpt('renewal', undefined, { body_truncated: true }).excerpt).toBe('');
+  });
+
+  it('keeps thread-context rows plain rather than implying that they matched the query', () => {
+    const shown = excerpt('renewal', 'This renewal arrived as neighbouring context.', { thread_context: true });
+    expect(shown.excerpt).toBe('This renewal arrived as neighbouring context.');
+    expect(shown.html).toContain('thread context');
   });
 });
 
@@ -180,7 +345,7 @@ describe('its empty and error states', () => {
   // help, so it is not a failure: the box names what it searched and the search completes.
   it('on a server that cannot search tasks and notes, says what it searched and completes the search', () => {
     const html = renderUniversalSearch({ ...base, query: 'zzz', groups: [], workUnsupported: true, marketplaceOffered: true }, NOW);
-    expect(html).toContain('Mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects and commitments too.');
+    expect(html).toContain('Mail, calendar, files, installed recipes and packs. Update your Recued server to search tasks, notes, projects, commitments and bookings too.');
     expect(html).toContain('No matches in the searched sources');
     expect(html).toContain(SEARCH_MARKETPLACE_ACTION);
     expect(html).not.toContain('role="alert"');

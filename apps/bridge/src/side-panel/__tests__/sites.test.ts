@@ -3,16 +3,23 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { BLOCKED_SITES_KEY, BLOCKED_SITES_MAX, EVERY_SITE, SCREENSHOTS_GRANT } from '../../permissions/site-grants.js';
-import { KEEP_SIGNED_IN_KEY, KEEP_SIGNED_IN_MAX_SITES, KEEP_SIGNED_IN_STATUS_KEY } from '../../keep-signed-in.js';
+import {
+  KEEP_SIGNED_IN_KEY,
+  KEEP_SIGNED_IN_MAX_SITES,
+  KEEP_SIGNED_IN_STATUS_KEY,
+  KEEP_SIGNED_IN_WEB_STORE_SAID,
+} from '../../keep-signed-in.js';
 import { createSitesControls, type SitesChrome } from '../sites.js';
 import type { SidePanelSitesState } from '../store/local-store.js';
 import { createSidePanelStore } from '../store/local-store.js';
 import {
   SIDE_PANEL_KEEP_ADD_ATTR,
   SIDE_PANEL_KEEP_FIELD_ATTR,
+  SIDE_PANEL_KEEP_LASTED_ATTR,
   SIDE_PANEL_KEEP_MESSAGE_ATTR,
   SIDE_PANEL_KEEP_REMOVE_ATTR,
   SIDE_PANEL_KEEP_ROW_ATTR,
+  SIDE_PANEL_KEEP_SIGNED_OUT_ATTR,
   SIDE_PANEL_KEEP_STATUS_ATTR,
   SIDE_PANEL_SITES_ADD_ATTR,
   SIDE_PANEL_SITES_GRANT_ATTR,
@@ -23,6 +30,8 @@ import {
   SIDE_PANEL_SITES_SCREENSHOTS_ATTR,
   SIDE_PANEL_SITES_SCREENSHOTS_GRANT_ATTR,
   SIDE_PANEL_SITES_STATUS_ATTR,
+  SIDE_PANEL_KEEP_UNDO_ATTR,
+  SIDE_PANEL_SITES_UNDO_ATTR,
   renderSitesSection,
   type SitesHandlers,
 } from '../views.js';
@@ -141,7 +150,9 @@ describe('the Sites controls', () => {
     expect(state.kept).toEqual(['example.com', 'mail.test']);
     await controls.onRemoveBlocked('example.com');
     expect(state.kept).toEqual(['mail.test']);
-    expect(last()).toEqual({ every_site: true, screenshots: false, blocked: ['mail.test'], message: '', keep: [] });
+    // D-347 follow-up 30 — with its Undo offered where it stood, and focused.
+    expect(last()).toEqual({ every_site: true, screenshots: false, blocked: ['mail.test'], message: '', keep: [],
+      removed: { site: 'example.com', index: 0 }, focus: { attr: SIDE_PANEL_SITES_UNDO_ATTR, value: 'example.com' } });
   });
 
   it(`holds at most ${BLOCKED_SITES_MAX} sites`, async () => {
@@ -153,7 +164,7 @@ describe('the Sites controls', () => {
     expect(last().message).toBe(`The list holds at most ${BLOCKED_SITES_MAX} sites.`);
   });
 
-  it('a list that cannot be read says the Bridge acts on no page, and the next change writes it afresh', async () => {
+  it('a malformed saved list says the Bridge acts on no page, and the next change writes it afresh', async () => {
     const { chrome, state } = fakeChrome(true, 'corrupt');
     const { controls, last } = controlsOn(chrome);
     await controls.refresh();
@@ -196,18 +207,20 @@ interface FakeElement {
   setAttribute(k: string, v: string): void; getAttribute(k: string): string | null;
   addEventListener(type: string, handler: (event?: unknown) => void): void; appendChild(el: FakeElement): FakeElement;
 }
-const fakeDocument = () => ({
-  createElement(tagName: string): FakeElement {
+const fakeDocument = () => {
+  const make = (tagName: string): FakeElement => {
     const el: FakeElement = {
-      tagName: tagName.toUpperCase(), textContent: '', className: '', children: [], attrs: new Map(), listeners: new Map(),
+      tagName, textContent: '', className: '', children: [], attrs: new Map(), listeners: new Map(),
       setAttribute(k, v) { el.attrs.set(k, v); },
       getAttribute(k) { return el.attrs.get(k) ?? null; },
       addEventListener(type, handler) { el.listeners.set(type, [...(el.listeners.get(type) ?? []), handler]); },
       appendChild(child) { el.children.push(child); return child; },
     };
     return el;
-  },
-});
+  };
+  // An SVG element keeps its name's case, as in a browser (follow-up 30's ×).
+  return { createElement: (tagName: string) => make(tagName.toUpperCase()), createElementNS: (_ns: string, tagName: string) => make(tagName) };
+};
 const all = (root: FakeElement, attr: string): FakeElement[] =>
   [...(root.attrs.has(attr) ? [root] : []), ...root.children.flatMap(child => all(child, attr))];
 const one = (root: FakeElement, attr: string, value?: string): FakeElement => {
@@ -250,6 +263,11 @@ describe('the Sites section', () => {
       .toEqual(['example.com', 'mail.test']);
     const remove = one(section, SIDE_PANEL_SITES_REMOVE_ATTR, 'mail.test');
     expect(remove.getAttribute('aria-label')).toBe('Remove mail.test');
+    // D-347 follow-up 30 — an ×, not the word: what it does is its name and its tooltip, the × hidden from a screen
+    // reader and drawn in the text's colour.
+    expect([remove.className, remove.textContent, remove.getAttribute('title')]).toEqual(['sites-remove', '', 'Remove mail.test']);
+    expect(remove.children.map(icon => [icon.tagName, icon.getAttribute('aria-hidden'), icon.getAttribute('stroke')]))
+      .toEqual([['svg', 'true', 'currentColor']]);
     click(remove);
     expect(onRemoveBlocked).toHaveBeenCalledWith('mail.test');
     expect(one(section, SIDE_PANEL_SITES_MESSAGE_ATTR).textContent).toBe('Could not save the list. Try again.');
@@ -324,6 +342,65 @@ const keepChrome = (kept: Record<string, unknown> = {}) => {
   return { chrome, kept };
 };
 
+describe('storage read failures while editing site lists', () => {
+  type List = 'blocked' | 'keep';
+  type Operation = 'add' | 'remove' | 'undo';
+  type Failure = 'once' | 'persistent';
+  const cases: Array<{ list: List; operation: Operation; failure: Failure }> =
+    (['blocked', 'keep'] as const).flatMap(list => (['add', 'remove', 'undo'] as const)
+      .map(operation => ({ list, operation, failure: 'once' as const })));
+  cases.push({ list: 'blocked', operation: 'undo', failure: 'persistent' },
+    { list: 'keep', operation: 'undo', failure: 'persistent' });
+
+  it.each(cases)('preserves $list entries and Undo after $failure read failure on $operation', async ({ list, operation, failure }) => {
+    const blocked = ['a.example.com', 'b.example.com', 'c.example.com'];
+    const keep = [
+      { site: blocked[0]!, every_minutes: 10, mode: 'session', window: { days: [1, 2, 3, 4, 5], from: '08:00', to: '18:00' } },
+      { site: blocked[1]!, every_minutes: 5, mode: 'reload' },
+      { site: blocked[2]!, every_minutes: 15, mode: 'session', window: { days: [0, 6], from: '10:00', to: '14:00' } },
+    ];
+    const { chrome, kept } = keepChrome({ [BLOCKED_SITES_KEY]: blocked, [KEEP_SIGNED_IN_KEY]: keep });
+    const original = structuredClone(kept);
+    const { controls, last } = controlsOn(chrome);
+    const undo = () => list === 'blocked' ? controls.onUndoRemoveBlocked() : controls.onUndoRemoveKeep();
+    const offer = () => list === 'blocked' ? last().removed : last().keep_removed;
+    const notice = () => list === 'blocked' ? last().message : last().keep_message;
+    if (list === 'blocked') await controls.onRemoveBlocked(blocked[0]!);
+    else await controls.onRemoveKeep(blocked[0]!);
+    expect(offer()).toMatchObject({ site: blocked[0] });
+    const before = structuredClone(kept);
+    (chrome.storage.set as ReturnType<typeof vi.fn>).mockClear();
+
+    const key = list === 'blocked' ? BLOCKED_SITES_KEY : KEEP_SIGNED_IN_KEY;
+    const get = chrome.storage.get;
+    let failures = failure === 'once' ? 1 : Infinity;
+    vi.spyOn(chrome.storage, 'get').mockImplementation(async keys => {
+      if (keys.includes(key) && failures > 0) { failures--; throw new Error('storage temporarily unavailable'); }
+      return get(keys);
+    });
+    if (operation === 'undo') await undo();
+    else if (list === 'blocked') {
+      if (operation === 'add') await controls.onAddBlocked('d.example.com');
+      else await controls.onRemoveBlocked(blocked[1]!);
+    } else if (operation === 'add') {
+      await controls.onAddKeep({ site: 'd.example.com', every_minutes: 10, mode: 'session' });
+    } else await controls.onRemoveKeep(blocked[1]!);
+
+    expect(chrome.storage.set).not.toHaveBeenCalled();
+    expect(kept).toEqual(before);
+    expect(offer()).toMatchObject({ site: blocked[0] });
+    expect(notice()).toMatch(/read/i);
+    expect(notice()).toMatch(/try again/i);
+
+    failures = 0;
+    await undo();
+    expect(chrome.storage.set).toHaveBeenCalledOnce();
+    expect(kept).toEqual(original);
+    expect(offer()).toBeUndefined();
+    expect(notice() ?? '').toBe('');
+  });
+});
+
 describe('Keep signed in — the controls (D-347 follow-up 19)', () => {
   it('reads each site with what happened last, takes a site added again with its new settings, and removes one', async () => {
     const { chrome, kept } = keepChrome({
@@ -396,6 +473,8 @@ describe('Keep signed in — the card (D-347 follow-up 19)', () => {
       .toBe('Stopped: its hours ran out. Add it again to start again.');
     const remove = one(section, SIDE_PANEL_KEEP_REMOVE_ATTR, 'crm.example.com');
     expect(remove.getAttribute('aria-label')).toBe('Stop keeping crm.example.com signed in');
+    // Follow-up 30 — an ×, its tooltip saying what it does.
+    expect([remove.className, remove.getAttribute('title')]).toEqual(['sites-remove', 'Stop keeping crm.example.com signed in']);
     click(remove);
     expect(onRemoveKeep).toHaveBeenCalledWith('crm.example.com');
   });
@@ -458,6 +537,69 @@ describe('Keep signed in — the card (D-347 follow-up 19)', () => {
     expect(one(section, SIDE_PANEL_SITES_MESSAGE_ATTR).textContent).toBe('');
     expect(texts(section)).toEqual(expect.arrayContaining([expect.stringContaining(
       'Pick fewer minutes than the site lets you stay idle, since a refresh can come a little late.')]));
+    // Follow-up 23 — what no refresh can do: the owner's two consoles each end a sign-in a set time after it began.
+    expect(texts(section)).toEqual(expect.arrayContaining([expect.stringContaining(
+      'No refresh helps a site that signs you out a set time after you signed in, whatever you do there: when a site '
+        + 'signs you out anyway, it says so here, with how long after you signed in.')]));
+    // Follow-up 27 — the tab kept awake.
+    expect(texts(section)).toEqual(expect.arrayContaining([expect.stringContaining(
+      'While a tab shows it, the Bridge keeps the tab from being put to sleep and refreshes it every few minutes')]));
+  });
+
+  it('follow-up 26 — says when a site signed you out anyway, above what was last done, and not for a site stopped', () => {
+    const signed_out = { at: at(14, 2), said: 'Signed out: its tab went to a sign-in page on signin.alibabacloud.com, '
+      + 'though the Bridge had kept its session every 10 minutes since 08:01.' };
+    const section = render(sitesWith([
+      { entry: { site: 'modelstudio.console.alibabacloud.com', every_minutes: 10, mode: 'session' },
+        status: { next_at: at(14, 20), last: { at: at(14, 10), what: 'skipped', said: 'Its tab is on a sign-in page.' }, signed_out } },
+      { entry: { site: 'console.example.com', every_minutes: 10, mode: 'session' },
+        status: { next_at: at(14, 20), last: { at: at(14, 10), what: 'kept', said: 'Kept the session.' } } },
+      { entry: { site: 'ops.example.com', every_minutes: 30, mode: 'session', window: { until: at(17, 30) }, off: true },
+        status: { signed_out } },
+    ]));
+    const line = one(section, SIDE_PANEL_KEEP_SIGNED_OUT_ATTR, 'modelstudio.console.alibabacloud.com');
+    expect(line.textContent).toBe('14:02: Signed out: its tab went to a sign-in page on signin.alibabacloud.com, though the '
+      + 'Bridge had kept its session every 10 minutes since 08:01.');
+    expect(line.className).toBe('sites-explain sites-signed-out');
+    expect(one(section, SIDE_PANEL_KEEP_STATUS_ATTR, 'modelstudio.console.alibabacloud.com').textContent)
+      .toBe('14:10: Its tab is on a sign-in page. Next at 14:20.');
+    // Said above the status, after how it is kept.
+    const lines = texts(section);
+    expect(lines.indexOf(line.textContent)).toBeLessThan(lines.indexOf('14:10: Its tab is on a sign-in page. Next at 14:20.'));
+    expect(all(section, SIDE_PANEL_KEEP_SIGNED_OUT_ATTR).map((el) => el.getAttribute(SIDE_PANEL_KEEP_SIGNED_OUT_ATTR)))
+      .toEqual(['modelstudio.console.alibabacloud.com']);
+  });
+
+  it('follow-up 29 — says under how a site is kept when it signed you out about as long after you signed in twice', () => {
+    const SIX_HOURS = 363 * 60_000;
+    const section = render(sitesWith([
+      { entry: { site: 'modelstudio.console.alibabacloud.com', every_minutes: 10, mode: 'reload' },
+        status: { next_at: at(14, 20), last: { at: at(14, 10), what: 'kept', said: 'Reloaded its tab.' },
+          lasted: { ms: SIX_HOURS, mode: 'reload', again: 'set_time' } } },
+      // Kept by its session both times: a reload advised, and not said once the site is reloaded.
+      { entry: { site: 'console.example.com', every_minutes: 10, mode: 'session' },
+        status: { lasted: { ms: 45 * 60_000, mode: 'session', again: 'try_reload' } } },
+      { entry: { site: 'crm.example.com', every_minutes: 10, mode: 'reload' },
+        status: { lasted: { ms: 45 * 60_000, mode: 'session', again: 'try_reload' } } },
+      // Once only, nothing to say yet; nor for a site stopped.
+      { entry: { site: 'erp.example.com', every_minutes: 10, mode: 'session' }, status: { lasted: { ms: SIX_HOURS, mode: 'session' } } },
+      { entry: { site: 'ops.example.com', every_minutes: 30, mode: 'reload', window: { until: at(17, 30) }, off: true },
+        status: { lasted: { ms: SIX_HOURS, mode: 'reload', again: 'set_time' } } },
+    ]));
+    const note = one(section, SIDE_PANEL_KEEP_LASTED_ATTR, 'modelstudio.console.alibabacloud.com');
+    expect(note.textContent).toBe('It signed you out about 6 hours 3 minutes after you signed in, as the time before, though '
+      + 'it was refreshed on time: it ends a sign-in a set time after it began, and no refresh helps, so you can stop keeping it.');
+    expect(note.className).toBe('sites-explain');
+    expect(one(section, SIDE_PANEL_KEEP_LASTED_ATTR, 'console.example.com').textContent).toBe('It signed you out about 45 '
+      + 'minutes after you signed in, as the time before, though its session was kept on time. Try adding it again with '
+      + 'Reload the page: if that does not keep you signed in either, it ends a sign-in a set time after it began, and no '
+      + 'refresh helps.');
+    expect(all(section, SIDE_PANEL_KEEP_LASTED_ATTR).map((el) => el.getAttribute(SIDE_PANEL_KEEP_LASTED_ATTR)))
+      .toEqual(['modelstudio.console.alibabacloud.com', 'console.example.com']);
+    // Right under how it is kept, above what was last done.
+    const lines = texts(section);
+    expect(lines.indexOf(note.textContent)).toBe(lines.indexOf('Every 10 minutes, reloading the page, always.') + 1);
+    expect(lines.indexOf(note.textContent)).toBeLessThan(lines.indexOf('14:10: Reloaded its tab. Next at 14:20.'));
   });
 
   it('D-347 follow-up 20 — a site on the list of sites never to use is not added, and what was typed stays', () => {
@@ -470,5 +612,202 @@ describe('Keep signed in — the card (D-347 follow-up 19)', () => {
     expect(one(section, SIDE_PANEL_KEEP_MESSAGE_ATTR).textContent)
       .toBe('console.example.com is on your list of sites never to use, so the Bridge leaves it alone.');
     expect(site.value).toBe('console.example.com');
+  });
+
+  it('follow-up 23 — a Chrome Web Store site is not added, either way of refreshing, and the card says why', async () => {
+    const onAddKeep = vi.fn();
+    const onKeepProblem = vi.fn();
+    const section = render(sitesWith([]), { onAddKeep, onKeepProblem });
+    const field = (key: string) => one(section, SIDE_PANEL_KEEP_FIELD_ATTR, key) as FakeElement & { value: string };
+    for (const [typed, mode] of [['https://chrome.google.com/u/1/webstore/devconsole', 'session'],
+      ['chrome.google.com', 'reload'], ['chromewebstore.google.com', 'session']] as const) {
+      field('site').value = typed;
+      field('mode').value = mode;
+      click(one(section, SIDE_PANEL_KEEP_ADD_ATTR));
+      await tick();
+      expect(onAddKeep).not.toHaveBeenCalled();
+      expect(one(section, SIDE_PANEL_KEEP_MESSAGE_ATTR).textContent).toBe(KEEP_SIGNED_IN_WEB_STORE_SAID);
+      expect(field('site').value).toBe(typed);
+    }
+    // Kept in the section's state too, so the next status the timer writes does not wipe it (follow-up 22).
+    expect(onKeepProblem).toHaveBeenLastCalledWith(KEEP_SIGNED_IN_WEB_STORE_SAID);
+    // A site above it is added: its other pages are refreshed, its store pages left alone.
+    field('site').value = 'google.com';
+    click(one(section, SIDE_PANEL_KEEP_ADD_ATTR));
+    expect(onAddKeep).toHaveBeenCalledWith({ site: 'google.com', every_minutes: 10, mode: 'session' });
+  });
+});
+
+// D-347 follow-up 30 — Remove is an ×, and a site removed by it can be put back.
+describe('Undo after a removal (D-347 follow-up 30)', () => {
+  it('puts a site never to use back where it stood, focusing its Undo, then the × put back, once each', async () => {
+    const { chrome, state } = fakeChrome(true, ['a.test', 'b.test', 'c.test']);
+    const { controls, last } = controlsOn(chrome);
+    await controls.onRemoveBlocked('b.test');
+    expect(state.kept).toEqual(['a.test', 'c.test']);
+    expect(last()).toMatchObject({ removed: { site: 'b.test', index: 1 }, focus: { attr: SIDE_PANEL_SITES_UNDO_ATTR, value: 'b.test' } });
+    // Keep signed in's next status draws the section again: the offer stays, the focus is not given twice.
+    await controls.refresh();
+    expect([last().removed, last().focus]).toEqual([{ site: 'b.test', index: 1 }, undefined]);
+    await controls.onUndoRemoveBlocked();
+    expect(state.kept).toEqual(['a.test', 'b.test', 'c.test']);
+    expect([last().removed, last().focus]).toEqual([undefined, { attr: SIDE_PANEL_SITES_REMOVE_ATTR, value: 'b.test' }]);
+    // Put back, the offer is over: removed from elsewhere (another window's panel), this panel offers nothing, and its
+    // Undo does nothing.
+    state.kept = ['a.test', 'c.test'];
+    await controls.refresh();
+    expect(last().removed).toBeUndefined();
+    await controls.onUndoRemoveBlocked();
+    expect(state.kept).toEqual(['a.test', 'c.test']);
+  });
+
+  it('offers the last removal only, not once a site is added, and not while the site is listed again', async () => {
+    const { chrome, state } = fakeChrome(true, ['a.test', 'b.test', 'c.test']);
+    const { controls, last } = controlsOn(chrome);
+    await controls.onRemoveBlocked('a.test');
+    await controls.onRemoveBlocked('b.test');
+    expect(last().removed).toEqual({ site: 'b.test', index: 0 });
+    // A second click on a site already gone leaves the offer as it was.
+    await controls.onRemoveBlocked('b.test');
+    expect(last().removed).toEqual({ site: 'b.test', index: 0 });
+    await controls.onAddBlocked('d.test');
+    expect(last().removed).toBeUndefined();
+    await controls.onUndoRemoveBlocked();
+    expect(state.kept).toEqual(['c.test', 'd.test']);
+    // Listed again from elsewhere (the panel of another window): not offered, and Undo adds it no second time.
+    await controls.onRemoveBlocked('c.test');
+    state.kept = ['d.test', 'c.test'];
+    await controls.refresh();
+    expect(last().removed).toBeUndefined();
+    await controls.onUndoRemoveBlocked();
+    expect(state.kept).toEqual(['d.test', 'c.test']);
+  });
+
+  it('puts it back at the end of a list grown shorter meanwhile, and holds the list to its most sites', async () => {
+    const { chrome, state } = fakeChrome(true, ['a.test', 'b.test', 'c.test']);
+    const { controls, last } = controlsOn(chrome);
+    await controls.onRemoveBlocked('c.test');
+    state.kept = ['a.test'];
+    await controls.onUndoRemoveBlocked();
+    expect(state.kept).toEqual(['a.test', 'c.test']);
+    await controls.onRemoveBlocked('a.test');
+    const full = Array.from({ length: BLOCKED_SITES_MAX }, (_, i) => `site${String(i)}.test`);
+    state.kept = full;
+    await controls.onUndoRemoveBlocked();
+    expect(state.kept).toEqual(full);
+    expect(last().message).toBe(`The list holds at most ${String(BLOCKED_SITES_MAX)} sites.`);
+  });
+
+  it('a removal that could not be saved offers no Undo, in either list', async () => {
+    const { chrome, state } = fakeChrome(true, ['a.test']);
+    (chrome.storage.set as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { throw new Error('quota'); });
+    const { controls, last } = controlsOn(chrome);
+    await controls.onRemoveBlocked('a.test');
+    expect(state.kept).toEqual(['a.test']);
+    expect(last()).toMatchObject({ blocked: ['a.test'], message: 'Could not save the list. Try again.' });
+    expect([last().removed, last().focus]).toEqual([undefined, undefined]);
+    const keeping = keepChrome({ [KEEP_SIGNED_IN_KEY]: [{ site: 'a.example.com', every_minutes: 10, mode: 'session' }] });
+    (keeping.chrome.storage.set as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { throw new Error('quota'); });
+    const card = controlsOn(keeping.chrome);
+    await card.controls.onRemoveKeep('a.example.com');
+    expect(card.last()).toMatchObject({ keep_message: 'Could not save the list. Try again.' });
+    expect([card.last().keep_removed, card.last().focus]).toEqual([undefined, undefined]);
+  });
+
+  it('puts a kept site back where it stood, with the settings and hours it had; each list offers its own', async () => {
+    const weekdays = { days: [1, 2, 3, 4, 5], from: '08:00', to: '18:00' };
+    const sites = [{ site: 'a.example.com', every_minutes: 10, mode: 'session' },
+      { site: 'b.example.com', every_minutes: 5, mode: 'reload', window: weekdays },
+      { site: 'c.example.com', every_minutes: 30, mode: 'session', window: { until: 1 }, off: true }];
+    const { chrome, kept } = keepChrome({ [KEEP_SIGNED_IN_KEY]: structuredClone(sites), [BLOCKED_SITES_KEY]: ['mail.test'] });
+    const { controls, last } = controlsOn(chrome);
+    await controls.onRemoveKeep('b.example.com');
+    expect(last()).toMatchObject({ keep_removed: { site: 'b.example.com', index: 1 },
+      focus: { attr: SIDE_PANEL_KEEP_UNDO_ATTR, value: 'b.example.com' } });
+    expect(last().removed).toBeUndefined();
+    await controls.onRemoveBlocked('mail.test');
+    expect(last()).toMatchObject({ removed: { site: 'mail.test', index: 0 }, keep_removed: { site: 'b.example.com', index: 1 } });
+    // A second click on a site already gone leaves the offer as it was.
+    await controls.onRemoveKeep('b.example.com');
+    expect(last().keep_removed).toEqual({ site: 'b.example.com', index: 1 });
+    await controls.onUndoRemoveKeep();
+    expect(kept[KEEP_SIGNED_IN_KEY]).toEqual(sites);
+    expect(last()).toMatchObject({ removed: { site: 'mail.test', index: 0 },
+      focus: { attr: SIDE_PANEL_KEEP_REMOVE_ATTR, value: 'b.example.com' } });
+    expect(last().keep_removed).toBeUndefined();
+    // Put back, the offer is over: removed from elsewhere, this panel offers nothing.
+    kept[KEEP_SIGNED_IN_KEY] = structuredClone(sites).filter(entry => entry.site !== 'b.example.com');
+    await controls.refresh();
+    expect(last().keep_removed).toBeUndefined();
+    kept[KEEP_SIGNED_IN_KEY] = structuredClone(sites);
+    // A site added to the card ends its offer; one listed again from elsewhere is not added twice.
+    await controls.onRemoveKeep('a.example.com');
+    await controls.onAddKeep({ site: 'd.example.com', every_minutes: 10, mode: 'session' });
+    expect(last().keep_removed).toBeUndefined();
+    await controls.onRemoveKeep('d.example.com');
+    kept[KEEP_SIGNED_IN_KEY] = [...(kept[KEEP_SIGNED_IN_KEY] as unknown[]), { site: 'd.example.com', every_minutes: 1, mode: 'session' }];
+    await controls.refresh();
+    expect(last().keep_removed).toBeUndefined();
+    await controls.onUndoRemoveKeep();
+    expect((kept[KEEP_SIGNED_IN_KEY] as Array<{ site: string }>).filter(entry => entry.site === 'd.example.com')).toHaveLength(1);
+  });
+
+  it(`holds Keep signed in to its ${String(KEEP_SIGNED_IN_MAX_SITES)} sites, said in its own card`, async () => {
+    const one = { site: 'a.example.com', every_minutes: 10, mode: 'session' };
+    const { chrome, kept } = keepChrome({ [KEEP_SIGNED_IN_KEY]: [one] });
+    const { controls, last } = controlsOn(chrome);
+    await controls.onRemoveKeep('a.example.com');
+    const full = Array.from({ length: KEEP_SIGNED_IN_MAX_SITES },
+      (_, i) => ({ site: `s${String(i)}.example.com`, every_minutes: 10, mode: 'session' }));
+    kept[KEEP_SIGNED_IN_KEY] = full;
+    await controls.onUndoRemoveKeep();
+    expect(kept[KEEP_SIGNED_IN_KEY]).toEqual(full);
+    expect(last().keep_message).toBe(`Keep signed in holds at most ${String(KEEP_SIGNED_IN_MAX_SITES)} sites.`);
+  });
+
+  /** The rows and Undo rows of a list, in order: a site, or `undo <site>`. */
+  const rowsOf = (root: FakeElement, row: string, undo: string): string[] => {
+    const walk = (el: FakeElement): FakeElement[] => [el, ...el.children.flatMap(walk)];
+    return walk(root).flatMap(el => (el.attrs.has(row) ? [el.getAttribute(row)!]
+      : el.attrs.has(undo) ? [`undo ${el.getAttribute(undo)!}`] : []));
+  };
+  const byId = (root: FakeElement, id: string): FakeElement | undefined =>
+    root.getAttribute('id') === id ? root : root.children.map(child => byId(child, id)).find(Boolean);
+
+  it('in place of a site just removed: what its removal did, and Undo, described by it, which puts it back', () => {
+    const onUndoRemoveBlocked = vi.fn();
+    const section = render({ every_site: true, screenshots: false, blocked: ['a.test', 'c.test'], message: '',
+      removed: { site: 'b.test', index: 1 } }, { onUndoRemoveBlocked });
+    expect(rowsOf(section, SIDE_PANEL_SITES_ROW_ATTR, SIDE_PANEL_SITES_UNDO_ATTR)).toEqual(['a.test', 'undo b.test', 'c.test']);
+    const undo = one(section, SIDE_PANEL_SITES_UNDO_ATTR, 'b.test');
+    expect([undo.textContent, undo.getAttribute('aria-label')]).toEqual(['Undo', 'Undo removing b.test']);
+    expect(byId(section, undo.getAttribute('aria-describedby')!)?.textContent).toBe('Removed b.test. Your AI may use it again.');
+    click(undo);
+    expect(onUndoRemoveBlocked).toHaveBeenCalledTimes(1);
+    // Last when it stood last, or past a list grown shorter; with the empty list's line when none is left.
+    expect(rowsOf(render({ every_site: true, screenshots: false, blocked: ['a.test'], message: '', removed: { site: 'z.test', index: 4 } }),
+      SIDE_PANEL_SITES_ROW_ATTR, SIDE_PANEL_SITES_UNDO_ATTR)).toEqual(['a.test', 'undo z.test']);
+    const empty = render({ every_site: true, screenshots: false, blocked: [], message: '', removed: { site: 'a.test', index: 0 } });
+    expect(rowsOf(empty, SIDE_PANEL_SITES_ROW_ATTR, SIDE_PANEL_SITES_UNDO_ATTR)).toEqual(['undo a.test']);
+    const walk = (el: FakeElement): FakeElement[] => [el, ...el.children.flatMap(walk)];
+    expect(walk(empty).map(el => el.textContent)).toEqual(expect.arrayContaining([
+      'No sites listed. A site here, and every page under it, is never read or acted on.', 'Removed a.test. Your AI may use it again.']));
+  });
+
+  it('in Keep signed in\'s card, in place of the site and its lines: that it stopped, and Undo', () => {
+    const onUndoRemoveKeep = vi.fn();
+    const section = render({ every_site: true, screenshots: false, blocked: [], message: '',
+      keep: [{ entry: { site: 'a.example.com', every_minutes: 10, mode: 'session' } },
+        { entry: { site: 'c.example.com', every_minutes: 10, mode: 'reload' } }],
+      keep_removed: { site: 'b.example.com', index: 1 } }, { onUndoRemoveKeep });
+    expect(rowsOf(section, SIDE_PANEL_KEEP_ROW_ATTR, SIDE_PANEL_KEEP_UNDO_ATTR))
+      .toEqual(['a.example.com', 'undo b.example.com', 'c.example.com']);
+    const undo = one(section, SIDE_PANEL_KEEP_UNDO_ATTR, 'b.example.com');
+    expect(undo.getAttribute('aria-label')).toBe('Undo removing b.example.com');
+    expect(byId(section, undo.getAttribute('aria-describedby')!)?.textContent).toBe('Stopped keeping b.example.com signed in.');
+    click(undo);
+    expect(onUndoRemoveKeep).toHaveBeenCalledTimes(1);
+    // The list of sites never used offers nothing of it.
+    expect(all(section, SIDE_PANEL_SITES_UNDO_ATTR)).toEqual([]);
   });
 });

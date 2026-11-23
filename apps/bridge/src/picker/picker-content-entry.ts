@@ -8,9 +8,8 @@
  *  `chrome.runtime.sendMessage` (the picker can't be returned synchronously
  *  from `executeScript` — the user takes time to hover, click + confirm).
  *
- *  Tests do NOT import this file — its top-level side effect references
- *  `document` + `chrome`. The testable logic lives in selector-engine.ts,
- *  preview.ts + picker-protocol.ts; this entry is the live binder. */
+ *  Entry tests replace the overlay and capture chrome messages. Selector
+ *  and preview behavior lives in selector-engine.ts + preview.ts. */
 
 import { startPickerOverlay, type PickerOverlayHandle } from './overlay.js';
 import {
@@ -29,10 +28,15 @@ interface ChromeRuntimeMessageBinding {
  *  element" twice) replaces the active overlay rather than stacking two. */
 interface PickerWindowBinding {
   __recuedElementPickerHandle?: PickerOverlayHandle;
+  __recuedElementPickerLaunch?: { launch_id: string; expires_at: number };
 }
 
 const main = (): void => {
   const win = globalThis as unknown as PickerWindowBinding;
+  const launch = win.__recuedElementPickerLaunch;
+  delete win.__recuedElementPickerLaunch;
+  if (!launch || typeof launch.launch_id !== 'string' || !launch.launch_id
+    || !Number.isFinite(launch.expires_at) || Date.now() >= launch.expires_at) return;
   // Tear down any prior overlay before starting a fresh one.
   try {
     win.__recuedElementPickerHandle?.destroy();
@@ -43,7 +47,7 @@ const main = (): void => {
   const deliver = (result: PickerResult): void => {
     win.__recuedElementPickerHandle = undefined;
     const chrome = (globalThis as { chrome?: ChromeRuntimeMessageBinding }).chrome;
-    const message: PickerResultMessage = { type: PICKER_RESULT_MESSAGE_TYPE, result };
+    const message: PickerResultMessage = { type: PICKER_RESULT_MESSAGE_TYPE, launch_id: launch.launch_id, result };
     try {
       const out = chrome?.runtime?.sendMessage?.(message);
       // Swallow a rejected promise (no receiver / SW asleep) — there is no

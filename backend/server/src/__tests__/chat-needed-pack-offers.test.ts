@@ -20,6 +20,8 @@ import type { MarketplaceCatalogue, MarketplaceCatalogueSnapshot } from '../inst
 import { neededPacksSentence } from '../install-offers/needed-packs.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import { createChatStore } from '../storage/chat-store.js';
+import { createCarriedHintKeys } from '../next-steps/carried-hints.js';
 
 /** A recipe whose one step is an op of `recued-core.docling`, which it declares. */
 const PARSE_A_PDF = {
@@ -133,7 +135,7 @@ const wireDeps = (db: Database.Database, overrides: Partial<ComposeChatOrchestra
  *  its orchestrator. */
 const composedRun = async (
   overrides: Partial<ComposeChatOrchestratorDeps>,
-  before?: (db: Database.Database) => void,
+  before?: (db: Database.Database) => void | Promise<void>,
 ): Promise<ChatDispatchResult> => {
   vi.resetModules();
   const create = vi.fn((_deps: ChatOrchestratorDeps): ChatOrchestrator => ({
@@ -150,7 +152,7 @@ const composedRun = async (
   const db = new Database(':memory:');
   cleanups.push(() => db.close());
   composeChatOrchestrator(wireDeps(db, overrides));
-  before?.(db);
+  await before?.(db);
   const registry = (create.mock.calls.at(-1)![0] as unknown as {
     registry: { dispatch: (name: string, args: unknown, ctx: unknown) => Promise<ChatDispatchResult> };
   }).registry;
@@ -181,6 +183,34 @@ describe('a refused run’s packs, offered through the real chat wire', () => {
 
   it('none without a catalogue: a test or a drive makes no download', async () => {
     expect(await composedRun({})).toEqual(REFUSED);
+  });
+
+  // D-405 slice 8 — "never twice in a conversation" is for the hints a search makes. A pack a call failed
+  // for want of answers that request, as a switch or a run's need does: it comes each time the call fails.
+  it('a pack the run needs is offered again in a conversation an earlier answer offered it in', async () => {
+    let carried: ReadonlySet<string> = new Set();
+    const result = await composedRun({ installOfferCatalogue: catalogue() }, async (db) => {
+      const chat = createChatStore(db);
+      chat.createSession({ id: 's1', now: 1_000 });
+      await chat.appendMessage({ id: 'a1', session_id: 's1', role: 'assistant', content: 'Docling would.', ts: 1_002,
+        target_server: 'self', model_used: { provider: 'test', model_id: 'test' },
+        picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: 'test', instance_id: 'local' } },
+        install_offers: [DOCLING] });
+      carried = await createCarriedHintKeys(chat)(ownerCtx);
+    });
+    // The run's conversation did carry it, as a search would read it…
+    expect([...carried]).toEqual(['offer:pack:docling']);
+    // …and the pack it needs is offered all the same.
+    expect(result).toMatchObject({ ok: true, install_offers: [DOCLING] });
+  });
+
+  // D-405 slice 3 — "Not now" on the pack, kept where `chat.hints.not_now` keeps it.
+  it('⛔ none for a pack the owner said "Not now" to: the refusal reads as before', async () => {
+    const result = await composedRun({ installOfferCatalogue: catalogue() }, (db) => {
+      db.prepare('INSERT INTO chat_hint_not_now (key, label, until, at) VALUES (?, ?, ?, ?)')
+        .run('offer:pack:docling', 'Get Docling', Date.now() + 86_400_000, 1);
+    });
+    expect(result).toEqual(REFUSED);
   });
 
   it('⛔ none on a turn the owner does not govern: the wire hands the wrapper tools.search’s guard', async () => {

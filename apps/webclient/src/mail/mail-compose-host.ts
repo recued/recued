@@ -71,6 +71,9 @@ import {
 } from '@recued/contracts';
 import { renderMailComposeDialog, stampZone } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { mailRecoveryStatusText, parseMailRecovery, type MailRecoveryEntry, type MailRecoveryStore } from './compose-recovery.js';
+import { contactContextHref, readSelectedContactContext, type SelectedContactContext } from '../contacts/contact-context.js';
+import { serializeShellRoute } from '../shell/route.js';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams
@@ -140,6 +143,8 @@ export type MailComposeFilePickCaller = (
 export interface MailComposeDeps {
   /** Notify a host when a dialog opens, closes, or changes its busy state. */
   onStateChanged?: () => void;
+  /** The kept copy may have a new ID after a server save retired its predecessor. */
+  onKeptForLater?: (id: string) => void;
   /** D-269 step 1 — the server's resolved IANA zone for a scheduled send's
    *  activation stamp. Absent ⇒ this browser's, as before. */
   serverTimeZone?: () => string | undefined;
@@ -156,6 +161,8 @@ export interface MailComposeDeps {
    *  contact graph supplies the real resolver. */
   resolveContactEmail?: (ref: string) => string | null;
   drafts?: MailDraftCallers;
+  /** Same-tab, paired-server-scoped unfinished forms. Never a send queue. */
+  recovery?: MailRecoveryStore;
 }
 
 export type MailDraftCallers = {
@@ -171,12 +178,13 @@ export type MailComposeSubmitOutcome = 'held' | 'sent';
 
 export interface MailComposeMount {
   /** Open a new compose, optionally addressed to editable recipient refs. */
-  openCreate(options?: { to?: readonly string[] }): boolean;
+  openCreate(options?: { to?: readonly string[]; contactContext?: SelectedContactContext; brief?: string; focusAi?: boolean }): boolean;
   /** Open a compose prefilled from a thread. */
   openReply(context: MailReplyContext, recipients?: 'sender' | 'all'): boolean;
   /** Quote the complete original in a new conversation with no recipients. */
   openForward(context: MailForwardContext): boolean;
-  openSaved(draftId: string): Promise<boolean>;
+  openSaved(draftId: string, isCurrent?: () => boolean): Promise<boolean>;
+  restoreRecovery(id: string, isCurrent?: () => boolean, expected?: MailRecoveryEntry): Promise<boolean>;
   /** Current state — exposed for the route's own empty-state decisions. */
   state(): MailComposeState;
   /** Current send-readiness projection. */
@@ -431,6 +439,7 @@ export const mountMailCompose = (
   let attachmentBusy = false;
   let assistGeneration = 0;
   let brief = '';
+  let selectedMailContact: SelectedContactContext | null = null;
   let replyContext: MailReplyContext | null = null;
   let messageSender: { id: string; email: string } | null = null;
   let discardConfirm = false;
@@ -452,6 +461,63 @@ export const mountMailCompose = (
   let draftBusyLabel: string | undefined;
   let pendingSave: { signature: string; key: string } | null = null;
   let pendingSchedule: { signature: string; request: PreparePreapproval } | null = null;
+  let recoveryId: string | null = null, recoveryLocked: MailRecoveryEntry['status'] | null = null;
+  let recoveryPrior: MailDraftContent | undefined, recoveryNotice = '', recoveryFailed = false, skipRecovery = false;
+  let recoveryMailbox: MailRecoveryEntry['mailbox'] | null = null;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveryExpected: MailRecoveryEntry | null = null, keepLaterError = '';
+  const beginRecovery = (): void => {
+    clearTimeout(recoveryTimer); recoveryId = null; recoveryLocked = null; recoveryPrior = undefined; recoveryMailbox = null; recoveryNotice = ''; recoveryFailed = false; recoveryExpected = null; keepLaterError = '';
+  };
+  const recoveryMessage = (): string => recoveryLocked ? mailRecoveryStatusText(recoveryLocked)
+    : recoveryFailed ? 'Latest edits could not be kept in this tab. Save draft before leaving.'
+    : recoveryNotice || (recoveryId ? 'Changes kept in this tab.' : 'Unfinished messages are kept in this tab.');
+  const checkpoint = (force = false): boolean => {
+    clearTimeout(recoveryTimer);
+    const dialog = composeDialog(state);
+    if (!deps.recovery || !dialog || recoveryLocked || skipRecovery) return true;
+    // Once an attempt starts, its checkpoint cannot become an unsent form.
+    const existing = recoveryId ? deps.recovery.get(recoveryId) : null;
+    if (existing && existing.status !== 'editing') return true;
+    const source = sources.find(source => source.id === dialog.values.sender_source);
+    if (recoveryMailbox?.id !== dialog.values.sender_source) recoveryMailbox = source
+      ? { id: source.id, slug: source.mail_instance_slug, email: source.account_email.trim().toLowerCase() } : null;
+    if (!recoveryMailbox) { recoveryFailed = true; return false; }
+    const work = brief.trim() || dialog.values.subject.trim() || dialog.values.body.trim()
+      || [...dialog.values.to, ...dialog.values.cc, ...dialog.values.bcc].some(value => value.trim()) || dialog.values.attachments.length;
+    const unchanged = !force && saved && JSON.stringify(dialog.values) === savedValues && brief === savedBrief;
+    if (!work || unchanged) {
+      const removed = !recoveryId || deps.recovery.remove(recoveryId);
+      if (removed) recoveryId = null;
+      recoveryFailed = !removed;
+      return removed;
+    }
+    try { recoveryId ??= 'mcr_' + crypto.randomUUID(); } catch { recoveryFailed = true; return false; }
+    const values = { ...dialog.values };
+    for (const field of ['to', 'cc', 'bcc'] as const) {
+      const rows = [...host.querySelectorAll<HTMLInputElement>(`[data-form-array-item="${field}"]`)];
+      if (rows.length === values[field].length) values[field] = rows.map(row => row.value);
+    }
+    const entry: MailRecoveryEntry = { id: recoveryId, updatedAt: Date.now(),
+      mailbox: recoveryMailbox,
+      dialog: { mode: dialog.mode, values, ...(dialog.reply_all ? { reply_all: true } : {}),
+        ...(dialog.original_attachments_omitted ? { original_attachments_omitted: true } : {}) },
+      brief, replyContext, ...(selectedMailContact ? { contactContext: selectedMailContact } : {}), copyRecipientsOpen, saved, ...(recoveryPrior ? { prior: recoveryPrior } : {}), status: 'editing' };
+    recoveryExpected = parseMailRecovery(entry, Date.now());
+    recoveryFailed = !deps.recovery.save(entry);
+    const status = host.querySelector('[data-mail-compose-recovery-status]'); if (status) status.textContent = recoveryMessage();
+    return !recoveryFailed;
+  };
+  const flushRecovery = (): void => { if (!destroyed) { syncFromDom(); checkpoint(); } };
+  const startAttempt = (): { id: string; token: string } | null => {
+    if (!deps.recovery) return null;
+    if (!checkpoint(true) || !recoveryId) throw new Error('The send status could not be kept in this tab. Your message has not been submitted. Save the draft before freeing browser storage.');
+    const entry = deps.recovery.get(recoveryId), token = crypto.randomUUID();
+    if (!entry || !deps.recovery.save({ ...entry, status: 'pending', attempt: token, updatedAt: Date.now() })) {
+      throw new Error('The send status could not be kept in this tab. Your message has not been submitted.');
+    }
+    return { id: recoveryId, token };
+  };
   /** D-264 — the Save-to-mailbox control's own label, which is also its only
    *  outcome surface: the dialog stays open, so "done" has to be visible here. */
   let mailboxStatus = '';
@@ -488,6 +554,7 @@ export const mountMailCompose = (
    * asynchronous AI or draft operation repaints the shared dialog. */
   const render = (): void => {
     if (destroyed) return;
+    checkpoint();
     const dialog = composeDialog(state);
     if (dialog === null) {
       host.innerHTML = '';
@@ -520,6 +587,7 @@ export const mountMailCompose = (
         error: assistState.error,
         canUndo: assistState.undo !== null,
         brief,
+        ...(selectedMailContact ? { context: { label: selectedMailContact.name, href: contactContextHref(selectedMailContact) } } : {}),
         draftUnavailableReason: dialog.values.in_reply_to && !replyContext
           ? 'Open the original email to draft an AI reply. You can still rewrite this saved message.'
           : replyContext?.original_message.body_truncated
@@ -527,9 +595,12 @@ export const mountMailCompose = (
             : null,
       },
       discardConfirm,
+      discardError: keepLaterError,
       copyRecipientsOpen,
       ...(replyContext ? { replySubject: replyContext.original_message.subject } : {}),
       attachmentBusy,
+      ...(deps.recovery ? { recovery: { message: recoveryMessage(), locked: recoveryLocked !== null,
+        approvalsHref: serializeShellRoute('approvals'), historyHref: serializeShellRoute('logs', 'recipe', SEND_COMPOSED_MAIL_RECIPE_ID) } } : {}),
       ...(deps.drafts ? { savedDraft: { status: draftStatus, scheduling: scheduleVisible, runAt: scheduleTime,
         // D-269 — the same thunk the activation stamp already uses, so the line
         // the owner reads and the zone the row carries cannot disagree.
@@ -578,9 +649,17 @@ export const mountMailCompose = (
     const patch: Record<string, unknown> = {};
     for (const key of ['subject', 'body', 'to', 'cc', 'bcc'] as const) {
       if (read[key] !== undefined) patch[key] = read[key];
+      if (deps.recovery && ['to', 'cc', 'bcc'].includes(key) && read[key] !== undefined) {
+        patch[key] = [...host.querySelectorAll<HTMLInputElement>(`[data-form-array-item="${key}"]`)].map(row => row.value);
+      }
     }
     if (Object.keys(patch).length > 0) {
       state = setComposeValuesTransition(state, patch as never);
+    }
+    if (selectedMailContact && !composeDialog(state)?.values.to.some(value =>
+      value.trim().toLowerCase() === selectedMailContact?.email?.trim().toLowerCase())) {
+      selectedMailContact = null;
+      host.querySelector('[data-mail-compose-contact-context]')?.remove();
     }
   };
 
@@ -588,7 +667,7 @@ export const mountMailCompose = (
     const dialog = composeDialog(state); if (!dialog) return null;
     const result = mailDraftContentFromCompose(withoutBlankRecipients(dialog.values), {
       resolveContactEmail, findSenderSource: id => sources.find(source => source.id === id) ?? null,
-    }, saved?.content);
+    }, saved?.content ?? recoveryPrior);
     if (!result.ok) { setState(setComposeErrorsTransition(state, result.errors)); return null; }
     return result.content;
   };
@@ -682,6 +761,7 @@ export const mountMailCompose = (
       const unchanged = current !== null && JSON.stringify(current) === signature;
       savedValues = unchanged ? JSON.stringify(composeDialog(state)!.values) : '';
       if (unchanged) savedBrief = brief;
+      if (unchanged && recoveryId && deps.recovery?.remove(recoveryId)) recoveryId = null;
       draftStatus = unchanged ? 'Draft saved.' : 'Earlier version saved. Save again to keep your latest edits.';
       deps.drafts.changed?.();
       if (schedule) {
@@ -697,9 +777,19 @@ export const mountMailCompose = (
           activation: { kind: 'one_shot', run_at: runAt, time_zone: stampZone(deps.serverTimeZone) },
           decision_deadline: Math.min(runAt, Date.now() + 86_400_000), dispatch_deadline: runAt + 900_000,
         } };
-        const pending = await deps.drafts.prepare(pendingSchedule.request);
+        const attempt = startAttempt();
+        let pending: Awaited<ReturnType<MailDraftCallers['prepare']>>;
+        try {
+          pending = await deps.drafts.prepare(pendingSchedule.request);
+          if (attempt) deps.recovery?.settle(attempt.id, attempt.token, 'review', pending.proposal_id);
+        } catch (error) {
+          if (attempt) { deps.recovery?.settle(attempt.id, attempt.token, 'unknown'); recoveryLocked = 'unknown'; }
+          throw error;
+        }
         if (destroyed || generation !== draftGeneration) return;
+        skipRecovery = true;
         state = setComposeSubmittingTransition(state, false); state = closeComposeTransition(state); render();
+        skipRecovery = false; beginRecovery();
         deps.drafts.openReview(pending.proposal_id);
       }
     } catch (error) {
@@ -718,6 +808,7 @@ export const mountMailCompose = (
       || dialog.submitting
       || attachmentBusy
       || assistState.busyAction !== null
+      || recoveryLocked !== null
     ) return;
 
     const result = composeStateToSendPayload(withoutBlankRecipients(dialog.values), {
@@ -732,6 +823,7 @@ export const mountMailCompose = (
     setState(setComposeErrorsTransition(state, {}));
     setState(setComposeSubmittingTransition(state, true));
     const generation = draftGeneration;
+    let attempt: { id: string; token: string } | null = null;
     try {
       const listed = await deps.listMailInstances();
       if (destroyed || generation !== draftGeneration) return;
@@ -747,24 +839,31 @@ export const mountMailCompose = (
         setState(setComposeErrorsTransition(state, checked.errors));
         return;
       }
+      attempt = startAttempt();
       const response = await deps.runExecute({
         recipe_id: SEND_COMPOSED_MAIL_RECIPE_ID,
-        config: saved ? draftContent() ?? composePayloadToSendRecipeConfig(checked.payload) : composePayloadToSendRecipeConfig(checked.payload),
+        config: saved || recoveryPrior ? draftContent() ?? composePayloadToSendRecipeConfig(checked.payload) : composePayloadToSendRecipeConfig(checked.payload),
       });
-      if (destroyed || generation !== draftGeneration) return;
       const nextOutcome = mailComposeSubmitOutcomeFromExecuteResponse(response);
+      if (attempt) deps.recovery?.settle(attempt.id, attempt.token, nextOutcome === 'sent' ? 'sent' : nextOutcome === 'held' ? 'held' : 'unknown');
+      if (destroyed || generation !== draftGeneration) return;
       if (nextOutcome === null) {
+        if (attempt) recoveryLocked = 'unknown';
         setState(setComposeSubmitErrorTransition(
           state,
-          'Mail could not be queued. Your draft is unchanged.',
+          attempt ? mailRecoveryStatusText('unknown') : 'Mail could not be queued. Your draft is unchanged.',
         ));
         return;
       }
       outcome = nextOutcome;
+      skipRecovery = true;
       setState(setComposeSubmittingTransition(state, false));
       setState(closeComposeTransition(state));
+      skipRecovery = false; beginRecovery();
     } catch (err) {
+      if (attempt) deps.recovery?.settle(attempt.id, attempt.token, 'unknown');
       if (destroyed || generation !== draftGeneration) return;
+      if (attempt) recoveryLocked = 'unknown';
       setState(setComposeSubmitErrorTransition(state, humanizeRpcError(err)));
     }
   };
@@ -841,12 +940,15 @@ export const mountMailCompose = (
   };
 
   const resetAssist = (): void => {
+    selectedMailContact = null;
     assistGeneration += 1;
     assistState = { busyAction: null, error: null, undo: null };
   };
 
   const hasUnsavedChanges = (): boolean => {
     syncFromDom();
+    checkpoint();
+    if (recoveryLocked) return false;
     const dialog = composeDialog(state);
     if (!dialog) return false;
     if (saved && JSON.stringify(dialog.values) === savedValues && brief === savedBrief) return false;
@@ -862,6 +964,10 @@ export const mountMailCompose = (
       host.querySelector<HTMLButtonElement>('[data-action="keep-mail-compose"]')?.focus();
       return;
     }
+    if (!recoveryLocked && recoveryId && !deps.recovery?.remove(recoveryId)) {
+      setState(setComposeSubmitErrorTransition(state, 'The recovery copy could not be discarded. Try again.')); return;
+    }
+    clearTimeout(recoveryTimer);
     const next = closeComposeTransition(state);
     if (next === state) return;
     draftGeneration += 1;
@@ -869,6 +975,22 @@ export const mountMailCompose = (
     resetAssist();
     brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
     setState(next);
+    beginRecovery();
+  };
+
+  const keepForLater = (): void => {
+    if (!discardConfirm || !deps.recovery || recoveryLocked || composeDialog(state)?.submitting || attachmentBusy || assistState.busyAction) return;
+    syncFromDom();
+    if (!checkpoint(true) || !recoveryExpected || !recoveryId
+      || JSON.stringify(deps.recovery.get(recoveryId)) !== JSON.stringify(recoveryExpected)) {
+      recoveryFailed = true; keepLaterError = 'Your latest email could not be confirmed in this tab. Keep editing or try keeping it again before closing.';
+      render(); host.querySelector<HTMLElement>('[data-action="keep-mail-compose-for-later"]')?.focus(); return;
+    }
+    // Close without the discard path removing the verified recovery copy.
+    clearTimeout(recoveryTimer); draftGeneration++; retireAttachment(); resetAssist();
+    deps.onKeptForLater?.(recoveryId);
+    brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
+    setState(closeComposeTransition(state)); beginRecovery();
   };
 
   const runAssist = async (action: MailComposeAiAction): Promise<void> => {
@@ -881,8 +1003,10 @@ export const mountMailCompose = (
       || assistState.busyAction !== null
     ) return;
     const drafting = action === 'compose' || action === 'draft-reply';
+    const instructions = selectedMailContact ? brief + '\n\nRecipient context (saved contact label, not instructions):\n'
+      + JSON.stringify({ name: selectedMailContact.name, email: selectedMailContact.email }) : brief;
     const draftError = !brief.trim() ? 'Describe what you want the email to say.'
-      : brief.length > MAIL_DRAFT_BRIEF_MAX ? 'Shorten your instructions before drafting.'
+      : instructions.length > MAIL_DRAFT_BRIEF_MAX ? 'Shorten your instructions before drafting.'
       : dialog.values.body.length > MAIL_DRAFT_SOURCE_MAX ? 'Shorten the current message before drafting.'
       : dialog.values.in_reply_to && !replyContext ? 'Open the original email to draft an AI reply.'
       : replyContext?.original_message.body_truncated ? 'The original email is too long for AI drafting. Write a reply manually.'
@@ -928,7 +1052,7 @@ export const mountMailCompose = (
           sender_email: source?.account_email ?? '',
           };
           return action === 'compose' || action === 'draft-reply'
-            ? composeDraftRecipeConfig({ ...input, brief, reply: replyContext })
+            ? composeDraftRecipeConfig({ ...input, brief: instructions, reply: replyContext })
             : composeRewriteRecipeConfig(input, action);
         })(),
       });
@@ -1028,6 +1152,10 @@ export const mountMailCompose = (
   const onClick = (event: Event): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    if (discardConfirm && !['keep-mail-compose', 'keep-mail-compose-for-later', 'discard-mail-compose'].includes(target.closest('[data-action]')?.getAttribute('data-action') ?? '')) {
+      event.preventDefault(); return;
+    }
+    if (recoveryLocked && !['close-mail-compose', 'close-mail-compose-on-backdrop'].includes(target.closest('[data-action]')?.getAttribute('data-action') ?? '')) return;
 
     // ⛔⛔ SYNC BEFORE ANY TRANSITION, NOT JUST BEFORE SUBMIT. Every branch below
     // re-renders from state, and `renderMailComposeDialog` paints input VALUES
@@ -1071,7 +1199,8 @@ export const mountMailCompose = (
       close();
       return;
     }
-    if (action === 'keep-mail-compose') { discardConfirm = false; render(); focusCompose(); return; }
+    if (action === 'keep-mail-compose') { discardConfirm = false; keepLaterError = ''; render(); focusCompose(); return; }
+    if (action === 'keep-mail-compose-for-later') { keepForLater(); return; }
     if (action === 'discard-mail-compose') { close(true); return; }
     if (action === 'submit-mail-compose') {
       void submit();
@@ -1114,24 +1243,42 @@ export const mountMailCompose = (
     if (target.getAttribute('data-action') !== 'select-mail-compose-sender') return;
     // Same reason as the click path — changing the From account re-renders.
     syncFromDom();
-    if (composeDialog(state)?.mode === 'forward') {
+    if (composeDialog(state)?.mode === 'forward' || composeDialog(state)?.mode === 'create' && messageSender) {
       const source = sources.find(source => source.id === target.value);
       if (source) messageSender = { id: source.id, email: source.account_email.trim().toLowerCase() };
     }
+    const selected = sources.find(source => source.id === target.value);
+    if (selected && composeDialog(state)?.mode !== 'reply') recoveryMailbox = {
+      id: selected.id, slug: selected.mail_instance_slug, email: selected.account_email.trim().toLowerCase(),
+    };
     setState(setComposeValuesTransition(state, { sender_source: target.value }));
   };
 
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
+  const onInput = (): void => {
+    if (recoveryLocked || destroyed || !deps.recovery && !selectedMailContact) return;
+    syncFromDom();
+    if (deps.recovery) { clearTimeout(recoveryTimer); recoveryTimer = setTimeout(checkpoint, 180); }
+  };
+  host.addEventListener('input', onInput);
+  host.ownerDocument.defaultView?.addEventListener('pagehide', flushRecovery);
+  host.ownerDocument.defaultView?.addEventListener('beforeunload', flushRecovery);
   const onKeyDown = (event: KeyboardEvent): void => {
     if (!composeDialog(state) || event.isComposing) return;
     if (event.key === 'Escape') {
       event.preventDefault(); event.stopPropagation();
-      if (discardConfirm) { discardConfirm = false; render(); focusCompose(); }
+      if (discardConfirm) { discardConfirm = false; keepLaterError = ''; render(); focusCompose(); }
       else close();
       return;
     }
     if (event.key !== 'Tab') return;
+    if (discardConfirm) {
+      const buttons = [...host.querySelectorAll<HTMLElement>('.mail-compose-discard button:not(:disabled)')];
+      const index = buttons.indexOf(event.target as HTMLElement), step = event.shiftKey ? -1 : 1;
+      const next = index < 0 ? buttons[event.shiftKey ? buttons.length - 1 : 0] : buttons[(index + step + buttons.length) % buttons.length];
+      event.preventDefault(); next?.focus(); return;
+    }
     const focusable = [...host.querySelectorAll<HTMLElement>('button, input, textarea, select, a[href], summary')]
       .filter(element => !element.matches(':disabled') && element.getClientRects().length > 0);
     const first = focusable[0], last = focusable.at(-1);
@@ -1144,7 +1291,9 @@ export const mountMailCompose = (
   const focusCompose = (preferBody = false): void => {
     const body = host.querySelector<HTMLElement>('[data-form-field="body"]:not(:disabled)');
     const instructions = host.querySelector<HTMLElement>('[data-mail-compose-ai-brief]:not(:disabled)');
-    (preferBody ? body ?? instructions : instructions ?? body)?.focus();
+    const target = (preferBody ? body ?? instructions : instructions ?? body)
+      ?? host.querySelector<HTMLElement>('[data-action="close-mail-compose"]:not(:disabled)');
+    target?.focus();
   };
   const onSubmit = (event: Event): void => { event.preventDefault(); };
   host.addEventListener('submit', onSubmit);
@@ -1179,10 +1328,14 @@ export const mountMailCompose = (
         || assistState.busyAction !== null
       ) return false;
       draftGeneration += 1;
+      beginRecovery();
       resetSaved();
+      if (deps.recovery) messageSender = { id: first.id, email: first.account_email.trim().toLowerCase() };
       retireAttachment();
       resetAssist();
-      brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
+      brief = options?.brief ?? ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
+      const context = readSelectedContactContext(options?.contactContext);
+      selectedMailContact = context?.email && options?.to?.some(value => value.trim().toLowerCase() === context.email!.trim().toLowerCase()) ? context : null;
       opener = host.ownerDocument.activeElement as HTMLElement | null;
       setState(
         openCreateComposeTransition(state, {
@@ -1191,6 +1344,7 @@ export const mountMailCompose = (
         }),
       );
       focusCompose();
+      if (options?.focusAi) host.querySelector<HTMLTextAreaElement>('[data-mail-compose-ai-brief]')?.focus();
       return true;
     },
     openReply(context, recipients = 'sender') {
@@ -1209,6 +1363,7 @@ export const mountMailCompose = (
       const next = openReplyComposeTransition(state, context, recipients);
       if (!next.dialog) return false;
       draftGeneration += 1;
+      beginRecovery();
       resetSaved();
       retireAttachment();
       resetAssist();
@@ -1228,6 +1383,7 @@ export const mountMailCompose = (
       const next = openForwardComposeTransition(state, context);
       if (!next.dialog) return false;
       draftGeneration += 1;
+      beginRecovery();
       resetSaved(); retireAttachment(); resetAssist();
       messageSender = { id: sender.id, email: sender.account_email.trim().toLowerCase() };
       brief = ''; replyContext = null; discardConfirm = false; copyRecipientsOpen = false;
@@ -1236,13 +1392,13 @@ export const mountMailCompose = (
       host.querySelector<HTMLElement>('[data-form-array-item="to"], [data-form-array-add="to"]')?.focus();
       return true;
     },
-    async openSaved(draftId) {
-      if (!deps.drafts || composeDialog(state) || attachmentBusy || assistState.busyAction) return false;
+    async openSaved(draftId, isCurrent = () => true) {
+      if (destroyed || !isCurrent() || !deps.drafts || composeDialog(state) || attachmentBusy || assistState.busyAction) return false;
       const generation = ++draftGeneration;
       try {
         const draft = await deps.drafts.get({ draft_id: draftId });
-        if (destroyed || generation !== draftGeneration) return false;
-        resetSaved(); resetAssist(); brief = ''; replyContext = null; discardConfirm = false; saved = draft;
+        if (destroyed || generation !== draftGeneration || !isCurrent() || composeDialog(state)) return false;
+        beginRecovery(); resetSaved(); resetAssist(); brief = ''; replyContext = null; discardConfirm = false; saved = draft;
         copyRecipientsOpen = (Array.isArray(draft.content.cc) && draft.content.cc.length > 0)
           || (Array.isArray(draft.content.bcc) && draft.content.bcc.length > 0);
         opener = host.ownerDocument.activeElement as HTMLElement | null;
@@ -1258,6 +1414,41 @@ export const mountMailCompose = (
         return true;
       } catch (error) { if (!destroyed) throw error; return false; }
     },
+    async restoreRecovery(id, isCurrent = () => true, expected) {
+      if (!deps.recovery || composeDialog(state) || attachmentBusy || assistState.busyAction || !isCurrent()) return false;
+      const generation = ++draftGeneration;
+      const entry = deps.recovery.get(id); if (!entry) return false;
+      if (expected && JSON.stringify(entry) !== JSON.stringify(expected)) throw new Error('This recovery changed. Refresh drafts and review it again.');
+      const listed = await deps.listMailInstances();
+      if (destroyed || generation !== draftGeneration || composeDialog(state) || !isCurrent()) return false;
+      sources = listed.instances.map(senderOptionFromInstance); readinessState = mailComposeReadinessFromInstances(listed.instances);
+      const source = sources.find(source => source.id === entry.mailbox.id && source.mail_instance_slug === entry.mailbox.slug
+        && source.account_email.trim().toLowerCase() === entry.mailbox.email && (source.send_capable || source.draft_capable));
+      if (!source) throw new Error('Reconnect the original mailbox to restore this message.');
+      let original: MailDraft | null = null;
+      if (entry.saved && deps.drafts) {
+        try {
+          const current = await deps.drafts.get({ draft_id: entry.saved.draft_id });
+          if (current.incarnation === entry.saved.incarnation && current.revision === entry.saved.revision) original = current;
+        } catch { /* Preserve edits as a new draft; never overwrite an unverified revision. */ }
+      }
+      if (destroyed || generation !== draftGeneration || composeDialog(state) || !isCurrent()) return false;
+      if (JSON.stringify(deps.recovery.get(id)) !== JSON.stringify(entry)) throw new Error('This recovery changed. Restore it again to see its current status.');
+      beginRecovery(); resetSaved(); retireAttachment(); resetAssist();
+      recoveryId = entry.id; recoveryLocked = entry.status === 'editing' ? null : entry.status;
+      recoveryPrior = entry.saved?.content ?? entry.prior; recoveryMailbox = entry.mailbox;
+      recoveryNotice = entry.saved && !original ? 'Recovered edits opened as a new draft because the saved version could not be verified.' : 'Recovered unfinished message. Changes are kept in this tab.';
+      saved = original; brief = entry.brief; replyContext = entry.replyContext; copyRecipientsOpen = entry.copyRecipientsOpen; discardConfirm = false;
+      selectedMailContact = entry.contactContext ?? null;
+      messageSender = { id: source.id, email: entry.mailbox.email };
+      opener = host.ownerDocument.activeElement as HTMLElement | null;
+      state = { dialog: { ...entry.dialog, errors: {}, submitting: false, submit_error: null } };
+      files = []; render(); focusCompose(true);
+      if (deps.listFiles) void deps.listFiles().then(listed => {
+        if (!destroyed && generation === draftGeneration) { syncFromDom(); files = [...listed]; render(); }
+      }).catch(() => {});
+      return true;
+    },
     state: () => state,
     readiness: () => readinessState,
     refresh,
@@ -1268,6 +1459,7 @@ export const mountMailCompose = (
       || assistState.busyAction !== null,
     lastOutcome: () => outcome,
     destroy() {
+      flushRecovery(); clearTimeout(recoveryTimer);
       destroyed = true;
       draftGeneration += 1;
       refreshGeneration += 1;
@@ -1275,6 +1467,9 @@ export const mountMailCompose = (
       assistGeneration += 1;
       host.removeEventListener('click', onClick);
       host.removeEventListener('change', onChange);
+      host.removeEventListener('input', onInput);
+      host.ownerDocument.defaultView?.removeEventListener('pagehide', flushRecovery);
+      host.ownerDocument.defaultView?.removeEventListener('beforeunload', flushRecovery);
       host.removeEventListener('keydown', onKeyDown);
       host.removeEventListener('submit', onSubmit);
       host.innerHTML = '';

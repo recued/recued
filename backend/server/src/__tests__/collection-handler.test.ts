@@ -23,6 +23,7 @@ import {
   handleCollectionListEndpoints,
   handleCollectionRunRetention,
   handleCollectionSearch,
+  handleCollectionSearchAll,
   makeCollectionHandlers,
 } from '../collections/collection-handler.js';
 
@@ -176,7 +177,7 @@ describe('handleCollectionList', () => {
     expect(res.records[0]!.hot_fields.summary).toBe('Standup');
   });
 
-  it('forwards filters / since / until / limit to the collection', async () => {
+  it('forwards filters and the complete keyset cursor alongside list bounds', async () => {
     // Record the query the stub actually received.
     let captured: unknown;
     registry = createCollectionRegistry();
@@ -189,12 +190,22 @@ describe('handleCollectionList', () => {
       platform: 'mail', slug: 'captured',
       filters: { thread_id: 'T1' },
       since: 10, until: 20, limit: 5,
+      before: { received_at: 17, record_id: 'mail-017' },
     });
     expect(captured).toEqual({
       platform: 'mail', slug: 'captured',
       filters: { thread_id: 'T1' },
       since: 10, until: 20, limit: 5,
+      before: { received_at: 17, record_id: 'mail-017' },
     });
+  });
+
+  it('rejects malformed cursors before delegating a list read', async () => {
+    for (const before of [null, [], { received_at: 1 }, { received_at: NaN, record_id: 'mail-1' },
+      { received_at: Infinity, record_id: 'mail-1' }, { received_at: 1.5, record_id: 'mail-1' },
+      { received_at: 1, record_id: '' }, { received_at: 1, record_id: 'mail-1', offset: 2 }]) {
+      await expect(handleCollectionList(deps, { platform: 'mail', slug: 'work', before })).rejects.toMatchObject({ code: 'bad_request' });
+    }
   });
 
   it('rejects a non-object filters', async () => {
@@ -465,4 +476,13 @@ describe('makeCollectionHandlers', () => {
     );
     expect((res as { record: CollectionRecord }).record.record_id).toBe('r1');
   });
+});
+
+it('reports a failed account while retaining other indexed search groups and platform scoping', async () => {
+  registry.register(stubCollection('mail', 'work', { searchMatches: [{ record_id: 'mail-one', hot_fields: { subject: 'Exact message' }, rank: -1, received_at: 1000 }] }));
+  registry.register({ ...stubCollection('mail', 'offline'), search: () => { throw new Error('The index is unavailable.'); } });
+  registry.register({ ...stubCollection('file', 'outside-scope'), search: () => { throw new Error('Must not be searched.'); } });
+  const result = await handleCollectionSearchAll(deps, { query: 'Exact', platforms: ['mail'] });
+  expect(result.groups.map(group => [group.platform, group.slug, group.matches[0]?.record_id])).toEqual([['mail', 'work', 'mail-one']]);
+  expect(result.unavailable_sources).toEqual([{ platform: 'mail', slug: 'offline' }]);
 });

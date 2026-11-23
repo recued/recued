@@ -134,7 +134,9 @@ describe('Records uses the shared resource review and its existing atomic revisi
     } finally { db.close(); }
   });
 
-  it('captures a Records catalog snapshot only when an independent grant no longer admits the call', async () => {
+  // D-348 §7.8 — a call a standing grant lets through runs under a snapshot of its change, so it
+  // can be undone, as an approved one can (before, it took none unless its grant failed).
+  it('captures a Records catalog snapshot for a call an independent grant admits, and asks with it once the grant no longer does', async () => {
     const db = new Database(':memory:');
     try {
       const { manifest, hooks, store } = setup(db);
@@ -152,14 +154,15 @@ describe('Records uses the shared resource review and its existing atomic revisi
       const input = { operation: 'update', args: { id: 'note-1', expected_version: 1, expected_revision: 0, set: { title: 'After' } } };
       await expect(runCatalogOperation(ctx, manifest, manifest.slug, input, '', undefined, undefined, undefined))
         .resolves.toMatchObject({ record: { title: 'After' } });
-      expect(capture).not.toHaveBeenCalled();
+      expect(capture).toHaveBeenCalledTimes(1);
       expect(match).toHaveBeenCalledTimes(1);
       expect(consume).toHaveBeenCalledTimes(1);
       consume.mockReturnValue(false);
       const second = { ...input, args: { ...input.args, expected_revision: 1, set: { title: 'Next' } } };
       await expect(runCatalogOperation(ctx, manifest, manifest.slug, second, '', undefined, undefined, undefined))
         .rejects.toMatchObject({ resource_review: { resources: [{ before: { title: 'After' }, after: { title: 'Next' } }] } });
-      expect(capture).toHaveBeenCalledTimes(1);
+      // The ask carries the snapshot taken as the grant admitted it: no second one.
+      expect(capture).toHaveBeenCalledTimes(2);
       expect(ctx.recordsOperationExecutor).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });

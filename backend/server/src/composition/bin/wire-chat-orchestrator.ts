@@ -1,4 +1,9 @@
 import { createPromptSchedules, type PromptSchedules } from '../../prompt-schedules.js';
+import { BODY_NUMBERS_RECIPE, BODY_NUMBERS_TURN_ON_UNDER, chatCalendarRefsOf, chatMailRefsOf, isChatSetupFeature, preapprovalCallerOf, type ChatSetupFeature } from '@recued/contracts';
+import type { CalendarCollection } from '../../collections/calendar/calendar-collection.js';
+import { runBrowsersOf } from '../../browser-step-check.js';
+import { holdsStandingPreapproval } from '../../run-question.js';
+import { triggerPreapprovalRecipeSha256 } from '../../trigger-preapproval-rpc.js';
 import { withQueuedChatTurns } from '../../chat-turn-queue.js';
 import { createProjectionVersionProbe } from '../../chat-projection-refresh.js';
 import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
@@ -41,7 +46,7 @@ import type { RemoteNoticeHook } from '@recued/notification';
 
 import type Database from 'better-sqlite3';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
-import { resolveServerTimeZone } from '@recued/contracts';
+import { parseQualifiedWorkEntityId, qualifyWorkEntityId, RECUED_BUILTIN_SOURCE_ID, resolveServerTimeZone, type WorkEntityKind } from '@recued/contracts';
 import { createKeyAgreementLookup, type KeyAgreementLookup } from '../../key-agreement.js';
 import { canonicalOpToolsForConnections } from '../../canonical-op-tool-catalog.js';
 import { resolveConnectionVendor } from '../../storage/connection-store.js';
@@ -62,6 +67,8 @@ import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
   deriveChatMessageRecallEligibility,
 } from '../../storage/chat-store.js';
+import { chatThinkingOffPrompt } from '../../chat-output-policy.js';
+import { MAIL_WORK_OUTPUT_SHAPE } from '../../mail-work-investigation-guidance.js';
 import type {
   AdapterRegistry as LLMAdapterRegistry,
   LLMConfig,
@@ -77,7 +84,7 @@ import type {
   InternalToolRegistry,
   WebChatTab,
 } from '@recued/contracts';
-import type { ExecutionSource, ToolEntry } from '@recued/contracts';
+import type { ExecutionSource, RecipeDefinition, ToolEntry } from '@recued/contracts';
 import { isExecutionSource, opGrantEntry, recipeGrantEntry, primitiveGrantEntry,
   isGrantableKernelOp,
   isRegisteredKernelOp,
@@ -104,8 +111,13 @@ import {
 import { createMiddlewareRegistry } from '@recued/middleware';
 
 import { createInternalToolRegistry } from '@recued/middleware/internal-tool-registry/index.js';
-import { buildTier2Catalog, createOpKindLookup, hashRecipe, parseRecipe } from '@recued/recipes';
+import { buildTier2Catalog, createOpKindLookup, formatTier2ToolName, hashRecipe, parseRecipe } from '@recued/recipes';
 import { recipeFromBrowserFlow } from '../../browser-flow-recipe.js';
+import { browserFlows as processBrowserFlows } from '../../bridges/browser-flow-record.js';
+import { createKitchenDraftStore } from '../../kitchen-draft-store.js';
+import { makeRequestRecipeDraft } from '../../request-recipe.js';
+import { labelPlan } from '../../plan-labels.js';
+import { createRunCarryOnStore, makeRunCarryOn } from '../../run-carry-on.js';
 import { validateRecipeInline } from '../../recipe-save-handler.js';
 import { registerFirstPartyMiddlewares } from '@recued/middleware-recued';
 import { registerPromptCacheMiddleware } from '@recued/middleware-prompt-cache';
@@ -117,8 +129,16 @@ import { wrapRegistryWithPause } from '../../registry-pause.js';
 import { ChatServerPausedError } from '../../chat-turn-executor.js';
 import { wrapChatRegistryForCatalogModes, type ToolsSearchTurnedOffEntry } from '../../chat-tools-search.js';
 import type { MarketplaceCatalogue } from '../../install-offers/catalogue.js';
-import { createInstallOfferSource } from '../../install-offers/source.js';
+import { FIRST_CATALOGUE_WAIT_MS, createInstallOfferSource } from '../../install-offers/source.js';
 import { createNeededPackOffers, wrapRegistryWithNeededPackOffers } from '../../install-offers/needed-packs.js';
+import { createThingTypeQueries, typeIdsNamedLike, wrapRegistryWithThingSteps } from '../../next-steps/thing-steps.js';
+import { promptSetupStep } from '../../next-steps/prompt-steps.js';
+import { searchedFeatureStep } from '../../next-steps/searched-features.js';
+import { createCarriedHintKeys } from '../../next-steps/carried-hints.js';
+import { createChatHintStore } from '../../storage/chat-hint-store.js';
+import { createSetupFeatureFacts } from '../../next-steps/setup-features.js';
+
+import { ASSET_TABLE } from '../../storage/work-entity-store.js';
 import { listInstalledPacks } from '../../pack-inventory.js';
 import { createRecallSearchBackend } from '../../chat-recall-search.js';
 import { wrapRegistryWithRecallSearch } from '../../chat-recall-search-tool.js';
@@ -248,6 +268,8 @@ import { buildChatToolRegistryInputs, buildChatTier1Handlers, type ChatToolHandl
 import { createDocumentSearchIndex, type DocumentSearchIndex } from '../../storage/document-search-index.js';
 import type { FileViewResolver } from '../../file-view-resolver.js';
 import { DATA_FILE_RECEIVED_SLUG } from '../../collections/file/file-read-handler.js';
+import { documentReadPlan } from '../../document-read-tool.js';
+import { DOCUMENT_READER_OPS, isDocumentReader } from '../../document-read-recipe.js';
 import { tokenUsageToReport } from '../../chat-token-usage.js';
 import type { EventBus } from '../../events/bus.js';
 import type { KeyManager } from '../../key-manager.js';
@@ -274,7 +296,7 @@ import type { PairedInstancesStore } from '../../paired-instances-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import { handleExecute } from '../../execute-handler.js';
-import { createHeldChatWrites, createHoldTier1Write, settleChatRun } from '../../chat-held-writes.js';
+import { createHeldChatWrites, createHoldTier1Write, createRunApprovedTier1Write, settleChatRun } from '../../chat-held-writes.js';
 import { createClaimLinker } from '../../claim-link.js';
 import { createWaitingSaveMarker } from '../../waiting-save-marks.js';
 import { createClaimLinkLedger } from '../../storage/claim-link-ledger.js';
@@ -289,8 +311,9 @@ import {
   type HeldResultContinuation,
 } from '../../chat-held-results.js';
 import { createHeldResultTurnStore, createHeldRunWatchStore } from '../../storage/chat-held-result-store.js';
-import { recipeToolTitle } from '../../recipe-tool-name.js';
+import { recipeToolActsInBrowser, recipeToolTitle } from '../../recipe-tool-name.js';
 import { useWriteRule } from '../../write-rules.js';
+import { tier1KindGrantHoldAnswer, useTier1KindGrant } from '../../kind-grants.js';
 import { recipeConnectionChoices } from '../../recipe-connection-choices.js';
 import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
 import { createInstalledRecipeScheduler } from '../../schedule-installed-recipe.js';
@@ -305,6 +328,19 @@ import { createBrowserPassStore, type BrowserPassStore } from '../../storage/bro
 import { listHeldBrowserTabs } from '../../bridges/dom-adapter.js';
 import { readableNamedPages } from '../../chat-named-pages.js';
 import { createScheduledPromptPreapprovalUse, scheduledPromptHoldAlwaysAllow } from '../../scheduled-prompt-preapproval.js';
+
+/** D-405 slice 1 — the search a setup hint probes with: the model's own search of the owner's things. */
+const SETUP_HINT_SEARCH_TOOL = 'work.search';
+/** D-405 slice 2 — the read a core feature's hint must be admitted to, as the chat index's probes are:
+ *  a feature chat may not read is never said to have none connected (ruling P5). */
+const SETUP_HINT_FEATURE_TOOLS: Readonly<Record<ChatSetupFeature, string>> = {
+  mail: 'mail.search',
+  calendar: 'calendar.search',
+  file: 'file.search',
+};
+/** D-405 slice 2 — how far back a file the owner sent means "the file" is that one: the window the
+ *  orchestrator reads for an earlier answer's step. */
+const SETUP_HINT_FILE_MESSAGES = 200;
 
 /** Direct + late-bound dependencies the chat composer needs. */
 export interface ComposeChatOrchestratorDeps {
@@ -444,13 +480,16 @@ export interface ChatOrchestratorBundle {
   readonly chatNotices: RemoteNoticeHook;
   /** D-343 slice 4 (ruling 20) — opens a conversation in the app holding a notice, for Today's
    *  "Close the day". Handed to Yours, which is composed after the chat. */
-  readonly openNoticeConversation: (notice: { title: string; text: string }) => Promise<{ session_id: string; message_id: string }>;
+  readonly openNoticeConversation: import('../../chat-notices.js').NoticeConversationOpener;
   connectionMcpStore: ChatConnectionMcpStore;
   inboundTokenStore: ChatInboundTokenStore;
   internalRegistry: InternalToolRegistry;
   /** D-336 slice O's open item — a Tier-1 call was held (the execute deps' `onTier1Held`): a
    *  later save of a fact marks the earlier held chat saves of it "Asked again". */
   onTier1Held: (call: { tool: string; args: Record<string, unknown>; run_id: string }) => Promise<void>;
+  /** A held Tier-1 call, approved (the execute deps' `runApprovedTier1Write`): run under its
+   *  proposal's reviewed change, so the owner can undo it from its card. */
+  runApprovedTier1Write: NonNullable<ExecuteHandlerDeps['runApprovedTier1Write']>;
   ownerDocumentSearch: OwnerDocumentSearch;
   orchestrator: ChatOrchestrator;
   chatDeps: ChatRpcDeps;
@@ -486,6 +525,21 @@ export interface ChatOrchestratorBundle {
 
 /** Compose the chat substrate. Synchronous — no I/O at compose time;
  *  every dispatch path resolves through the late-bound getters. */
+/** D-402 slices F3 and H4 — the chat's "not asked yet" reads a caller's standing "Always" for a recipe as it
+ *  is now, and for the browsers its run would act in: a chat's run names no dish, so it takes its recipe's
+ *  main dish's settings (D-319). An "Always" granted for other browsers does not stand. The same rule the
+ *  question applies (`holdsStandingPreapproval`). */
+export const chatStandingPreapproval = (getExecuteDeps: () => Pick<ExecuteHandlerDeps, 'triggerPreapprovals' | 'dishStore'> | undefined) =>
+  (recipe: RecipeDefinition, source: ExecutionSource, nested?: ReadonlyMap<string, string>): boolean => {
+    const caller = preapprovalCallerOf(source);
+    const executeDeps = getExecuteDeps();
+    const store = executeDeps?.triggerPreapprovals;
+    if (caller === undefined || store === undefined) return false;
+    const main = executeDeps?.dishStore?.listByRecipe(recipe.recipe_id).find((dish) => dish.is_default);
+    return holdsStandingPreapproval({ store, caller, recipe_id: recipe.recipe_id, recipe_sha256: triggerPreapprovalRecipeSha256(recipe),
+      browsers: runBrowsersOf(recipe, main?.config_overlay ?? {}), ...(nested !== undefined ? { nested } : {}) });
+  };
+
 export const composeChatOrchestrator = (
   deps: ComposeChatOrchestratorDeps,
 ): ChatOrchestratorBundle => {
@@ -576,6 +630,16 @@ export const composeChatOrchestrator = (
   ensureChatConnectionMcpAnnotationSchema(db);
   ensureChatInboundTokenSchema(db);
   const chatStore = createChatStore(db, chatKeyProvider, getLlmConfig);
+  // D-405 slice 3 — the hints under answers the owner said "Not now" to. Every place that offers one
+  // asks `hintHidden` (the row and the model's sentence are left out together); the rpc keeps the list.
+  const chatHintStore = createChatHintStore(db);
+  const hintHidden = (key: string): boolean => {
+    try {
+      return chatHintStore.hides(key, Date.now());
+    } catch {
+      return false;
+    }
+  };
   const getSpanAnchorDeps = composeSpanAnchor({ db, chatKeyProvider });
   // Same durable store threads into the dispatch gate, approval RPCs, and
   // session snapshots. Construction never resumes work: a row left `running`
@@ -823,6 +887,14 @@ export const composeChatOrchestrator = (
         return false;
       }
     } } : {}),
+    // D-402 slice F3 — the caller's standing "Always" for a recipe as it is now: such a recipe runs
+    // without asking, so a round waiting for the owner does not hold it back.
+    standingPreapproval: chatStandingPreapproval(getExecuteDeps),
+    // D-402 slice F4 — "Stop allowing" from the owner's chat: the execute deps' one composition (late-bound).
+    stopAllowing: (input) => getExecuteDeps()?.stopAllowing?.(input),
+    // D-339 slice 12a — the owner's chats' switch for a Body's numbers, as the run's gate reads it.
+    bodyNumbers: () => getExecuteDeps()?.bodyNumbers,
+    aiAppContractOf: (name) => getExecuteDeps()?.aiAppContractOf?.(name),
     getDocumentSearchIndex: () => documentSearchIndex ??= createDocumentSearchIndex(deps.db),
     getPromptSchedules: () => promptSchedules,
     getContactStore,
@@ -1128,6 +1200,7 @@ export const composeChatOrchestrator = (
   // recipes the same projection holds that their grant does not admit, and the pack actions
   // they switched off. `tools.search` names these with where each is turned on; any other
   // source gets none, because a contract's app learns nothing about what is installed.
+  const BODY_NUMBERS_TOOL = formatTier2ToolName(BODY_NUMBERS_RECIPE.publisher_id, BODY_NUMBERS_RECIPE.recipe_id);
   const ownerTurnedOff = (source?: ExecutionSource): ReadonlyArray<ToolsSearchTurnedOffEntry> => {
     if (source === undefined) return [];
     const gate = getExecuteDeps()?.opAdmissionGate;
@@ -1141,7 +1214,9 @@ export const composeChatOrchestrator = (
       true,
     )
       .filter((entry) => !reachable(entry.name))
-      .map((entry) => ({ entry, tab: 'Recipes' as const }));
+      // D-339 slice 12a — a Body's numbers' recipe is turned on by the switch on every Body page.
+      .map((entry) => ({ entry, tab: 'Recipes' as const,
+        ...(entry.name === BODY_NUMBERS_TOOL ? { turn_on_under: BODY_NUMBERS_TURN_ON_UNDER } : {}) }));
     const actions = (chatToolRegistryInputs.rawOpTurnedOffSource(source) as ReadonlyArray<ToolEntry>)
       .map((entry) => ({ entry, tab: 'Ops' as const }));
     return [...recipes, ...actions];
@@ -1345,13 +1420,41 @@ export const composeChatOrchestrator = (
   // D-323 — what every install offer reads per call: the owner's switch, and
   // what is installed.
   const installOffersEnabled = (): boolean => chatStore.getInstallOffersEnabled?.() ?? true;
+  // ⛔ BOTH NAMES. A Records pack's row is keyed by its generated `records-<hash>` id; its own slug
+  // (`body-signals`, the catalogue's) is `authored_pack_slug`. Read by slug alone, an installed Records
+  // pack read as not installed: live (2026-11-18), chat offered Body signals with it installed, and D-404's
+  // "<pack> is installed." could never show for one.
   const installedPackSlugs = (): ReadonlySet<string> => {
     const contracts = deps.getContractStore?.();
-    return new Set(contracts === undefined ? [] : listInstalledPacks(contracts).map((row) => row.pack_slug));
+    return new Set(contracts === undefined ? [] : listInstalledPacks(contracts)
+      .flatMap((row) => (row.authored_pack_slug !== undefined ? [row.pack_slug, row.authored_pack_slug] : [row.pack_slug])));
   };
-  // D-323 — the OUTERMOST wrapper, so every call the chat makes, whichever
-  // wrapper answers it, offers the packs it came back needing.
-  const baseChatRegistry = wrapRegistryWithNeededPackOffers(wrapRegistryWithRecallSearch(
+  // D-404 slice A — whether the owner has a thing, active or lent, of any of these types: "none"
+  // is what a thing step under an answer is offered for.
+  const { hasThingOfTypes } = createThingTypeQueries(db);
+  // D-405 slices 2 and 4 — whether any mailbox, calendar or file source is connected: the one fact the
+  // chat's hints and the Set up page (`chat.setup.features`) both read (`next-steps/setup-features.ts`).
+  const setupFeatureConnected = createSetupFeatureFacts({ db, getConnectionStore });
+  // D-405 slice 8 — the hint keys earlier answers of a call's conversation carried, read once a turn: the
+  // steps and offers the model's own searches make leave them out, never twice in one conversation (P3).
+  const carriedHintKeys = createCarriedHintKeys(chatStore);
+  // D-405 slices 2 and 6 — whether the feature has any connected, for a hint: said only on the owner's
+  // own turn (the guard D-404's steps use), while their "Suggest packs" switch is on (D-323 P7, shared
+  // by ruling P3), and when chat may read that feature. One gate for a feature the owner's words name
+  // and one the model's own search found none of, so the two never differ.
+  const featureConnectedForHint = (feature: ChatSetupFeature, ctx: ChatDispatchContext): boolean | null => {
+    if (!installOffersEnabled() || !admitTier1(SETUP_HINT_FEATURE_TOOLS[feature], ctx)) return null;
+    try {
+      chatToolRegistryInputs.ownerCatalogGuard(ctx.execution_source);
+    } catch {
+      return null;
+    }
+    return setupFeatureConnected(feature);
+  };
+  // D-323 — the OUTERMOST wrapper but one, so every call the chat makes, whichever
+  // wrapper answers it, offers the packs it came back needing. D-404's thing steps sit
+  // outside it: they only follow an empty search of the owner's things.
+  const baseChatRegistry = wrapRegistryWithThingSteps(wrapRegistryWithNeededPackOffers(wrapRegistryWithRecallSearch(
     wrapChatRegistryForCatalogModes(
       wrapRegistryWithEnrichmentTopicTools(internalRegistry, {
         listTopicsWithRows: () =>
@@ -1375,6 +1478,9 @@ export const composeChatOrchestrator = (
             enabled: installOffersEnabled,
             installedPackSlugs,
             hasRecipe: (recipe_id) => deps.recipeStore.get(recipe_id) !== null,
+            hidden: hintHidden,
+            // D-405 slice 8 — an offer an earlier answer of the conversation made is not made again.
+            carried: carriedHintKeys,
           }),
       // D-346 follow-up — what the owner switched off, so search says "turn it on".
       ownerTurnedOff,
@@ -1414,9 +1520,58 @@ export const composeChatOrchestrator = (
           catalogue: deps.installOfferCatalogue,
           enabled: installOffersEnabled,
           installedPackSlugs,
+          hidden: hintHidden,
         }),
         ownerCatalogGuard: chatToolRegistryInputs.ownerCatalogGuard,
-      });
+      }), {
+    // D-404 slice A — "No Passport in Yours yet" under an answer whose search of the owner's
+    // things found none, on the owner's own turns.
+    types: () => assetTypes(db).list(),
+    hasThingOfTypes,
+    ownerCatalogGuard: chatToolRegistryInputs.ownerCatalogGuard,
+    // D-405 slice 3 — a step the owner said "Not now" to is left out, its sentence with it.
+    hidden: hintHidden,
+    // D-405 slice 8 — and one an earlier answer of the conversation carried, the same way.
+    carried: carriedHintKeys,
+    // D-404 step 4 — the owner's things of these types, and whether each has a reading yet: its
+    // readings map holds one, or its reading history does.
+    thingsOfTypes: (typeIds) => {
+      if (typeIds.length === 0) return [];
+      const rows = db.prepare(`SELECT id, name, json_extract(data_blob,'$.readings') AS readings FROM ${ASSET_TABLE}
+        WHERE class_id IN (${typeIds.map(() => '?').join(',')}) AND status IN ('active','lent') AND deleted_at IS NULL
+        ORDER BY updated_at DESC LIMIT 20`).all(...typeIds) as Array<{ id: string; name: string; readings: string | null }>;
+      const history = db.prepare('SELECT 1 FROM asset_reading_history WHERE asset_id = ? LIMIT 1');
+      const anyReading = (json: string | null): boolean => {
+        try {
+          const readings = json === null ? null : JSON.parse(json) as unknown;
+          return readings !== null && typeof readings === 'object' && Object.values(readings).some((value) => value !== null);
+        } catch { return false; }
+      };
+      return rows.map((row) => ({ id: row.id, name: row.name, has_readings: anyReading(row.readings) || history.get(row.id) !== undefined }));
+    },
+    // D-404 step 4 — the certified packs extending a pack (`body-signals-apple-health` extends
+    // `body-signals`), from D-323's catalogue copy; one not installed only while the owner lets chat
+    // suggest packs (D-323 P7).
+    feedingPacks: async (packSlug) => {
+      if (deps.installOfferCatalogue === undefined) return [];
+      const catalogue = await deps.installOfferCatalogue.ready(FIRST_CATALOGUE_WAIT_MS);
+      if (catalogue === null) return [];
+      const installed = installedPackSlugs();
+      const suggest = installOffersEnabled();
+      return catalogue.packs
+        .filter((pack) => pack.publisher_certified && pack.slug.startsWith(`${packSlug}-`) && (installed.has(pack.slug) || suggest))
+        .map((pack) => ({ slug: pack.slug, name: pack.name, publisher: pack.publisher_id, installed: installed.has(pack.slug) }));
+    },
+    // D-404 slice D — the installed recipe a tools.search match names, `<publisher>/<recipe_id>`
+    // (a recipe id may hold a slash, so each slash is tried as the boundary, as the Tier-2 lookup does).
+    recipeForTool: (toolName) => {
+      for (let at = toolName.indexOf('/'); at > 0; at = toolName.indexOf('/', at + 1)) {
+        const recipe = recipeStore.get(toolName.slice(at + 1));
+        if (recipe !== null && recipe !== undefined) return recipe;
+      }
+      return null;
+    },
+  });
   const d214Experiment = readExecutionCaseExperimentEnv();
   if (!getSpanAnchorDeps) {
     throw new Error('D-214 span-anchor composition is unavailable');
@@ -1502,7 +1657,14 @@ export const composeChatOrchestrator = (
       // counter, so the budget finally sees chat. See `addOwnerTokenUsage`.
       deps.addOwnerTokenUsage?.(u.total_tokens);
     };
-    const body = await executeLLM(manifest, input, {
+    // The privacy wrapper has already prepared this instruction text. Select
+    // its off variant inside @recued/llm, after the actual source is resolved.
+    const basePrompt = input['llm.system_prompt'];
+    const offPrompt = typeof basePrompt === 'string'
+      ? chatThinkingOffPrompt(basePrompt, MAIL_WORK_OUTPUT_SHAPE, opts?.browser_action_mode === true) : undefined;
+    const effectiveInput = offPrompt !== undefined && offPrompt !== basePrompt
+      ? { ...input, 'llm.system_prompt_when_thinking_off': offPrompt } : input;
+    const body = await executeLLM(manifest, effectiveInput, {
       config: cfg,
       adapters: llmAdapterRegistry,
       quota: llmQuota,
@@ -1510,8 +1672,15 @@ export const composeChatOrchestrator = (
       webChatSupported: false,
       onTokenUsage: captureUsage,
       onFinishReason: reason => { finishReason = reason; },
+      ...(process.env.RECUED_CHAT_OUTPUT_DIAGNOSTICS === '1' ? {
+        onOutputDiagnostics: diagnostics => console.info(`[chat] output diagnostics ${JSON.stringify({
+          ingredient: manifest.slug, ...diagnostics,
+        })}`),
+      } : {}),
       // Opt-in only; absent leaves `resolveLLMTimeoutMs` at its no-timer default.
       ...(opts?.timeout_ms !== undefined ? { timeout_ms: opts.timeout_ms } : {}),
+      // D-343 — a newer turn took this brief over: its request ends now.
+      ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
     });
     return {
       body,
@@ -1604,6 +1773,8 @@ export const composeChatOrchestrator = (
 
   const executionOrchestrator = withChatSessionBusy(createChatOrchestrator({
     chatStore,
+    recipeTitle: (recipe_ref) => recipeToolTitle(recipeStore, recipe_ref),
+    recipeActsInBrowser: (recipe_ref) => recipeToolActsInBrowser(recipeStore, recipe_ref),
     revalidateProjectionRead: createProjectionVersionProbe({
       query: chatToolRegistryInputs.tier1Handlers['situation.query']!,
       fieldVersion: async (request, ctx) => deps.getSituationAccess?.()?.fieldVersion(request, ctx.execution_source),
@@ -1668,6 +1839,7 @@ export const composeChatOrchestrator = (
     // every one while the conversation's "Don't ask about browser actions" is on (opening asks
     // nothing then), else those a tab already shows. A store that cannot be read says off.
     namedPagesReadable: (session_id: string, addresses: readonly string[]) => readableNamedPages(addresses, {
+      connectedBridges: () => getExecutorConfig()?.bridgeDispatcherRef?.()?.connectedBridges?.() ?? 0,
       requestPassLive: () => {
         if (!deps.db) return false;
         try {
@@ -1828,6 +2000,29 @@ export const composeChatOrchestrator = (
         );
       }),
     } : {}),
+    // D-405 slice 1 — a setup hint from the owner's message itself: the search the model would run of
+    // the owner's things, by the words that named a type, through this same registry, so D-404's wrapper
+    // decides the step and the owner's switches hold. The same switch check the index probes apply
+    // first; a turn state of its own, so the probe costs the model's search budget nothing.
+    buildSetupHint: (message: string, ctx: ChatDispatchContext) => promptSetupStep(message, {
+      types: () => assetTypes(db).list(),
+      search: async (query) => (admitTier1(SETUP_HINT_SEARCH_TOOL, ctx)
+        ? baseChatRegistry.dispatch(SETUP_HINT_SEARCH_TOOL, { kind: 'asset', query }, { ...ctx, turn_state: new Map<string, unknown>() })
+        : null),
+      // D-405 slice 2 — whether the feature the owner asked about has any connected (the gate above).
+      featureConnected: (feature) => featureConnectedForHint(feature, ctx),
+      conversationHasFiles: async () => ctx.session_id !== undefined
+        && (await chatStore.listMessagePage(ctx.session_id, SETUP_HINT_FILE_MESSAGES)).messages
+          .some((message) => (message.attachments?.length ?? 0) > 0),
+      // D-405 slice 3 — a feature the owner said "Not now" to (a thing's or a pack's is left out by the search).
+      hidden: hintHidden,
+    }),
+    // D-405 slice 6 — a feature the model's own search found none of the owner's in: the same gate and
+    // fact as the words' (above), "Not now" left out.
+    buildSearchedFeatureHint: (features, ctx) => searchedFeatureStep(features, {
+      featureConnected: (feature) => featureConnectedForHint(feature, ctx),
+      hidden: hintHidden,
+    }),
     // D-172 P2 — names the files the chat tail carries, resolved LIVE from the
     // file collection so a since-deleted file drops out of the marker instead
     // of being offered to the model as an id that resolves to nothing.
@@ -1867,6 +2062,10 @@ export const composeChatOrchestrator = (
       resolveChatInputTokenBudget(getLlmConfig(), route),
     forwardedSenderIndex,
     heldRunWatches: watchHeldRunsIn(heldRunWatchStore),
+    // D-348 — each request of the owner's chats, and the calls it held, for chains to learn from.
+    chainEvidence: () => getExecuteDeps()?.chainEvidence,
+    // D-348 slice 4 — and the rules the owner accepted for it.
+    chainRules: () => getExecuteDeps()?.chainRules,
     settleHeldCall: async ({ run_id, held, until, signal }) => {
       const settled = await heldRunWaiters.wait(run_id, until, signal);
       return settled === undefined ? undefined : settledHeldCallResult(settled, held);
@@ -1968,13 +2167,38 @@ export const composeChatOrchestrator = (
     executeAiCall: executeChatAiCall,
     ...(voiceTranscription ? { voiceTranscription } : {}),
     planApprovalStore: planApprovalStoreShared,
+    readPendingApprovalRows: (sessionId) => planApprovalStoreShared.readPendingEvidenceRows(sessionId),
+    readCancelledApprovalRows: (sessionId) => planApprovalStoreShared.readCancelledEvidenceRows(sessionId),
+    readCompletedHeldActionRows: (sessionId) => planApprovalStoreShared.readCompletedHeldEvidenceRows(sessionId),
     // D-329 — a Tier-1 write is held as a write raw op is: its checkpoint, the receipt, and
     // the ask every approval channel shows, under the run id its proposal was stored with.
     holdTier1Write: createHoldTier1Write(getExecuteDeps),
-    // D-329 §3.4 — a standing write rule the owner accepted stands in for that ask.
-    useWriteRule: (source, tool, args) => useWriteRule(getExecuteDeps()?.writeRules, source, tool, args),
-    // D-341 — the pre-approval a held write's ask offers, which its card offers too.
-    holdAlwaysAllow: (source, tool, args) => scheduledPromptHoldAlwaysAllow(getExecuteDeps() ?? {}, source, tool, args),
+    // D-343 — a work row's qualified id when it is Recued's own, so its change says it stays here.
+    localWorkId: (kind, id) => {
+      const store = getWorkEntityCrudDeps?.()?.store;
+      if (store === undefined) return undefined;
+      const row = kind === 'task' ? store.readTask(id) : kind === 'note' ? store.readNote(id) : kind === 'commitment' ? store.readCommitment(id)
+        : kind === 'project' ? store.readProject(id) : kind === 'booking' ? store.readBooking(id) : null;
+      if (row === null || row.source_id !== RECUED_BUILTIN_SOURCE_ID(kind as WorkEntityKind)) return undefined;
+      return qualifyWorkEntityId({ kind: kind as WorkEntityKind, source_id: row.source_id, local_id: row.id });
+    },
+    // D-343 — a task's due date before a change, for its approval ("today → Sun 15 Nov, 17:00").
+    taskDueBefore: (id) => {
+      const store = getWorkEntityCrudDeps?.()?.store;
+      if (store === undefined) return undefined;
+      const qualified = parseQualifiedWorkEntityId(id);
+      const local = qualified === null ? id : qualified.kind === 'task' && qualified.identity === 'local' ? qualified.record_id : undefined;
+      const row = local === undefined ? null : store.readTask(local);
+      return row === null ? undefined : row.due_at ?? null;
+    },
+    // D-329 §3.4 — a standing write rule the owner accepted stands in for that ask; else (D-177
+    // N.15) the kind grant "Allow in this chat" the owner gave this conversation.
+    useWriteRule: (source, tool, args) => useWriteRule(getExecuteDeps()?.writeRules, source, tool, args)
+      ?? useTier1KindGrant(getExecuteDeps()?.sessionGrantResolver, source, tool, args),
+    // D-341 — the pre-approval a held write's ask offers, which its card offers too; else (D-177
+    // N.15) the kind grant the owner's own chat's ask offers ("Allow in this chat").
+    holdAlwaysAllow: (source, tool, args) => scheduledPromptHoldAlwaysAllow(getExecuteDeps() ?? {}, source, tool, args)
+      ?? tier1KindGrantHoldAnswer(getExecuteDeps()?.sessionGrantResolver, source, tool, args),
     // D-341 slice B3 — and, for a scheduled prompt, the prompt's own standing pre-approval.
     useTriggerPreapproval: (source, tool, args) => {
       const executeDeps = getExecuteDeps();
@@ -1997,6 +2221,8 @@ export const composeChatOrchestrator = (
     // getter the tool-registry inputs consume (resolves at dispatch
     // time); the correction store is a local SQLite read view.
     ...(deps.getSituationAccess ? { getSituationAccess: deps.getSituationAccess } : {}),
+    // D-343 (2026-11-15) — a closing marks what any conversation already recorded for its day.
+    ...(deps.getClosingRecords ? { getClosingRecords: deps.getClosingRecords } : {}),
     middlewareRegistry,
     getCorrectionEventsStore: () => correctionEventsStore,
     getContactStore,
@@ -2071,8 +2297,31 @@ export const composeChatOrchestrator = (
   });
   orchestrator.promptSchedules = promptSchedules;
 
+  // D-402 slices E4b, E4c — the chat kept for each run a hand-off stopped: opened by "Carry on in Chat",
+  // and read by "Make a recipe" in that chat.
+  const runCarryOnStore = createRunCarryOnStore(db);
   const chatDeps: ChatRpcDeps = {
     store: chatStore,
+    // D-405 slice 3 — "Not now" on a hint under an answer.
+    hints: chatHintStore,
+    // D-405 slice 4 — the Set up page: mail, a calendar, files, connected or not.
+    setupFeatures: setupFeatureConnected,
+    // D-406 — an email the owner picked for a message: the stored email in its mailbox, with the sender, subject
+    // and date it holds, or null when the mailbox or the email is gone (`chat.send` then refuses in words).
+    pickedMail: (ref) => {
+      const record = getCollectionRegistry()?.get('mail', ref.slug)?.get(ref.record_id);
+      if (record === null || record === undefined) return null;
+      return chatMailRefsOf([{ slug: ref.slug, record_id: ref.record_id, from: record.hot_fields.from,
+        subject: record.hot_fields.subject, received_at: record.received_at }])[0] ?? null;
+    },
+    // D-406 (Q4) — a calendar event the owner picked: the stored event in its calendar, with its title and start,
+    // or null when the calendar or the event is gone (`chat.send` then refuses in words).
+    pickedCalendar: (ref) => {
+      const collection = getCollectionRegistry()?.get('calendar', ref.slug) as Partial<CalendarCollection> | undefined;
+      const row = collection?.table?.getByRecordId(ref.record_id) ?? null;
+      if (row === null) return null;
+      return chatCalendarRefsOf([{ slug: ref.slug, record_id: ref.record_id, title: row.hot.summary, start_at: row.hot.start_at }])[0] ?? null;
+    },
     connectionMcpStore,
     // D-228 slice 4 — the picker's visibility predicate, off the SAME coverage
     // closure the chat catalog and the Tier-3 retirement use. A peer surfaces in
@@ -2331,6 +2580,8 @@ export const composeChatOrchestrator = (
     executionCaseLifecycle: executionCases.lifecycle,
     executionSpanAnchorStore: getSpanAnchorDeps().store,
     deleteSessionExecutionCases: executionCases.deleteSession,
+    // D-348 — and the chain evidence its requests left.
+    deleteSessionChainEvidence: (session_id) => { getExecuteDeps()?.chainEvidence?.deleteSession(session_id); },
     // D-219 item 2 — the owner's view of their own corpus, and its unlearn.
     // Both go straight to the case store / compiler: there is no experiment
     // gate here and there must not be one. The owner may always see what was
@@ -2411,6 +2662,63 @@ export const composeChatOrchestrator = (
             ...checked.issues.filter((issue) => issue.severity === 'error').map((issue) => issue.message)] };
       },
     },
+    // D-402 slice A4 — "Make a recipe" on a request: its plan, from the process's recorder (the
+    // execute handler and the DOM adapter record into it), kept in Kitchen as Recued's.
+    executionRequestRecipe: makeRequestRecipeDraft({
+      flows: processBrowserFlows,
+      // D-402 slice E4c — in a chat that carries on a run a hand-off stopped, the way it took is added to
+      // the run's recipe: the chat's run, and the recipe as installed.
+      carryOn: (session_id) => runCarryOnStore.bySession(session_id),
+      recipes: (recipe_id) => recipeStore.get(recipe_id) ?? undefined,
+      // D-402 slice D2 — the owner's zone, for a typed day relative to the run's day.
+      timeZone: () => getExecuteDeps()?.ownerTimeZone?.(),
+      // D-402 slice H2 — the paired browsers, so a draft's browser settings hold their lasting ids.
+      browsers: () => getExecutorConfig()?.bridgeDispatcherRef?.()?.listBrowsers?.(),
+      // 2026-11-21 (task K, live) — the reader a document read uses for a stored file now: a read the chat
+      //   answered from text a reader had kept ran none, so its own record cannot say which made that text.
+      documentReader: (record_id) => {
+        const file = getCollectionRegistry()?.get('file', DATA_FILE_RECEIVED_SLUG)?.get(record_id);
+        if (!file) return undefined;
+        const { converter } = documentReadPlan(chatToolHandlerDeps, file);
+        return converter !== undefined && isDocumentReader(converter) ? `recued-core.${converter}.${DOCUMENT_READER_OPS[converter]}` : undefined;
+      },
+      // D-402 slice E2 (§6.3) — the owner's models, through the chat's privacy layer, label where the
+      // request used judgement.
+      labelPlan: (input) => labelPlan(privateAiCall, input),
+      resolveRoot: (session_id, turn_id) => executionCases.compiler.resolveRootForClose(session_id, turn_id),
+      kitchenDrafts: createKitchenDraftStore(db),
+      // D-402 slices B2b, B4 — the request's last reply, whose values the recipe reads out, and the
+      // owner's words in it, whose values were context.
+      answerOf: async (session_id, inRequest) => {
+        const messages = (await chatStore.listMessages(session_id))
+          .filter((message) => message.turn_id !== undefined && inRequest(message.turn_id));
+        const reply = messages.filter((message) => message.role === 'assistant').at(-1)?.content;
+        const request = messages.filter((message) => message.role === 'user').map((message) => message.content).join('\n');
+        return { ...(reply !== undefined ? { reply } : {}), ...(request !== '' ? { request } : {}) };
+      },
+    }),
+    // D-404 slice B1 — of the steps under chat answers, the ones that landed: a pack installed, a
+    // recipe installed, a thing of the type (any type of its name) in Yours, active or lent, or (D-405
+    // slice 2) a mailbox, a calendar or a file source connected.
+    nextStepsLanded: (steps) => {
+      const packs = installedPackSlugs();
+      const types = assetTypes(db).list();
+      return steps.filter((step) => step.kind === 'pack' ? packs.has(step.id)
+        : step.kind === 'recipe' ? recipeStore.get(step.id) !== null
+          : step.kind === 'feature' ? isChatSetupFeature(step.id) && setupFeatureConnected(step.id) === true
+            : hasThingOfTypes(typeIdsNamedLike(step.id, types)));
+    },
+    // D-402 slice E4b — "Carry on in Chat" from a run a hand-off stopped: the run's record, the
+    // recipe's name, and the chat kept for the run.
+    executionCarryOn: makeRunCarryOn({
+      runs: { get: async (run_id) => (auditLog !== undefined ? auditLog.get(run_id) : null) },
+      recipeName: (recipe_id) => {
+        const name: unknown = recipeStore.get(recipe_id)?.metadata?.name;
+        return typeof name === 'string' && name.trim() !== '' ? name.trim() : undefined;
+      },
+      store: runCarryOnStore,
+      now: () => Date.now(),
+    }),
     executionCaseForget: async (case_id) => {
       const result = await executionCases.compiler.forgetCase(case_id);
       return {
@@ -2639,8 +2947,8 @@ export const composeChatOrchestrator = (
       // an inbound token; every tool still defaults deny per-token, and a door
       // reaches a recipe only once the owner ticks it. Showing a choice is not
       // making it.
-      // Tier 3 and chat's `recipe.stop` stay off the door (`isMcpWireRegistryTool`):
-      // the wire lists neither, so a grant for one would save a no-op.
+      // Tier 3, chat's `recipe.stop` and the owner's `recipe.stop_allowing` stay off the door
+      // (`isMcpWireRegistryTool`): the wire lists none of them, so a grant for one would save a no-op.
       const registryEntries = [
         ...internalRegistry.list().filter((entry) => entry.tier !== 2 && isMcpWireRegistryTool(entry)),
         ...buildTier2Catalog(
@@ -2789,6 +3097,11 @@ export const composeChatOrchestrator = (
     inboundTokenStore,
     internalRegistry,
     onTier1Held: markWaitingSaves,
+    runApprovedTier1Write: createRunApprovedTier1Write({
+      plans: planApprovalStoreShared,
+      getResourceReview: () => getExecuteDeps()?.executorConfig.resourceReview,
+      broadcast,
+    }),
     orchestrator,
     chatDeps,
     executionCaseLifecycle: executionCases.lifecycle,

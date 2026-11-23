@@ -94,6 +94,7 @@ export const createCollectionOAuthAppSwitchPanel = (deps: {
         : 'The saved OAuth app was kept. ' + (outcome.reason === 'changed' ? 'The account or app changed; refresh and review again.' : outcome.reason === 'interrupted' ? 'The server restarted during verification; start a fresh review.' : 'Account or permission checks failed.')) + '</p>' : '')
       + (error ? '<p role="alert">' + e(error) + '</p>' : '')
       + (busy ? '<p role="status">' + (applying ? 'Applying the reviewed app switch…' : 'Checking sign-in and account access…') + '</p>' : '')
+      + '<div class="accounts-oauth-app-actions">'
       + (attempt ? button('status', 'Check result', busy)
         : deps.bulk && outcome ? ''
         : review ? (deps.bulk ? review.expires_at <= now() ? '<p>This review expired. Refresh and authorize again before applying.</p>' + button('refresh', 'Refresh account review', busy)
@@ -104,7 +105,7 @@ export const createCollectionOAuthAppSwitchPanel = (deps: {
       + (deps.bulk && deps.targetApp && outcome && outcome.app_id !== deps.targetApp.id
         ? '<p>This earlier switch used a different saved app. Choose accounts again to review a move to the selected bulk destination.</p>' : '')
       + (deps.bulk ? '' : button('apps', 'Manage saved apps', busy || !!attempt)
-        + button('close', busy && !applying ? 'Cancel sign-in' : 'Close', applying)) + '</section>';
+        + button('close', busy && !applying ? 'Cancel sign-in' : 'Close', applying)) + '</div></section>';
     deps.updated?.();
   };
   const close = () => {

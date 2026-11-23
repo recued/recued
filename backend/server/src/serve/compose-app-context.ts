@@ -1,6 +1,6 @@
 import { buildPackOpResolution } from '../pack-inventory.js';
 import { lowerOpStepRecipe } from '@recued/recipes';
-import { RpcError } from '@recued/contracts';
+import { RpcError, WEBHOOK_PAIRED_CONNECTION_KINDS } from '@recued/contracts';
 import { createCollectionOAuthSources } from '../collection-oauth-sources.js';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
 import { dirname, join, resolve } from 'node:path';
@@ -386,7 +386,7 @@ export interface AppContext extends LlmSubstrate {
   /** D-338 — makes a notification to a linked messenger a notice in that chat. */
   chatNoticesRef: import('@recued/notification').RemoteNoticeHook | undefined;
   /** D-343 slice 4 — the chat's way to open a conversation holding a notice, for Yours' Close the day. */
-  openNoticeConversationRef: ((notice: { title: string; text: string }) => Promise<{ session_id: string; message_id: string }>) | undefined;
+  openNoticeConversationRef: import('../chat-notices.js').NoticeConversationOpener | undefined;
   chatConnectionMcpStoreRef: ChatConnectionMcpStore | undefined;
   chatInboundTokenStoreRef: ChatInboundTokenStore | undefined;
   chatOrchestratorRef: ChatOrchestrator | undefined;
@@ -414,6 +414,7 @@ export interface AppContext extends LlmSubstrate {
   /** D-336 slice O's open item — the chat bundle's "a Tier-1 call was held" step, which marks
    *  the earlier saves of the same fact still waiting. */
   tier1HeldRef?: ChatOrchestratorBundle['onTier1Held'];
+  tier1ApprovedRunRef?: ChatOrchestratorBundle['runApprovedTier1Write'];
   ownerDocumentSearch?: ChatOrchestratorBundle['ownerDocumentSearch'];
   /** D-177 N.11 rule 5 (slice D) — the chat bundle's per-session
    *  forwarded-sender candidate index, retained so the execution-context
@@ -1227,8 +1228,16 @@ export const composeAppContext = (
     // can disappear; any persistence failure preserves both sides. A later
     // same-name enrollment cannot clear the durable recovery latch.
     connectionStoreRef.addBeforeDelete((kind, name) => {
-      if (kind === 'api') {
-        webhookIngressStoreRef!.failCloseForDeletedPairedConnection(name);
+      // D-201 Slice 10AW (10AS finding 8) — of each kind a webhook pairs with:
+      // a Telegram bot is a notification connection, and its deletion closed
+      // nothing while the webhook went on taking messages.
+      // D-201 Slice 10BB (10AY finding 14) — read from the profiles' own list,
+      // so a kind a profile pairs with later is covered here too. A webhook
+      // under that name whose profile or mode cannot be read refuses the
+      // deletion of either kind: which one it pairs with is unknown, so its
+      // connection is kept rather than its webhook left open.
+      if ((WEBHOOK_PAIRED_CONNECTION_KINDS as readonly string[]).includes(kind)) {
+        webhookIngressStoreRef!.failCloseForDeletedPairedConnection(name, kind as typeof WEBHOOK_PAIRED_CONNECTION_KINDS[number]);
       }
       return undefined;
     });
@@ -1239,6 +1248,21 @@ export const composeAppContext = (
       getEncryptionKey: keys!.keyProvider('webhook_payloads'),
       hasDispatchTarget: (ingressId, eventType) =>
         webhookConsumerStoreRef!.hasDispatchTarget(ingressId, eventType),
+      // D-201 Slice 10A — handed-off recipe work that has not run still counts
+      // against the intake backlog the outbox used to bound on its own.
+      countActiveConsumerWork: () => webhookConsumerStoreRef!.countActiveDispatchEvents(),
+      // D-201 Slice 10F — an event dead letter's targets, in its decision's own
+      // transaction: closing it cancels them, trying it again gives them fresh
+      // attempts (refused when no recipe takes the event now), and retention
+      // removes the finished ones of the events it deletes.
+      onDeadLetterEventClosed: (eventId) => {
+        webhookConsumerStoreRef!.closeTargetsOfClosedEvent(eventId);
+      },
+      onDeadLetterEventRequeued: (eventId) => {
+        webhookConsumerStoreRef!.refreshTargetsOfRequeuedEvent(eventId);
+      },
+      eventHasCurrentRecipe: (eventId) => webhookConsumerStoreRef!.eventHasCurrentRecipe(eventId),
+      pruneConsumerRows: () => { webhookConsumerStoreRef!.pruneDispatchesWithoutEvents(); },
       // D-201 Slice 9BP — registry metadata is an explicit production boot
       // requirement. The store validates its effective configured retention
       // against every profile before creating or serving durable delivery rows.
@@ -1846,6 +1870,7 @@ export const composeAppContext = (
     executionCaseSourcePruner: chatBundle?.executionCaseSourcePruner,
     internalRegistryRef: chatBundle?.internalRegistry,
     ...(chatBundle?.onTier1Held !== undefined ? { tier1HeldRef: chatBundle.onTier1Held } : {}),
+    ...(chatBundle?.runApprovedTier1Write !== undefined ? { tier1ApprovedRunRef: chatBundle.runApprovedTier1Write } : {}),
     ownerDocumentSearch: chatBundle?.ownerDocumentSearch,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
     /** D-137 — writes the result half of a paired tool call when a held run

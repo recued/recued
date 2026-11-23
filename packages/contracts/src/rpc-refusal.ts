@@ -91,6 +91,7 @@ export const RPC_REFUSAL_RECIPE_CODES: Readonly<Record<string, RecipeErrorCode>>
   unavailable: 'SERVER_ERROR',
   unsupported: 'BAD_INPUT', // "only your own memory (user_self) is editable"; the rest are Settings
   webhook_registration_unconfirmed: 'ACTION_DELIVERY_UNCERTAIN', // status computed at the site
+  webhook_registration_event_types_unknown: 'BAD_INPUT', // 409, but the owner's event names are what to change
 
   // ── A specific recipe code says it better than the status ──
   ai_invalid_output: 'AI_OUTPUT_INVALID', // 502

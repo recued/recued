@@ -8,6 +8,7 @@ import {
 import { handleAuditExportPage } from '../audit-export-handler.js';
 import { ensureMemorySchema } from '../memory-schema.js';
 import {
+  WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS,
   WebhookIngressStoreError,
   createWebhookIngressStore,
   type WebhookIngressStore,
@@ -1016,7 +1017,7 @@ describe('D-201 Slice 1 webhook ingress store', () => {
     });
     store.enable(manual.ingress_id);
 
-    expect(store.failCloseForDeletedPairedConnection('shared-api')).toBe(2);
+    expect(store.failCloseForDeletedPairedConnection('shared-api', 'api')).toBe(2);
     expect(store.get(managed.ingress_id)).toMatchObject({
       intake_state: 'disabled',
       registration_state: 'drifted',
@@ -1060,7 +1061,7 @@ describe('D-201 Slice 1 webhook ingress store', () => {
     store.confirmOperationBoundReadiness(row.ingress_id);
     store.enable(row.ingress_id);
 
-    store.failCloseForDeletedPairedConnection('provider-api');
+    store.failCloseForDeletedPairedConnection('provider-api', 'api');
     expect(() => store.enable(row.ingress_id)).toThrow('explicit rebind');
     expect(store.recoverDeletedOperationBoundConnection(
       row.ingress_id,
@@ -1109,7 +1110,7 @@ describe('D-201 Slice 1 webhook ingress store', () => {
       WHERE ingress_id = ?
     `).run(corrupt.ingress_id);
     connections.addBeforeDelete((kind, name) => {
-      if (kind === 'api') store.failCloseForDeletedPairedConnection(name);
+      if (kind === 'api') store.failCloseForDeletedPairedConnection(name, kind);
       return undefined;
     });
 
@@ -1139,5 +1140,575 @@ describe('D-201 Slice 1 webhook ingress store', () => {
     expect(db.prepare(`
       SELECT state FROM webhook_credential_versions
     `).pluck().all()).toEqual(['retired']);
+  });
+});
+
+describe('D-201 Slices 10K + 10O — every success, rotation, rebind and cleanup clears the unknown-names codes', () => {
+  const CODES = [
+    'managed_registration_event_types_unknown',
+    'managed_registration_event_types_unrestored',
+  ] as const;
+  const setCode = (db: Database.Database, ingressId: string, code: string): void => {
+    db.prepare(`
+      UPDATE webhook_ingresses SET last_error_code = ?, last_error_event_types_json = '["mesage"]'
+      WHERE ingress_id = ?
+    `).run(code, ingressId);
+  };
+  const codeOf = (store: WebhookIngressStore, ingressId: string) => store.get(ingressId)?.last_error_code;
+
+  for (const code of CODES) {
+    it(`${code}: a rotation, a committed create and a confirmed read-back`, async () => {
+      const { db, store } = makeStore();
+      const ingress = createManagedStripe(store);
+      const endpointUrl = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+      const first = store.prepareManagedRegistration(ingress.ingress_id);
+      setCode(db, ingress.ingress_id, code);
+      const rotated = store.rotateManagedRegistrationAttempt(first.expected);
+      expect(codeOf(store, ingress.ingress_id)).toBeNull();
+      setCode(db, ingress.ingress_id, code);
+      await store.commitManagedRegistrationCreate({
+        expected: rotated.expected,
+        remote_endpoint_id: 'we_1234567890abcdef',
+        endpoint_url: endpointUrl,
+        credentials: { endpoint_secret: 'whsec_managed-one-time' },
+        requires_handshake: false,
+      });
+      expect(codeOf(store, ingress.ingress_id)).toBeNull();
+      setCode(db, ingress.ingress_id, code);
+      const current = store.prepareManagedRegistration(ingress.ingress_id);
+      store.confirmManagedRegistrationReadBack({
+        expected: current.expected,
+        remote_endpoint_id: 'we_1234567890abcdef',
+        endpoint_url: endpointUrl,
+        requires_handshake: false,
+      });
+      expect(codeOf(store, ingress.ingress_id)).toBeNull();
+    });
+
+    it(`${code}: a rebind that needs cleanup, its cleanup, and a rebind that needs none`, async () => {
+      const { db, store } = makeStore();
+      const ingress = createManagedStripe(store);
+      const prepared = store.prepareManagedRegistration(ingress.ingress_id);
+      await store.commitManagedRegistrationCreate({
+        expected: prepared.expected,
+        remote_endpoint_id: 'we_accountcutover12345',
+        endpoint_url: `https://hooks.example/v1/webhooks/${ingress.public_id}`,
+        credentials: { endpoint_secret: 'whsec_account-cutover' },
+        requires_handshake: false,
+      });
+      store.enable(ingress.ingress_id);
+      setCode(db, ingress.ingress_id, code);
+      expect(store.prepareManagedConnectionRebind({
+        expected: store.snapshotManagedRegistration(ingress.ingress_id).expected,
+        paired_connection_id: 'stripe-test-other-account',
+      })).toMatchObject({ cleanup_required: true });
+      expect(codeOf(store, ingress.ingress_id)).toBeNull();
+      setCode(db, ingress.ingress_id, code);
+      const cleanup = store.prepareManagedRegistrationCleanup(ingress.ingress_id, 'rebind');
+      store.completeManagedRegistrationCleanup({ expected: cleanup.expected, intent: 'rebind' });
+      expect(codeOf(store, ingress.ingress_id)).toBeNull();
+      setCode(db, ingress.ingress_id, code);
+      expect(store.prepareManagedConnectionRebind({
+        expected: store.snapshotManagedRegistration(ingress.ingress_id).expected,
+        paired_connection_id: 'stripe-test-third-account',
+      })).toMatchObject({ cleanup_required: false });
+      expect(codeOf(store, ingress.ingress_id)).toBeNull();
+    });
+  }
+});
+
+describe('D-201 Slice 10Z — a create that may still land, as the store keeps it', () => {
+  it('keeps one with its connection and canonical address, oldest first, and settling twice is a no-op', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const first = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    const second = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-other', endpoint_url: url });
+    expect(first.create_id).toMatch(/^whu_[0-9a-f]{32}$/);
+    expect(store.listUnsettledCreates()).toEqual([first, second]);
+    expect(second.sent_at).toBeGreaterThan(first.sent_at);
+    store.settleUnsettledCreate(first.create_id);
+    store.settleUnsettledCreate(first.create_id);
+    expect(store.listUnsettledCreates()).toEqual([second]);
+  });
+
+  it('refuses one without a connection, at another address, or for no webhook', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    for (const input of [
+      { ingress_id: ingress.ingress_id, connection_id: ' ', endpoint_url: url },
+      { ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: 'https://hooks.example/v1/webhooks/someoneElse_0123456789abcdef' },
+      { ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: `http://hooks.example/v1/webhooks/${ingress.public_id}` },
+    ]) {
+      expect(() => store.recordUnsettledCreate(input)).toThrow(expect.objectContaining({ code: 'invalid_state' }));
+    }
+    expect(() => store.recordUnsettledCreate({ ingress_id: 'whi_missing', connection_id: 'stripe-test', endpoint_url: url }))
+      .toThrow(expect.objectContaining({ code: 'not_found' }));
+    expect(store.listUnsettledCreates()).toEqual([]);
+  });
+
+  it('stores a refusal on a default it was on already apart from one it could not be put back from, its names beside it', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    store.prepareManagedRegistration(ingress.ingress_id);
+    const mark = (options: { left_on_default?: boolean; was_on_default?: boolean }) => {
+      store.markManagedRegistrationEventTypesUnknown(
+        store.snapshotManagedRegistration(ingress.ingress_id).expected,
+        ['mesage'],
+        options,
+      );
+      return store.get(ingress.ingress_id)!;
+    };
+    expect(mark({ left_on_default: true, was_on_default: true })).toMatchObject({
+      last_error_code: 'managed_registration_event_types_on_default',
+      last_error_event_types: ['mesage'],
+    });
+    expect(mark({ left_on_default: true })).toMatchObject({
+      last_error_code: 'managed_registration_event_types_unrestored',
+      last_error_event_types: ['mesage'],
+    });
+    // Without left_on_default, was_on_default says nothing.
+    expect(mark({ was_on_default: true }).last_error_code).toBe('managed_registration_event_types_unknown');
+  });
+
+  // D-201 Slice 10AD (10AA finding 26) — the other four of its six sites: a
+  // new attempt, a commit, and a rebind with and without a cleanup.
+  it('a new attempt, a commit, and a rebind either way clear a stored on-default refusal too', async () => {
+    const onDefault = (store: ReturnType<typeof makeStore>['store'], id: string) => store
+      .markManagedRegistrationEventTypesUnknown(
+        store.snapshotManagedRegistration(id).expected,
+        ['mesage'],
+        { left_on_default: true, was_on_default: true },
+      ).last_error_code;
+    // A new attempt, nothing committed.
+    {
+      const { store } = makeStore();
+      const id = createManagedStripe(store).ingress_id;
+      store.prepareManagedRegistration(id);
+      expect(onDefault(store, id)).toBe('managed_registration_event_types_on_default');
+      store.rotateManagedRegistrationAttempt(store.snapshotManagedRegistration(id).expected);
+      expect(store.get(id)!.last_error_code).toBeNull();
+    }
+    // A commit, and a rebind that has an endpoint to clean up.
+    {
+      const { store } = makeStore();
+      const ingress = createManagedStripe(store);
+      const id = ingress.ingress_id;
+      store.prepareManagedRegistration(id);
+      expect(onDefault(store, id)).toBe('managed_registration_event_types_on_default');
+      const committed = await store.commitManagedRegistrationCreate({
+        expected: store.snapshotManagedRegistration(id).expected,
+        remote_endpoint_id: 'we_0000000000000002',
+        endpoint_url: `https://hooks.example/v1/webhooks/${ingress.public_id}`,
+        credentials: { endpoint_secret: 'whsec_StoreFixtureSecret123' },
+        requires_handshake: false,
+      });
+      expect(committed.last_error_code).toBeNull();
+      expect(onDefault(store, id)).toBe('managed_registration_event_types_on_default');
+      const rebound = store.prepareManagedConnectionRebind({
+        expected: store.snapshotManagedRegistration(id).expected,
+        paired_connection_id: 'stripe-other',
+      });
+      expect(rebound.cleanup_required).toBe(true);
+      expect(rebound.ingress.last_error_code).toBeNull();
+    }
+    // A rebind with nothing to clean up: no attempt made, nothing committed.
+    {
+      const { store } = makeStore();
+      const id = createManagedStripe(store).ingress_id;
+      expect(onDefault(store, id)).toBe('managed_registration_event_types_on_default');
+      const rebound = store.prepareManagedConnectionRebind({
+        expected: store.snapshotManagedRegistration(id).expected,
+        paired_connection_id: 'stripe-other',
+      });
+      expect(rebound.cleanup_required).toBe(false);
+      expect(rebound.ingress.last_error_code).toBeNull();
+    }
+  });
+
+  it('a confirmation, and a switch-off whose cleanup completes, clear a stored on-default refusal as they clear the others', async () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const id = ingress.ingress_id;
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const remoteId = 'we_0000000000000001';
+    await store.commitManagedRegistrationCreate({
+      expected: store.prepareManagedRegistration(id).expected,
+      remote_endpoint_id: remoteId,
+      endpoint_url: url,
+      credentials: { endpoint_secret: 'whsec_StoreFixtureSecret123' },
+      requires_handshake: false,
+    });
+    const onDefault = () => store.markManagedRegistrationEventTypesUnknown(
+      store.snapshotManagedRegistration(id).expected,
+      ['mesage'],
+      { left_on_default: true, was_on_default: true },
+    ).last_error_code;
+    expect(onDefault()).toBe('managed_registration_event_types_on_default');
+    expect(store.confirmManagedRegistrationReadBack({
+      expected: store.snapshotManagedRegistration(id).expected,
+      remote_endpoint_id: remoteId,
+      endpoint_url: url,
+      requires_handshake: false,
+    }).last_error_code).toBeNull();
+    store.enable(id);
+    expect(onDefault()).toBe('managed_registration_event_types_on_default');
+    expect(store.disable(id)).toMatchObject({ registration_state: 'cleanup_pending' });
+    expect(store.completeManagedRegistrationCleanup({
+      expected: store.prepareManagedRegistrationCleanup(id, 'disable').expected,
+      intent: 'disable',
+    }).last_error_code).toBeNull();
+  });
+});
+
+describe('D-201 Slice 10AH — what the store keeps of a stray and of its failed searches (10AE findings 8 and 9)', () => {
+  it('keeps a stray a rebind found apart from a create, and counts the strays of each webhook', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const create = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    const stray = store.recordUnsettledCreate({
+      ingress_id: ingress.ingress_id, connection_id: 'stripe-other', endpoint_url: url, kind: 'stray',
+    });
+    expect(create).toMatchObject({ kind: 'create', unreached_ms: 0, unreached_last_at: null, unreached_since: null });
+    expect(stray).toMatchObject({ kind: 'stray' });
+    expect(store.listUnsettledCreates()).toEqual([create, stray]);
+    expect(store.countStrayEndpoints(ingress.ingress_id)).toBe(1);
+    expect(store.countStrayEndpoints('whi_ffffffffffffffffffffffffffffffff')).toBe(0);
+    store.settleUnsettledCreate(stray.create_id);
+    expect(store.countStrayEndpoints(ingress.ingress_id)).toBe(0);
+  });
+
+  it('notes how long its searches have failed, and a search that reaches it clears that', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const record = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    store.noteUnsettledCreateUnreached(record.create_id, 5_000, 0);
+    store.noteUnsettledCreateUnreached(record.create_id, 9_000, 4_000);
+    expect(store.listUnsettledCreates()[0]).toMatchObject({
+      unreached_since: 5_000, unreached_ms: 4_000, unreached_last_at: 9_000,
+    });
+    store.noteUnsettledCreateReached(record.create_id);
+    expect(store.listUnsettledCreates()[0]).toMatchObject({
+      unreached_since: null, unreached_ms: 0, unreached_last_at: null,
+    });
+  });
+
+  it('opens a table from before 10AH in place: a run of failures counts on from its first failed search', () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    const options = {
+      now: () => 1_800_000_000_000,
+      getEncryptionKey: () => KEY,
+      newIngressId: () => 'whi_0123456789abcdef0123456789abcdef',
+      newPublicId: () => 'opaquePublicId_0123456789abcdef',
+      newCredentialSetRef: () => 'whc_0123456789abcdef0123456789abcdef',
+    };
+    const ingress = createManagedStripe(createWebhookIngressStore(db, options));
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    // The table as 10AD left it, with one record whose searches began to fail.
+    db.exec(`
+      DROP TABLE webhook_registration_unsettled_creates;
+      CREATE TABLE webhook_registration_unsettled_creates (
+        create_id TEXT PRIMARY KEY,
+        ingress_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        endpoint_url TEXT NOT NULL,
+        sent_at INTEGER NOT NULL,
+        unreached_since INTEGER,
+        FOREIGN KEY (ingress_id) REFERENCES webhook_ingresses(ingress_id) ON DELETE CASCADE
+      );
+    `);
+    db.prepare(`
+      INSERT INTO webhook_registration_unsettled_creates VALUES (?, ?, 'stripe-test', ?, 1000, 7000)
+    `).run('whu_0123456789abcdef0123456789abcdef', ingress.ingress_id, url);
+    const reopened = createWebhookIngressStore(db, options);
+    expect(reopened.listUnsettledCreates()).toEqual([{
+      create_id: 'whu_0123456789abcdef0123456789abcdef',
+      ingress_id: ingress.ingress_id,
+      connection_id: 'stripe-test',
+      endpoint_url: url,
+      sent_at: 1000,
+      kind: 'create',
+      remote_endpoint_id: null,
+      unreached_since: 7000,
+      unreached_ms: 0,
+      unreached_last_at: 7000,
+    }]);
+    // Opened again: nothing changes.
+    expect(createWebhookIngressStore(db, options).listUnsettledCreates()).toEqual(reopened.listUnsettledCreates());
+  });
+});
+
+describe('D-201 Slice 10AL — the sweep\'s edges in the store (10AI findings 18, 20 and 21)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const storeOptions = () => ({
+    now: () => 1_800_000_000_000,
+    getEncryptionKey: () => KEY,
+    newIngressId: () => 'whi_0123456789abcdef0123456789abcdef',
+    newPublicId: () => 'opaquePublicId_0123456789abcdef',
+    newCredentialSetRef: () => 'whc_0123456789abcdef0123456789abcdef',
+  });
+  const stripeStray = (store: ReturnType<typeof makeStore>['store'], ingress: { ingress_id: string; public_id: string }, id: string, connection = 'stripe-other') =>
+    store.recordUnsettledCreate({
+      ingress_id: ingress.ingress_id,
+      connection_id: connection,
+      endpoint_url: `https://hooks.example/v1/webhooks/${ingress.public_id}`,
+      kind: 'stray',
+      remote_endpoint_id: id,
+    });
+
+  it("a run of failures a server before 10AH ended, or began again after, counts from nothing (finding 18)", () => {
+    const { store, db } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const record = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    store.noteUnsettledCreateUnreached(record.create_id, 5_000, 0);
+    store.noteUnsettledCreateUnreached(record.create_id, 5_000 + 166 * HOUR, 166 * HOUR);
+    // That server's reached note clears `unreached_since` alone.
+    db.prepare('UPDATE webhook_registration_unsettled_creates SET unreached_since = NULL WHERE create_id = ?')
+      .run(record.create_id);
+    expect(store.listUnsettledCreates()[0]).toMatchObject({
+      unreached_since: null, unreached_ms: 0, unreached_last_at: null,
+    });
+    // Then its failed search notes when the next run began, and nothing else.
+    const began = 5_000 + 170 * HOUR;
+    db.prepare('UPDATE webhook_registration_unsettled_creates SET unreached_since = ? WHERE create_id = ?')
+      .run(began, record.create_id);
+    expect(store.listUnsettledCreates()[0]).toMatchObject({
+      unreached_since: began, unreached_ms: 0, unreached_last_at: began,
+    });
+    // A run this server noted reads as it was.
+    store.noteUnsettledCreateUnreached(record.create_id, began + HOUR, HOUR);
+    expect(store.listUnsettledCreates()[0]).toMatchObject({
+      unreached_since: began, unreached_ms: HOUR, unreached_last_at: began + HOUR,
+    });
+  });
+
+  it('keeps one record per stray, taken up again when it is found again, and counts each once (finding 20)', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const first = stripeStray(store, ingress, 'we_stray_one');
+    store.noteUnsettledCreateUnreached(first.create_id, 5_000, 0);
+    store.noteUnsettledCreateUnreached(first.create_id, 9_000, 4_000);
+    store.giveUpStrayEndpoint(first.create_id, 9_000);
+    // A rebind tried again finds it again, through another connection.
+    const again = stripeStray(store, ingress, 'we_stray_one', 'stripe-third');
+    expect(again).toMatchObject({
+      create_id: first.create_id, connection_id: 'stripe-third', sent_at: first.sent_at,
+      remote_endpoint_id: 'we_stray_one', unreached_ms: 0, unreached_last_at: null, unreached_since: null,
+    });
+    expect(store.listUnsettledCreates()).toEqual([again]);
+    expect(store.countStrayEndpoints(ingress.ingress_id)).toBe(1);
+    expect(store.countGivenUpStrayEndpoints(ingress.ingress_id)).toBe(0);
+    // Another stray is another record.
+    stripeStray(store, ingress, 'we_stray_two');
+    expect(store.countStrayEndpoints(ingress.ingress_id)).toBe(2);
+    // The sweep's note of one standing records it only when none is kept.
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    store.noteStrayEndpointStanding({
+      ingress_id: ingress.ingress_id, connection_id: 'stripe-other', endpoint_url: url, remote_endpoint_id: 'we_stray_two',
+    });
+    store.noteStrayEndpointStanding({
+      ingress_id: ingress.ingress_id, connection_id: 'stripe-other', endpoint_url: url, remote_endpoint_id: 'we_stray_three',
+    });
+    expect(store.listUnsettledCreates().map((record) => record.remote_endpoint_id))
+      .toEqual(['we_stray_one', 'we_stray_two', 'we_stray_three']);
+    // A read that finds one gone settles it.
+    store.settleStrayEndpoint(ingress.ingress_id, 'we_stray_two');
+    expect(store.countStrayEndpoints(ingress.ingress_id)).toBe(2);
+    // Only a stray names its endpoint, and an id is short and plain.
+    expect(() => store.recordUnsettledCreate({
+      ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url, remote_endpoint_id: 'we_x',
+    })).toThrow(expect.objectContaining({ code: 'invalid_state' }));
+    expect(() => stripeStray(store, ingress, 'we stray/with spaces'))
+      .toThrow(expect.objectContaining({ code: 'invalid_state' }));
+  });
+
+  it('keeps a stray given up, unswept, for the owner to be told, until they say it is gone or a read finds it gone (finding 21)', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const create = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    const one = stripeStray(store, ingress, 'we_stray_one');
+    const two = stripeStray(store, ingress, 'we_stray_two');
+    store.giveUpStrayEndpoint(one.create_id, 9_000);
+    store.giveUpStrayEndpoint(two.create_id, 9_000);
+    // A create is never kept as given up.
+    store.giveUpStrayEndpoint(create.create_id, 9_000);
+    expect(store.listUnsettledCreates()).toEqual([create]);
+    expect(store.countStrayEndpoints(ingress.ingress_id)).toBe(0);
+    expect(store.countGivenUpStrayEndpoints(ingress.ingress_id)).toBe(2);
+    // A read that finds one gone settles it, given up as it is.
+    store.settleStrayEndpoint(ingress.ingress_id, 'we_stray_one');
+    expect(store.countGivenUpStrayEndpoints(ingress.ingress_id)).toBe(1);
+    // The owner says the rest are gone: only those go.
+    const standing = stripeStray(store, ingress, 'we_stray_three');
+    expect(store.dismissGivenUpStrayEndpoints(ingress.ingress_id)).toBe(1);
+    expect(store.countGivenUpStrayEndpoints(ingress.ingress_id)).toBe(0);
+    expect(store.listUnsettledCreates()).toEqual([create, standing]);
+    expect(store.dismissGivenUpStrayEndpoints(ingress.ingress_id)).toBe(0);
+  });
+
+  it('opens a table from 10AH in place, its strays counted once each', () => {
+    const { store, db } = makeStore();
+    const ingress = createManagedStripe(store);
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    // The table as 10AH left it: one stray recorded twice, as a rebind tried
+    // again recorded it.
+    db.exec(`
+      DROP TABLE webhook_registration_unsettled_creates;
+      CREATE TABLE webhook_registration_unsettled_creates (
+        create_id TEXT PRIMARY KEY,
+        ingress_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        endpoint_url TEXT NOT NULL,
+        sent_at INTEGER NOT NULL,
+        unreached_since INTEGER,
+        kind TEXT NOT NULL DEFAULT 'create',
+        unreached_ms INTEGER NOT NULL DEFAULT 0,
+        unreached_last_at INTEGER,
+        FOREIGN KEY (ingress_id) REFERENCES webhook_ingresses(ingress_id) ON DELETE CASCADE
+      );
+    `);
+    for (const id of ['whu_0123456789abcdef0123456789abcdea', 'whu_0123456789abcdef0123456789abcdeb']) {
+      db.prepare(`
+        INSERT INTO webhook_registration_unsettled_creates (create_id, ingress_id, connection_id, endpoint_url, sent_at, kind)
+        VALUES (?, ?, 'stripe-test', ?, 1000, 'stray')
+      `).run(id, ingress.ingress_id, url);
+    }
+    const reopened = createWebhookIngressStore(db, storeOptions());
+    expect(reopened.listUnsettledCreates()).toEqual([
+      expect.objectContaining({ kind: 'stray', remote_endpoint_id: null }),
+      expect.objectContaining({ kind: 'stray', remote_endpoint_id: null }),
+    ]);
+    // A record from before 10AL names no endpoint: each counts as itself.
+    expect(reopened.countStrayEndpoints(ingress.ingress_id)).toBe(2);
+    // Opened again: nothing changes.
+    expect(createWebhookIngressStore(db, storeOptions()).listUnsettledCreates()).toEqual(reopened.listUnsettledCreates());
+  });
+});
+
+// D-201 Slice 10AH (10AE finding 23) — its two checks after the decrypt, which
+// no test pinned: the key, and whether it is still a retire to clean up.
+describe('D-201 Slice 10AH — the retiring read checks what changed while it decrypted', () => {
+  const retiringStripe = async (getEncryptionKey?: () => Uint8Array | null) => {
+    const made = makeStore(getEncryptionKey === undefined ? {} : { getEncryptionKey });
+    const ingress = createManagedStripe(made.store);
+    await made.store.commitManagedRegistrationCreate({
+      expected: made.store.prepareManagedRegistration(ingress.ingress_id).expected,
+      remote_endpoint_id: 'we_1234567890abcdef',
+      endpoint_url: `https://hooks.example/v1/webhooks/${ingress.public_id}`,
+      credentials: { endpoint_secret: 'whsec_retiring-one' },
+      requires_handshake: false,
+    });
+    made.store.retire(ingress.ingress_id);
+    return { ...made, ingress };
+  };
+
+  it('refuses one the vault locked, or changed its key, during', async () => {
+    let key: Uint8Array | null = KEY;
+    const { store, ingress } = await retiringStripe(() => key);
+    expect(await store.readRetiringCredentialVersions(ingress.ingress_id)).toHaveLength(1);
+    const locked = store.readRetiringCredentialVersions(ingress.ingress_id);
+    key = null;
+    await expect(locked).rejects.toMatchObject({ code: 'locked' });
+    key = KEY;
+    const rekeyed = store.readRetiringCredentialVersions(ingress.ingress_id);
+    key = new Uint8Array(32).fill(9);
+    await expect(rekeyed).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('reads nothing once its cleanup completed during', async () => {
+    const { store, ingress } = await retiringStripe();
+    const pending = store.readRetiringCredentialVersions(ingress.ingress_id);
+    store.completeManagedRegistrationCleanup({
+      expected: store.prepareManagedRegistrationCleanup(ingress.ingress_id, 'retire').expected,
+      intent: 'retire',
+    });
+    await expect(pending).resolves.toEqual([]);
+  });
+});
+
+// D-201 Slice 10AR (10AM findings 10 and 28) — what the store keeps for the pass
+// over webhooks whose messages are refused.
+describe('D-201 Slice 10AR — the last verified message, and a set again that failed', () => {
+  it('a last verified message more than a minute ahead gives way to the next; a nearer one stays', () => {
+    const { store } = makeStore();
+    const ingress = createStripe(store);
+    const at = 1_900_000_000_000;
+    const lastDelivery = () => store.get(ingress.ingress_id)!.last_delivery_at;
+    store.recordAcceptedDelivery(ingress.ingress_id, at + 60 * 60 * 1000);
+    store.recordAcceptedDelivery(ingress.ingress_id, at);
+    expect(lastDelivery()).toBe(at);
+    store.recordAcceptedDelivery(ingress.ingress_id, at + WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS);
+    store.recordAcceptedDelivery(ingress.ingress_id, at + 1);
+    expect(lastDelivery()).toBe(at + WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS);
+  });
+
+  it('keeps when a try to set it again last failed, as last written, beside the set again', () => {
+    const { store } = makeStore();
+    const ingress = createStripe(store);
+    expect(store.secretSetAgainFailedAt(ingress.ingress_id)).toBeNull();
+    store.noteSecretSetAgainFailed(ingress.ingress_id, 5_000);
+    // As last written: one a clock that ran ahead wrote gives way.
+    store.noteSecretSetAgainFailed(ingress.ingress_id, 4_000);
+    expect(store.secretSetAgainFailedAt(ingress.ingress_id)).toBe(4_000);
+    expect(store.secretSetAgainAt(ingress.ingress_id)).toBeNull();
+    store.noteSecretSetAgain(ingress.ingress_id, 6_000);
+    expect(store.secretSetAgainFailedAt(ingress.ingress_id)).toBe(4_000);
+    expect(() => store.noteSecretSetAgainFailed(ingress.ingress_id, -1)).toThrow(WebhookIngressStoreError);
+    expect(() => store.noteSecretSetAgainFailed('whi_ffffffffffffffffffffffffffffffff', 1)).toThrow();
+  });
+});
+
+describe('D-201 Slice 10BA — a stray Recued cannot prove (10AY finding 4)', () => {
+  const stripeStray = (
+    store: ReturnType<typeof makeStore>['store'],
+    ingress: { ingress_id: string; public_id: string },
+    id: string,
+    connection = 'stripe-other',
+  ) => store.recordUnsettledCreate({
+    ingress_id: ingress.ingress_id,
+    connection_id: connection,
+    endpoint_url: `https://hooks.example/v1/webhooks/${ingress.public_id}`,
+    kind: 'stray',
+    remote_endpoint_id: id,
+  });
+  it('notes one unproven and clears it, lists it so, and a rebind that finds it again takes it up proven', () => {
+    const { store } = makeStore();
+    const ingress = createManagedStripe(store);
+    const stray = stripeStray(store, ingress, 'we_stray_one');
+    const other = stripeStray(store, ingress, 'we_stray_two');
+    expect(store.listStrayEndpoints(ingress.ingress_id).map((entry) => entry.unproven)).toEqual([false, false]);
+    store.noteStrayUnproven(stray.create_id, 5_000);
+    expect(store.listStrayEndpoints(ingress.ingress_id).map((entry) => [entry.remote_endpoint_id, entry.unproven]))
+      .toEqual([['we_stray_one', true], ['we_stray_two', false]]);
+    // Given up, it stays unproven: the card says Recued never tried.
+    store.giveUpStrayEndpoint(stray.create_id, 9_000);
+    expect(store.listStrayEndpoints(ingress.ingress_id)[0]).toMatchObject({ given_up: true, unproven: true });
+    // A rebind that finds it again takes it up as one to remove.
+    stripeStray(store, ingress, 'we_stray_one', 'stripe-third');
+    expect(store.listStrayEndpoints(ingress.ingress_id)[0]).toMatchObject({ given_up: false, unproven: false });
+    // Cleared by a later search that proves it.
+    store.noteStrayUnproven(other.create_id, 6_000);
+    store.noteStrayUnproven(other.create_id, null);
+    expect(store.listStrayEndpoints(ingress.ingress_id)[1]).toMatchObject({ unproven: false });
+    // D-201 Slice 10BQ (10BM finding 13) — found at another address: said so,
+    // and cleared with it.
+    store.noteStrayUnproven(other.create_id, 6_500, true);
+    expect(store.listStrayEndpoints(ingress.ingress_id)[1]).toMatchObject({ unproven: true, elsewhere: true });
+    store.noteStrayUnproven(other.create_id, 6_600);
+    expect(store.listStrayEndpoints(ingress.ingress_id)[1]).toMatchObject({ unproven: true, elsewhere: false });
+    store.noteStrayUnproven(other.create_id, 6_700, true);
+    store.noteStrayUnproven(other.create_id, null, true);
+    expect(store.listStrayEndpoints(ingress.ingress_id)[1]).toMatchObject({ unproven: false, elsewhere: false });
+    // A create is never a stray.
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const create = store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    store.noteStrayUnproven(create.create_id, 7_000);
+    expect(store.listStrayEndpoints(ingress.ingress_id)).toHaveLength(2);
   });
 });

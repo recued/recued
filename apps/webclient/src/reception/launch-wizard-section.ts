@@ -107,6 +107,8 @@ export interface ReceptionWizardSectionOptions {
 }
 
 export interface ReceptionWizardSectionMount {
+  hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   /** Re-render the embedded wizard from its current cursor + configs. */
   update(): void;
   /** Tear down the embedded wizard + remove the chrome. Idempotent. */
@@ -167,19 +169,19 @@ export const mountReceptionWizardSection = (
    *  on `disposed`: a finish that resolves after the user already left must
    *  not yank them back to the endpoints list (mirrors Slice 2's Codex
    *  MEDIUM fold on the authoring section). */
-  const onClose = (result?: LaunchWizardRunResult): void => {
-    const shareableIds: string[] = [];
-    if (result !== undefined) {
-      const at = now();
-      for (const created of result.created) {
-        if (!isReceptionEndpointKindAvailable(created.kind)) continue;
-        shell.setEndpointShare(
-          created.result.endpoint_id,
-          buildShareInputForCreate(created.kind, created.result, null, at),
-        );
-        shareableIds.push(created.result.endpoint_id);
-      }
+  const capturedShares = new Set<string>();
+  const captureShares = (result: LaunchWizardRunResult): void => {
+    for (const created of result.created) {
+      const id = created.result.endpoint_id;
+      if (!isReceptionEndpointKindAvailable(created.kind) || capturedShares.has(id)) continue;
+      shell.setEndpointShare(id, buildShareInputForCreate(created.kind, created.result, null, now()));
+      capturedShares.add(id);
     }
+  };
+  const onClose = (result?: LaunchWizardRunResult): void => {
+    if (result) captureShares(result);
+    const shareableIds = result?.created.filter(created => isReceptionEndpointKindAvailable(created.kind))
+      .map(created => created.result.endpoint_id) ?? [];
     if (disposed) return;
     // Exactly one shareable endpoint → land on its detail so the one-shot
     // Share Cards surface immediately. Multiple → the endpoints list shows
@@ -198,6 +200,7 @@ export const mountReceptionWizardSection = (
     exposureProfile: opts.exposureProfile,
     now,
     onClose,
+    onProgress: captureShares,
     ...(opts.renderStepContent !== undefined
       ? { renderStepContent: opts.renderStepContent }
       : {}),
@@ -207,6 +210,8 @@ export const mountReceptionWizardSection = (
   });
 
   return {
+    hasInFlightWork: () => wizard.hasInFlightWork?.() ?? false,
+    hasUnsavedChanges: () => wizard.hasUnsavedChanges?.() ?? false,
     update: () => {
       if (disposed) return;
       wizard.update();

@@ -19,9 +19,11 @@
  *
  *  A watch is an `EventEmitter` like `FSWatcher`: it emits `error` if the watch
  *  fails, `close()` returns at once, and `ready` settles when the watch has
- *  attached (or rejects when it could not). The process is unref'd, so it
- *  never keeps the server alive, and it exits when the server goes away,
- *  however it goes: its message channel closes. */
+ *  attached (or rejects when it could not). Once its watches have attached the
+ *  process is unref'd, so it never keeps the server alive; a watch still
+ *  waiting to attach holds the event loop, since the server awaits it at boot
+ *  before it listens (`holdUntilAttached`). The process exits when the server
+ *  goes away, however it goes: its message channel closes. */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -203,6 +205,36 @@ export const createWatchHost = (opts: {
   let child: ChildProcess | undefined;
   let nextId = 1;
   const live = new Map<number, HostedWatch>();
+  /** How many of each process's watches wait to attach. */
+  const attaching = new Map<ChildProcess, number>();
+
+  /** ⛔ A watch waiting to attach holds the server's event loop: the watch
+   *  process and its channel stay ref'd until every such watch has settled. The
+   *  server awaits each folder's attach at boot, before it listens, with
+   *  nothing else holding the loop, and a wait nothing held let Node exit there
+   *  on its own: code 0, nothing logged, and launchd restarts the server only
+   *  after a failure, so it stayed down (found 2026-11-22). The process as well
+   *  as the channel: one that dies before it answers must still deliver its
+   *  `exit`, which fails the watch. */
+  const holdUntilAttached = (proc: ChildProcess, watch: HostedWatch): void => {
+    const waiting = attaching.get(proc) ?? 0;
+    if (waiting === 0) {
+      proc.ref();
+      proc.channel?.ref();
+    }
+    attaching.set(proc, waiting + 1);
+    const settled = (): void => {
+      const left = (attaching.get(proc) ?? 1) - 1;
+      if (left > 0) {
+        attaching.set(proc, left);
+        return;
+      }
+      attaching.delete(proc);
+      proc.unref();
+      proc.channel?.unref();
+    };
+    void watch.ready.then(settled, settled);
+  };
 
   const failAll = (err: Error): void => {
     child = undefined;
@@ -217,7 +249,7 @@ export const createWatchHost = (opts: {
     // …; measured 2026-10-19 on Windows 11), none of them the server's.
     const started = spawn(command, args, { env: {}, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
     // ⚠ Both: the process and its message channel each keep the server's
-    // event loop alive otherwise.
+    // event loop alive otherwise. A watch waiting to attach holds them again.
     started.unref();
     started.channel?.unref();
     started.on('message', (msg: HostMessage) => { live.get(msg.id)?.receive(msg); });
@@ -243,6 +275,7 @@ export const createWatchHost = (opts: {
       const post = (msg: unknown): void => { if (host.connected) host.send(msg as object); };
       const watch = new HostedWatch(id, listener, post, (gone) => { live.delete(gone); });
       live.set(id, watch);
+      holdUntilAttached(host, watch);
       post({ op: 'watch', id, root });
       return watch;
     },

@@ -12,6 +12,7 @@ import {
   handleWebhookManualRegistrationConfirm,
   handleWebhookManagedRegistrationReconcile,
   handleWebhookIngressRetire,
+  handleWebhookIngressStraysDismiss,
   handleWebhookIngressUpdate,
   makeWebhookIngressHandlers,
   projectWebhookIngress,
@@ -343,7 +344,7 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
     await handleWebhookIngressEnable(deps, {
       ingress_id: created.ingress.ingress_id,
     }, owner);
-    deps.store.failCloseForDeletedPairedConnection('fixture-provider-test');
+    deps.store.failCloseForDeletedPairedConnection('fixture-provider-test', 'api');
     await expect(handleWebhookIngressGet(deps, {
       ingress_id: created.ingress.ingress_id,
     }, owner)).resolves.toMatchObject({
@@ -422,7 +423,7 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
       selected_event_types: ['delivery'],
     }, owner);
     expect(created.ingress.intake_state).toBe('draft');
-    deps.store.failCloseForDeletedPairedConnection('unused-fixture-provider');
+    deps.store.failCloseForDeletedPairedConnection('unused-fixture-provider', 'api');
     expect(deps.store.get(created.ingress.ingress_id)).toMatchObject({
       intake_state: 'draft',
       last_error_code: 'paired_connection_deleted',
@@ -745,6 +746,8 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
       reconcile,
       cleanup: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
       rebind: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
+      sweepUnsettledCreates: vi.fn(async () => ({ removed: 0, settled: 0, given_up: 0, failed: 0 })),
+      setSecretAgain: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
     };
 
     await expect(handleWebhookManagedRegistrationReconcile(deps, {
@@ -813,6 +816,8 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
       reconcile: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
       cleanup: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
       rebind,
+      sweepUnsettledCreates: vi.fn(async () => ({ removed: 0, settled: 0, given_up: 0, failed: 0 })),
+      setSecretAgain: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
     };
 
     await expect(handleWebhookManagedRegistrationReconcile(deps, {
@@ -920,6 +925,8 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
       reconcile: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
       cleanup,
       rebind: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
+      sweepUnsettledCreates: vi.fn(async () => ({ removed: 0, settled: 0, given_up: 0, failed: 0 })),
+      setSecretAgain: vi.fn(async (ingressId: string) => deps.store.get(ingressId)!),
     };
 
     await expect(handleWebhookIngressDisable(deps, {
@@ -1691,6 +1698,8 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
       'webhook.ingress.registration.reconcile',
       'webhook.ingress.enable',
       'webhook.ingress.disable',
+      'webhook.ingress.door.set',
+      'webhook.ingress.strays.dismiss',
       'webhook.ingress.test.deliver',
       'webhook.ingress.retire',
       'webhook.delivery.list',
@@ -1698,6 +1707,9 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
       'webhook.delivery.event.get',
       'webhook.delivery.rejected.list',
       'webhook.delivery.retention.prune',
+      'webhook.delivery.dead_letter.list',
+      'webhook.delivery.dead_letter.requeue',
+      'webhook.delivery.dead_letter.resolve',
     ]);
   });
 
@@ -1715,5 +1727,319 @@ describe('D-201 Slices 1 / 5A / 5B2B / 7D / 7E / 8A / 8G webhook control-plane R
     } finally {
       await server.close();
     }
+  });
+});
+
+describe("D-201 Slice 10X — the webhook's switch makes its doors, and its card lists them", () => {
+  /** A way in that can be switched on: operation-bound, with its credentials. */
+  const readyIngress = async (deps: WebhookIngressRpcDeps): Promise<string> => {
+    const created = await handleWebhookIngressCreate(deps, {
+      display_name: 'Doors',
+      profile_id: 'generic.static-header-token.v1',
+      environment: 'test',
+      paired_connection_id: 'fixture-provider-test',
+      registration_mode: 'operation_bound',
+      selected_event_types: ['delivery'],
+    }, owner);
+    await handleWebhookCredentialWrite(deps, {
+      ingress_id: created.ingress.ingress_id,
+      credentials: { header_name: 'X-Webhook-Token', header_token: 'doors-token' },
+    }, owner);
+    return created.ingress.ingress_id;
+  };
+  const shapesIt = {
+    recipe_id: 'shapes-it',
+    name: 'Shapes it',
+    consumer_kind: 'local_recipe' as const,
+    armed: true,
+  };
+
+  it('switching it on, and on again while on, makes the doors that are not open; the view lists them', async () => {
+    const deps = makeDeps();
+    const ingressId = await readyIngress(deps);
+    const reopened: string[] = [];
+    let door: 'open' | 'missing' = 'missing';
+    deps.recipeDoors = {
+      list: () => [{ ...shapesIt, door }],
+      reopen: (id) => { reopened.push(id); door = 'open'; return []; },
+    };
+    await expect(handleWebhookIngressGet(deps, { ingress_id: ingressId }, owner)).resolves.toMatchObject({
+      ingress: { intake_state: 'ready', recipes: [{ ...shapesIt, door: 'missing' }] },
+    });
+    await expect(handleWebhookIngressEnable(deps, { ingress_id: ingressId }, owner)).resolves.toMatchObject({
+      ingress: { intake_state: 'enabled', recipes: [{ recipe_id: 'shapes-it', door: 'open' }] },
+    });
+    // On again while on (its card's "Open its door"): before 10X, nothing.
+    door = 'missing';
+    await expect(handleWebhookIngressEnable(deps, { ingress_id: ingressId }, owner)).resolves.toMatchObject({
+      ingress: { intake_state: 'enabled', recipes: [{ recipe_id: 'shapes-it', door: 'open' }] },
+    });
+    expect(reopened).toEqual([ingressId, ingressId]);
+  });
+
+  it('a list or a re-make that throws never fails the view or the switch', async () => {
+    const deps = makeDeps();
+    const ingressId = await readyIngress(deps);
+    deps.recipeDoors = {
+      list: () => { throw new Error('the consumer store is unreadable'); },
+      reopen: () => { throw new Error('the contract store is unavailable'); },
+    };
+    const enabled = await handleWebhookIngressEnable(deps, { ingress_id: ingressId }, owner);
+    expect(enabled.ingress.intake_state).toBe('enabled');
+    expect(enabled.ingress).not.toHaveProperty('recipes');
+  });
+
+  it('a switch that cannot let messages in makes no door', async () => {
+    const deps = makeDeps();
+    const ingressId = await readyIngress(deps);
+    const reopened: string[] = [];
+    deps.recipeDoors = { list: () => [], reopen: (id) => { reopened.push(id); return []; } };
+    const ready = deps.runtimeReadiness!;
+    deps.runtimeReadiness = async (ingress, profile) => ({ ...await ready(ingress, profile), tls_ready: false });
+    await expect(handleWebhookIngressEnable(deps, { ingress_id: ingressId }, owner))
+      .rejects.toMatchObject({ code: 'webhook_not_ready' });
+    expect(reopened).toEqual([]);
+  });
+});
+
+// D-201 Slice 10AH (10AE finding 8) — a stray a rebind could not remove was
+// recorded nowhere, and the owner was told nothing.
+describe('D-201 Slice 10AH — the view counts the strays the sweep is still removing', () => {
+  it('says how many, never when there are none, and never in the way of the view', async () => {
+    const deps = makeDeps();
+    const ingress = deps.store.create({
+      display_name: 'Managed billing events',
+      profile_id: 'stripe.event.v1',
+      environment: 'test',
+      paired_connection_id: 'stripe-test',
+      registration_mode: 'managed_endpoint',
+      selected_event_types: ['invoice.paid'],
+    });
+    const get = () => handleWebhookIngressGet(deps, { ingress_id: ingress.ingress_id }, owner);
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints');
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    // A lost create is not one: only what a rebind found and could not remove.
+    deps.store.recordUnsettledCreate({ ingress_id: ingress.ingress_id, connection_id: 'stripe-test', endpoint_url: url });
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints');
+    const stray = deps.store.recordUnsettledCreate({
+      ingress_id: ingress.ingress_id, connection_id: 'stripe-other', endpoint_url: url, kind: 'stray',
+    });
+    expect((await get()).ingress).toMatchObject({ stray_endpoints: 1 });
+    expect((await handleWebhookIngressList(deps, undefined, owner)).ingresses[0]).toMatchObject({ stray_endpoints: 1 });
+    // A count that cannot be read is left out.
+    const count = deps.store.countStrayEndpoints;
+    deps.store.countStrayEndpoints = () => { throw new Error('database is locked'); };
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints');
+    deps.store.countStrayEndpoints = count;
+    deps.store.settleUnsettledCreate(stray.create_id);
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints');
+  });
+});
+
+// D-201 Slice 10AL (10AI finding 21) — a stray given up went with its record,
+// and the card's row with it, which read as resolved.
+describe('D-201 Slice 10AL — the strays Recued stopped trying to remove are said, until the owner says they are gone', () => {
+  it('the view counts them apart from the strays still being removed, and only the owner clears only those', async () => {
+    const deps = makeDeps();
+    const ingress = deps.store.create({
+      display_name: 'Managed billing events',
+      profile_id: 'stripe.event.v1',
+      environment: 'test',
+      paired_connection_id: 'stripe-test',
+      registration_mode: 'managed_endpoint',
+      selected_event_types: ['invoice.paid'],
+    });
+    const url = `https://hooks.example/v1/webhooks/${ingress.public_id}`;
+    const stray = (id: string) => deps.store.recordUnsettledCreate({
+      ingress_id: ingress.ingress_id, connection_id: 'stripe-other', endpoint_url: url, kind: 'stray', remote_endpoint_id: id,
+    });
+    const get = () => handleWebhookIngressGet(deps, { ingress_id: ingress.ingress_id }, owner);
+    const givenUp = stray('we_given_up');
+    stray('we_still_removed');
+    expect((await get()).ingress).toMatchObject({ stray_endpoints: 2 });
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints_given_up');
+    deps.store.giveUpStrayEndpoint(givenUp.create_id, 1_000);
+    expect((await get()).ingress).toMatchObject({ stray_endpoints: 1, stray_endpoints_given_up: 1 });
+    expect((await handleWebhookIngressList(deps, undefined, owner)).ingresses[0])
+      .toMatchObject({ stray_endpoints: 1, stray_endpoints_given_up: 1 });
+    // A count that cannot be read is left out.
+    const count = deps.store.countGivenUpStrayEndpoints;
+    deps.store.countGivenUpStrayEndpoints = () => { throw new Error('database is locked'); };
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints_given_up');
+    deps.store.countGivenUpStrayEndpoints = count;
+    // The owner's alone, with no other key, for a webhook there is.
+    const dismiss = (args: unknown, caller: { instance_id: string } | undefined) =>
+      handleWebhookIngressStraysDismiss(deps, args as { ingress_id: string }, caller);
+    await expect(dismiss({ ingress_id: ingress.ingress_id }, undefined)).rejects.toMatchObject({ code: 'permission_denied' });
+    await expect(dismiss({ ingress_id: ingress.ingress_id, all: true }, owner)).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(dismiss({ ingress_id: 'whi_ffffffffffffffffffffffffffffffff' }, owner)).rejects.toMatchObject({ code: 'not_found' });
+    expect((await get()).ingress).toMatchObject({ stray_endpoints_given_up: 1 });
+    const { ingress: after } = await dismiss({ ingress_id: ingress.ingress_id }, owner);
+    // The strays still being removed stay: the sweep goes on with them.
+    expect(after).toMatchObject({ stray_endpoints: 1 });
+    expect(after).not.toHaveProperty('stray_endpoints_given_up');
+    expect((await get()).ingress).not.toHaveProperty('stray_endpoints_given_up');
+  });
+
+  it('is served by the handlers the composition mounts', async () => {
+    const handlers = makeWebhookIngressHandlers(makeDeps());
+    expect(typeof handlers?.handlers['webhook.ingress.strays.dismiss']).toBe('function');
+  });
+});
+
+// D-201 Slice 10AQ (10AM findings 6, 7 and 26) — counted only, a stray could
+// not be told from the webhook's own endpoint, and a retired webhook's was
+// said nowhere.
+describe("D-201 Slice 10AQ — each stray named, and a retired webhook's said", () => {
+  const managed = (deps: WebhookIngressRpcDeps, display_name: string) => deps.store.create({
+    display_name,
+    profile_id: 'stripe.event.v1',
+    environment: 'test',
+    paired_connection_id: 'stripe-test',
+    registration_mode: 'managed_endpoint',
+    selected_event_types: ['invoice.paid'],
+  });
+  const strayOf = (
+    deps: WebhookIngressRpcDeps,
+    ingress: { ingress_id: string; public_id: string },
+    remote_endpoint_id: string,
+    connection_id = 'stripe-test',
+  ) => deps.store.recordUnsettledCreate({
+    ingress_id: ingress.ingress_id,
+    connection_id,
+    endpoint_url: `https://hooks.example/v1/webhooks/${ingress.public_id}`,
+    kind: 'stray',
+    remote_endpoint_id,
+  });
+  /** Deps whose store mints each webhook its own ids. */
+  const manyDeps = (): WebhookIngressRpcDeps => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    let stamp = 1_900_000_000_000;
+    let made = 0;
+    return {
+      ...makeDeps(),
+      store: createWebhookIngressStore(db, {
+        now: () => ++stamp,
+        getEncryptionKey: () => new Uint8Array(32).fill(7),
+        newIngressId: () => `whi_${(++made).toString(16).padStart(32, '0')}`,
+        newPublicId: () => `opaquePublicId_${made.toString(16).padStart(16, '0')}`,
+        newCredentialSetRef: () => `whc_${made.toString(16).padStart(32, '0')}`,
+      }),
+    };
+  };
+  const byId = (strays: readonly { remote_endpoint_id: string | null }[] | undefined) =>
+    [...(strays ?? [])].sort((left, right) => String(left.remote_endpoint_id).localeCompare(String(right.remote_endpoint_id)));
+
+  it('the view names each stray with the account it is at, given up or not', async () => {
+    const deps = makeDeps();
+    const ingress = managed(deps, 'Managed billing events');
+    const get = async () => (await handleWebhookIngressGet(deps, { ingress_id: ingress.ingress_id }, owner)).ingress!;
+    expect(await get()).not.toHaveProperty('strays');
+    const elsewhere = strayOf(deps, ingress, 'we_at_the_old_account', 'stripe-old');
+    strayOf(deps, ingress, 'we_beside_the_live_one');
+    deps.store.giveUpStrayEndpoint(elsewhere.create_id, 1_000);
+    expect(byId((await get()).strays)).toEqual([
+      { remote_endpoint_id: 'we_at_the_old_account', connection_id: 'stripe-old', given_up: true },
+      { remote_endpoint_id: 'we_beside_the_live_one', connection_id: 'stripe-test', given_up: false },
+    ]);
+    // D-201 Slice 10BA (10AY finding 4) — and one Recued cannot prove, said so.
+    const unprovenOne = deps.store.listStrayEndpoints(ingress.ingress_id)
+      .find((stray) => stray.remote_endpoint_id === 'we_beside_the_live_one')!;
+    deps.store.noteStrayUnproven(unprovenOne.create_id, 2_000);
+    expect(byId((await get()).strays)).toEqual([
+      { remote_endpoint_id: 'we_at_the_old_account', connection_id: 'stripe-old', given_up: true },
+      { remote_endpoint_id: 'we_beside_the_live_one', connection_id: 'stripe-test', given_up: false, unproven: true },
+    ]);
+    // D-201 Slice 10BQ (10BM finding 13) — and one found at another address.
+    deps.store.noteStrayUnproven(unprovenOne.create_id, 2_500, true);
+    expect(byId((await get()).strays)[1]).toEqual({
+      remote_endpoint_id: 'we_beside_the_live_one', connection_id: 'stripe-test', given_up: false, unproven: true,
+      elsewhere: true,
+    });
+    deps.store.noteStrayUnproven(unprovenOne.create_id, null);
+    // A list that cannot be read is left out, the counts still said.
+    const list = deps.store.listStrayEndpoints;
+    deps.store.listStrayEndpoints = () => { throw new Error('database is locked'); };
+    expect(await get()).not.toHaveProperty('strays');
+    expect(await get()).toMatchObject({ stray_endpoints: 1, stray_endpoints_given_up: 1 });
+    deps.store.listStrayEndpoints = list;
+  });
+
+  it('a retired webhook is listed while a stray of its stands, given up or not; one with none is not', async () => {
+    const deps = manyDeps();
+    const live = managed(deps, 'Live');
+    const strayed = managed(deps, 'Retired, a stray standing');
+    const bare = managed(deps, 'Retired, nothing left');
+    const left = strayOf(deps, strayed, 'we_left_behind');
+    deps.store.giveUpStrayEndpoint(left.create_id, 1_000);
+    deps.store.retire(strayed.ingress_id);
+    deps.store.retire(bare.ingress_id);
+    const listed = async (args?: { include_retired?: boolean }) =>
+      (await handleWebhookIngressList(deps, args, owner)).ingresses.map((row) => row.display_name).sort();
+    // Before 10AQ only `Live`: the stray given up was said nowhere.
+    expect(await listed()).toEqual(['Live', 'Retired, a stray standing']);
+    expect((await handleWebhookIngressList(deps, undefined, owner)).ingresses
+      .find((row) => row.ingress_id === strayed.ingress_id)).toMatchObject({
+      intake_state: 'retired',
+      stray_endpoints_given_up: 1,
+      strays: [{ remote_endpoint_id: 'we_left_behind', connection_id: 'stripe-test', given_up: true }],
+    });
+    expect(await listed({ include_retired: true })).toEqual(['Live', 'Retired, a stray standing', 'Retired, nothing left']);
+    // Once the owner says it is gone, it is listed no more.
+    await handleWebhookIngressStraysDismiss(deps, { ingress_id: strayed.ingress_id }, owner);
+    expect(await listed()).toEqual(['Live']);
+    expect(live.ingress_id).toBeDefined();
+  });
+
+  it("the owner's \"I removed it\" clears that webhook's alone", async () => {
+    const deps = manyDeps();
+    const first = managed(deps, 'First');
+    const second = managed(deps, 'Second');
+    deps.store.giveUpStrayEndpoint(strayOf(deps, first, 'we_first').create_id, 1_000);
+    deps.store.giveUpStrayEndpoint(strayOf(deps, second, 'we_second').create_id, 1_000);
+    await handleWebhookIngressStraysDismiss(deps, { ingress_id: first.ingress_id }, owner);
+    expect(deps.store.countGivenUpStrayEndpoints(first.ingress_id)).toBe(0);
+    expect(deps.store.countGivenUpStrayEndpoints(second.ingress_id)).toBe(1);
+  });
+  // D-201 Slice 10AT (10AS finding 1, and the review's survivors H2 and H3) — a
+  // retired webhook whose clean-up at the service failed dropped out of the
+  // list, and its "Try the clean-up again" with it: a regression of v26.11.9.
+  it("the list keeps the store's own rule: a retired webhook whose clean-up is pending is listed, stray or not", async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    let stamp = 1_900_000_000_000;
+    let made = 0;
+    const deps: WebhookIngressRpcDeps = {
+      ...makeDeps(),
+      store: createWebhookIngressStore(db, {
+        now: () => ++stamp,
+        getEncryptionKey: () => new Uint8Array(32).fill(7),
+        newIngressId: () => `whi_${(++made).toString(16).padStart(32, '0')}`,
+        newPublicId: () => `opaquePublicId_${made.toString(16).padStart(16, '0')}`,
+        newCredentialSetRef: () => `whc_${made.toString(16).padStart(32, '0')}`,
+      }),
+    };
+    managed(deps, 'Live');
+    const pending = managed(deps, 'Retired, its clean-up pending');
+    const strayed = managed(deps, 'Retired, a stray standing');
+    const bare = managed(deps, 'Retired, nothing left');
+    // An endpoint committed at the service: retired, its removal is still to do.
+    db.prepare(`UPDATE webhook_ingresses SET remote_endpoint_id = 'we_committed' WHERE ingress_id = ?`)
+      .run(pending.ingress_id);
+    // A stray standing, not given up.
+    strayOf(deps, strayed, 'we_standing');
+    for (const row of [pending, strayed, bare]) deps.store.retire(row.ingress_id);
+    expect(deps.store.get(pending.ingress_id)).toMatchObject({ intake_state: 'retired', registration_state: 'cleanup_pending' });
+    expect(deps.store.listStrayEndpoints(pending.ingress_id)).toEqual([]);
+    const listed = async () =>
+      (await handleWebhookIngressList(deps, undefined, owner)).ingresses.map((row) => row.display_name).sort();
+    // Before 10AT the clean-up pending one was missing.
+    expect(await listed()).toEqual(['Live', 'Retired, a stray standing', 'Retired, its clean-up pending']);
+    // Strays that cannot be read list none; the store's own rule still lists the clean-up pending one.
+    const list = deps.store.listStrayEndpoints;
+    deps.store.listStrayEndpoints = () => { throw new Error('database is locked'); };
+    expect(await listed()).toEqual(['Live', 'Retired, its clean-up pending']);
+    deps.store.listStrayEndpoints = list;
   });
 });

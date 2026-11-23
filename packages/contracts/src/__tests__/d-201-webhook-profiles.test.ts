@@ -10,9 +10,13 @@ import {
   parseBulkPackManifest,
 } from '../bulk-pack.js';
 import {
+  MAX_WEBHOOK_EVENT_TYPE_GRAMMAR_CHARACTERS,
   WEBHOOK_PROFILE_IDS,
   WEBHOOK_PROFILE_REGISTRY,
   isWebhookProfileId,
+  sameWebhookEventTypeGrammar,
+  validateWebhookEventTypeGrammar,
+  webhookEventTypeGrammarAccepts,
   validateRecipeWebhookTrigger,
   validateWebhookProfileRegistry,
   validateWebhookRequirement,
@@ -21,6 +25,7 @@ import {
   webhookProfile,
   webhookProfileAcceptsEventType,
   webhookProfileRequiresPairedConnection,
+  webhookPairedConnectionKind,
   type PackWebhookRequirement,
 } from '../webhook-profiles.js';
 import {
@@ -236,6 +241,27 @@ describe('D-201 trusted portable profile registry', () => {
     );
   });
 
+  // D-201 Slice 10AW (10AS finding 8) — the kind of connection a webhook pairs
+  // with is the profile's: readiness, a connection's deletion and the
+  // registration all read it there.
+  it('names the kind of connection each paired profile reads, and refuses one that cannot be read', () => {
+    expect(webhookPairedConnectionKind(WEBHOOK_PROFILE_REGISTRY['telegram.bot-webhook.v1'])).toBe('notification');
+    for (const profileId of ['stripe.event.v1', 'paddle.notification.v1', 'github.webhook.v1',
+      'generic.static-header-token.v1'] as const) {
+      expect(webhookPairedConnectionKind(WEBHOOK_PROFILE_REGISTRY[profileId])).toBe('api');
+    }
+    const telegram = WEBHOOK_PROFILE_REGISTRY['telegram.bot-webhook.v1'];
+    expect(validateWebhookProfileRegistry({
+      ...WEBHOOK_PROFILE_REGISTRY,
+      'telegram.bot-webhook.v1': { ...telegram, paired_connection_kind: 'mcp' as unknown as 'api' },
+    }).join('\n')).toContain('paired_connection_kind must be one of api, notification');
+    const raw = WEBHOOK_PROFILE_REGISTRY['generic.raw-body-hmac-sha256.v1'];
+    expect(validateWebhookProfileRegistry({
+      ...WEBHOOK_PROFILE_REGISTRY,
+      'generic.raw-body-hmac-sha256.v1': { ...raw, paired_connection_kind: 'notification' },
+    }).join('\n')).toContain('paired_connection_kind needs a registration mode that pairs a connection');
+  });
+
   it('rejects missing and unexpected registry keys instead of trusting a type cast', () => {
     const missing = { ...WEBHOOK_PROFILE_REGISTRY } as Record<string, typeof WEBHOOK_PROFILE_REGISTRY['stripe.event.v1']>;
     delete missing['stripe.event.v1'];
@@ -447,6 +473,166 @@ describe('D-201 trusted portable profile registry', () => {
       .toContain('Settings > Webhooks');
     expect(settings.test_delivery_boundary)
       .toContain('No Recued-originated test delivery is available');
+  });
+});
+
+describe('D-201 Slice 10C — one portable grammar for every open event catalog', () => {
+  it('gives every open catalog a valid grammar that admits each name it offers', () => {
+    for (const profileId of WEBHOOK_PROFILE_IDS) {
+      const catalog = WEBHOOK_PROFILE_REGISTRY[profileId].event_types;
+      if (catalog.kind !== 'open') continue;
+      expect(validateWebhookEventTypeGrammar(catalog.grammar), profileId).toEqual([]);
+      expect(catalog.known_values.filter((value) =>
+        !webhookEventTypeGrammarAccepts(catalog.grammar, value)), profileId).toEqual([]);
+      expect(Object.isFrozen(catalog.grammar), profileId).toBe(true);
+    }
+    expect(WEBHOOK_PROFILE_REGISTRY['lemonsqueezy.webhook.v1'].event_types).toMatchObject({
+      grammar: { kind: 'lowercase_identifier_event_type.v1', max_characters: 128 },
+    });
+    expect(WEBHOOK_PROFILE_REGISTRY['paddle.notification.v1'].event_types).toMatchObject({
+      grammar: {
+        kind: 'lowercase_dot_segment_event_type.v1',
+        segment_count: 2,
+        max_segment_characters: 63,
+      },
+    });
+    // D-201 Slice 10G — the lowercase names Telegram stores and sends, each a
+    // name the JSON reader takes as the Update's member.
+    expect(WEBHOOK_PROFILE_REGISTRY['telegram.bot-webhook.v1'].event_types).toMatchObject({
+      grammar: { kind: 'lowercase_json_member_event_type.v1', max_characters: 128 },
+    });
+  });
+
+  it('admits exactly the language of each grammar, bounds included', () => {
+    const ascii = { kind: 'ascii_alphanumeric_dot_colon_slash_dash.v1', max_bytes: 5 } as const;
+    expect(['a', '0.a:b', 'a/b-c', 'abcde'].filter((value) =>
+      !webhookEventTypeGrammarAccepts(ascii, value))).toEqual([]);
+    expect(['', '.a', '-a', 'a b', 'abcdef', 'é', 'a_b\n'].filter((value) =>
+      webhookEventTypeGrammarAccepts(ascii, value))).toEqual([]);
+    const identifier = { kind: 'ascii_identifier.v1', max_bytes: 4 } as const;
+    expect(['a', 'Ab_1', 'Z'].filter((value) =>
+      !webhookEventTypeGrammarAccepts(identifier, value))).toEqual([]);
+    expect(['', '_a', '1a', 'a.b', 'a-b', 'abcde'].filter((value) =>
+      webhookEventTypeGrammarAccepts(identifier, value))).toEqual([]);
+    const lowercase = { kind: 'lowercase_identifier_event_type.v1', max_characters: 4 } as const;
+    expect(['a', 'ab_1'].filter((value) =>
+      !webhookEventTypeGrammarAccepts(lowercase, value))).toEqual([]);
+    expect(['A', 'aB', 'a.b', '1a', 'abcde'].filter((value) =>
+      webhookEventTypeGrammarAccepts(lowercase, value))).toEqual([]);
+    const dot = {
+      kind: 'lowercase_dot_segment_event_type.v1',
+      segment_count: 2,
+      max_segment_characters: 3,
+    } as const;
+    expect(['a.b', 'abc.d_1'].filter((value) =>
+      !webhookEventTypeGrammarAccepts(dot, value))).toEqual([]);
+    expect(['a', 'a.b.c', '.a', 'a.', 'a..b', 'abcd.a', 'a.1b', 'A.b'].filter((value) =>
+      webhookEventTypeGrammarAccepts(dot, value))).toEqual([]);
+    for (const nonString of [undefined, null, 1, {}, ['a']]) {
+      expect(webhookEventTypeGrammarAccepts(ascii, nonString)).toBe(false);
+    }
+  });
+
+  it('refuses a grammar that is not one of the closed kinds with exact, bounded fields', () => {
+    const refusals: unknown[] = [
+      null,
+      [],
+      'lowercase_identifier_event_type.v1',
+      { kind: 'regex', pattern: '.*' },
+      { kind: 'ascii_identifier.v1' },
+      { kind: 'ascii_identifier.v1', max_bytes: 10, flags: 'i' },
+      { kind: 'ascii_identifier.v1', max_characters: 10 },
+      { kind: 'ascii_identifier.v1', max_bytes: 0 },
+      { kind: 'ascii_identifier.v1', max_bytes: MAX_WEBHOOK_EVENT_TYPE_GRAMMAR_CHARACTERS + 1 },
+      { kind: 'ascii_identifier.v1', max_bytes: 1.5 },
+      { kind: 'ascii_identifier.v1', max_bytes: '10' },
+      { kind: 'lowercase_identifier_event_type.v1', max_bytes: 10 },
+      { kind: 'lowercase_dot_segment_event_type.v1', segment_count: 0, max_segment_characters: 3 },
+      { kind: 'lowercase_dot_segment_event_type.v1', segment_count: 17, max_segment_characters: 1 },
+      { kind: 'lowercase_dot_segment_event_type.v1', segment_count: 3, max_segment_characters: 43 },
+      { kind: 'lowercase_dot_segment_event_type.v1', segment_count: 2 },
+    ];
+    for (const grammar of refusals) {
+      expect(validateWebhookEventTypeGrammar(grammar), JSON.stringify(grammar)).not.toEqual([]);
+    }
+    expect(validateWebhookEventTypeGrammar({
+      kind: 'lowercase_dot_segment_event_type.v1',
+      segment_count: 3,
+      max_segment_characters: 42,
+    })).toEqual([]);
+  });
+
+  it('compares two grammars by kind and every bound', () => {
+    const paddle = {
+      kind: 'lowercase_dot_segment_event_type.v1',
+      segment_count: 2,
+      max_segment_characters: 63,
+    } as const;
+    expect(sameWebhookEventTypeGrammar(paddle, { ...paddle })).toBe(true);
+    expect(sameWebhookEventTypeGrammar(paddle, { ...paddle, segment_count: 3 })).toBe(false);
+    expect(sameWebhookEventTypeGrammar(paddle, { ...paddle, extra: 1 })).toBe(false);
+    expect(sameWebhookEventTypeGrammar(paddle, {
+      kind: paddle.kind,
+      segment_count: 2,
+    })).toBe(false);
+    expect(sameWebhookEventTypeGrammar(paddle, null)).toBe(false);
+    expect(sameWebhookEventTypeGrammar(
+      { kind: 'ascii_identifier.v1', max_bytes: 128 },
+      { kind: 'ascii_alphanumeric_dot_colon_slash_dash.v1', max_bytes: 128 },
+    )).toBe(false);
+  });
+
+  it('refuses a registry whose open catalog has no grammar, a bad one, or a name outside it', () => {
+    const lemon = WEBHOOK_PROFILE_REGISTRY['lemonsqueezy.webhook.v1'];
+    const withCatalog = (event_types: unknown) => validateWebhookProfileRegistry({
+      ...WEBHOOK_PROFILE_REGISTRY,
+      'lemonsqueezy.webhook.v1': {
+        ...lemon,
+        event_types: event_types as typeof lemon.event_types,
+      },
+    }).join('\n');
+    if (lemon.event_types.kind !== 'open') throw new Error('Lemon Squeezy catalog is open');
+    expect(withCatalog({ kind: 'open', known_values: lemon.event_types.known_values }))
+      .toContain('event type grammar must be an object');
+    expect(withCatalog({
+      ...lemon.event_types,
+      grammar: { kind: 'regex', pattern: '.*' },
+    })).toContain('event type grammar kind is not a known grammar');
+    expect(withCatalog({
+      ...lemon.event_types,
+      known_values: [...lemon.event_types.known_values, 'Order_Created'],
+    })).toContain("known event type 'Order_Created' is outside the catalog's grammar");
+  });
+
+  it("D-201 Slice 10T — names a service never lists: Telegram's two hidden kinds, in its grammar and never offered", () => {
+    const telegram = WEBHOOK_PROFILE_REGISTRY['telegram.bot-webhook.v1'].event_types;
+    if (telegram.kind !== 'open') throw new Error('Telegram catalog is open');
+    expect(telegram.never_listed).toEqual(['custom_event', 'custom_query']);
+    expect(Object.isFrozen(telegram.never_listed)).toBe(true);
+    const lemon = WEBHOOK_PROFILE_REGISTRY['lemonsqueezy.webhook.v1'];
+    const lemonCatalog = lemon.event_types;
+    if (lemonCatalog.kind !== 'open') throw new Error('Lemon Squeezy catalog is open');
+    const withNeverListed = (never_listed: string[]) => validateWebhookProfileRegistry({
+      ...WEBHOOK_PROFILE_REGISTRY,
+      'lemonsqueezy.webhook.v1': { ...lemon, event_types: { ...lemonCatalog, never_listed } },
+    }).join('\n');
+    expect(withNeverListed(['Order_Created'])).toContain("never-listed event type 'Order_Created' is outside the catalog's grammar");
+    expect(withNeverListed([lemonCatalog.known_values[0]!])).toContain('is also offered');
+    expect(withNeverListed(['some_hidden_kind'])).toBe('');
+  });
+
+  it('takes the open names Lemon Squeezy, GitHub and Telegram send, and refuses globally shaped ones', () => {
+    const accepts = (profileId: keyof typeof WEBHOOK_PROFILE_REGISTRY, value: string) =>
+      webhookProfileAcceptsEventType(WEBHOOK_PROFILE_REGISTRY[profileId], value);
+    expect(accepts('lemonsqueezy.webhook.v1', 'subscription_plan_changed')).toBe(true);
+    expect(accepts('github.webhook.v1', 'merge_group')).toBe(true);
+    expect(accepts('telegram.bot-webhook.v1', 'business_message')).toBe(true);
+    // Each of these fits the old shape every open profile used to take.
+    expect(accepts('lemonsqueezy.webhook.v1', 'subscription.plan_changed')).toBe(false);
+    expect(accepts('github.webhook.v1', 'Push')).toBe(false);
+    expect(accepts('telegram.bot-webhook.v1', 'edited-message')).toBe(false);
+    expect(accepts('paddle.notification.v1', 'transaction')).toBe(false);
+    expect(accepts('stripe.event.v1', 'charge.refunded')).toBe(true);
   });
 });
 

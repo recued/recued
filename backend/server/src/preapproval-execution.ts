@@ -183,7 +183,7 @@ export const createPreapprovalExecutionRuntime = (deps: {
       poll.claimed = claimed.handle;
       return claimed;
     },
-    recordDispatchUse(source: ExecutionSource, slug: string, overlay: ContractOverlayResolver): boolean {
+    recordDispatchUse(source: ExecutionSource, slug: string, overlay: ContractOverlayResolver): boolean | object {
       const frame = frames.getStore(); if (!frame) return false;
       if (preapprovalHash(source) !== preapprovalHash(frame.run.plan.origin.source)
         || (frame.transport ? !frame.transport.resolved : !frame.gateway_resolved || slug !== frame.call.slug)) {
@@ -192,7 +192,7 @@ export const createPreapprovalExecutionRuntime = (deps: {
       if (!overlay.reserveDispatchUse) return refuse('The contract budget reservation service is unavailable.');
       const reservation = overlay.reserveDispatchUse(source, frame.member.ingredient_slug, frame.call.connection_name || undefined);
       if (reservation) frame.progress.use_reservation = reservation;
-      return true;
+      return reservation ?? true;
     },
     /** Called only by the owned activation driver after qualification. The
      * public request schema has no execution-handle field. */

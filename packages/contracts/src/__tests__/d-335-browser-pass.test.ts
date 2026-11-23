@@ -12,6 +12,7 @@ import {
   browserPassOccasionOf,
   browserPassSiteOf,
   browserPassActsOf,
+  browserPassBrowserOfRow,
   describeBrowserPass,
   isBrowserPassLive,
   readBrowserPassOffer,
@@ -61,12 +62,49 @@ describe('D-335 slice F — a pass key', () => {
   });
 });
 
+describe('D-402 slice H4d — a pass for a recipe that names its browsers says which browser', () => {
+  const HOME: BrowserPassKey = { ...KEY, browser: 'inst-home' };
+  it('by the owner\'s name, one no longer paired said to be, and nothing for a key that names none', () => {
+    expect(describeBrowserPass(HOME, { name: 'Home', paired: true })).toBe('Click on github.com in “Home”');
+    expect(describeBrowserPass(HOME, { name: 'Old laptop', paired: false }))
+      .toBe('Click on github.com in “Old laptop” (no longer paired)');
+    expect(describeBrowserPass(HOME, { paired: false })).toBe('Click on github.com in a browser no longer paired');
+    expect(describeBrowserPass(HOME)).toBe('Click on github.com in one of your browsers');
+    expect(describeBrowserPass({ ...HOME, recipe: 'act-on-web-page' }, { name: 'Home' })).toBe('Act on pages on github.com in “Home”');
+    // A key that names no browser (a Browser Toolkit pass, every pass before H4c) reads as it did.
+    expect(describeBrowserPass(KEY, { name: 'Home', paired: true })).toBe('Click on github.com');
+    // A sentence says the browser apart, so what a pass covers stays as it was.
+    expect(browserPassActsOf(HOME)).toBe('clicks on github.com');
+  });
+
+  it('a row\'s browser, as the phrase reads it', () => {
+    expect(browserPassBrowserOfRow({ browser_name: 'Home', browser_paired: false })).toEqual({ name: 'Home', paired: false });
+    expect(browserPassBrowserOfRow({})).toEqual({});
+  });
+
+  it('an offer keeps the browser\'s name beside the browser its key names, and only there', () => {
+    const offer = { key: HOME, host: 'github.com', channel_session_id: 'chat:s', browser_name: 'Home' };
+    expect(readBrowserPassOffer(JSON.parse(JSON.stringify(offer)))).toEqual(offer);
+    expect(readBrowserPassOffer({ ...offer, key: KEY })).toEqual({ key: KEY, host: 'github.com', channel_session_id: 'chat:s' });
+    expect(readBrowserPassOffer({ ...offer, browser_name: 7 })).toEqual({ key: HOME, host: 'github.com', channel_session_id: 'chat:s' });
+  });
+});
+
 describe('D-335 slice F — an offer read back', () => {
   const offer = { key: KEY, host: 'github.com', channel_session_id: 'chat:s' };
   it('reads a whole offer, and only its fields', () => {
     expect(readBrowserPassOffer({ ...offer, extra: true })).toEqual(offer);
     expect(readBrowserPassOffer({ ...offer, key: { ...KEY, principal: { kind: 'ai_app', contract_id: 'ct-1', x: 1 } } }))
       .toEqual({ ...offer, key: { ...KEY, principal: { kind: 'ai_app', contract_id: 'ct-1' } } });
+  });
+
+  it('D-402 slice H4c — keeps the browser a key names, and reads nothing when that browser is not an id', () => {
+    const inHome = { ...offer, key: { ...KEY, browser: 'inst-home' } };
+    expect(readBrowserPassOffer(JSON.parse(JSON.stringify(inHome)))).toEqual(inHome);
+    expect(browserPassKeyHash(readBrowserPassOffer(inHome)!.key)).not.toBe(browserPassKeyHash(KEY));
+    for (const browser of ['', 7, null, {}]) {
+      expect(readBrowserPassOffer({ ...offer, key: { ...KEY, browser } }), JSON.stringify(browser)).toBeUndefined();
+    }
   });
 
   it('reads nothing from an offer this version cannot trust', () => {

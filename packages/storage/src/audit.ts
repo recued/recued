@@ -760,6 +760,10 @@ export type ActivityAction =
   // (`target` = the rule id, or the key hash). Reserve-class: each stands in for an
   // approval answer, and "did I approve that?" is a months-later question.
   | 'write_rule_used' | 'write_rule_minted' | 'write_rule_dismissed' | 'write_rule_revoked'
+  // D-348 — the chains the owner's approvals teach: the owner's decisions on Contracts
+  // (`target` = the rule id, or the request key's hash; `detail` the counts, never whom the
+  // calls reach), and (slice 4 on) a held call a chain let through. Reserve-class, as D-329's.
+  | 'chain_rule_used' | 'chain_rule_minted' | 'chain_rule_dismissed' | 'chain_rule_revoked'
   // D-335 slice F — passes for Browser Toolkit writes. `browser_pass_used`: a held browser
   // write ran on a pass instead of an ask (`target` = the pass id; `detail` carries
   // `{run_id, recipe_id, site, kind, principal}`). `browser_pass_minted` (an accepted
@@ -781,6 +785,15 @@ export type ActivityAction =
   // `detail` carries `{run_id, recipe_id, op, trigger, uses, max_uses}`). `_granted` / `_revoked`:
   // the owner's decisions. Reserve-class: each stands in for an approval answer.
   | 'trigger_preapproval_used' | 'trigger_preapproval_granted' | 'trigger_preapproval_revoked'
+  // D-339 slice 12a — the owner's chats' switch for a Body's numbers. `body_numbers_set`: the owner set it
+  // on a Body's page (`target` = `body_numbers`; `detail` carries `{chats, before}`). `body_numbers_read_allowed`:
+  // a held read of a Body's numbers ran on the switch's Allow instead of an ask, once a run (`target` = the
+  // op; `detail` carries `{run_id, recipe_id, principal}`). Reserve-class: each stands in for an approval
+  // answer, and "when did my chats read my numbers?" is a months-later question.
+  | 'body_numbers_set' | 'body_numbers_read_allowed'
+  // D-402 slice F4 (ruling 12) — "Stop allowing": every standing permission one caller held for one
+  // recipe, ended at once (`target` = the recipe; `detail` carries `{caller, by, ended}`). Reserve-class.
+  | 'stop_allowing'
   | 'chat_export'
   // D-137 W2.2 § A.1.1 — Mary toggled her per-kind chat catalog scope.
   // `target` = `'chat_tool_catalog_scope'` (singleton); `detail`
@@ -798,6 +811,9 @@ export type ActivityAction =
   | 'chat_rolling_brief_set'
   // D-323 — the owner's switch for chat's install offers.
   | 'chat_install_offers_set'
+  // D-405 slice 3 — "Not now" on a hint under a chat answer, and one brought back.
+  | 'chat_hint_not_now'
+  | 'chat_hint_restored'
   // D-318 step 1 — the owner named (or cleared) the email chat door's mailbox.
   | 'mail_chat_door_set'
   // D-318 step 8 — the email with an enrolling address's code arrived: confirmed
@@ -1234,6 +1250,11 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'write_rule_minted',
   'write_rule_dismissed',
   'write_rule_revoked',
+  // D-348 — a call a chain let through, and the owner's chain decisions.
+  'chain_rule_used',
+  'chain_rule_minted',
+  'chain_rule_dismissed',
+  'chain_rule_revoked',
   // D-335 slice F — a browser write a pass let through, and the owner's pass decisions.
   'browser_pass_used',
   'browser_pass_minted',
@@ -1243,6 +1264,11 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'trigger_preapproval_used',
   'trigger_preapproval_granted',
   'trigger_preapproval_revoked',
+  // D-339 slice 12a — a held read of a Body's numbers the owner's switch let through, and the switch.
+  'body_numbers_set',
+  'body_numbers_read_allowed',
+  // D-402 slice F4 — every standing permission one caller held for one recipe, ended at once.
+  'stop_allowing',
   // D-335 slice Z — secrets browser steps typed, and the logins the owner remembered or forgot.
   'browser_secret_asked',
   'browser_secret_given',

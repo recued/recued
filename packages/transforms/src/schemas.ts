@@ -68,7 +68,7 @@ const MATH_OPS = [
 ] as const;
 
 /** Source of truth: ReduceOp in ../types.ts */
-const REDUCE_OPS = ['sum', 'count', 'avg', 'min', 'max'] as const;
+const REDUCE_OPS = ['sum', 'count', 'avg', 'min', 'max', 'first', 'last'] as const;
 
 /** Source of truth: DateUnit in ../types.ts */
 const DATE_UNITS = ['days', 'hours', 'minutes', 'seconds'] as const;
@@ -185,6 +185,7 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   },
   pick: {
     source: REQ('object'),
+    fields: OPT('array'),
   },
   omit: {
     source: REQ('object'),
@@ -228,6 +229,7 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   trim:      { input: REQ('string') },
   string_length: { input: REQ('string') },
   encode_base64: { input: REQ('string') },
+  url_encode: { input: REQ('string') },
   decode_base64: { input: REQ('string') },
   split: {
     input: REQ('string'),
@@ -544,6 +546,12 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     window_ms: REQ('number'), min_count: REQ('number'), now: REQ('number'),
     max_age_ms: OPT('number'), series_fields: OPT('array'),
   },
+  // D-339 slice 9 — which way the window's values are going (Theil–Sen slope, Mann–Kendall test).
+  trend: {
+    rows: REQ('array'), time_field: REQ('string'), value_field: REQ('string'),
+    window_ms: REQ('number'), min_count: REQ('number'), now: REQ('number'),
+    max_age_ms: OPT('number'), series_fields: OPT('array'),
+  },
   within_distance: {
     place: REQ('object'), rows: REQ('array'), latitude_field: REQ('string'),
     longitude_field: REQ('string'), radius_km: REQ('number'),
@@ -632,9 +640,9 @@ export const APPLY_VALUE_PARAM: Record<string, string> = {
   compare: 'left',
   // {array, separator} — no `field`, so no collision. Turning a per-row array
   // into a testable string is the common shape (`pubTypeList.pubType` →
-  // "Retracted Publication; Journal Article"), and `contains` is string-only,
-  // so without this there is no way to test membership of a nested array from
-  // a condition at all.
+  // "Retracted Publication; Journal Article"). Conditions also support exact
+  // array membership through `contains`; joining remains useful for display
+  // and text substring matching.
   join: 'array',
 };
 

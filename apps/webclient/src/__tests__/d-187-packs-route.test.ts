@@ -43,8 +43,10 @@ import {
 } from '../packs/bootstrap-packs-route.js';
 import type { PackAppExecuteCaller } from '../packs/pack-app-view.js';
 import {
+  PACKS_DETAIL_ADD_THING_ATTR,
   PACKS_DETAIL_NEEDS_UPDATE_ATTR,
   PACKS_DETAIL_PIN_ATTR,
+  PACKS_DETAIL_THINGS_ATTR,
   PACKS_DETAIL_TAB_ATTR,
   PACKS_DETAIL_USES_PACK_ATTR,
   PACKS_DETAIL_USES_STATE_ATTR,
@@ -750,6 +752,43 @@ describe('D-321 W2 / S8 — Packs it uses', () => {
     expect(collectText(github()!)).toContain('GitHub — Needs gh. Waiting on it: Open a pull request. Its own actions need Slack.');
     route.dispose();
   });
+
+  // ⛔ A Records pack's recipes are stored under its generated `records-<hash>` id, never its slug, so
+  // a filter by slug never saw them: a used pack that needs something named no action waiting on it.
+  // Found by D-404 slice E's live run (2026-11-19). Its own recipes are also those its manifest lists.
+  it('a Records pack: its recipes, stored under its generated id, still name the actions waiting', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialPackSlug: 'certificate-watch',
+      packsListCaller: vi.fn(async () => ({ packs: [
+        {
+          ...baseEntry({ installed: true }), slug: 'certificate-watch', name: 'Certificate Watch', installed_any_version: true,
+          recipe_refs: [{ slug: 'check-certificates', version: 1 }],
+        },
+        { ...baseEntry({ installed: true }), slug: 'openssl-x509', name: 'OpenSSL X.509', installed_any_version: true },
+      ] })),
+      recipesListCaller: async () => ({ recipes: [
+        { ...ownRecipe('check-certificates', 'Check certificates', ['recued-core.openssl-x509']), pack_slug: 'records-0123456789abcdef' } as ServerRecipeListEntry,
+      ] }),
+      packProgramsCallers: {
+        status: async () => ({
+          system: 'macos',
+          packs: [{ slug: 'openssl-x509', tools: [{ catalog: 'recued-core/openssl-x509', binary: 'openssl', state: 'missing', install: [], docs: [] }] }],
+        }),
+        setOutside: async () => { throw new Error('unused'); },
+        clearOutside: async () => { throw new Error('unused'); },
+      },
+    });
+    await route.packsPanel()!.whenLoaded();
+    const openssl = (): FakeEl | undefined => collectByAttr(root, PACKS_DETAIL_USES_PACK_ATTR)
+      .find((el) => el.getAttribute(PACKS_DETAIL_USES_PACK_ATTR) === 'openssl-x509');
+    await vi.waitFor(() => expect(openssl()?.getAttribute(PACKS_DETAIL_USES_STATE_ATTR)).toBe('needs'));
+    expect(collectText(openssl()!)).toContain('OpenSSL X.509 — Needs openssl. Waiting on it: Check certificates.');
+    route.dispose();
+  });
 });
 
 describe('Packs R22 — route list→detail wiring', () => {
@@ -1438,5 +1477,68 @@ describe('resolvePackInput', () => {
   it('returns null for empty input', () => {
     expect(resolvePackInput('')).toBeNull();
     expect(resolvePackInput('   ')).toBeNull();
+  });
+});
+
+// D-404 slice E — an installed pack that works on things in Yours, with none of any of them: its
+// Needs attention says what it needs, and its page links to Yours' form for each type.
+describe('D-404 slice E — an installed pack with nothing in Yours to work on', () => {
+  const route = (packs: PackListEntry[], initialPackSlug: string) => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const handle = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialPackSlug,
+      packsListCaller: vi.fn(async () => ({ packs })),
+      recipesListCaller: async () => ({ recipes: [] }),
+    });
+    return { root, handle };
+  };
+  const travel = (patch: Partial<PackListEntry>): PackListEntry => ({
+    ...baseEntry({ installed: true }), slug: 'travel-documents', name: 'Travel documents', installed_any_version: true, ...patch,
+  });
+
+  it('Needs attention names the one thing, or says it needs a thing; the page links to each type\'s form', async () => {
+    const { root, handle } = route([
+      travel({ missing_things: [{ type_id: 'travel_passport', type_name: 'Passport' }, { type_id: 'travel_id_card', type_name: 'ID card' }] }),
+      { ...baseEntry({ installed: true }), slug: 'body-signals', name: 'Body signals', installed_any_version: true,
+        missing_things: [{ type_id: 'body', type_name: 'Body' }] },
+    ], 'travel-documents');
+    await vi.waitFor(() => expect(collectText(collectByAttr(root, PACKS_ROUTE_NEEDS_ATTR)[0]!)).toContain('Body signals — Needs a Body'));
+    expect(collectText(collectByAttr(root, PACKS_ROUTE_NEEDS_ATTR)[0]!)).toContain('Travel documents — Needs a thing in Yours');
+    await handle.packsPanel()!.whenLoaded();
+    await vi.waitFor(() => expect(collectByAttr(root, PACKS_DETAIL_THINGS_ATTR)).toHaveLength(1));
+    const block = collectByAttr(root, PACKS_DETAIL_THINGS_ATTR)[0]!;
+    expect(collectText(block)).toContain('Things in Yours');
+    expect(collectText(block)).toContain('No Passport or ID card in Yours yet. One of them is enough.');
+    expect(collectByAttr(root, PACKS_DETAIL_ADD_THING_ATTR).map((link) => [
+      link.getAttribute(PACKS_DETAIL_ADD_THING_ATTR), link.getAttribute('href'), link.textContent,
+    ])).toEqual([
+      ['travel_passport', '#yours/new/travel_passport', 'Add a Passport'],
+      ['travel_id_card', '#yours/new/travel_id_card', 'Add an ID card'],
+    ]);
+    handle.dispose();
+  });
+
+  it('one type reads as chat says it; a pack not installed, or with nothing missing, shows nothing', async () => {
+    const one = route([travel({ missing_things: [{ type_id: 'travel_visa', type_name: 'Visa' }] })], 'travel-documents');
+    await one.handle.packsPanel()!.whenLoaded();
+    await vi.waitFor(() => expect(collectByAttr(one.root, PACKS_DETAIL_THINGS_ATTR)).toHaveLength(1));
+    expect(collectText(collectByAttr(one.root, PACKS_DETAIL_THINGS_ATTR)[0]!)).toContain('No Visa in Yours yet.');
+    expect(collectText(collectByAttr(one.root, PACKS_DETAIL_THINGS_ATTR)[0]!)).not.toContain('One of them');
+    one.handle.dispose();
+    // Not installed: whatever the row says, the page and Needs attention say nothing of it.
+    const notInstalled = route([travel({ installed: false, installed_any_version: false,
+      missing_things: [{ type_id: 'travel_visa', type_name: 'Visa' }] })], 'travel-documents');
+    await notInstalled.handle.packsPanel()!.whenLoaded();
+    expect(collectByAttr(notInstalled.root, PACKS_DETAIL_THINGS_ATTR)).toHaveLength(0);
+    expect(collectText(collectByAttr(notInstalled.root, PACKS_ROUTE_NEEDS_ATTR)[0] ?? notInstalled.root)).not.toContain('Needs a Visa');
+    notInstalled.handle.dispose();
+    const fine = route([travel({})], 'travel-documents');
+    await fine.handle.packsPanel()!.whenLoaded();
+    expect(collectByAttr(fine.root, PACKS_DETAIL_THINGS_ATTR)).toHaveLength(0);
+    expect(collectText(fine.root)).not.toContain('Needs a thing in Yours');
+    fine.handle.dispose();
   });
 });

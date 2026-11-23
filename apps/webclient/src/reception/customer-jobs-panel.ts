@@ -1,3 +1,4 @@
+import { CUSTOMER_JOB_WORKSPACE_STYLES } from './customer-job-workspace-styles.js';
 import { customerInvoiceRecordAddress } from '../data/records-navigation.js';
 import { focusCustomerWorkspace } from './customer-workspace-focus.js';
 import { receptionCustomerJobAddress,receptionSignoffAddress,receptionInboxTargetAddress,type CustomerJobTab } from './navigation.js';
@@ -71,6 +72,7 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
     @media(max-width:900px){[data-customer-jobs] .job-summary{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}[data-customer-jobs] form[aria-label="Find customer jobs"]{grid-template-columns:minmax(0,1fr) auto}[data-job-more-filters]{grid-column:1/-1;grid-row:2}}
     @media(max-width:640px){[data-customer-jobs] .job-summary{grid-template-columns:1fr}[data-customer-jobs] form[aria-label="Find customer jobs"]{grid-template-columns:minmax(0,1fr) auto}.job-search-field{grid-column:1/-1}[data-job-more-filters]{grid-column:2;grid-row:2}[data-job-more-filters][open]{grid-column:1/-1;display:grid}[data-customer-jobs] form[aria-label="Find customer jobs"]>.job-actions{grid-column:1;grid-row:2;flex-wrap:nowrap}}
     @media(max-width:640px){[data-customer-jobs] .job-statuses{grid-template-columns:1fr}}
+    ${CUSTOMER_JOB_WORKSPACE_STYLES}
   `);
   const board = add('div','');board.setAttribute('data-jobs-board','');
   const heading = add('h2',opts.jobId ? 'Customer job' : 'Customer jobs',board);
@@ -79,10 +81,10 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
 
   const form = doc.createElement('form');form.setAttribute('aria-label','Find customer jobs');board.appendChild(form);form.hidden = !!opts.jobId;
   const searchLabel = add('label','Search customer, quote or invoice',form);const search = doc.createElement('input');search.type = 'search';search.maxLength = QUOTE_SIGNOFF_SEARCH_MAX;searchLabel.appendChild(search);
-  const filterField=add('div','',form);const filterLabel = add('label','Show jobs',filterField);const filter = doc.createElement('select');filter.id = 'recued-customer-jobs-filter';
+  const filterField=add('div','',form);filterField.className = 'job-filter-field';const filterLabel = add('label','Show jobs',filterField);const filter = doc.createElement('select');filter.id = 'recued-customer-jobs-filter';
   filterLabel.setAttribute('for',filter.id);filterField.appendChild(filter);
   for (const value of CUSTOMER_JOB_FILTERS) { const option = doc.createElement('option');option.value = value;option.textContent = filters[value];filter.appendChild(option); }
-  const archiveField=add('div','',form);const archiveLabel = add('label','Job history',archiveField);const archiveFilter = doc.createElement('select');archiveFilter.id = 'recued-customer-jobs-history';archiveLabel.setAttribute('for',archiveFilter.id);archiveField.appendChild(archiveFilter);
+  const archiveField=add('div','',form);archiveField.className = 'job-filter-field';const archiveLabel = add('label','Job history',archiveField);const archiveFilter = doc.createElement('select');archiveFilter.id = 'recued-customer-jobs-history';archiveLabel.setAttribute('for',archiveFilter.id);archiveField.appendChild(archiveFilter);
   for (const [value,text] of [['active','Active jobs'],['archived','Archived jobs'],['all','Active and archived jobs']]) { const option = doc.createElement('option');option.value = value!;option.textContent = text!;archiveFilter.appendChild(option); }
   const formActions = add('div','',form);formActions.className = 'job-actions';
   const submit = button('Search jobs',formActions);submit.type = 'submit';const refresh = button('Refresh jobs',formActions);
@@ -429,7 +431,7 @@ export const mountCustomerJobsPanel = (opts: CustomerJobsPanelOptions) => {
   newer.addEventListener('click',() => { if (!loading && !boardBusy() && page.previous.length) void load({ cursor: page.previous.at(-1),previous: page.previous.slice(0,-1) }); });
   const interval = setInterval(() => { if (!disposed && root.isConnected && !opts.workspace && !loading && !inFlight()) void load();reminders?.update();paymentReminders?.update();accounts.update(); },20_000);
   searchLabel.className = 'job-search-field';
-  const moreFilters = add('details','',form);moreFilters.setAttribute('data-job-more-filters','');add('summary','Filters',moreFilters);moreFilters.append(filterField,archiveField);
+  const moreFilters = add('details','',form);moreFilters.setAttribute('data-job-more-filters','');add('summary','Filters',moreFilters);const filterFields=add('div','',moreFilters);filterFields.className = 'job-filter-fields';filterFields.append(filterField,archiveField);
   if (query.filter !== 'all' || query.archive !== 'active') (moreFilters as HTMLDetailsElement).open = true;
   controls();
   if (opts.workspace === 'accounts') void accounts.open(opts.onCloseWorkspace);

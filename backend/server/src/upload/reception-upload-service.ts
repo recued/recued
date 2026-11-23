@@ -46,6 +46,7 @@
  *  (rev 2 protocol + rev 3 shared-split + rev 4 build order + rev 5 transports). */
 
 import { randomUUID } from 'node:crypto';
+import { admitDropBlob, DropAdmissionError } from '../ports/reception/drop-admission.js';
 
 import type {
   DropLinkConfig,
@@ -158,6 +159,7 @@ export type ReceptionUploadFinalizeResult =
       readonly size_bytes: number;
     }
   | { readonly status: 'pending'; readonly reason: 'incomplete'; readonly offset: number }
+  | { readonly status: 'rejected'; readonly reason: 'not_authorized' | 'day_cap' }
   | { readonly status: 'gone'; readonly reason: 'not_found' | 'expired' };
 
 export interface ReceptionUploadCreateInput {
@@ -195,6 +197,9 @@ export interface ReceptionUploadFinalizeInput {
   readonly endpoint_id: string;
   readonly upload_id: string;
   readonly visitor_fields: ReceptionUploadFinalizeContext;
+  /** Public HTTP callers supply a live bearer check, re-run at persistence.
+   * Trusted internal recovery may omit it; registry state is always checked. */
+  readonly authorize?: () => boolean;
   readonly now?: number;
 }
 
@@ -318,13 +323,10 @@ export const createReceptionUploadService = (
     const at = nowOf();
     const endpoint_id = session.scope_key;
     const blob_id = `drop_resumable_${session.upload_id}`;
+    const visitor = (input.finalize_context ?? {}) as ReceptionUploadFinalizeContext & { authorize?: () => boolean };
 
-    // Idempotent `one_time` self-revoke on a CLEAN upload — factored out so BOTH
-    // the first finalize AND a retry that finds the row already persisted close
-    // the link. Re-attemptable: a crash between the metadata insert and the
-    // revoke must not leave the `one_time` link live (registry revoke is
-    // idempotent). Gated on `outcome === 'pending'` so a rejected upload doesn't
-    // burn the link.
+    // Recovery for rows written before atomic admission: an old interrupted
+    // finalize may have inserted its metadata without revoking the link.
     const revokeIfOneTime = (
       outcome: DropLinkProcessingOutcome,
       config: DropLinkConfig | null,
@@ -346,6 +348,9 @@ export const createReceptionUploadService = (
     // double-insert / no duplicate audit).
     const existing = dropBlobStore.findById(blob_id);
     if (existing) {
+      if (existing.endpoint_id !== endpoint_id || visitor.authorize && visitor.authorize() !== true) {
+        throw new DropAdmissionError('not_authorized');
+      }
       revokeIfOneTime(existing.processing_outcome, loadConfig(endpoint_id));
       return {
         blob_id,
@@ -355,7 +360,6 @@ export const createReceptionUploadService = (
       };
     }
 
-    const visitor = (input.finalize_context ?? {}) as ReceptionUploadFinalizeContext;
     const config = loadConfig(endpoint_id);
 
     const filename_sanitized = sanitizeFilename(session.filename);
@@ -425,23 +429,29 @@ export const createReceptionUploadService = (
     // Persist the metadata row regardless of outcome (the Abuse Inbox reads
     // rejected outcomes; the drain reactive trigger fires only on `pending`).
     // `storage_path` = the CAS hash, exactly as the single-POST path stores it.
-    dropBlobStore.insert({
-      blob_id,
-      endpoint_id,
-      uploaded_at: at,
-      source_ip_hash: null, // the dispatcher access-log carries the per-IP hash
-      visitor_email_encrypted,
-      visitor_name_encrypted,
-      visitor_description_encrypted,
-      filename_sanitized: filename_sanitized ?? '(rejected)',
-      mime_type_reported: reported,
-      mime_type_detected: detected ?? '',
-      size_bytes,
-      content_hash,
-      storage_path: content_hash,
-      scan_status: 'unscanned',
-      processing_outcome: outcome,
+    const admitted = admitDropBlob({
+      registry: getStore(), drops: dropBlobStore, now: nowOf(),
+      authorize: visitor.authorize ?? (() => true),
+      input: {
+        blob_id,
+        endpoint_id,
+        uploaded_at: at,
+        source_ip_hash: null, // the dispatcher access-log carries the per-IP hash
+        visitor_email_encrypted,
+        visitor_name_encrypted,
+        visitor_description_encrypted,
+        filename_sanitized: filename_sanitized ?? '(rejected)',
+        mime_type_reported: reported,
+        mime_type_detected: detected ?? '',
+        size_bytes,
+        content_hash,
+        storage_path: content_hash,
+        scan_status: 'unscanned',
+        processing_outcome: outcome,
+      },
     });
+    if ('conflict' in admitted) throw new DropAdmissionError(admitted.conflict);
+    if (admitted.one_time_consumed) options.invalidateRegistryCache?.(endpoint_id);
 
     // Signed `drop_blob.received` audit row (one per upload). Deterministic
     // `activity_id` (no wall-clock) so a finalize retry doesn't double-log.
@@ -466,10 +476,6 @@ export const createReceptionUploadService = (
     } catch {
       /* swallow — row persisted */
     }
-
-    // `one_time` self-revoke on a CLEAN upload (validation passed + magic-byte
-    // match) so the visitor can't reload for a fresh nonce + upload again.
-    revokeIfOneTime(outcome, config);
 
     return { blob_id, outcome, content_hash, size_bytes };
   };
@@ -596,11 +602,17 @@ export const createReceptionUploadService = (
       if (!ownedSession(input.upload_id, input.endpoint_id)) {
         return { status: 'gone', reason: 'not_found' };
       }
-      const r = await core.finalize({
-        upload_id: input.upload_id,
-        finalize_context: input.visitor_fields,
-        ...(input.now !== undefined ? { now: input.now } : {}),
-      });
+      let r: Awaited<ReturnType<typeof core.finalize>>;
+      try {
+        r = await core.finalize({
+          upload_id: input.upload_id,
+          finalize_context: { ...input.visitor_fields, ...(input.authorize ? { authorize: input.authorize } : {}) },
+          ...(input.now !== undefined ? { now: input.now } : {}),
+        });
+      } catch (error) {
+        if (error instanceof DropAdmissionError) return { status: 'rejected', reason: error.conflict };
+        throw error;
+      }
       if (r.ok) {
         return {
           status: 'finalized',

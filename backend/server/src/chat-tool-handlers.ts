@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   FTS_STOPWORDS,
   absentFromAll,
@@ -9,6 +9,7 @@ import {
 } from '@recued/fts';
 
 import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
+import { bodyNumbersAllowsRead, bodyNumbersFor } from './body-numbers-setting.js';
 import { situationPersonName } from './situations/model-projection.js';
 import type { MailFactClose, MailFactCloseTo } from './situations/mail-fact-records.js';
 import {
@@ -68,6 +69,7 @@ import {
   AssetValidationError,
   parseAssetSearchTerms,
   parseQualifiedWorkEntityId,
+  isWorkEntityKind,
   WORK_ENTITY_KIND_SET,
   calendarDayMs,
   COMMITMENT_DIRECTION_SET,
@@ -90,6 +92,13 @@ import {
   type Commitment,
   type Occasion,
   type OccasionInput,
+  occasionIsPrivate,
+  occasionNextDate,
+  occasionWaitingForNext,
+  OCCASION_TIME,
+  isOccasionTimeZone,
+  isOccasionAlertMinutes,
+  type SituationPlace,
   type AssetRule,
   type WorkEntityKind,
   isReadableCollection,
@@ -155,6 +164,11 @@ import {
   type MemoryRelationRow,
   readOwnerOperationOverride,
   type ScanFn,
+  ACCT_ALIAS_VALUES,
+  CRM_ALIAS_VALUES,
+  preapprovalCallerOf,
+  RUN_LET_THROUGH_STOPPABLE,
+  stopAllowingSummary,
 } from '@recued/contracts';
 import { recordMade } from './claim-link.js';
 import {
@@ -202,6 +216,17 @@ import {
 import {
   askAfterWaiting, conversationCarriesOn, HELD_CARRIES_ON_MESSAGE, notAskedYetMessage, noteWaitingInTurn,
 } from './chat-carries-on.js';
+import {
+  deferToRound,
+  gatherCallKey,
+  gatherOpKey,
+  gathersInRound,
+  keptForRound,
+  readsOnceAsked,
+  roundAccepts,
+  type DeferredHold,
+} from './chat-gather.js';
+import { chainRequestKeyOf, chainRequestOf } from './chain-evidence.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import { createMailReadHandler } from './mail-read-tool.js';
 import { checkContactWrite, contactAskLabels, createContactWriteHandler } from './contact-write-tool.js';
@@ -320,11 +345,13 @@ import {
   type WaitingTier1Call,
 } from './raw-op-dispatch.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
-import { recipeMayAsk, type RecipeAskLookups } from './recipe-asks-owner.js';
+import { classifyRecipeAsks, type RecipeAskLookups } from './recipe-asks-owner.js';
+import { nestedAskingVersions } from './run-question.js';
 import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
 import type { InstalledRecipeScheduleInput, InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
-import { calendarAddressOf } from './collections/calendar/provider.js';
+import { calendarAddressOf, calendarProviderKindOf } from './collections/calendar/provider.js';
+import { CALENDAR_BODY_MAX_CHARS } from './collections/calendar/calendar-table.js';
 import { parseInstantWithOffset } from '@recued/transforms';
 import { eventWhenOnTurnClock } from './chat-clock.js';
 import { calendarEventApprovalLabel } from './held-calendar-labels.js';
@@ -337,14 +364,19 @@ import { calendarEventApprovalLabel } from './held-calendar-labels.js';
 export type ChatRecipeExecutor = (
   request: ExecuteRequest,
   /** Host-set only, never from the request: the tool a caller with its own key called the
-   *  recipe by (`InternalExecuteOverrides.entry_tool_name`), as the MCP door passes it, and a
-   *  chat door's look at each record change the run makes (`record_change_check`, spec §53). */
+   *  recipe by (`InternalExecuteOverrides.entry_tool_name`), as the MCP door passes it, a
+   *  chat door's look at each record change the run makes (`record_change_check`, spec §53), and
+   *  the owner's chat's round keeping a hold's ask for its gathered approval (`defer_ask`, D-177
+   *  §N.15.9). */
   internal?: {
     readonly entry_tool_name?: string;
     readonly record_change_check?: (call: {
       readonly operation_id: string;
       readonly record_id: string;
     }) => Promise<string | undefined>;
+    readonly defer_ask?: (hold: DeferredHold) => boolean;
+    /** D-348 slice 5 — the key of the request the turn is part of (`chainRequestKeyOf`). */
+    readonly chain_request_key?: string;
   },
 ) => Promise<ExecuteResponse>;
 
@@ -356,6 +388,17 @@ export interface ChatToolHandlerDeps {
    *  Browser Toolkit read that opens its page asks nothing, and runs beside the round's other reads.
    *  Absent ⇒ such a read takes its turn among the round's calls that may ask. */
   browserRequestPassLive?: (session_id: string) => boolean;
+  /** D-402 slice F3 (§7.4) — whether the caller holds a standing "Always" for this recipe as it is
+   *  now (its version): then no step a pre-approval can stand in for asks. Absent ⇒ none is held. */
+  /** D-402 ruling 17 — `nested`: the recipes the run starts whose steps would ask, at their versions now. */
+  standingPreapproval?: (recipe: RecipeDefinition, source: ExecutionSource, nested?: ReadonlyMap<string, string>) => boolean;
+  /** D-402 slice F4 (§7.9) — "Stop allowing": end every standing permission a caller holds for a recipe
+   *  (`stop-allowing.ts`, the execute deps' one composition). Absent, or `undefined` back (the execute
+   *  deps not wired yet) ⇒ `recipe.stop_allowing` reports it unavailable. */
+  stopAllowing?: (input: { readonly caller: import('@recued/contracts').PreapprovalCaller; readonly recipe_id: string;
+    readonly by: 'owner_chat' }) => import('@recued/contracts').StopAllowingResult | undefined;
+  /** An AI app's contract, by the name the owner gave its key (any case). */
+  aiAppContractOf?: (name: string) => string | undefined;
   readMailBody?: (record: import('@recued/contracts').CollectionRecord) => Promise<string | null>;
   mailAttachments?: MailAttachmentReader;
   documentPacks?: InstalledPackScan;
@@ -370,6 +413,9 @@ export interface ChatToolHandlerDeps {
    *  Called once per listing, so the stores are read once. Absent ⇒ no recipe
    *  tool takes a `connections` argument. */
   connectionChoices?: () => (recipe: RecipeDefinition) => ReadonlyArray<Tier2ConnectionSlot>;
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers, which a held Body's note tells
+   *  them (`work.read`). Late-bound; absent ⇒ the note says the read asks. */
+  bodyNumbers?: () => Pick<import('./body-numbers-setting.js').BodyNumbersSetting, 'forChats'> | undefined;
   /** D-237 P1 — injectable clock for the source-freshness verdicts the
    *  collection reads now carry. Absent ⇒ `Date.now`, matching every D-236 call
    *  site. Present so a test can pin an age rather than infer one from wall
@@ -754,6 +800,18 @@ const runFailureDetail = (result: ExecuteResponse): string => {
   return typeof msg === 'string' && msg.length > 0 ? msg : 'the run did not complete';
 };
 
+/** D-402 slice F5 (§7.9) — the recipe whose standing permission for the owner's chats let some of this
+ *  run's writes through without asking (an "Always", a site pass, a grant or a rule): its line in the
+ *  chat offers "Stop allowing" for it. Read off the run's own record of what let each write through
+ *  (`let_through`), never off its words. Not for "Yes, this time" alone, which ended with the run, nor
+ *  for an AI app's run, which is stopped from the app's pages. */
+export const stopAllowingOfRun = (result: ExecuteResponse): { stop_allowing_recipe_id?: string } => {
+  const through = result.let_through;
+  return through?.caller?.kind === 'owner_chat'
+    && through.writes.some((write) => write.count > 0 && RUN_LET_THROUGH_STOPPABLE.has(write.by))
+    ? { stop_allowing_recipe_id: result.recipe_id } : {};
+};
+
 export const wrapRecipeRunResult = (
   result: ExecuteResponse,
   toolLabel?: string,
@@ -769,6 +827,8 @@ export const wrapRecipeRunResult = (
   const runAddress = {
     ...(run_id !== undefined ? { run_id } : {}),
     ...(dish_id !== undefined ? { dish_id } : {}),
+    // A run that wrote and then held, failed or was cancelled may have written under it too.
+    ...stopAllowingOfRun(result),
   };
   if (result.run_terminated !== undefined) {
     return {
@@ -2025,9 +2085,25 @@ const calendarEventOfRecordId = (
   return undefined;
 };
 
+/** D-405 slice 6 — `calendar.search`'s note when the only calendar it read is the one every server makes
+ *  for itself (`local`): what that calendar holds, and that an empty answer is not the owner's free day.
+ *  Words as slice 2's line for a calendar the owner names (`featureStepSentence('calendar')`). */
+export const SERVER_CALENDAR_ONLY_NOTE = 'The only calendar read is Recued\'s own on this server, which holds only the events '
+  + 'added in Recued: no calendar of the owner\'s is connected. What it holds says nothing about their other calendars; '
+  + 'say those cannot be read until one is connected, and never that the owner is free.';
+
+/** D-407 Q8 — an event its own calendar marks private says so beside its fields, as a situation item
+ *  does (`private: true`, `model-projection.ts`): a model writing for the owner's notifications calls
+ *  it only "a reminder in Yours". */
+const privateMark = (marked: true | undefined): { private?: true } => marked === true ? { private: true } : {};
+
 const createCalendarSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
+    // D-407 slice 5 — private as its calendar marks it, or as the occasion that holds it is.
+    const occasions = deps.getOccasions?.();
+    const markOf = (slug: string, source_id: string, marked: true | undefined): { private?: true } =>
+      privateMark(marked === true || occasions?.eventPrivate?.(slug, source_id) === true ? true : undefined);
     // D-205 #3 — the `data.calendar` read fence, BEFORE the registry is touched.
     const registry = deps.getCollectionRegistry();
     if (!registry) return executionError('collection registry unavailable');
@@ -2062,6 +2138,38 @@ const createCalendarSearchHandler =
       // from an enrolled calendar that is behind.
       return { ok: true, result: { matches: [], collections: [], source_freshness: [] } };
     }
+    // D-406 (Q4) — one event exactly, by the `record_id` a result or the owner's pick names: the read a picked event
+    // gets before the first round, and the one a referenced event ("Ask about this event", "Add records") always
+    // needed (a title search could find a namesake). Absence is said in the body, never by failing (see `near_id`).
+    const recordId = typeof args.record_id === 'string' && args.record_id.length > 0 ? args.record_id : undefined;
+    if (recordId !== undefined) {
+      const slug = typeof args.slug === 'string' && args.slug.length > 0 ? args.slug : undefined;
+      const scoped = slug === undefined ? collections : collections.filter((c) => c.slug === slug);
+      const found = scoped.flatMap((c) => {
+        const row = c.table.getByRecordId(recordId);
+        return row === null ? [] : [{ c, row }];
+      });
+      const common = {
+        collections: collections.map((c) => c.slug),
+        calendar_addresses: collections.map((c) => ({ collection_slug: c.slug, ...calendarAddressOf(c) })),
+        source_freshness: collectionSourceFreshnessFanOut(collections, (deps.now ?? Date.now)()),
+      };
+      if (found.length !== 1) {
+        return { ok: true, result: { matches: [], more_matches: false, ...common,
+          ...(found.length === 0
+            ? { record_not_found: recordId, note: `No event with record_id ${JSON.stringify(recordId)} is stored in ${slug === undefined ? 'the connected calendars' : `calendar ${JSON.stringify(slug)}`}. Pass a record_id and collection_slug from an earlier result or the owner's pick; ids cannot be guessed.` }
+            : { record_ambiguous: recordId, calendars: found.map(({ c }) => c.slug), note: `record_id ${JSON.stringify(recordId)} is in more than one calendar. Pass slug: the collection_slug of the event meant.` }) } };
+      }
+      const { c, row } = found[0]!;
+      const when = eventWhenOnTurnClock(row.hot, ctx.time_zone);
+      const raw = row.body_inline ?? '';
+      const body = raw.length > 0
+        ? { body: raw.slice(0, CALENDAR_BODY_MAX_CHARS), ...(raw.length > CALENDAR_BODY_MAX_CHARS ? { body_truncated: true } : {}) }
+        : row.blob_hash !== null ? { body_truncated: true } : {};
+      return { ok: true, result: { matches: [{ collection_slug: c.slug, record_id: row.record_id, source_id: row.source_id,
+        hot_fields: row.hot, ...markOf(c.slug, row.source_id, row.event.marked_private), ...(when !== undefined ? { when } : {}), received_at: row.received_at, ...body }],
+        more_matches: false, ...common } };
+    }
     try {
       const perCollectionLimit = Math.max(
         1,
@@ -2086,6 +2194,7 @@ const createCalendarSearchHandler =
               // what this search returned, and this search never returned it.
               source_id: m.source_id,
               hot_fields: m.hot,
+              ...markOf(c.slug, m.source_id, m.marked_private),
               ...(when !== undefined ? { when } : {}),
               rank: m.rank,
               // Calendar's own description, hydrated from the row.
@@ -2115,6 +2224,7 @@ const createCalendarSearchHandler =
               // D-336 (spec §56) — and the id a write takes, which this said it carried.
               source_id: r.source_id,
               hot_fields: r.hot,
+              ...markOf(c.slug, r.source_id, r.event.marked_private),
               ...(when !== undefined ? { when } : {}),
               received_at: r.received_at,
             });
@@ -2129,6 +2239,10 @@ const createCalendarSearchHandler =
           collections, query, { one: 'calendar event', many: 'calendar events' }, truncated.length > 0,
         )
         : undefined;
+      // D-405 slice 6 — only the calendar every server makes for itself was read: none of the owner's is
+      // connected, so an empty answer says nothing about their day. Said in the result the model reads,
+      // whatever the answer then carries: a fact about this search, never a link.
+      const serverCalendarOnly = collections.every((c) => c.slug === DEFAULT_LOCAL_CALENDAR_SLUG && calendarProviderKindOf(c) === 'local');
       // D-237 P1 — calendar reads its own `CalendarCollectionTable` rather than
       // the `collection.list` path, exactly as `calendar-dispatcher.ts` does, so
       // the verdict is DERIVED here from the same `health()` rather than
@@ -2148,6 +2262,7 @@ const createCalendarSearchHandler =
             (deps.now ?? Date.now)(),
           ),
           ...(hint !== undefined ? { hint } : {}),
+          ...(serverCalendarOnly ? { note: SERVER_CALENDAR_ONLY_NOTE } : {}),
         },
       };
     } catch (e) {
@@ -4713,10 +4828,81 @@ const recipeNotAskedYet = (
 ): ChatDispatchResult | null => {
   const waitingFor = askAfterWaiting(ctx.execution_source, ctx.turn_state);
   if (waitingFor === undefined || ctx.execution_source === undefined) return null;
-  return recipeMayAsk(recipe, ctx.execution_source, recipeAskLookups(deps))
+  return recipeWouldAsk(deps, recipe, ctx.execution_source)
     ? { ok: false, reason: 'not_asked_yet', detail: notAskedYetMessage(waitingFor) }
     : null;
 };
+
+/** D-402 slice F3 (§7.4) — whether a recipe, run as `source`, would ask the owner: a step that asks
+ *  every time, or one a pre-approval could stand in for with no standing "Always" held for this
+ *  version. One the caller's "Always" covers runs without asking, so it is not held back. */
+const recipeWouldAsk = (deps: ChatToolHandlerDeps, recipe: RecipeDefinition, source: ExecutionSource): boolean => {
+  const lookups = recipeAskLookups(deps);
+  const asks = classifyRecipeAsks(recipe, source, lookups);
+  if (asks.some((ask) => ask.verdict === 'still')) return true;
+  if (!asks.some((ask) => ask.verdict === 'ahead')) return false;
+  // Ruling 17 — the "Always" must name the recipes it runs too, at their versions now, as the question reads it.
+  return deps.standingPreapproval?.(recipe, source, nestedAskingVersions(asks, recipe, lookups.recipeOf)) !== true;
+};
+
+/** D-348 slice 5 — the key of the request the turn is part of, for a run it starts to carry. */
+const chainRequestOption = (ctx: ChatDispatchContext): { chain_request_key?: string } => {
+  const key = chainRequestKeyOf(ctx.turn_state);
+  return key !== undefined ? { chain_request_key: key } : {};
+};
+
+/** D-348 slice 5 — and for a pack action it calls directly, with the call's name in the audit, as a
+ *  chat write's (`<session>:<turn>:<tool>`). */
+const chainRequestOfTurn = (
+  ctx: ChatDispatchContext,
+  toolName: string,
+): { chainRequest?: { key_hash: string; request_id: string; audit_target: string } } => {
+  const request = chainRequestOf(ctx.turn_state);
+  return request !== undefined
+    ? { chainRequest: { ...request, audit_target: `${ctx.session_id ?? ''}:${ctx.turn_id ?? ''}:${toolName}` } }
+    : {};
+};
+
+/** D-177 §N.15.9 — a recipe call its round gathers (Q7): it runs past slice L while its round still
+ *  takes its kind, and its hold, if it holds, is kept for the round's end (`defer_ask`). `undefined`
+ *  when its round does not gather it. */
+const roundGatherFor = (
+  ctx: ChatDispatchContext,
+  toolName: string,
+  args: unknown,
+): { readonly defer_ask: (hold: DeferredHold) => boolean } | undefined => {
+  if (!gathersInRound(ctx.turn_state, ctx.execution_source, toolName, args)) return undefined;
+  const call_key = gatherCallKey(toolName, args);
+  if (!roundAccepts(ctx.turn_state, call_key)) return undefined;
+  return { defer_ask: (hold) => deferToRound(ctx.turn_state, { ...hold, tool_name: toolName, call_key }) };
+};
+
+/** D-177 §N.15.9 — a run its round kept for its gathered approval says so (`run_held.gathered`):
+ *  its ask goes out with the round's, so the round neither waits on it alone nor notes it twice.
+ *  `onceAsked`: its result once the round's ask is out, told where the ask went, as the result of
+ *  a call asked on its own is (D-329); the round's end reads it (`heldOnceAsked`). */
+const markGathered = (
+  result: ChatDispatchResult,
+  ctx: ChatDispatchContext,
+  onceAsked?: (approval_channels: readonly string[]) => ChatDispatchResult,
+): ChatDispatchResult => {
+  if (!(result.ok && result.run_held?.kind === 'approval' && keptForRound(ctx.turn_state, result.run_id))) return result;
+  const gathered = (held: ChatDispatchResult): ChatDispatchResult =>
+    held.ok && held.run_held?.kind === 'approval' ? { ...held, run_held: { kind: 'approval', gathered: true } } : held;
+  if (onceAsked !== undefined && result.run_id !== undefined) {
+    readsOnceAsked(ctx.turn_state, result.run_id, (approval_channels) => gathered(onceAsked(approval_channels)));
+  }
+  return gathered(result);
+};
+
+/** D-329 — a held run's chat result once its ask's channels are known, as `wrapRecipeRunResult`
+ *  forms it when the run raised its own ask: the run's address kept, which the response carries
+ *  out of sight and a copy of it drops. */
+const heldRunOnceAsked = (wrapped: ChatDispatchResult, response: ExecuteResponse, conversation: unknown) =>
+  (approval_channels: readonly string[]): ChatDispatchResult => {
+    const told = wrapRecipeRunResult({ ...response, approval_channels: [...approval_channels] }, undefined, conversation);
+    return told.ok && wrapped.ok ? { ...wrapped, result: told.result } : wrapped;
+  };
 
 /** What `recipeMayAsk` reads a recipe's steps against: their manifests, the packs' operations, the
  *  owner's rulings on them, and the vendor-neutral writes' targets. */
@@ -4732,6 +4918,11 @@ const recipeAskLookups = (deps: ChatToolHandlerDeps): RecipeAskLookups => {
           readOwnerOperationOverride({ scan: contracts, ingredient_id, operation_id }) }
       : {}),
     ...(deps.neutralWriteTargets !== undefined ? { neutralWriteTargets: deps.neutralWriteTargets } : {}),
+    // D-402 slice F1 — a recipe one of its operations runs (D-232), read as its own steps.
+    recipeOf: (recipe_id: string) => deps.getRecipeStore().get(recipe_id),
+    // D-339 slice 12a — a Body's numbers, which the owner's chats on "Allow" read without asking.
+    heldReadAllowed: (source: ExecutionSource, slug: string, operation_id: string) =>
+      bodyNumbersAllowsRead(deps.bodyNumbers?.(), source, slug, operation_id),
   };
 };
 
@@ -4771,11 +4962,13 @@ const createRecipeRunHandler =
         }
       }
     }
-    // D-337 slice L — not run while a call of this turn waits, when it may ask the owner.
+    // D-337 slice L — not run while a call of this turn waits, when it may ask the owner, unless
+    // its round gathers it (D-177 §N.15.9).
     const runRecipe = (req.recipe as RecipeDefinition | undefined)
       ?? (req.recipe_id ? deps.getRecipeStore().get(req.recipe_id) : null);
+    const gather = roundGatherFor(ctx, 'recipe.run', args);
     if (runRecipe) {
-      const notAsked = recipeNotAskedYet(deps, runRecipe, ctx);
+      const notAsked = gather === undefined ? recipeNotAskedYet(deps, runRecipe, ctx) : null;
       if (notAsked !== null) return notAsked;
       // D-336 (spec §48–§49) — a CRM change given an id that is not a CRM record's, or a CRM
       // contact the user named only in part, is refused first.
@@ -4784,8 +4977,14 @@ const createRecipeRunHandler =
     }
     try {
       // D-336 (spec §53) — and a contact the run finds itself is asked about at its change.
-      const result = await execute(req, { record_change_check: crmContactChangeCheck(deps, ctx, 'recipe.run') });
-      return wrapRecipeRunResult(result, undefined, ctx.execution_source);
+      const result = await execute(req, {
+        record_change_check: crmContactChangeCheck(deps, ctx, 'recipe.run'),
+        ...(gather !== undefined ? { defer_ask: gather.defer_ask } : {}),
+        // D-348 slice 5 — the request this turn is part of, for the rule the owner accepted for it.
+        ...chainRequestOption(ctx),
+      });
+      const wrapped = wrapRecipeRunResult(result, undefined, ctx.execution_source);
+      return markGathered(wrapped, ctx, heldRunOnceAsked(wrapped, result, ctx.execution_source));
     } catch (e) {
       return refusalOf(e);
     }
@@ -4841,8 +5040,10 @@ const dispatchTier2Once =
     // owner's own chat handed the recipe whatever the model wrote.
     const dateIssue = recipeDateArgumentIssue(recipe, args);
     if (dateIssue !== null) return invalidArgs(dateIssue);
-    // D-337 slice L — not run while a call of this turn waits, when it may ask the owner.
-    const notAsked = recipeNotAskedYet(deps, recipe, ctx);
+    // D-337 slice L — not run while a call of this turn waits, when it may ask the owner, unless
+    // its round gathers it (D-177 §N.15.9).
+    const gather = roundGatherFor(ctx, toolName, args);
+    const notAsked = gather === undefined ? recipeNotAskedYet(deps, recipe, ctx) : null;
     if (notAsked !== null) return notAsked;
     // D-137 Trio #D Codex P1 fold — channel-aware trigger_source so
     // Tier 2 recipes invoked over MCP wire trip the same engine gates
@@ -4875,8 +5076,11 @@ const dispatchTier2Once =
         entry_tool_name: toolName,
         // D-336 (spec §53) — and a contact the run finds itself is asked about at its change.
         record_change_check: crmContactChangeCheck(deps, ctx, toolName),
+        ...(gather !== undefined ? { defer_ask: gather.defer_ask } : {}),
+        ...chainRequestOption(ctx),
       });
-      return wrapRecipeRunResult(result, undefined, ctx.execution_source);
+      const wrapped = wrapRecipeRunResult(result, undefined, ctx.execution_source);
+      return markGathered(wrapped, ctx, heldRunOnceAsked(wrapped, result, ctx.execution_source));
     } catch (e) {
       return refusalOf(e);
     }
@@ -4893,7 +5097,11 @@ export const createChatTier2Dispatch = (deps: ChatToolHandlerDeps): Tier2Handler
     if (release === undefined) return dispatchOnce(toolName, raw, ctx);
     try {
       const result = await dispatchOnce(toolName, raw, ctx);
-      if (result.ok && result.run_held?.kind === 'approval') noteWaitingInTurn(ctx.turn_state, toolName);
+      // Once per held run (the turn notes it too); a run kept for its round's end waits with the
+      // round's approval instead (D-177 §N.15.9).
+      if (result.ok && result.run_held?.kind === 'approval' && result.run_held.gathered !== true) {
+        noteWaitingInTurn(ctx.turn_state, toolName, result.run_id);
+      }
       return result;
     } finally {
       release();
@@ -4919,7 +5127,7 @@ const askTurnFor = async (deps: ChatToolHandlerDeps, toolName: string, raw: unkn
   if (parsed === null || state === undefined || ctx.execution_source === undefined) return undefined;
   const recipe = deps.getRecipeStore().get(parsed.recipe_id);
   if (recipe?.metadata?.concurrency_safe !== true) return undefined;
-  if (!recipeMayAsk(recipe, ctx.execution_source, recipeAskLookups(deps))) return undefined;
+  if (!recipeWouldAsk(deps, recipe, ctx.execution_source)) return undefined;
   const ops = recipe.steps.flatMap((step) => (typeof (step as { op?: unknown }).op === 'string' ? [(step as { op: string }).op] : []));
   if (ops.length > 0 && ops.every((op) => BROWSER_READ_OPS.has(op))) {
     const page = asObject(raw)?.page;
@@ -5176,7 +5384,8 @@ const bookingTime = (value: unknown): number | null =>
 /** D-343 slice 1 (ruling 14) — the chat changes a booking as the owner's booking dialog does:
  *  how it went (`state`), its time (`starts_at`, then `ends_at` or its kept length) or its
  *  title. Nothing here tells a booking's visitor, as the dialog does not; a booking made from
- *  the reception page has one, so its result says they were not told, for the model to pass on. */
+ *  the reception page has one, so its result says they were not told and how to tell them: the
+ *  reception pack's "Tell a booking's visitor about a change", whose send asks the owner. */
 const updateBookingFromChat = async (
   deps: ChatToolHandlerDeps,
   crud: WorkEntityCrudRpcDeps,
@@ -5247,7 +5456,9 @@ const updateBookingFromChat = async (
   const visitorNotTold = booking.reception_record_id !== undefined
     && (patch.slot_start_at !== undefined || (patch.lifecycle_state === 'cancelled' && booking.lifecycle_state !== 'cancelled'));
   return { ok: true, result: { updated: true, kind: 'booking', id, fields,
-    ...(visitorNotTold ? { note: 'Its visitor booked it through the user\'s reception page and has not been told. Say so.' } : {}) } };
+    ...(visitorNotTold ? { note: 'Its visitor booked it through the user\'s reception page and has not been told. Say so, and ask '
+      + 'the user whether to tell them. If they want to, call "tools.search" for "tell a booking\'s visitor about a change" and run '
+      + 'it with this booking\'s id and a short message for the visitor; it asks the user before it sends.' } : {}) } };
 };
 
 /** D-343 slice 1 — the occasions made in Yours, as the chat changes them: read, and saved as Yours'
@@ -5256,10 +5467,20 @@ const updateBookingFromChat = async (
 export interface ChatOccasions {
   read(id: string): Occasion | null;
   save(input: OccasionInput, owner: ExecutionSource): Promise<unknown>;
+  /** D-407 slice 1 — every occasion, for `work.search`. Absent ⇒ the chat finds none that way. */
+  list?(): Occasion[];
+  /** D-407 slice 1 — a place by the name the user said, as Yours keeps one (`where`). */
+  place?(name: string): SituationPlace;
+  /** D-407 slice 4 — the calendar occasions put their events in, chosen once by the owner; null when none is. Absent:
+   *  this server writes no occasion's event. */
+  calendar?(): { name: string } | null;
+  /** D-407 slice 5 (§4.2) — the event an occasion holds is private as its occasion is: one it adopted (a clinic's
+   *  invite) carries no marking of Recued's, and `calendar.search` named it to the model unmarked. */
+  eventPrivate?(slug: string, source_id: string): boolean;
 }
 /** No contract can grant this yet, so only the owner's own chat, messenger or schedule (no
  *  governing contract) changes an occasion, and an AI app is refused. */
-export const OCCASION_UPDATE_OP_ID = 'core.occasion.update';
+export const OCCASION_UPDATE_OP_ID = 'core.situation.occasion-update';
 const OCCASION_TITLE_MAX = 500;
 
 /** D-343 slice 1 (ruling 14) — the chat changes an occasion made in Yours: its title, its date
@@ -5277,9 +5498,9 @@ const updateOccasionFromChat = async (
   if (!occasions) return executionError('work.update: occasions are unavailable');
   const id = typeof args.id === 'string' ? args.id.trim() : '';
   if (id.length === 0) return invalidArgs('work.update requires the id of the row to change');
-  const other = Object.keys(args).filter((name) => !['kind', 'id', 'title', 'on', 'muted'].includes(name) && args[name] !== undefined);
+  const other = Object.keys(args).filter((name) => !['kind', 'id', 'title', 'on', 'time', 'alert_minutes_before', 'in_calendar', 'muted', 'private', 'where', 'add_steps', 'no_next'].includes(name) && args[name] !== undefined);
   if (other.length > 0) {
-    return invalidArgs(`work.update: an occasion takes \`title\`, \`on\` and \`muted\`, not ${other.map((name) => `\`${name}\``).join(', ')}`);
+    return invalidArgs(`work.update: an occasion takes \`title\`, \`on\`, \`time\`, \`alert_minutes_before\`, \`in_calendar\`, \`muted\`, \`private\`, \`where\`, \`add_steps\` and \`no_next\`, not ${other.map((name) => `\`${name}\``).join(', ')}`);
   }
   if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, OCCASION_UPDATE_OP_ID)) {
     return neededSwitchOff('work.update', OCCASION_UPDATE_OP_ID, ctx.execution_source);
@@ -5302,8 +5523,10 @@ const updateOccasionFromChat = async (
     if (occasion.source_next_on === undefined) next.month_day = args.on.slice(5);
     else {
       const today = assetDateAt(deps.now?.() ?? Date.now(), ctx.time_zone ?? 'UTC');
-      if (args.on < today) return invalidArgs(`work.update: “${occasion.title}” happens once, so \`on\` is today or later`);
+      if (args.on < today) return invalidArgs(`work.update: “${occasion.title}” ${occasion.after_each === true ? 'takes its next one' : 'happens once'}, so \`on\` is today or later`);
       next.source_next_on = args.on;
+      // D-407 slice 2 — the next one of one that comes back whenever the last one says, as "When is the next one?" sets it.
+      if (occasion.after_each === true) next.month_day = args.on.slice(5);
     }
     fields.push('on');
   }
@@ -5315,9 +5538,60 @@ const updateOccasionFromChat = async (
     next.muted = args.muted;
     fields.push('muted');
   }
-  if (fields.length === 0) return invalidArgs("work.update: send an occasion's new `title`, `on` or `muted`");
+  // D-407 slice 2 (Q2) — its time of day, on its own zone, else the turn's.
+  if (args.time !== undefined) {
+    if (typeof args.time !== 'string' || !OCCASION_TIME.test(args.time)) return invalidArgs('work.update: an occasion\'s `time` is HH:mm, such as "10:30"');
+    next.time = args.time; next.time_zone = occasion.time_zone ?? ctx.time_zone ?? 'UTC';
+    fields.push('time');
+  }
+  // D-407 slice 4 — In my calendar, or Recued only.
+  if (args.in_calendar !== undefined) {
+    if (typeof args.in_calendar !== 'boolean') return invalidArgs('work.update: `in_calendar` is `true` or `false`');
+    if (args.in_calendar && !occasions.calendar?.()) return invalidArgs('work.update: no calendar is chosen for occasions yet: the user chooses one in Yours');
+    if (args.in_calendar && occasion.source) return invalidArgs(`work.update: “${occasion.title}” is dated by its source, so it has no event of its own`);
+    next.in_calendar = args.in_calendar;
+    fields.push('in_calendar');
+  }
+  // D-407 — its alert before that time; `null` takes it away.
+  if (args.alert_minutes_before !== undefined) {
+    if (args.alert_minutes_before === null) delete next.alert_minutes;
+    else if (!isOccasionAlertMinutes(args.alert_minutes_before)) return invalidArgs('work.update: `alert_minutes_before` is whole minutes from 0 to 1440, or `null`');
+    else if (next.time === undefined) return invalidArgs(`work.update: “${occasion.title}” has no \`time\` yet: send one with the alert`);
+    else next.alert_minutes = args.alert_minutes_before;
+    fields.push('alert_minutes_before');
+  }
+  // D-407 slice 2 — "No next one": it stops asking, and stays a one-time occasion that has happened.
+  if (args.no_next !== undefined) {
+    if (args.no_next !== true) return invalidArgs('work.update: `no_next` is `true`, when the user says there is no next one');
+    if (occasion.after_each !== true) return invalidArgs(`work.update: “${occasion.title}” does not ask for its next one`);
+    if (args.on !== undefined) return invalidArgs('work.update: `no_next` ends it, so it takes no `on`');
+    delete next.after_each;
+    fields.push('no_next');
+  }
+  // D-407 slice 1 — whether it is private, where it is, and steps before it.
+  if (args.private !== undefined) {
+    if (typeof args.private !== 'boolean') return invalidArgs('work.update: `private` is `true` or `false`');
+    next.private = args.private;
+    fields.push('private');
+  }
+  if (args.where !== undefined) {
+    const where = typeof args.where === 'string' ? args.where.trim() : '';
+    if (where.length === 0 || where.length > OCCASION_TITLE_MAX) return invalidArgs('work.update: an occasion\'s `where` is the place, as the user said it');
+    if (!occasions.place) return executionError('work.update: places are unavailable');
+    next.where = occasions.place(where);
+    fields.push('where');
+  }
+  if (args.add_steps !== undefined) {
+    const steps = occasionSteps(args.add_steps, 'add_steps');
+    if (typeof steps === 'string') return invalidArgs(`work.update: ${steps}`);
+    next.rules = [...occasion.rules, ...steps];
+    fields.push('add_steps');
+  }
+  if (fields.length === 0) return invalidArgs("work.update: send an occasion's new `title`, `on`, `muted`, `private`, `where` or `add_steps`");
   if (next.title === occasion.title && next.month_day === occasion.month_day && next.source_next_on === occasion.source_next_on
-    && next.muted === occasion.muted) {
+    && next.muted === occasion.muted && occasionIsPrivate(next) === occasionIsPrivate(occasion) && next.private === occasion.private
+    && JSON.stringify(next.where) === JSON.stringify(occasion.where) && next.rules.length === occasion.rules.length && next.after_each === occasion.after_each
+    && next.time === occasion.time && next.alert_minutes === occasion.alert_minutes && next.in_calendar === occasion.in_calendar) {
     return invalidArgs(`work.update: “${occasion.title}” already says that, so nothing would change`);
   }
   if (check) return WOULD_RUN;
@@ -5327,6 +5601,187 @@ const updateOccasionFromChat = async (
     return executionError(`work.update failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   return { ok: true, result: { updated: true, kind: 'occasion', id, fields } };
+};
+
+/** D-407 slice 1 — the chat's new occasion. No contract grants it yet, so only the owner's own chat, messenger or
+ *  schedule adds one, as `OCCASION_UPDATE_OP_ID` changes one, and an AI app is refused. */
+export const OCCASION_CREATE_OP_ID = 'core.situation.occasion-create';
+/** The fields `work.create` takes for an occasion alone. */
+const OCCASION_CREATE_FIELDS = ['on', 'repeat', 'people', 'where', 'private', 'steps', 'remind_days_before', 'time', 'time_zone', 'alert_minutes_before', 'in_calendar'] as const;
+const OCCASION_LIST_MAX = 20;
+const OCCASION_DAYS_MAX = 366;
+
+/** A step before an occasion, as Yours' "Add habit" keeps one: a task that many days before its date, closed by the
+ *  day it is due (`strict_expire`, as an occasion's task must). */
+const occasionStepRule = (title: string, days: number): AssetRule => ({
+  id: `habit_${randomUUID().replaceAll('-', '')}`, title, enabled: true, muted: false, pinned: true, consequence: 'routine',
+  expiry_policy: 'strict_expire', when: { kind: 'expiry', field: 'next_on', ...(days > 0 ? { offset: { amount: days, unit: 'days' as const } } : {}) },
+  reaction: { notify: true, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true },
+});
+/** The occasion's own reminder: before it as asked, else a week before as Yours' default, and on the day. */
+const occasionDateRule = (title: string, before: readonly number[] | undefined): AssetRule => ({
+  id: 'date', title, enabled: true, muted: false, pinned: false, consequence: 'routine', expiry_policy: 'strict_expire',
+  when: { kind: 'expiry', field: 'next_on' }, reaction: { notify: true, occurrence: 'notice', emit: false },
+  schedule: { before: before === undefined ? [{ amount: 1, unit: 'weeks' }] : before.map((days) => ({ amount: days, unit: 'days' as const })), on_day: true },
+});
+/** Steps as their rules, or why they are refused. */
+const occasionSteps = (raw: unknown, name: string): AssetRule[] | string => {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > OCCASION_LIST_MAX) return `\`${name}\` is a list of up to ${String(OCCASION_LIST_MAX)} steps: [{"title": "Blood test", "days_before": 7}]`;
+  const rules: AssetRule[] = [];
+  for (const step of raw) {
+    const title = isPlainObject(step) && typeof step.title === 'string' ? step.title.trim() : '';
+    const days = isPlainObject(step) ? step.days_before : undefined;
+    if (title.length === 0 || title.length > OCCASION_TITLE_MAX || typeof days !== 'number' || !Number.isInteger(days) || days < 0 || days > OCCASION_DAYS_MAX) {
+      return `each of \`${name}\` has a \`title\` and \`days_before\`, a whole number of days from 0 to ${String(OCCASION_DAYS_MAX)}`;
+    }
+    rules.push(occasionStepRule(title, days));
+  }
+  return rules;
+};
+/** The people a new occasion names, as contact ids: an email a contact has, else that email; a name one contact
+ *  has; a name none has, added as a name-only contact (D-336, Q6) once the owner approves. Two with that name, or
+ *  a blank, is refused, saying why. In a check, nothing is added. */
+const occasionPeople = (deps: ChatToolHandlerDeps, raw: unknown, source: ExecutionSource | undefined, check: boolean): string[] | string => {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.length > OCCASION_LIST_MAX || raw.some((person) => typeof person !== 'string' || person.trim().length === 0 || person.length > 320)) {
+    return `\`people\` is a list of up to ${String(OCCASION_LIST_MAX)} emails or names`;
+  }
+  const store = deps.getContactStore();
+  const ids: string[] = [];
+  for (const person of (raw as string[]).map((value) => value.trim())) {
+    if (person.includes('@')) {
+      const contact = store?.get(person.toLowerCase());
+      ids.push(contact?.contact_id ?? contact?.email ?? person.toLowerCase());
+      continue;
+    }
+    const named = (store?.list({ name_contains: person, limit: 50 }) ?? []).filter((contact) => contact.name?.trim().toLowerCase() === person.toLowerCase());
+    if (named.length > 1) return `two contacts are named “${person}”: pass the email \`contact.search\` gives for the one meant`;
+    if (named.length === 1) { ids.push(named[0]!.contact_id ?? named[0]!.email); continue; }
+    if (check) { ids.push(person); continue; }
+    if (!store) return 'contacts are unavailable, so a person is named by an email `contact.search` found';
+    const made = store.createMentionOnlyContact({ name: person }, deps.now?.() ?? Date.now(), { origin_actor: source?.actor ?? 'user_self' });
+    ids.push(made.contact_id ?? made.email);
+  }
+  return [...new Set(ids)];
+};
+
+/** D-407 slice 1 (§5.1, Q1) — the chat adds an occasion: its date and how it comes back, who and where, whether it
+ *  is private (a health one is, the description says, and the card shows it), its reminders and the steps before
+ *  it. Saved as Yours' "Save occasion" saves one, as the owner's own (D-343 ruling 16). */
+const createOccasionFromChat = async (
+  deps: ChatToolHandlerDeps,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+  check: boolean,
+): Promise<ChatDispatchResult> => {
+  const occasions = deps.getOccasions?.();
+  if (!occasions) return executionError('work.create: occasions are unavailable');
+  const allowed = new Set<string>(['kind', 'title', ...OCCASION_CREATE_FIELDS]);
+  const other = Object.keys(args).filter((name) => !allowed.has(name) && args[name] !== undefined);
+  // D-407 slice 1 — measured live: the model kept a time or a note in `body` and then lost the turn to the retry.
+  if (other.includes('body')) {
+    return invalidArgs('work.create: an occasion keeps no `body`: put a time of day in `time` ("17:00"), and say anything else in your answer');
+  }
+  if (other.length > 0) {
+    return invalidArgs(`work.create: an occasion takes \`title\`, \`on\`, \`repeat\`, \`time\`, \`time_zone\`, \`alert_minutes_before\`, \`in_calendar\`, \`people\`, \`where\`, \`private\`, \`steps\` and \`remind_days_before\`, not ${other.map((name) => `\`${name}\``).join(', ')}`);
+  }
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  if (title.length === 0 || title.length > OCCASION_TITLE_MAX) return invalidArgs(`work.create: an occasion's \`title\` is its name, at most ${String(OCCASION_TITLE_MAX)} characters`);
+  if (typeof args.on !== 'string' || !isAssetDate(args.on)) return invalidArgs("work.create: an occasion's `on` is its date, YYYY-MM-DD");
+  const on = args.on;
+  const repeat = args.repeat ?? 'once';
+  if (repeat !== 'yearly' && repeat !== 'once' && repeat !== 'after_each') return invalidArgs('work.create: an occasion\'s `repeat` is `yearly`, `once` or `after_each`');
+  if (repeat !== 'yearly' && on < assetDateAt(deps.now?.() ?? Date.now(), ctx.time_zone ?? 'UTC')) {
+    return invalidArgs(`work.create: “${title}” ${repeat === 'once' ? 'happens once' : 'is the next one'}, so \`on\` is today or later`);
+  }
+  if (args.private !== undefined && typeof args.private !== 'boolean') return invalidArgs('work.create: `private` is `true` or `false`');
+  const where = args.where === undefined ? undefined : typeof args.where === 'string' ? args.where.trim() : '';
+  if (where !== undefined && (where.length === 0 || where.length > OCCASION_TITLE_MAX)) return invalidArgs('work.create: an occasion\'s `where` is the place, as the user said it');
+  const steps = args.steps === undefined ? [] : occasionSteps(args.steps, 'steps');
+  if (typeof steps === 'string') return invalidArgs(`work.create: ${steps}`);
+  const before = args.remind_days_before;
+  if (before !== undefined && (!Array.isArray(before) || before.length === 0 || before.length > 5
+    || before.some((days) => typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > OCCASION_DAYS_MAX))) {
+    return invalidArgs(`work.create: \`remind_days_before\` is a list of up to 5 whole numbers of days, 1 to ${String(OCCASION_DAYS_MAX)}`);
+  }
+  // D-407 slice 2 (Q2) — its time of day, on the turn's clock unless the call names the appointment's own zone.
+  if (args.time !== undefined && (typeof args.time !== 'string' || !OCCASION_TIME.test(args.time))) return invalidArgs('work.create: an occasion\'s `time` is HH:mm, such as "10:30"');
+  if (args.time_zone !== undefined && args.time === undefined) return invalidArgs('work.create: `time_zone` goes with a `time`');
+  const timeZone = args.time_zone ?? ctx.time_zone ?? 'UTC';
+  if (args.time !== undefined && !isOccasionTimeZone(timeZone)) return invalidArgs('work.create: `time_zone` is an IANA zone, such as "America/Chicago"');
+  // D-407 — its alert before that time, sent by the occasion itself.
+  if (args.alert_minutes_before !== undefined && !isOccasionAlertMinutes(args.alert_minutes_before)) {
+    return invalidArgs('work.create: `alert_minutes_before` is whole minutes from 0 to 1440, such as 120 for "2 hours before"');
+  }
+  if (args.alert_minutes_before !== undefined && args.time === undefined) return invalidArgs('work.create: `alert_minutes_before` goes with a `time`');
+  // D-407 slice 4 (Q4) — In my calendar: ticked to start once the owner chose a calendar, unless the user says Recued only.
+  if (args.in_calendar !== undefined && typeof args.in_calendar !== 'boolean') return invalidArgs('work.create: `in_calendar` is `true` or `false`');
+  const calendar = occasions.calendar?.() ?? null;
+  if (args.in_calendar === true && calendar === null) {
+    return invalidArgs('work.create: no calendar is chosen for occasions yet: the user chooses one in Yours. Leave `in_calendar` out to keep it in Recued only');
+  }
+  const people = occasionPeople(deps, args.people, ctx.execution_source, true);
+  if (typeof people === 'string') return invalidArgs(`work.create: ${people}`);
+  if (where !== undefined && !occasions.place) return executionError('work.create: places are unavailable');
+  if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, OCCASION_CREATE_OP_ID)) {
+    return neededSwitchOff('work.create', OCCASION_CREATE_OP_ID, ctx.execution_source);
+  }
+  if (check) return WOULD_RUN;
+  const ids = occasionPeople(deps, args.people, ctx.execution_source, false);
+  if (typeof ids === 'string') return invalidArgs(`work.create: ${ids}`);
+  const input: OccasionInput = {
+    title, month_day: on.slice(5), ...(repeat !== 'yearly' ? { source_next_on: on } : {}), ...(repeat === 'after_each' ? { after_each: true as const } : {}), people: ids,
+    ...(where !== undefined ? { where: occasions.place!(where) } : {}), ...(typeof args.private === 'boolean' ? { private: args.private } : {}),
+    ...(typeof args.time === 'string' ? { time: args.time, time_zone: timeZone as string } : {}),
+    ...(isOccasionAlertMinutes(args.alert_minutes_before) ? { alert_minutes: args.alert_minutes_before } : {}),
+    ...(calendar !== null ? { in_calendar: args.in_calendar !== false } : {}),
+    muted: false, rules: [occasionDateRule(title, before as number[] | undefined), ...steps],
+  };
+  let saved: unknown;
+  try {
+    saved = await occasions.save(input, ctx.execution_source!);
+  } catch (e) {
+    return executionError(`work.create failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const id = isPlainObject(saved) && typeof saved.id === 'string' ? saved.id : undefined;
+  return { ok: true, result: { created: true, kind: 'occasion', ...(id !== undefined ? { id } : {}), title, on, repeat,
+    ...(typeof args.time === 'string' ? { time: args.time } : {}), private: occasionIsPrivate(input), steps: steps.length } };
+};
+
+/** D-407 slice 1 (A3) — an occasion as `work.search` and `work.read` give it: what changing it needs. Its people
+ *  and place are left out: `situation.query` gives them, aliased as everywhere else. `private: true` marks one the
+ *  owner's notifications call only "a reminder in Yours". */
+const occasionForChat = (occasion: Occasion, today: string): Record<string, unknown> => {
+  const steps = occasion.rules.filter((rule) => rule.reaction.occurrence === 'action').map((rule) => ({ title: rule.title,
+    days_before: rule.when.kind === 'expiry' && rule.when.offset ? rule.when.offset.amount * (rule.when.offset.unit === 'weeks' ? 7 : rule.when.offset.unit === 'months' ? 30 : 1) : 0 }));
+  return { kind: 'occasion', id: occasion.id, title: occasion.title, next_on: occasionNextDate(occasion, today),
+    repeat: occasion.after_each === true ? 'after_each' : occasion.source_next_on !== undefined && !occasion.source ? 'once' : 'yearly',
+    ...(occasionWaitingForNext(occasion, today) !== undefined ? { waiting_for_next: true, last_on: occasion.source_next_on } : {}),
+    ...(occasion.time !== undefined ? { time: occasion.time } : {}),
+    ...(occasion.alert_minutes !== undefined ? { alert_minutes_before: occasion.alert_minutes } : {}),
+    ...(occasion.in_calendar === true ? { in_calendar: true } : {}),
+    ...(occasionIsPrivate(occasion) ? { private: true } : {}), ...(occasion.muted ? { muted: true } : {}), ...(steps.length > 0 ? { steps } : {}) };
+};
+const searchOccasionsFromChat = (deps: ChatToolHandlerDeps, args: Record<string, unknown>, ctx: ChatDispatchContext): ChatDispatchResult => {
+  const occasions = deps.getOccasions?.();
+  if (!occasions?.list) return executionError('work.search: occasions are unavailable');
+  const today = assetDateAt(deps.now?.() ?? Date.now(), ctx.time_zone ?? 'UTC');
+  const words = (typeof args.query === 'string' ? args.query.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [] : []);
+  const limit = typeof args.limit === 'number' && Number.isInteger(args.limit) && args.limit > 0 ? Math.min(args.limit, 50) : 20;
+  const scored = occasions.list().map((occasion) => {
+    const text = occasion.title.toLowerCase();
+    return { occasion, score: words.filter((word) => text.includes(word)).length };
+  }).filter((row) => words.length === 0 || row.score > 0)
+    .sort((a, b) => b.score - a.score || (occasionNextDate(a.occasion, today) ?? '9999').localeCompare(occasionNextDate(b.occasion, today) ?? '9999'));
+  return { ok: true, result: { matches: scored.slice(0, limit).map((row) => occasionForChat(row.occasion, today)), more_matches: scored.length > limit } };
+};
+const readOccasionFromChat = (deps: ChatToolHandlerDeps, args: Record<string, unknown>, ctx: ChatDispatchContext): ChatDispatchResult => {
+  const occasions = deps.getOccasions?.();
+  if (!occasions) return executionError('work.read: occasions are unavailable');
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  const occasion = id.length > 0 ? occasions.read(id) : null;
+  if (!occasion) return invalidArgs(`work.read: there is no occasion \`${id}\`; work.search with kind \`occasion\` gives each with its id`);
+  return { ok: true, result: { entity: occasionForChat(occasion, assetDateAt(deps.now?.() ?? Date.now(), ctx.time_zone ?? 'UTC')) } };
 };
 
 export const BOOKING_CREATE_OP_ID = 'core.work-entity.booking.create';
@@ -5405,7 +5860,7 @@ const closeMailFactFromChat = async (
 const createWorkUpdateHandler =
   (deps: ChatToolHandlerDeps, check = false): Tier1Handler =>
   async (raw, ctx) => {
-    const args = asObject(raw);
+    let args = asObject(raw);
     // An occasion is kept in Yours, and a mail fact is the mail's, not in the work graph.
     if (args?.kind === 'occasion') return updateOccasionFromChat(deps, args, ctx, check);
     if (args?.kind === 'mail_fact') return closeMailFactFromChat(deps, args, ctx, check);
@@ -5416,6 +5871,16 @@ const createWorkUpdateHandler =
     const kind = args.kind;
     if (kind === 'asset') return updateAssetFromChat(deps, args, ctx, check);
     if (kind === 'booking') return updateBookingFromChat(deps, crud, args, ctx, check);
+    // A qualified id (as `work.search` returns it, or as the dispatch qualifies a row on
+    // Recued's own Source) names the local row the kernel CRUD writes. ⛔ Found live
+    // (2026-11-15): `work_entity.upsert` reads its id raw, so an approved change of a
+    // qualified task id failed "not found" after the owner said yes.
+    // A booking resolves its own. The result names the id as the model sent it.
+    const sentId = typeof args.id === 'string' ? args.id.trim() : '';
+    if (typeof args.id === 'string' && isWorkEntityKind(kind)) {
+      const local = workRowLocalId(crud, kind, args.id.trim());
+      if (local !== undefined) args = { ...args, id: local };
+    }
     if (!isWorkCreateKind(kind)) {
       return invalidArgs(
         `work.update requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset', 'booking', 'occasion', 'mail_fact'].join(' / ')}`,
@@ -5431,7 +5896,7 @@ const createWorkUpdateHandler =
     for (const name of ['starts_at', 'ends_at'] as const) {
       if (args[name] !== undefined) return invalidArgs(`work.update: \`${name}\` applies to a booking only`);
     }
-    for (const name of ['on', 'muted'] as const) {
+    for (const name of ['on', 'muted', 'no_next', 'time', 'alert_minutes_before', 'in_calendar'] as const) {
       if (args[name] !== undefined) return invalidArgs(`work.update: \`${name}\` applies to an occasion only`);
     }
     // D-343 slice 1 — a commitment is kept or cancelled on its own, as a task is ticked off.
@@ -5471,6 +5936,8 @@ const createWorkUpdateHandler =
     if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
       if (kind !== 'task') return wrongDate('due_at', 'task');
       put('due_at', 'due_at', args.due_at);
+    } else if (args.due_at !== undefined && args.due_at !== null) {
+      return invalidArgs('work.update: `due_at` is the day "YYYY-MM-DD", or the day and time on the user\'s clock "YYYY-MM-DDTHH:mm"');
     }
     if (args.clear_due_at === true) {
       if (kind !== 'task') return wrongDate('clear_due_at', 'task');
@@ -5559,7 +6026,7 @@ const createWorkUpdateHandler =
         // webclient's Today toggle takes, and re-stamps `completed_at` when the
         // owner says "mark it done" on a task that already is.
         await guardTaskMarkDone(crud, { id, done: args.done as boolean });
-        return { ok: true, result: { updated: true, kind, id, done: args.done as boolean } };
+        return { ok: true, result: { updated: true, kind, id: sentId, done: args.done as boolean } };
       }
       await handleWorkEntityUpsert(
         crud,
@@ -5568,7 +6035,7 @@ const createWorkUpdateHandler =
       );
       return {
         ok: true,
-        result: { updated: true, kind, id, fields: changed },
+        result: { updated: true, kind, id: sentId, fields: changed },
       };
     } catch (e) {
       return executionError(
@@ -5812,10 +6279,15 @@ const workCreate = async (
 
   const kind = args.kind;
   if (kind === 'asset') return createAssetFromChat(deps, args, ctx, check);
+  // D-407 slice 1 — an occasion is no work row: Yours keeps it.
+  if (kind === 'occasion') return createOccasionFromChat(deps, args, ctx, check);
   if (!isWorkCreateKind(kind)) {
     return invalidArgs(
-      `work.create requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset'].join(' / ')}`,
+      `work.create requires kind to be one of ${[...WORK_CREATE_KINDS, 'asset', 'occasion'].join(' / ')}`,
     );
+  }
+  for (const name of OCCASION_CREATE_FIELDS) {
+    if (args[name] !== undefined) return invalidArgs(`work.create: \`${name}\` applies to an occasion only`);
   }
   for (const name of ['type', 'dates', 'readings', 'holder_email', 'attributes', 'place', 'belongs_to'] as const) {
     if (args[name] !== undefined) return invalidArgs(`work.create: \`${name}\` applies to an asset only`);
@@ -5860,6 +6332,8 @@ const workCreate = async (
   if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
     if (kind !== 'task') return wrongKindDate('work.create', 'due_at', 'task', kind);
     put('due_at', 'due_at', args.due_at);
+  } else if (args.due_at !== undefined && args.due_at !== null) {
+    return invalidArgs('work.create: `due_at` is the day "YYYY-MM-DD", or the day and time on the user\'s clock "YYYY-MM-DDTHH:mm"');
   }
   // A project's target is a DAY — asked for as one, stored as its UTC midnight.
   if (args.target_completion_at !== undefined) {
@@ -6455,6 +6929,21 @@ const workRowName = (crud: NonNullable<ReturnType<NonNullable<ChatToolHandlerDep
     return undefined;
   }
 };
+/** The local row id a qualified work id names, or `undefined` when the id is not qualified or
+ *  names no row of `kind` here (the write then refuses it as before). */
+const workRowLocalId = (crud: NonNullable<ReturnType<NonNullable<ChatToolHandlerDeps['getWorkEntityCrudDeps']>>>,
+  kind: WorkEntityKind, id: string): string | undefined => {
+  try {
+    const qualified = parseQualifiedWorkEntityId(id);
+    if (qualified === null || qualified.kind !== kind) return undefined;
+    const row = qualified.identity === 'source'
+      ? crud.resolver.readEntityBySourceIdentity(kind, qualified.source_id, qualified.record_id)
+      : crud.resolver.readEntity(kind, qualified.record_id);
+    return row === null || row.source_id !== qualified.source_id ? undefined : row.id;
+  } catch {
+    return undefined;
+  }
+};
 /** D-329 — how the owner knows the rows a held `work.create` or `work.update` names: its
  *  `id`, and an asset's `belongs_to`, by their own names. Recorded on the ask and the card
  *  (`value_labels`), never shown to the AI. ⛔ Found live (2026-10-25): an asset's reading
@@ -6462,9 +6951,34 @@ const workRowName = (crud: NonNullable<ReturnType<NonNullable<ChatToolHandlerDep
  *  they could not tell which one they were approving. */
 export const workAskLabels = async (deps: ChatToolHandlerDeps, raw: unknown): Promise<ApprovalValueLabels | undefined> => {
   const args = asObject(raw);
-  // D-343 slice 1 — an occasion and a mail fact by their titles ("Bill: City Water").
-  if ((args?.kind === 'occasion' || args?.kind === 'mail_fact') && typeof args.id === 'string') {
-    const title = args.kind === 'occasion' ? deps.getOccasions?.()?.read(args.id)?.title : deps.getMailFacts?.()?.read(args.id)?.title;
+  if (args?.kind === 'occasion') {
+    const labels: Record<string, Record<string, string>> = {};
+    // D-407 slice 1 (Q6) — a new occasion's people: a contact by name, and a name no contact has as new.
+    if (args.id === undefined && Array.isArray(args.people)) {
+      const store = deps.getContactStore();
+      const people: Record<string, string> = {};
+      for (const person of args.people.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)) {
+        const said = person.trim();
+        const found = said.includes('@') ? store?.get(said.toLowerCase())
+          : (store?.list({ name_contains: said, limit: 50 }) ?? []).find((contact) => contact.name?.trim().toLowerCase() === said.toLowerCase());
+        people[person] = found ? (found.name ?? found.email) : said.includes('@') ? said : `${said} (new contact)`;
+      }
+      if (Object.keys(people).length > 0) labels.people = people;
+    }
+    // D-343 slice 1 — an occasion by its title.
+    if (typeof args.id === 'string') {
+      const title = deps.getOccasions?.()?.read(args.id)?.title;
+      if (title !== undefined) labels.id = { [args.id]: title };
+    }
+    // D-407 slice 4 (§4.1) — the calendar its own event goes in, which the AI never knows: the card says it, the left-out
+    // case too (`occasionCalendarWords`).
+    const calendar = deps.getOccasions?.()?.calendar?.() ?? null;
+    if (calendar !== null) labels.in_calendar = { true: `Its event goes in ${calendar.name}` };
+    return Object.keys(labels).length > 0 ? labels : undefined;
+  }
+  // D-343 slice 1 — a mail fact by its title ("Bill: City Water").
+  if (args?.kind === 'mail_fact' && typeof args.id === 'string') {
+    const title = deps.getMailFacts?.()?.read(args.id)?.title;
     return title === undefined ? undefined : { id: { [args.id]: title } };
   }
   const crud = deps.getWorkEntityCrudDeps?.();
@@ -6554,6 +7068,7 @@ const createWorkTypeHandler =
 /** The work-entity read tools' deps, from the chat tools' own (exported for the wiring pin,
  *  `escalation-contract-overlay-wiring.test.ts`). */
 export const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadToolsDeps => ({
+  ...(deps.bodyNumbers ? { bodyNumbersFor: (ctx: ChatDispatchContext) => bodyNumbersFor(deps.bodyNumbers!(), ctx.execution_source) } : {}),
   ...(deps.getSituationAccess ? { getReadScope: (ctx: ChatDispatchContext) => {
     const access = deps.getSituationAccess!(); return access ? createReadScope(access, ctx.execution_source) : undefined;
   } } : {}),
@@ -6576,8 +7091,12 @@ export const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityRe
 
 const createWorkSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
-  async (raw, ctx) =>
-    runWorkEntitySearchTool(workEntityReadToolsDeps(deps), raw, ctx);
+  async (raw, ctx) => {
+    // D-407 slice 1 (A3) — an occasion is found as the rest are, and changed with the id this gives.
+    const args = asObject(raw);
+    if (args?.kind === 'occasion') return searchOccasionsFromChat(deps, args, ctx);
+    return runWorkEntitySearchTool(workEntityReadToolsDeps(deps), raw, ctx);
+  };
 
 /** D-342 — a typed thing's read names each attribute its type keeps, an unset one as null, as its
  *  dates and readings are: an update calls no `work.type`, and changes what it read. */
@@ -6593,8 +7112,11 @@ const withTypeAttributes = (read: ChatDispatchResult): ChatDispatchResult => {
 };
 const createWorkReadHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
-  async (raw, ctx) =>
-    withTypeAttributes(await runWorkEntityReadTool(workEntityReadToolsDeps(deps), raw, ctx));
+  async (raw, ctx) => {
+    const args = asObject(raw);
+    if (args?.kind === 'occasion') return readOccasionFromChat(deps, args, ctx);
+    return withTypeAttributes(await runWorkEntityReadTool(workEntityReadToolsDeps(deps), raw, ctx));
+  };
 
 // ────────────────────────────────────────────────────────────────
 // Tier 2 source + manifest lookup
@@ -6917,6 +7439,37 @@ const createRecipeStopHandler =
     return { ok: true, result: projected };
   };
 
+/** D-402 slice F4 (§7.9, ruling 12) — the owner's chat takes an "Always" back: every standing permission
+ *  the owner's chats, or the AI app the owner names, hold for a recipe, ended at once. The owner's own
+ *  chat only: refused from a household member's, a customer's or any contracted chat. Never held: a
+ *  revoke only removes. Says what it ended, for the model to tell the owner. */
+const createRecipeStopAllowingHandler = (deps: ChatToolHandlerDeps): Tier1Handler => async (raw, ctx) => {
+  const source = ctx.execution_source;
+  if (source === undefined) return executionError('no execution source on this turn');
+  if (preapprovalCallerOf(source)?.kind !== 'owner_chat') {
+    return { ok: false, reason: 'channel_denied', detail: 'Only the user\'s own chat can stop allowing a recipe.' };
+  }
+  const args = asObject(raw);
+  if (!args) return invalidArgs('args must be an object');
+  const ref = typeof args.recipe_id === 'string' ? args.recipe_id.trim() : '';
+  if (ref === '') return invalidArgs('recipe_id is required');
+  const recipe_id = ref.includes('/') ? ref.slice(ref.lastIndexOf('/') + 1) : ref;
+  const app = typeof args.app === 'string' ? args.app.trim() : '';
+  let caller: import('@recued/contracts').PreapprovalCaller = { kind: 'owner_chat' };
+  if (app !== '') {
+    const contract_id = deps.aiAppContractOf?.(app);
+    if (contract_id === undefined) return { ok: true, result: { status: 'not_found', said: `No AI app is called “${app}”, so nothing was ended.` } };
+    caller = { kind: 'ai_app', contract_id };
+  }
+  const ended = deps.stopAllowing?.({ caller, recipe_id, by: 'owner_chat' });
+  if (ended === undefined) return executionError('stopping what a recipe may do without asking is unavailable here');
+  const summary = stopAllowingSummary(ended);
+  const who = app !== '' ? app : 'your chats';
+  return { ok: true, result: { status: summary !== '' ? 'stopped' : 'none', ended,
+    said: summary !== '' ? `Ended ${summary}: ${who} now ask before each action of this recipe that asks.`
+      : `Nothing let ${who} run this recipe without asking, so nothing was ended.` } };
+};
+
 // ────────────────────────────────────────────────────────────────
 // recipe.schedule — D-193 amendment: chat's own way to schedule
 // ────────────────────────────────────────────────────────────────
@@ -7169,16 +7722,35 @@ export const buildChatTier1Handlers = (
   'situation.query': async (raw, ctx) => {
     const access = deps.getSituationAccess?.();
     if (!access) return executionError('Situation query unavailable');
+    // D-343 (2026-11-14) — `close: true`: the user wants to close this day. Taken off before the
+    // query, which knows no such key.
+    const closing = raw !== null && typeof raw === 'object' && !Array.isArray(raw) && Object.hasOwn(raw, 'close');
+    const { close, ...query } = closing ? raw as Record<string, unknown> : { close: undefined };
+    if (closing && (close !== true || typeof query.time !== 'string')) {
+      return invalidArgs('situation.query: `close: true` goes with one day as `time`, "YYYY-MM-DD"');
+    }
     try {
       const { situationModelProjection } = await import('./situations/model-projection.js');
       const { situationSourceCitations } = await import('./chat-situation-source-citations.js');
       // D-338 — a day the model names is read on the turn's clock, which `current_date` is in.
-      const native = await access.read(raw, ctx.execution_source, undefined, ctx.time_zone);
+      const native = await access.read(closing ? query : raw, ctx.execution_source, undefined, ctx.time_zone);
       // D-338 — each item says when it happens on that clock (`when_text`), as `calendar.search`
       // does (given only epoch ms, a model put meetings an hour early), and which ones the owner's
       // notifications call only "a reminder in Yours".
-      return { ok: true, ...situationSourceCitations(native, situationModelProjection(native, situationPersonName(deps.getContactStore?.()),
+      const read = { ok: true as const, ...situationSourceCitations(native, situationModelProjection(native, situationPersonName(deps.getContactStore?.()),
         { zone: ctx.time_zone, isPrivate: access.isPrivate })) };
+      if (!closing || ctx.execution_source === undefined) return read;
+      const { closingToolSteps } = await import('./chat-closing-day.js');
+      const pursuits = (access.eveningPursuits?.(ctx.execution_source) ?? [])
+        .map((pursuit) => ({ title: pursuit.private ? 'Pursuit in Yours' : pursuit.title, ref: pursuit.ref }));
+      const result = read.result !== null && typeof read.result === 'object' ? read.result as Record<string, unknown> : {};
+      // D-343 (2026-11-15) — what is already recorded for the day, from any conversation.
+      let recorded: ReturnType<NonNullable<ReturnType<NonNullable<ChatToolHandlerDeps['getClosingRecords']>>>['recorded']> = [];
+      try { recorded = deps.getClosingRecords?.()?.recorded(query.time as string, ctx.time_zone) ?? []; } catch { recorded = []; }
+      const already_recorded = recorded.map((record) => ({ title: record.title, outcome: record.outcome, ...(record.ref ? { ref: record.ref } : {}) }));
+      return { ...read, result: { ...result, ...(pursuits.length > 0 ? { pursuits } : {}),
+        ...(already_recorded.length > 0 ? { already_recorded } : {}),
+        how_to_close: closingToolSteps(query.time as string, already_recorded.length > 0) } };
     } catch (error) {
       const { SituationAccessError } = await import('./situations/access.js');
       if (error instanceof SituationAccessError) return { ok: true, result: { refused: true, hint: error.message } };
@@ -7196,6 +7768,7 @@ export const buildChatTier1Handlers = (
   'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
   'recipe.stop': createRecipeStopHandler(deps),
+  'recipe.stop_allowing': createRecipeStopAllowingHandler(deps),
   'recipe.schedule': createRecipeScheduleHandler(deps),
   'schedule.run_prompt': createPromptScheduleHandler(deps, 'run_prompt'),
   'schedule.list': createPromptScheduleHandler(deps, 'list'),
@@ -7520,6 +8093,22 @@ const dispatchChatCanonicalOp = async (
   // argument, so the run's settings are not needed to read it.
   const refused = await crmChangeRefusal(deps, built.recipe, {}, ctx, toolName);
   if (refused !== undefined) return refused;
+  // D-337 slice K — not asked while a call of this turn waits, when it would ask, as a recipe the
+  // chat runs is not (slice L), unless its round gathers it (D-177 §N.15.9). Read as the
+  // vendor-neutral op it runs (`core.crm.*`, `core.acct.*`), so a write waits and a read never.
+  // ⛔ This path checked nothing until 2026-11-10: harmless while the chat's writes ran unasked,
+  // live once they asked (§N.15.7), when a second ask could be answered first.
+  const gather = roundGatherFor(ctx, toolName, args);
+  const alias = opId.slice(0, dot);
+  const family = (CRM_ALIAS_VALUES as readonly string[]).includes(alias) ? 'crm'
+    : (ACCT_ALIAS_VALUES as readonly string[]).includes(alias) ? 'acct' : undefined;
+  if (gather === undefined && family !== undefined) {
+    const notAsked = recipeNotAskedYet(deps, {
+      ...built.recipe,
+      steps: [{ id: 'result', op: `core.${family}.${alias}.${verb}` }],
+    } as unknown as RecipeDefinition, ctx);
+    if (notAsked !== null) return notAsked;
+  }
 
   const execute = deps.getExecuteRecipe?.();
   if (!execute) {
@@ -7530,7 +8119,7 @@ const dispatchChatCanonicalOp = async (
     config: { [CANONICAL_OP_CONNECTION_VAR]: conn },
     trigger_source: 'chat',
     ...(ctx.execution_source !== undefined ? { execution_source: ctx.execution_source } : {}),
-  } as unknown as ExecuteRequest);
+  } as unknown as ExecuteRequest, { ...(gather !== undefined ? { defer_ask: gather.defer_ask } : {}), ...chainRequestOption(ctx) });
 
   if (named) {
     const response = (await runOne(connection as string)) as ExecuteResponse;
@@ -7539,12 +8128,15 @@ const dispatchChatCanonicalOp = async (
     // owner's chat records its late result, and the email door its follow-up
     // (D-318 audit). A recipe run's dispatch carries the same (`wrapRecipeRunResult`).
     const run_id = executeResponseAuditRunId(response);
-    return {
+    const held: ChatDispatchResult = {
       ok: true,
       result: response as unknown as Record<string, unknown>,
       ...(response.awaiting_approval === true ? { run_held: { kind: 'approval' as const } } : {}),
       ...(run_id !== undefined ? { run_id } : {}),
     };
+    return markGathered(held, ctx, (approval_channels) => ({
+      ...held, result: { ...response, approval_channels: [...approval_channels] } as unknown as Record<string, unknown>,
+    }));
   }
   // Unnamed `search` — every connection the DESCRIPTOR offers, which is already the
   // profile-granted set, so the fan-out can never reach a connection the catalog
@@ -7592,15 +8184,31 @@ export const createChatRawOpDispatch = (
   if (!ctx.execution_source) {
     return executionError('cannot dispatch operation: no execution source on this turn');
   }
+  // D-177 §N.15.9 — a call its round repeats holds beside the round's others of its op, and is asked
+  // with them when the round ends.
+  const gathering = gathersInRound(ctx.turn_state, ctx.execution_source, toolName, args);
+  const callKey = gatherCallKey(toolName, args);
   try {
     const outcome = await dispatchRawOp(dispatchDeps, {
       opId,
       args: opArgs,
       executionSource: ctx.execution_source,
       ...(ctx.contract_snapshot ? { contractSnapshot: ctx.contract_snapshot } : {}),
-      // D-337 slice K — not asked while a call of this turn waits for the owner.
-      askAfter: () => askAfterWaiting(ctx.execution_source, ctx.turn_state),
+      // D-337 slice K — not asked while a call of this turn waits for the owner, unless its round
+      // gathers it.
+      askAfter: (op_key) => gathering && op_key !== undefined && roundAccepts(ctx.turn_state, callKey, op_key)
+        ? undefined : askAfterWaiting(ctx.execution_source, ctx.turn_state),
+      ...(gathering ? {
+        deferAsk: (hold: DeferredHold) => deferToRound(ctx.turn_state, { ...hold, tool_name: toolName, call_key: callKey }),
+      } : {}),
+      // D-348 slice 5 — the request this turn is part of, for the rule the owner accepted for it.
+      ...chainRequestOfTurn(ctx, toolName),
     });
+    // D-329 — kept for its round's approval, it is told where that went once it is out.
+    if (outcome.kind === 'held' && outcome.gathered === true) {
+      readsOnceAsked(ctx.turn_state, outcome.run_id, (approval_channels) =>
+        projectRawOpOutcome({ ...outcome, approval_channels }, ctx.execution_source));
+    }
     return projectRawOpOutcome(outcome, ctx.execution_source);
   } catch (e) {
     return executionError(errMessage(e));
@@ -7636,7 +8244,7 @@ export const projectRawOpOutcome = (
       const elsewhere = approvalElsewhereMessage(outcome.approval_channels ?? [], approvalChannelOf(conversation));
       return {
         ok: true,
-        run_held: { kind: 'approval' },
+        run_held: outcome.gathered === true ? { kind: 'approval', gathered: true } : { kind: 'approval' },
         run_id: outcome.run_id,
         result: {
           status: 'awaiting_approval',
@@ -7705,6 +8313,36 @@ export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
     'contact.write': (args: unknown, ctx: ChatDispatchContext) => contactAskLabels(deps, args, ctx),
     'work.create': (args: unknown) => workAskLabels(deps, args),
     'work.update': (args: unknown) => workAskLabels(deps, args),
+    // D-343 — the tasks a day's record ticks off, by their own names, for its ask.
+    'episode.record': async (args: unknown) => {
+      const store = deps.getWorkEntityCrudDeps?.()?.store;
+      const records = args !== null && typeof args === 'object' ? (args as { records?: unknown }).records : undefined;
+      const named: Record<string, string> = {};
+      for (const record of Array.isArray(records) ? records : []) {
+        const item = (record as { item?: { collection?: unknown; id?: unknown } } | null)?.item;
+        if (store === undefined || item?.collection !== 'task' || typeof item.id !== 'string') continue;
+        const title = store.readTask(item.id)?.title;
+        if (typeof title === 'string' && title.trim() !== '') named[item.id] = title;
+      }
+      // D-343 (2026-11-15) — what the day already holds, from any conversation, so a second close
+      // of one day (Telegram, then the app) says so before the owner approves it.
+      const call = args !== null && typeof args === 'object' ? args as { day?: unknown; time_zone?: unknown } : {};
+      // A record of an item this call records again is replaced by it, so it is not "already" there
+      // beside it (the 2026-11-15 drive: "Done: Read 20 pages" and "Already recorded: read 20 pages of my book").
+      const cited = new Set((Array.isArray(records) ? records : []).flatMap((record) => {
+        const item = (record as { item?: { collection?: unknown; id?: unknown } } | null)?.item;
+        return typeof item?.collection === 'string' && typeof item.id === 'string' ? [`${item.collection}\u0000${item.id}`] : [];
+      }));
+      let earlier: Record<string, string> = {};
+      try {
+        const kept = typeof call.day === 'string'
+          ? deps.getClosingRecords?.()?.recorded(call.day, typeof call.time_zone === 'string' ? call.time_zone : undefined) ?? [] : [];
+        earlier = Object.fromEntries(kept.filter((record) => record.ref === undefined || !cited.has(`${record.ref.collection}\u0000${record.ref.id}`))
+          .map((record, n) => [String(n), `${record.title}${record.outcome === 'skipped' ? ' (skipped)' : ''}`]));
+      } catch { earlier = {}; }
+      const labels = { ...(Object.keys(named).length > 0 ? { item: named } : {}), ...(Object.keys(earlier).length > 0 ? { recorded_before: earlier } : {}) };
+      return Object.keys(labels).length > 0 ? labels : undefined;
+    },
     'calendar.update': (args: unknown, ctx: ChatDispatchContext) => calendarAskLabels(deps, args, ctx),
   },
   // D-336 slice G — what a held write meets, told when it is held.

@@ -5,7 +5,7 @@ import {
   merge, prefix_keys, pick, omit, rename, set, json_byte_length,
   json_stringify, json_parse, csv_parse, utf8_byte_length, sha256,
 } from './object.js';
-import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from './string.js';
+import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64, url_encode } from './string.js';
 export { stripHtmlText, STRIP_HTML_MAX_INPUT } from './string.js';
 /** D-244 — whole-file CSV filtering as PURE functions. Exported for the kernel
  *  ops that own the I/O: `core.storage.csv.filter` reads the warehouse record and
@@ -52,8 +52,8 @@ import {
   time_within_window, time_elapsed_since, http_changed,
 } from './reactive.js';
 import { wait } from './timing.js';
-import { held, transitions, window_change, baseline, within_distance } from './series.js';
-export { held, transitions, window_change, baseline, within_distance } from './series.js';
+import { held, transitions, window_change, baseline, trend, within_distance } from './series.js';
+export { held, transitions, window_change, baseline, trend, within_distance } from './series.js';
 import { enrichmentOrFetch } from './enrichment-or-fetch.js';
 import { piiProtect, piiRestore } from './pii-transforms.js';
 
@@ -174,6 +174,7 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   ['lowercase', lowercase], ['uppercase', uppercase], ['trim', trim], ['string_length', string_length], ['split', split],
   ['contains_any', contains_any], ['concat', concat], ['replace', replace], ['template', template],
   ['truncate', truncate], ['strip_html', strip_html], ['encode_base64', encode_base64], ['decode_base64', decode_base64],
+  ['url_encode', url_encode],
   // Numeric
   ['round', round], ['clamp', clamp], ['to_number', to_number], ['math', math], ['decimal_math', decimal_math], ['weighted_score', weighted_score],
   // Date
@@ -205,7 +206,7 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   ['time_elapsed_since', time_elapsed_since],
   ['http_changed', http_changed],
   ['held', held], ['transitions', transitions],
-  ['window_change', window_change], ['baseline', baseline], ['within_distance', within_distance],
+  ['window_change', window_change], ['baseline', baseline], ['trend', trend], ['within_distance', within_distance],
   // D-117 calendar reactive helpers
   ['calendar_changed_since', calendar_changed_since],
   ['calendar_new_since', calendar_new_since],

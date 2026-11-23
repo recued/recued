@@ -91,6 +91,7 @@ import type {
   InboundReply,
   NotificationMessage,
 } from '../types.js';
+import { forTextChannel } from '../types.js';
 
 /** A composed outbound email handed to the `EmailSender` seam. The leaf
  *  composes content only; the recipient + the sending mail instance are
@@ -365,7 +366,9 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
     }, () => undefined)
     .finally(() => { loading = undefined; });
 
-  const deliveryEmail = (envelope: AskDeliveryEnvelope): OutboundEmail => {
+  const deliveryEmail = (delivery: AskDeliveryEnvelope): OutboundEmail => {
+    // D-343 — an approval in its plain words, when it has them (`forTextChannel`).
+    const envelope = { ...delivery, asks: delivery.asks.map((ask) => ({ ...ask, message: forTextChannel(ask.message) })) };
     const first = envelope.asks[0]!;
     const repeat = 'Repeat — the previous delivery could not be confirmed.';
     let email: OutboundEmail;
@@ -411,7 +414,9 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
       await sendEmail(composeNotify(message));
     },
 
-    async deliverAsk(ask_id, message, options) {
+    async deliverAsk(ask_id, held, options) {
+      // D-343 — an approval in its plain words, when it has them.
+      const message = forTextChannel(held);
       if (loading !== undefined) await loading;
       if (delivered.has(ask_id)) return;
       // Reserve the id BEFORE the await — a concurrent second

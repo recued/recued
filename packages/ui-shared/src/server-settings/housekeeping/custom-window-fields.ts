@@ -54,9 +54,10 @@ export const renderHousekeepingCustomWindowFields = (
     props.config.custom_window_end_hour,
   );
 
-  const renderHourSelect = (id: string, action: string, value: number | undefined): string => `
+  const renderHourSelect = (id: string, action: string, value: number | undefined, label: string): string => `
     <select
       id="${e(id)}"
+      aria-label="${e(label)}"
       data-action="${e(action)}"
       class="housekeeping-custom-hour"
       ${props.saving ? 'disabled' : ''}
@@ -98,9 +99,9 @@ export const renderHousekeepingCustomWindowFields = (
       </div>
       <div class="housekeeping-custom-row housekeeping-custom-window">
         <span class="housekeeping-custom-window-label">Run between</span>
-        ${renderHourSelect('housekeeping-custom-start', 'housekeeping-custom-start', startHour)}
+        ${renderHourSelect('housekeeping-custom-start', 'housekeeping-custom-start', startHour, 'Run window start hour')}
         <span class="housekeeping-custom-window-sep">and</span>
-        ${renderHourSelect('housekeeping-custom-end', 'housekeeping-custom-end', endHour)}
+        ${renderHourSelect('housekeeping-custom-end', 'housekeeping-custom-end', endHour, 'Run window end hour')}
         <span class="housekeeping-custom-hint">(local time, end exclusive — crosses midnight when start &gt; end)</span>
       </div>
     </div>

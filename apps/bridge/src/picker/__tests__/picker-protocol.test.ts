@@ -22,10 +22,16 @@ describe('isUsablePickedSelector', () => {
 });
 
 describe('isPickerResultMessage', () => {
+  it('requires a non-empty launch credential for picked and cancelled results', () => {
+    for (const launch_id of [undefined, '', 7]) {
+      expect(isPickerResultMessage({ type: PICKER_RESULT_MESSAGE_TYPE, launch_id,
+        result: { status: 'cancelled' } })).toBe(false);
+    }
+  });
   it('accepts a well-formed picked message', () => {
     expect(
       isPickerResultMessage({
-        type: PICKER_RESULT_MESSAGE_TYPE,
+        type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch',
         result: {
           status: 'picked',
           selector: '#deal',
@@ -39,7 +45,7 @@ describe('isPickerResultMessage', () => {
   it('accepts a picked message with null sample_text', () => {
     expect(
       isPickerResultMessage({
-        type: PICKER_RESULT_MESSAGE_TYPE,
+        type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch',
         result: { status: 'picked', selector: '.x', page_url: 'https://x.test/', sample_text: null },
       }),
     ).toBe(true);
@@ -47,20 +53,20 @@ describe('isPickerResultMessage', () => {
 
   it('accepts a cancelled message', () => {
     expect(
-      isPickerResultMessage({ type: PICKER_RESULT_MESSAGE_TYPE, result: { status: 'cancelled' } }),
+      isPickerResultMessage({ type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch', result: { status: 'cancelled' } }),
     ).toBe(true);
   });
 
   it('rejects a foreign message type', () => {
     expect(
-      isPickerResultMessage({ type: 'recued.bridge.inspect', result: { status: 'cancelled' } }),
+      isPickerResultMessage({ type: 'recued.bridge.inspect', launch_id: 'launch', result: { status: 'cancelled' } }),
     ).toBe(false);
   });
 
   it('rejects a picked message missing fields', () => {
     expect(
       isPickerResultMessage({
-        type: PICKER_RESULT_MESSAGE_TYPE,
+        type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch',
         result: { status: 'picked', selector: '#x' },
       }),
     ).toBe(false);
@@ -69,7 +75,7 @@ describe('isPickerResultMessage', () => {
   it('rejects a picked message with non-string selector', () => {
     expect(
       isPickerResultMessage({
-        type: PICKER_RESULT_MESSAGE_TYPE,
+        type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch',
         result: { status: 'picked', selector: 5, page_url: 'https://x.test/', sample_text: null },
       }),
     ).toBe(false);
@@ -79,7 +85,7 @@ describe('isPickerResultMessage', () => {
     for (const selector of ['', '   ', 'div[data-x="{{y}}"]']) {
       expect(
         isPickerResultMessage({
-          type: PICKER_RESULT_MESSAGE_TYPE,
+          type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch',
           result: { status: 'picked', selector, page_url: 'https://x.test/', sample_text: null },
         }),
       ).toBe(false);
@@ -94,7 +100,7 @@ describe('isPickerResultMessage', () => {
 
   it('rejects an unknown status', () => {
     expect(
-      isPickerResultMessage({ type: PICKER_RESULT_MESSAGE_TYPE, result: { status: 'weird' } }),
+      isPickerResultMessage({ type: PICKER_RESULT_MESSAGE_TYPE, launch_id: 'launch', result: { status: 'weird' } }),
     ).toBe(false);
   });
 });

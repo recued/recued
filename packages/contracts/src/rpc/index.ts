@@ -40,6 +40,7 @@ export type {
   ServerLlmProbeDiagnosis,
   ServerLlmUsageResponse,
   ServerLlmUsageSource,
+  ServerLlmSourceLastCall,
   ServerLlmProbeResult,
   ServerLlmPromptSurface,
   ServerLlmMessageRole,

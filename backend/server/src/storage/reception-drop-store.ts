@@ -101,8 +101,28 @@ export interface DropBlobInsertInput {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+export interface DropBlobAdmissionPolicy {
+  readonly max_uploads_per_endpoint_per_day: number;
+  readonly one_time: boolean;
+}
+
+export type DropBlobInsertResult =
+  | { readonly row: DropBlobSummary; readonly one_time_consumed: boolean }
+  | { readonly conflict: 'not_authorized' | 'day_cap' };
+
+export interface DropBlobAdmission {
+  /** Re-read live authority and policy under the transaction's write lock. */
+  readonly authorize: () => DropBlobAdmissionPolicy | null;
+  readonly window_start_at: number;
+  /** Must throw on failure: both the metadata insert and revoke roll back. */
+  readonly consumeOneTime: () => void;
+}
+
 export interface DropBlobStore {
   insert(input: DropBlobInsertInput): DropBlobSummary;
+  /** Public admission: authorize, enforce the cap, insert, and consume a clean
+   * one-time upload in one synchronous write transaction. */
+  insertIfAvailable(input: DropBlobInsertInput, admission: DropBlobAdmission): DropBlobInsertResult;
   findById(blob_id: string): DropBlobSummary | null;
   /** Count uploads accepted for an endpoint within a rolling window —
    *  substrate uses this for the per-day cap enforcement. */
@@ -219,6 +239,14 @@ export const createReceptionDropBlobStore = (
        AND processing_outcome != 'rejected_domain'
   `);
 
+  // A concurrent commit may carry a later clock stamp. Do not hide it behind
+  // this request's captured `now` when enforcing the final quota.
+  const countAdmissionWindowStmt = db.prepare(`
+    SELECT COUNT(*) AS n FROM reception_drop_blob_metadata
+     WHERE endpoint_id = @endpoint_id AND uploaded_at >= @window_start_at
+       AND processing_outcome NOT IN ('rejected_size', 'rejected_mime', 'rejected_filename', 'rejected_domain')
+  `);
+
   const listPendingStmt = db.prepare(`
     SELECT * FROM reception_drop_blob_metadata
      WHERE endpoint_id = @endpoint_id
@@ -235,31 +263,50 @@ export const createReceptionDropBlobStore = (
      WHERE blob_id = @blob_id
   `);
 
+  const runInsert = (input: DropBlobInsertInput): DropBlobSummary => {
+    insertStmt.run({
+      blob_id: input.blob_id,
+      endpoint_id: input.endpoint_id,
+      uploaded_at: input.uploaded_at,
+      source_ip_hash: input.source_ip_hash,
+      visitor_email_encrypted: base64ToBlob(input.visitor_email_encrypted),
+      visitor_name_encrypted: base64ToBlob(input.visitor_name_encrypted),
+      visitor_description_encrypted: base64ToBlob(input.visitor_description_encrypted),
+      filename_sanitized: input.filename_sanitized,
+      mime_type_reported: input.mime_type_reported,
+      mime_type_detected: input.mime_type_detected,
+      size_bytes: input.size_bytes,
+      content_hash: input.content_hash,
+      storage_path: input.storage_path,
+      scan_status: input.scan_status ?? null,
+      processing_outcome: input.processing_outcome,
+      metadata_blob: input.metadata ? JSON.stringify(input.metadata) : null,
+    });
+    const row = findByIdStmt.get({ blob_id: input.blob_id }) as DropBlobRow | undefined;
+    if (!row) {
+      throw new Error('ReceptionDropBlobStore.insert: row missing after insert');
+    }
+    return rowToSummary(row);
+  };
+
+  const admit = db.transaction((input: DropBlobInsertInput, admission: DropBlobAdmission): DropBlobInsertResult => {
+    const policy = admission.authorize();
+    if (!policy) return { conflict: 'not_authorized' };
+    const { n } = countAdmissionWindowStmt.get({
+      endpoint_id: input.endpoint_id, window_start_at: admission.window_start_at,
+    }) as { n: number };
+    if (n >= policy.max_uploads_per_endpoint_per_day) return { conflict: 'day_cap' };
+    const row = runInsert(input);
+    const one_time_consumed = policy.one_time && input.processing_outcome === 'pending';
+    if (one_time_consumed) admission.consumeOneTime();
+    return { row, one_time_consumed };
+  });
+
   return {
-    insert(input) {
-      insertStmt.run({
-        blob_id: input.blob_id,
-        endpoint_id: input.endpoint_id,
-        uploaded_at: input.uploaded_at,
-        source_ip_hash: input.source_ip_hash,
-        visitor_email_encrypted: base64ToBlob(input.visitor_email_encrypted),
-        visitor_name_encrypted: base64ToBlob(input.visitor_name_encrypted),
-        visitor_description_encrypted: base64ToBlob(input.visitor_description_encrypted),
-        filename_sanitized: input.filename_sanitized,
-        mime_type_reported: input.mime_type_reported,
-        mime_type_detected: input.mime_type_detected,
-        size_bytes: input.size_bytes,
-        content_hash: input.content_hash,
-        storage_path: input.storage_path,
-        scan_status: input.scan_status ?? null,
-        processing_outcome: input.processing_outcome,
-        metadata_blob: input.metadata ? JSON.stringify(input.metadata) : null,
-      });
-      const row = findByIdStmt.get({ blob_id: input.blob_id }) as DropBlobRow | undefined;
-      if (!row) {
-        throw new Error('ReceptionDropBlobStore.insert: row missing after insert');
-      }
-      return rowToSummary(row);
+    insert: runInsert,
+
+    insertIfAvailable(input, admission) {
+      return admit.exclusive(input, admission);
     },
 
     findById(blob_id) {

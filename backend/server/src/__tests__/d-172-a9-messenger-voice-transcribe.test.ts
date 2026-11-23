@@ -92,7 +92,8 @@ interface ScenarioInput {
    *  (the default, and what every pre-existing case here uses) means the
    *  marker degrades to empty, which is why those cases still pin a bare
    *  `user_message`. */
-  fileNames?: ReadonlyMap<string, string>;
+  fileNames?: ReadonlyMap<string, string>
+    | ((ids: readonly string[]) => ReadonlyMap<string, string>);
 }
 
 const runScenario = async (input: ScenarioInput) => {
@@ -149,7 +150,8 @@ const runScenario = async (input: ScenarioInput) => {
       selfSignature,
       executeAiCall,
       ...(input.fileNames
-        ? { resolveFileNames: () => input.fileNames! }
+        ? { resolveFileNames: (ids) => typeof input.fileNames === 'function'
+          ? input.fileNames(ids) : input.fileNames! }
         : {}),
       voiceTranscription: {
         getFileReadDeps: () => ({ registry, blobs }),
@@ -339,14 +341,10 @@ describe('D-172 A.9 messenger voice transcription', () => {
       // Resolve whatever id the ingest minted — the harness hands the resolver
       // the real ids, so echoing a fixed name proves the wiring without
       // predicting the hash.
-      fileNames: new Proxy(new Map<string, string>(), {
-        get(target, prop) {
-          if (prop === 'get') {
-            return (id: string) => { capturedId = id; return 'voice.ogg'; };
-          }
-          return Reflect.get(target, prop);
-        },
-      }) as ReadonlyMap<string, string>,
+      fileNames: (ids) => new Map(ids.map((id) => {
+        capturedId = id;
+        return [id, 'voice.ogg'];
+      })),
     });
     const marked = promptBody<{ user_message: string }>(result.aiInputs[0]).user_message;
     expect(marked).toBe(

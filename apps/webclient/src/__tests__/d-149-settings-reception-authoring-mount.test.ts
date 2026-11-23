@@ -192,6 +192,7 @@ const makeFakeShell = () => {
     runPreview: vi.fn(() =>
       Promise.resolve({
         preview_hash: 'ph-test',
+        html: '<p>Visitor preview</p>', visible_fields: [], expires_at: 1_700_000_600_000,
       } as unknown as ReceptionEndpointPreviewResult),
     ),
     createEndpoint: vi.fn(() =>
@@ -213,6 +214,17 @@ describe('customer approval workflow authoring', () => {
     options: [{ id: 'yes', label: 'Yes' }], context_raw: { summary: 'Review the work' },
     visitor_field_constraints: { name: 'optional', email: 'optional' }, expiry_days: 7,
     on_action: { target_id: 'old-work', on_approve_action: 'create_commitment' } });
+  it('can save a default approval and drops choices when changing to an action that forbids them', () => {
+    const working = seedWorkingConfig('approval_link', { ...config(), action_kind: 'approve_wording', options: undefined });
+    expect(validateConfigForKind('approval_link', working).valid).toBe(true);
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select', fieldKey: 'action_kind', value: 'pick_time' }));
+    addRepeaterRow(working, 'options');
+    Object.assign((working.options as object[])[0]!, { id: 'morning', label: 'Morning' });
+    expect(validateConfigForKind('approval_link', working).valid).toBe(true);
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select', fieldKey: 'action_kind', value: 'approve_wording' }));
+    expect(validateConfigForKind('approval_link', working).valid).toBe(true);
+    expect(working).not.toHaveProperty('options');
+  });
   it('switches to accept/reject and clears the old target when the owner selects a workflow', () => {
     const working = seedWorkingConfig('approval_link', config());
     applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select',
@@ -357,16 +369,18 @@ describe('D-149 follow-on — applyFieldDelegateEvent', () => {
     );
   });
 
-  it('clearing an optional text field back to empty deletes the leaf', () => {
+  it('keeps the required empty page tagline and omits cleared optional text', () => {
     const config = seedWorkingConfig('reception_page', validReceptionPage());
     applyFieldDelegateEvent(
       'reception_page',
       config,
       fieldEvent({ control: 'text', fieldKey: 'tagline', value: '' }),
     );
-    expect(config.display_overrides as Record<string, unknown>).not.toHaveProperty(
-      'tagline',
-    );
+    expect(config.display_overrides).toMatchObject({ tagline: '' });
+    applyFieldDelegateEvent('reception_page', config,
+      fieldEvent({ control: 'text', fieldKey: 'response_time_estimate', value: '' }));
+    expect(config.display_overrides).not.toHaveProperty('response_time_estimate');
+    expect(validateConfigForKind('reception_page', config).valid).toBe(true);
   });
 
   it('a number field edit coerces to a number', () => {

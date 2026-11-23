@@ -19,6 +19,12 @@
  *  in a recipe's context would falsely read as recipe-local.
  */
 
+import {
+  CALLER_PREAPPROVAL_PANEL_STYLES,
+  mountCallerPreapprovalPanel,
+  type CallerPreapprovalPanelCallers,
+  type CallerPreapprovalPanelMount,
+} from '../contracts/caller-preapproval-panel.js';
 import { renderActionLabel } from '@recued/ui-shared/icon-render';
 import type {
   AutoRunStatusEntry,
@@ -135,6 +141,7 @@ import {
   type ConfigEditorOverlayHandle,
   type ConnectionLineSlot,
   type MailboxVariableCallers,
+  type BrowserVariableCallers,
   type MailTemplateVariableCallers,
   type RecipeCardState,
   type RecipeCardTriggerKind,
@@ -295,6 +302,9 @@ import {
   updateListContinuity,
   type ListPreviewMount,
 } from '../shell/list-preview-continuity.js';
+
+/** D-402 slice F4d — the section on a recipe's page saying who runs it without asking. */
+export const RECIPES_ROUTE_PREAPPROVALS_ATTR = 'data-recued-recipe-preapprovals';
 
 export const RECIPES_ROUTE_STYLES_MARKER =
   'data-recued-recipes-route-styles';
@@ -724,6 +734,8 @@ export interface BootstrapRecipesRouteOptions {
   triggersListCaller?: RecipesTriggersListCaller;
   autoRunListCaller?: RecipesAutoRunListCaller;
   autoRunUpdateCaller?: RecipesAutoRunUpdateCaller;
+  /** D-402 slice F4d (§7.9) — who runs a recipe without asking, on its page, and ending it. */
+  callerPreapprovals?: CallerPreapprovalPanelCallers;
   /** D-315 §5.2 — the owner's mail templates, for a `mail_template` setting in
    *  the Settings editor: pick one, open it, duplicate one to edit. Absent ⇒
    *  the setting is a text box. */
@@ -732,6 +744,8 @@ export interface BootstrapRecipesRouteOptions {
    *  (`mailbox_settings`) in the dish form and the run dialog. Absent ⇒ the
    *  setting is a text box. */
   mailboxCallers?: MailboxVariableCallers;
+  /** D-402 slice H2b — the owner's paired browsers, for a dish's browser settings (`pair.browsers`). */
+  browserCallers?: BrowserVariableCallers;
   /** D-292 — uploads a file for the guided spreadsheet import. Absent ⇒ that
    *  flow offers only files already in Recued. */
   sheetImportUploadCaller?: SheetImportUploader;
@@ -2701,7 +2715,7 @@ export const bootstrapRecipesRoute = (
     // The panel's own rules travel WITH it now — scoped to
     // `RECIPE_RESULT_HOST_ATTR`, not to this route's host, so the same sheet
     // serves `#packs/<slug>`.
-    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}\n${LIST_PREVIEW_STYLES}\n${RUNNING_AS_STYLES}`;
+    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}\n${LIST_PREVIEW_STYLES}\n${RUNNING_AS_STYLES}\n${CALLER_PREAPPROVAL_PANEL_STYLES}`;
     doc.head.appendChild(style);
   }
 
@@ -2875,6 +2889,9 @@ export const bootstrapRecipesRoute = (
     autoRun: null,
   };
   let autoRunBusy = new Set<string>();
+  // D-402 slice F4d — the section saying who runs the recipe without asking (`placeRecipePreapprovals`).
+  let recipePreapprovals: { readonly recipe_id: string; readonly host: HTMLElement; readonly mount: CallerPreapprovalPanelMount } | null = null;
+  let recipePreapprovalsShownFor: string | null = null;
   let autoRunErrors = new Map<string, string>();
   let resultPanel: RecipesResultPanelSnapshot | null = null;
   // D-display-mode P1/P2 — this device keeps its board current on its own.
@@ -2917,6 +2934,7 @@ export const bootstrapRecipesRoute = (
   const hasRecipeInFlightWork = (): boolean =>
     defaultRunBusy
     || autoRunBusy.size > 0
+    || recipePreapprovals?.mount.pending() === true
     || hasResultGridSaveInFlight()
     || hasResultFilterInFlight()
     || dishBusy.size > 0
@@ -3030,9 +3048,47 @@ export const bootstrapRecipesRoute = (
     return carrierRefsReadStates.get(carrier.readKey) ?? null;
   };
 
+  // D-402 slice F4d (§7.9) — who runs the recipe without asking, after "Runs & automation". One section
+  // per recipe, kept across repaints: the page is drawn from markup, so it is put back after each.
+  const placeRecipePreapprovals = (recipe_id: string, shownBefore: string | null): void => {
+    const callers = opts.callerPreapprovals;
+    if (callers === undefined) return;
+    if (recipePreapprovals !== null && recipePreapprovals.recipe_id !== recipe_id) {
+      recipePreapprovals.mount.dispose();
+      recipePreapprovals = null;
+    }
+    let fresh = false;
+    if (recipePreapprovals === null) {
+      const host = doc.createElement('section');
+      host.className = 'recipes-detail-section';
+      host.setAttribute(RECIPES_ROUTE_PREAPPROVALS_ATTR, '');
+      host.hidden = true;
+      recipePreapprovals = { recipe_id, host, mount: mountCallerPreapprovalPanel({
+        host, document: doc, callers, only: { recipe_id },
+        heading: 'Runs without asking', headingLevel: 2, headingClassName: 'recipes-detail-section-title',
+        intro: 'Who may run this recipe without asking you, because you answered “Always”. End one and it asks '
+          + 'again from then on.',
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+      }) };
+      fresh = true;
+    }
+    const runs = (routeRoot.querySelector?.(`[${RECIPES_ROUTE_RUNS_LINK_ATTR}]`) as HTMLElement | null | undefined)
+      ?.closest?.('section') ?? null;
+    if (runs !== null && runs.parentNode !== null) runs.parentNode.insertBefore(recipePreapprovals.host, runs.nextSibling);
+    else return;
+    recipePreapprovalsShownFor = recipe_id;
+    // Back on this recipe from another page: read again what may run it.
+    if (!fresh && shownBefore !== recipe_id) void recipePreapprovals.mount.refresh();
+  };
+
   const render = (): void => {
     if (disposed) return;
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const recipePreapprovalsShownBefore = recipePreapprovalsShownFor;
+    recipePreapprovalsShownFor = null;
+    // A control in that section keeps focus across the repaint (the section is the same node).
+    const focusedInRecipePreapprovals = recipePreapprovals !== null && activeElement !== null && activeElement !== undefined
+      && recipePreapprovals.host.contains?.(activeElement) === true ? activeElement : null;
     const focusedResultFilterAction = captureResultFilterActionFocus(activeElement);
     const focusedResultGridSubmitKey = captureResultTableEditSubmitFocus(activeElement);
     const focusedDetailRecipeId = activeElement?.getAttribute?.(
@@ -3206,6 +3262,11 @@ export const bootstrapRecipesRoute = (
             syncResultTableEditChrome(gridRoot, next);
           },
         });
+      }
+      placeRecipePreapprovals(selected.recipe_id, recipePreapprovalsShownBefore);
+      if (focusedInRecipePreapprovals !== null && recipePreapprovals?.host.contains?.(focusedInRecipePreapprovals) === true) {
+        focusedInRecipePreapprovals.focus?.({ preventScroll: true });
+        return;
       }
       if (restoreResultTableEditSubmitFocus(routeRoot, focusedResultGridSubmitKey)) {
         return;
@@ -4465,6 +4526,7 @@ export const bootstrapRecipesRoute = (
       ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
       ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
       ...(opts.mailboxCallers !== undefined ? { mailboxes: opts.mailboxCallers } : {}),
+      ...(opts.browserCallers !== undefined ? { browsers: opts.browserCallers } : {}),
       ...(connectionSlots !== undefined ? { connectionSlots } : {}),
       onCreated: (made, scheduleError) => {
         pendingDishFocus = made.dish_id;
@@ -5552,6 +5614,8 @@ export const bootstrapRecipesRoute = (
       dishFormHandle = null;
       preapprovalActivation?.destroy();
       preapprovalActivation = null;
+      recipePreapprovals?.mount.dispose();
+      recipePreapprovals = null;
       for (const picker of resultGridRefPickers.splice(0)) picker.destroy();
       const urlApi = (doc.defaultView as unknown as {
         URL?: { revokeObjectURL(url: string): void };

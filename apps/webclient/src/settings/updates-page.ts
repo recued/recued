@@ -1312,6 +1312,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       .activeElement;
     const restoreApplyFocus =
       active?.hasAttribute?.(UPDATES_APPLY_BTN_ATTR) === true;
+    const restoreCancelFocus =
+      active?.hasAttribute?.(UPDATES_APPLY_CANCEL_ATTR) === true;
     const restoreForceApplyFocus =
       active?.hasAttribute?.(UPDATES_FORCE_APPLY_BTN_ATTR) === true;
     clear(availableEl);
@@ -1331,7 +1333,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         : undefined;
     if (a === undefined) {
       setHidden(availableEl, true);
-      if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
+      if (restoreApplyFocus || restoreCancelFocus || restoreForceApplyFocus) focusElement(versionEl);
       return;
     }
     setHidden(availableEl, false);
@@ -1373,7 +1375,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     // digest above is the action; rendering a disabled "Update now" control
     // makes that delegated path look broken rather than intentionally external.
     if (docker?.artifact === 'docker-baked') {
-      if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
+      if (restoreApplyFocus || restoreCancelFocus || restoreForceApplyFocus) focusElement(versionEl);
       return;
     }
     // A server nothing restarts refuses this apply before it downloads anything.
@@ -1384,7 +1386,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         text: TERMINAL_UPDATE_COPY,
         attrs: { [UPDATES_TERMINAL_NOTE_ATTR]: '' },
       }));
-      if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
+      if (restoreApplyFocus || restoreCancelFocus || restoreForceApplyFocus) focusElement(versionEl);
       return;
     }
     // ⛔ EVERY UPDATE ASKS ONCE, IN THE SAME WORDS: Update to <version> →
@@ -1435,8 +1437,9 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       void doApply(false);
     });
     availableEl.appendChild(applyBtn);
+    let cancelBtn: HTMLElement | null = null;
     if (armed && !serverActionElsewhere) {
-      const cancelBtn = make('button', {
+      cancelBtn = make('button', {
         text: 'Cancel',
         icon: 'close',
         className: 'rx-btn',
@@ -1475,7 +1478,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       forceBtn.addEventListener('click', () => void doApply(true));
       availableEl.appendChild(forceBtn);
     }
-    if (restoreApplyFocus) focusElement(applyBtn);
+    if (restoreCancelFocus && cancelBtn !== null) focusElement(cancelBtn);
+    else if (restoreApplyFocus || restoreCancelFocus) focusElement(applyBtn);
     else if (restoreForceApplyFocus) {
       // A terminal force result removes its one-shot control. Return to the
       // ordinary action when it remains available instead of dropping focus
@@ -2160,12 +2164,21 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       setHidden(applyResultEl, false);
       applyResultEl.textContent = state.applyError;
     } else if (state.applyResult !== null) {
-      setHidden(applyResultEl, false);
-      const base = APPLY_STATUS_COPY[state.applyResult.status];
-      applyResultEl.textContent =
-        state.applyResult.detail !== undefined && state.applyResult.detail.length > 0
-          ? `${base} (${state.applyResult.detail})`
-          : base;
+      const verification = opts.serverUpdateReceiptVerification?.read() ?? null;
+      const recoveryOwnsProgress =
+        (state.applyResult.status === 'applying' || state.applyResult.status === 'restarting')
+        && verification?.operation === 'update'
+        && !RECEIPT_SELF_RESOLVING_PHASES.has(verification.phase);
+      setHidden(applyResultEl, recoveryOwnsProgress);
+      if (recoveryOwnsProgress) {
+        applyResultEl.textContent = '';
+      } else {
+        const base = APPLY_STATUS_COPY[state.applyResult.status];
+        applyResultEl.textContent =
+          state.applyResult.detail !== undefined && state.applyResult.detail.length > 0
+            ? `${base} (${state.applyResult.detail})`
+            : base;
+      }
     } else if (state.updateOutcome !== null) {
       setHidden(applyResultEl, false);
       applyResultEl.textContent = state.updateOutcome;
@@ -2914,6 +2927,15 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
 
   const detachReceiptVerification =
     opts.serverUpdateReceiptVerification?.subscribe((next) => {
+      if (next?.phase === 'closed' && next.operation === 'update') {
+        // Unresolved closure is not an outcome. Retire the old restart claim
+        // before clearing the shared latch can trigger a version re-check.
+        if (state.applyResult?.status === 'applying' || state.applyResult?.status === 'restarting') {
+          state.applyResult = null;
+        }
+        state.updateOutcome = null;
+        applyingToVersion = null;
+      }
       if (next?.phase === 'completed' && next.baseline !== undefined) {
         state.check = {
           status: next.baseline.updateStatus,

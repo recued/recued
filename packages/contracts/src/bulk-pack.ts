@@ -1321,6 +1321,19 @@ export interface PackListEntry {
    *  name the same packs. Absent when none is missing, for a pack not installed,
    *  and from an older server. */
   missing_packs?: ReadonlyArray<PackMissingPack>;
+  /** D-404 slice E — the types of thing this installed pack works on, when the owner has nothing in
+   *  Yours of any of them (any state but deleted, a type of the same name included), so the pack has
+   *  nothing to work on: its Needs attention says "Needs a Body", and its page links to Yours' form
+   *  for each. The types its recipes act on, or every type it ships when it ships no recipe; never
+   *  one its own recipes create. Absent once the owner has one, for a pack not installed, and from
+   *  an older server. */
+  missing_things?: ReadonlyArray<PackMissingThing>;
+}
+
+/** D-404 slice E — a type of thing an installed pack works on, as `work.type` names it, and its name. */
+export interface PackMissingThing {
+  readonly type_id: string;
+  readonly type_name: string;
 }
 
 /** D-321 W2 — a pack an installed pack's recipes call that is not installed. */

@@ -25,10 +25,15 @@
  *  restart inside that window loses the reply, never the outcome on the card. */
 
 import {
+  captureResourceReview,
   isChatDispatchReason,
   isExecutionSource,
+  isGatedActionTerminal,
+  KIND_GRANT_OPTION_ID,
+  TRIGGER_PREAPPROVAL_OPTION_ID,
   tier1CallTitle,
   type ChatDispatchReason,
+  type ResourceReviewHooks,
   type ChatMessage,
   type ChatPlanExecutionReceipt,
   type ChatPlanMade,
@@ -37,15 +42,24 @@ import {
   type ExecutionSource,
   type RecuedServerSignature,
 } from '@recued/contracts';
-import { PREFLIGHT_HANDLER_KIND, type planApproval } from '@recued/gateway';
+import {
+  isPreflightApprovalKind,
+  PREFLIGHT_GATHERED_HANDLER_KIND,
+  preflightAskHolds,
+  type planApproval,
+} from '@recued/gateway';
 import type { NotificationBlock } from '@recued/notification';
 import type { AuditEntry, CheckpointStore } from '@recued/storage';
 
 import type { ChatBroadcastEmitter, ChatOrchestratorDeps } from './chat-orchestrator.js';
+import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { holdTier1Call, type RawOpDispatchDeps } from './raw-op-dispatch.js';
+import { withResourceReview } from './resource-review.js';
+import { reviewedLocalMutationKind } from './storage/ordinary-local-mutation-receipts.js';
 import { mailChatFollowUpText, mailChatRunOutcome } from './mail-chat-door/follow-ups.js';
 import type { PreflightRunSettled } from './preflight-resumer.js';
 import type { ChatStore } from './storage/chat-store.js';
+import { declinedActionWords, withDeclinedAction } from './chat-rolling-brief.js';
 import type { HeldResultContinuation, HeldResultOutcome } from './chat-held-results.js';
 import type { GatedActionStore } from './gated-action-store.js';
 
@@ -112,7 +126,8 @@ export interface HeldChatWritesDeps {
     planApproval.PlanApprovalStore,
     'resolve' | 'markConsumed' | 'recordExecution' | 'findByHoldRun' | 'answerMessageId' | 'lapseHold'
   >;
-  readonly chatStore: Pick<ChatStore, 'appendMessage'>;
+  /** The note's read and write are optional: a store without them notes no declined write (`withDeclinedAction`). */
+  readonly chatStore: Pick<ChatStore, 'appendMessage'> & Partial<Pick<ChatStore, 'readSessionBrief' | 'writeSessionBrief'>>;
   readonly broadcast: ChatBroadcastEmitter;
   readonly signature: RecuedServerSignature;
   readonly now?: () => number;
@@ -246,6 +261,9 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
       return false;
     }
     if (plan === undefined) return false;
+    // D-343 — replaced by a newer version: withdrawn with nothing run and no one's answer, so
+    // nothing more is said of it (a deny that won the race to its ask settles here too).
+    if (plan.hold?.replaced_at !== undefined) return true;
     const at = now();
     const title = tier1CallTitle(plan.tool, plan.args);
     const source = isExecutionSource(settled.execution_source) ? settled.execution_source : undefined;
@@ -272,6 +290,15 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
           : plan;
         if (resolved !== undefined && resolved.status !== plan.status) {
           emit({ kind: 'chat.plan_resolved', session_id: plan.session_id, turn_id: plan.turn_id, plan: resolved });
+        }
+        // The owner said no: the conversation's note keeps it, so a later "Continue." does not reopen it. In its
+        // own try: the refusal above is already durable, and a note that cannot be updated is not a failed one.
+        try {
+          const stored = await deps.chatStore.readSessionBrief?.(plan.session_id);
+          const noted = stored === undefined || stored === null ? null : withDeclinedAction(stored, declinedActionWords(plan.tool, title, plan.args));
+          if (noted !== null) await deps.chatStore.writeSessionBrief?.(plan.session_id, noted);
+        } catch (error) {
+          console.error(`[chat] the declined write for plan ${plan.plan_id} was not noted`, error);
         }
       } else {
         const approved = plan.status === 'proposed'
@@ -341,9 +368,24 @@ export const createHeldChatWrites = (deps: HeldChatWritesDeps): HeldChatWrites =
  *  once, and few enough that a long uptime keeps it small. */
 const ANSWERED_KEPT = 1000;
 
-/** The answers a held write's card gives its ask: yes once, yes with its trigger's standing
- *  pre-approval (D-341), or no. */
-export type HeldPlanAskOption = 'approve' | 'allow_trigger' | 'deny';
+/** The answers a held write's card gives its ask: yes once, yes with the second answer the ask
+ *  offers (`allow_offered`), or no. The second answer is the trigger's standing pre-approval on a
+ *  scheduled run's write (D-341, "Always allow for this scheduled prompt"), or the kind grant on
+ *  the owner's own chat's write (D-177 N.15, "Allow in this chat"); a hold offers one
+ *  at most, and its card shows it as `hold.always_allow`. */
+export type HeldPlanAskOption = 'approve' | 'allow_offered' | 'deny';
+
+/** D-177 §N.15.9 (1c-b) — what the card's answer says beside its option. `edited`: the yes carries
+ *  the owner's change to the call, which a round's one approval of several refuses (`ignored`).
+ *  `together`: told the runs of every hold a round's one approval answered, the asked one's
+ *  included, so each one's card is answered with it. */
+export interface HeldPlanAnswerOptions {
+  readonly edited?: boolean;
+  readonly together?: (run_ids: readonly string[]) => void;
+}
+
+/** The second answers a held write's ask can offer beside Approve, in the order tried. */
+const SECOND_ANSWERS = [TRIGGER_PREAPPROVAL_OPTION_ID, KIND_GRANT_OPTION_ID] as const;
 
 /** D-329 — the chat card's answer to its held write's ask, over the notification block,
  *  given as the owner's answer from the app (`via: 'ui'`) like the approval cards'. The ask
@@ -374,20 +416,32 @@ export const createHeldPlanAskAnswerer = (
     run_id: string,
     option: HeldPlanAskOption,
     beforeApprove?: () => Promise<void>,
+    opts?: HeldPlanAnswerOptions,
   ): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
     if (answered.has(run_id)) return 'closed';
+    // Its own ask, or (D-177 §N.15.9) its round's one approval, which lists every hold it answers.
     const ask = (await block.listUnresolvedAsks()).find((candidate) =>
-      candidate.handler_kind === PREFLIGHT_HANDLER_KIND && candidate.handler_payload.run_id === run_id);
+      isPreflightApprovalKind(candidate.handler_kind)
+      && preflightAskHolds(candidate).some((hold) => hold.run_id === run_id));
     if (ask === undefined) {
       return holdExpired !== undefined && await holdExpired(run_id) ? 'expired' : 'no_ask';
     }
     if (ask.status !== 'open') return 'closed';
-    if (option === 'allow_trigger' && !ask.options.some((offered) => offered.id === 'allow_trigger')) return 'ignored';
-    if (option !== 'deny') await beforeApprove?.();
-    const outcome = await block.submitAnswer({ ask_id: ask.ask_id, option, via: 'ui' });
+    // An approval of several takes no change to one of them; its card offers none.
+    const gathered = ask.handler_kind === PREFLIGHT_GATHERED_HANDLER_KIND;
+    if (gathered && opts?.edited === true) return 'ignored';
+    // The second answer is the one the open ask offers; an ask offering none ignores it.
+    const answer = option === 'allow_offered'
+      ? SECOND_ANSWERS.find((id) => ask.options.some((offered) => offered.id === id))
+      : option;
+    if (answer === undefined) return 'ignored';
+    if (answer !== 'deny') await beforeApprove?.();
+    const outcome = await block.submitAnswer({ ask_id: ask.ask_id, option: answer, via: 'ui' });
     if (outcome === 'answered') {
-      answered.add(run_id);
-      if (answered.size > ANSWERED_KEPT) answered.delete(answered.values().next().value!);
+      const runs = preflightAskHolds(ask).flatMap((hold) => (hold.run_id !== undefined ? [hold.run_id] : []));
+      for (const run of runs.length > 0 ? runs : [run_id]) answered.add(run);
+      while (answered.size > ANSWERED_KEPT) answered.delete(answered.values().next().value!);
+      if (gathered) opts?.together?.(runs);
     }
     return outcome;
   };
@@ -395,8 +449,9 @@ export const createHeldPlanAskAnswerer = (
     run_id: string,
     option: HeldPlanAskOption,
     beforeApprove?: () => Promise<void>,
+    opts?: HeldPlanAnswerOptions,
   ): Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'> => {
-    const turn = (answering.get(run_id) ?? Promise.resolve()).then(() => answerOnce(run_id, option, beforeApprove));
+    const turn = (answering.get(run_id) ?? Promise.resolve()).then(() => answerOnce(run_id, option, beforeApprove, opts));
     const settled = turn.then(() => {}, () => {});
     answering.set(run_id, settled);
     try {
@@ -414,7 +469,7 @@ export const createHeldPlanAskAnswerer = (
 export const createHoldTier1Write = (
   getDeps: () => RawOpDispatchDeps | undefined,
 ): NonNullable<ChatOrchestratorDeps['holdTier1Write']> =>
-  async ({ tool, args, plan_id, run_id, session_id, turn_id, execution_source, contract_snapshot, value_labels, memory_conflicts, change_in_chat }) => {
+  async ({ tool, args, plan_id, run_id, session_id, turn_id, execution_source, contract_snapshot, value_labels, memory_conflicts, change_in_chat, defer_ask }) => {
     const deps = getDeps();
     if (deps === undefined) return { held: false, reason: 'execute_deps_unavailable' };
     const outcome = await holdTier1Call(deps, {
@@ -429,14 +484,53 @@ export const createHoldTier1Write = (
       ...(value_labels !== undefined ? { valueLabels: value_labels } : {}),
       ...(memory_conflicts !== undefined ? { memoryConflicts: memory_conflicts } : {}),
       ...(change_in_chat !== undefined ? { changeInChat: change_in_chat } : {}),
+      ...(defer_ask !== undefined ? { deferAsk: defer_ask } : {}),
     });
     if (outcome.kind !== 'held') {
       return { held: false, reason: outcome.kind === 'ask' ? 'approval_not_wired' : outcome.kind };
     }
+    // D-177 §N.15.9 (1c-b) — kept for its round's one approval: no ask is out yet.
+    if (outcome.gathered === true) return { held: true, gathered: true };
     return outcome.approval_channels !== undefined
       ? { held: true, approval_channels: outcome.approval_channels }
       : { held: true };
   };
+
+/** A held write, approved (the execute deps' `runApprovedTier1Write`): run as a write approved
+ *  on its card runs. Its proposal is approved and spent first, then the call runs under its
+ *  reviewed change and a receipt for the proposal (`runLocalMutation`), so its card offers
+ *  Undo. Before, an approved hold ran the call bare and kept no receipt: the owner's own
+ *  chats, which always hold, could undo none of their changes. A call that changes nothing
+ *  Recued can undo, or a proposal that cannot be spent, runs as before; the settlement records
+ *  the outcome either way, on a proposal already spent changing nothing. ⚠ Reviewed, the change
+ *  is refused when its record changed since it was proposed, as a card's is. */
+export const createRunApprovedTier1Write = (deps: {
+  readonly plans: Pick<planApproval.PlanApprovalStore, 'findByHoldRun' | 'resolve' | 'consumeForDispatch' | 'runLocalMutation'>;
+  readonly getResourceReview: () => ResourceReviewHooks | undefined;
+  readonly broadcast: ChatBroadcastEmitter;
+  readonly now?: () => number;
+}): NonNullable<ExecuteHandlerDeps['runApprovedTier1Write']> => async (call, dispatch) => {
+  const now = deps.now ?? Date.now;
+  const plan = await deps.plans.findByHoldRun?.(call.run_id);
+  const review = plan?.resource_review;
+  if (plan === undefined || plan.tool !== call.tool || review === undefined
+    || reviewedLocalMutationKind(review) === null || deps.plans.runLocalMutation === undefined) return dispatch();
+  const at = now();
+  if (plan.status === 'proposed') {
+    const approved = await deps.plans.resolve(plan.plan_id, 'approved', at);
+    if (approved?.status === 'approved') {
+      try {
+        deps.broadcast.emit({ kind: 'chat.plan_resolved', session_id: plan.session_id, turn_id: plan.turn_id, plan: approved });
+      } catch { /* observability only */ }
+    }
+  }
+  const spent = await deps.plans.consumeForDispatch(plan.plan_id, at, plan.turn_id);
+  if (spent === undefined) return dispatch();
+  return withResourceReview(review, () => {
+    captureResourceReview(deps.getResourceReview(), call.tool, call.args, review, true);
+    return deps.plans.runLocalMutation!(plan.plan_id, plan.turn_id, call.source, call.validate, dispatch);
+  });
+};
 
 /** D-329 — the chat's run-settled sink: a held write settles here, onto its card and its
  *  reply, and never also as a tool call's result row (it has no call row to pair with). */
@@ -465,5 +559,72 @@ export const createHoldExpiredReader = (deps: {
     return (await deps.gatedActionStore.getBySubject(run_id, 'raw_op'))?.status === 'cancelled';
   } catch {
     return false;
+  }
+};
+
+/** D-343 (the owner, 2026-11-14: "a way for model to ... chat more about it tuning the content
+ *  before settling") — what a withdrawn approval says beneath what it asked, where its message can
+ *  still be changed (Telegram, Slack). */
+export const HELD_WRITE_REPLACED_NOTE = 'Replaced by a newer version.';
+
+/** D-343 — withdraw a held write a newer version of the same call replaced before it was answered:
+ *  its ask closed everywhere with `HELD_WRITE_REPLACED_NOTE`, its receipt cancelled (so an approval
+ *  that still arrives runs nothing, and a restart does not ask again), its plan cancelled with
+ *  `hold.replaced_at`, its checkpoint gone. As an expiry is, in that order, and never a refusal:
+ *  no continuation, no fixed reply, no write rule or chain counts it as a no.
+ *  `'raced'` when an answer got there first (it settles as answered), or when its ask is a round's
+ *  one approval of several writes, which this one cannot take back alone. */
+export const createHeldWriteWithdrawal = (deps: {
+  readonly block: Pick<NotificationBlock, 'listUnresolvedAsks' | 'cancelAsk'>;
+  readonly checkpointStore: Pick<CheckpointStore, 'listByRun' | 'delete'>;
+  readonly gatedActionStore: Pick<GatedActionStore, 'getBySubject' | 'finish'>;
+  readonly plans: Pick<planApproval.PlanApprovalStore, 'replaceHold'>;
+  readonly emit?: ChatBroadcastEmitter['emit'];
+  readonly now?: () => number;
+}) => async (plan: ChatPlanProposal): Promise<'withdrawn' | 'raced'> => {
+  const run_id = plan.hold?.run_id;
+  if (run_id === undefined || plan.status !== 'proposed' || plan.hold?.group !== undefined) return 'raced';
+  const ask = (await deps.block.listUnresolvedAsks()).find((candidate) =>
+    isPreflightApprovalKind(candidate.handler_kind) && preflightAskHolds(candidate).some((hold) => hold.run_id === run_id));
+  if (ask !== undefined) {
+    if (ask.status !== 'open' || preflightAskHolds(ask).length > 1) return 'raced';
+    if (await deps.block.cancelAsk(ask.ask_id, { note: HELD_WRITE_REPLACED_NOTE }) !== 'cancelled') return 'raced';
+  }
+  const action = await deps.gatedActionStore.getBySubject(run_id, 'raw_op');
+  if (action !== null && !isGatedActionTerminal(action.status)) {
+    await deps.gatedActionStore.finish(action.action_ref, {
+      status: 'cancelled',
+      status_message: 'A newer version replaced it before it was answered; nothing ran.',
+      result: { code: 'REPLACED', replaced: true },
+      observed: { items: 1, succeeded: 0, failed: 0 },
+    });
+  }
+  const replaced = await deps.plans.replaceHold?.(plan.plan_id, run_id, (deps.now ?? Date.now)());
+  if (replaced !== undefined && replaced.status !== plan.status) {
+    try { deps.emit?.({ kind: 'chat.plan_resolved', session_id: plan.session_id, turn_id: plan.turn_id, plan: replaced }); }
+    catch { /* observability only */ }
+  }
+  for (const checkpoint of await deps.checkpointStore.listByRun(run_id).catch(() => [])) {
+    await deps.checkpointStore.delete(checkpoint.checkpoint_id).catch(() => { /* retention collects it */ });
+  }
+  return 'withdrawn';
+};
+
+/** D-343 — after a day's record is held, the conversation's earlier record for the SAME day still
+ *  waiting for the owner is replaced by it: there is always one record of a day to approve, the
+ *  latest, however long the owner talks it over. (`onTier1Held`, after the new hold is raised.) */
+export const createDayRecordReplacer = (deps: {
+  readonly plans: Pick<planApproval.PlanApprovalStore, 'findByHoldRun' | 'listPending'>;
+  readonly withdraw: (plan: ChatPlanProposal) => Promise<'withdrawn' | 'raced'>;
+}) => async (call: { tool: string; args: Record<string, unknown>; run_id: string }): Promise<void> => {
+  if (call.tool !== 'episode.record' || typeof call.args.day !== 'string') return;
+  const held = await deps.plans.findByHoldRun?.(call.run_id);
+  if (held === undefined) return;
+  for (const earlier of await deps.plans.listPending(held.session_id)) {
+    const args = earlier.args !== null && typeof earlier.args === 'object' ? earlier.args as Record<string, unknown> : undefined;
+    if (earlier.tool !== 'episode.record' || earlier.hold === undefined || earlier.hold.run_id === call.run_id
+      || earlier.status !== 'proposed' || args?.day !== call.args.day) continue;
+    try { await deps.withdraw(earlier); }
+    catch (error) { console.error(`[chat] replacing the earlier record of ${String(call.args.day)} failed`, error); }
   }
 };

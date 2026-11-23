@@ -23,8 +23,11 @@
  *  Spec: D-187 AMENDMENT block; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
-import { RpcError } from '@recued/contracts';
-import type { HandlerSlice, ServerRpcRegistry } from '@recued/contracts';
+import { isBodyNumbersMode, RpcError } from '@recued/contracts';
+import type { BodyNumbersMode, HandlerSlice, ServerRpcRegistry } from '@recued/contracts';
+import type { AuditLogStore } from '@recued/storage';
+
+import type { BodyNumbersSetting } from './body-numbers-setting.js';
 
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import type { WsClient } from './ws-server.js';
@@ -41,6 +44,11 @@ export interface ContractGrantRpcDeps {
   /** Optional clock injection. Tests pin the boundary; production falls back to
    *  `Date.now()`. */
   now?: () => number;
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers. Absent ⇒ its two methods
+   *  refuse (`bad_request`), as on a server with no store for it. */
+  bodyNumbers?: BodyNumbersSetting;
+  /** Where `contract.grant.body_numbers.write` records the owner's choice. Absent ⇒ unrecorded (tests). */
+  auditLog?: AuditLogStore;
 }
 
 export const handleContractGrantRead = (
@@ -127,17 +135,58 @@ export const handleContractGrantWrite = (
   return { ok: true, granted: args.granted };
 };
 
+/** D-339 slice 12a — the owner's chats' switch for a Body's numbers, as it stands. */
+export const handleBodyNumbersRead = (deps: ContractGrantRpcDeps): { chats: BodyNumbersMode } => {
+  if (deps.bodyNumbers === undefined) {
+    throw new RpcError('bad_request', 'contract.grant.body_numbers.read: this server cannot store the setting');
+  }
+  return { chats: deps.bodyNumbers.forChats() };
+};
+
+/** D-339 slice 12a — set the owner's chats' switch for a Body's numbers from a Body's page: Off · Ask ·
+ *  Allow. Needs a paired client, as a grant's write does; the owner's choice is audited. */
+export const handleBodyNumbersWrite = (
+  deps: ContractGrantRpcDeps,
+  args: { chats?: unknown },
+  caller: { instance_id: string | null } | undefined,
+): { chats: BodyNumbersMode } => {
+  if (!caller?.instance_id) {
+    throw new RpcError(
+      'permission_denied',
+      'contract.grant.body_numbers.write: requires a paired client (D-121); rpc dispatched from an unregistered connection',
+    );
+  }
+  if (!isBodyNumbersMode(args.chats)) {
+    throw new RpcError('bad_request', `contract.grant.body_numbers.write: chats must be off, ask or allow; got ${JSON.stringify(args.chats)}`);
+  }
+  if (deps.bodyNumbers === undefined) {
+    throw new RpcError('bad_request', 'contract.grant.body_numbers.write: this server cannot store the setting');
+  }
+  const before = deps.bodyNumbers.forChats();
+  const chats = deps.bodyNumbers.setForChats(args.chats);
+  if (deps.auditLog !== undefined) {
+    void deps.auditLog.logActivity({
+      activity_id: '', timestamp: deps.now?.() ?? Date.now(), action: 'body_numbers_set', target: 'body_numbers',
+      detail: JSON.stringify({ chats, before }),
+    }).catch(() => {});
+  }
+  return { chats };
+};
+
 type ContractGrantMethods =
   | 'contract.grant.read'
   | 'contract.grant.read_by_entry'
-  | 'contract.grant.write';
+  | 'contract.grant.write'
+  | 'contract.grant.body_numbers.read'
+  | 'contract.grant.body_numbers.write';
 
 export const makeContractGrantHandlers = (
   deps: ContractGrantRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ContractGrantMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
-    methods: ['contract.grant.read', 'contract.grant.read_by_entry', 'contract.grant.write'],
+    methods: ['contract.grant.read', 'contract.grant.read_by_entry', 'contract.grant.write',
+      'contract.grant.body_numbers.read', 'contract.grant.body_numbers.write'],
     handlers: {
       'contract.grant.read': async (args) =>
         handleContractGrantRead(deps, args as { contract_id?: unknown }),
@@ -147,6 +196,13 @@ export const makeContractGrantHandlers = (
         handleContractGrantWrite(
           deps,
           args as { contract_id?: unknown; entry_key?: unknown; granted?: unknown },
+          client ? { instance_id: client.instance_id ?? null } : undefined,
+        ),
+      'contract.grant.body_numbers.read': async () => handleBodyNumbersRead(deps),
+      'contract.grant.body_numbers.write': async (args, client) =>
+        handleBodyNumbersWrite(
+          deps,
+          args as { chats?: unknown },
           client ? { instance_id: client.instance_id ?? null } : undefined,
         ),
     },

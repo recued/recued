@@ -103,12 +103,13 @@ describe('CHAT_INDEX_MODE_CATALOG_GUIDANCE copy invariants', () => {
     expect(G).toContain('tools.search');
     expect(G).toContain('args_schema');
     expect(G).toContain('recipe_slug');
-    expect(G).toContain('without their argument schema');
+    expect(G).toContain('Entries with "args_schema" already define their arguments');
     // Lock the CONTRACT, not just tokens: the invoke instruction is "call it by
     // its recipe_slug", and tools.search is gated behind a CONDITIONAL ("if you
     // need its exact arguments, or no listed tool fits").
     expect(G).toContain('call it by its "recipe_slug"');
-    expect(G).toContain('If you need its exact arguments, or no listed tool fits');
+    expect(G).toContain('For a listed entry without its schema');
+    expect(G).toContain('or if no listed tool fits');
   });
 
   it('drops the false "cannot call directly" prohibition + mandatory-pre-step framing (fix-lock)', () => {
@@ -206,7 +207,8 @@ describe('CHAT_LEAN_CORE_MODE_CATALOG_GUIDANCE copy invariants', () => {
   it('carries the anti-blind-guess clause (never invoke an unseen recipe_slug)', () => {
     // The bench caught the model inventing a recipe.run slug ("recued/inbox-triage",
     // wrong) instead of searching. Lock the guard against guessed slugs.
-    expect(G).toMatch(/[Nn]ever invoke a "recipe_slug" you have not seen/);
+    expect(G).toContain('Never guess a "recipe_slug"');
+    expect(G).toContain('actually listed in "available_tools" or returned by "tools.search"');
   });
 
   it('reinforces the standing-view case (2nd iteration — counters residual work.search substitution)', () => {
@@ -330,6 +332,9 @@ beforeEach(() => {
   db = new Database(':memory:');
   ensureChatSchema(db);
   store = createChatStore(db);
+  // These comparisons isolate catalog composition against the base prompt. With the running note on, each style
+  // puts its own action guidance in (`chat-standard-note-absorbed.test.ts`); with it off, every turn sends the base.
+  store.setRollingBriefEnabled(false);
   captured = [];
   broadcast = { emit: (event) => captured.push(event) };
 });

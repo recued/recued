@@ -25,6 +25,7 @@
  *  `endpoint-capabilities` what it learned. A second detector here would be a
  *  copy of two regexes, free to disagree with the ones serving real traffic. */
 
+import { diagnoseProviderFailure } from './call-outcome.js';
 import {
   forgetEndpoint,
   jsonModeUnsupported,
@@ -36,7 +37,7 @@ import { PROBE_PICTURE } from './probe-picture.js';
 import type { EmbeddingsAdapterRegistry } from './embeddings/types.js';
 import type { TranscriptionAdapterRegistry } from './adapters/transcription.js';
 import type { LLMAdapter, LLMSlot } from './types.js';
-import { LLMError } from './types.js';
+import { LLMError, stoppedAtOutputLimit } from './types.js';
 
 /** What went wrong, in the owner's terms rather than the provider's.
  *
@@ -121,55 +122,12 @@ const PROBE_PROMPT = 'Reply with the single word: ok';
 const statusOf = (e: LLMError): number | undefined =>
   typeof e.details?.status === 'number' ? e.details.status : undefined;
 
-/** Map a failure onto the field of the form the owner should look at.
- *
- *  ⚠ Reads `details.status`, never the message text. The message is truncated
- *  at 200 chars by `classifyProviderError`, so a status parsed out of it is
- *  lossy — and a provider that prefixes its body with a long preamble would
- *  push the code out of range and silently land in the wrong bucket. */
+/** Map a failure onto the field of the form the owner should look at. One reading with a real
+ *  call's (`diagnoseProviderFailure`, `call-outcome.ts`), so the two cannot disagree. */
 export const diagnoseProbeFailure = (e: unknown): {
   diagnosis: LlmProbeDiagnosis;
   detail: string;
-} => {
-  if (!(e instanceof LLMError)) {
-    return {
-      diagnosis: 'unreachable',
-      detail: e instanceof Error ? e.message : String(e),
-    };
-  }
-  if (e.code === 'AI_TIMEOUT') {
-    return { diagnosis: 'unreachable', detail: e.message };
-  }
-  const status = statusOf(e);
-  if (status === 401 || status === 403) {
-    return { diagnosis: 'auth', detail: e.message };
-  }
-  if (status === 429) return { diagnosis: 'rate_limited', detail: e.message };
-  if (status === 404) return { diagnosis: 'model_missing', detail: e.message };
-  if (status !== undefined && status >= 500) {
-    return { diagnosis: 'provider_error', detail: e.message };
-  }
-  // A 400 naming the model is the common "model id does not exist" shape on
-  // endpoints that do not use 404 for it (several openai-compatible servers).
-  //
-  // ⚠ The bounded `[^.]{0,40}?` gap is load-bearing: the real message carries
-  // the model ID BETWEEN the word and the verdict — "model 'llama-9' does not
-  // exist" — so a pattern demanding they be adjacent matches none of the
-  // strings it was written for. Bounded rather than greedy so it cannot reach
-  // across a sentence and pair "model" with an unrelated later clause.
-  if (
-    status === 400
-    && /model[_ -]?not[_ -]?found|(?:unknown|invalid|unsupported)[_ -]model|model[^.]{0,40}?(?:does not exist|not found|is not (?:a )?valid|is invalid)/i
-      .test(e.message)
-  ) {
-    return { diagnosis: 'model_missing', detail: e.message };
-  }
-  // A network failure never reached a status at all.
-  if (status === undefined && /LLM call failed/i.test(e.message)) {
-    return { diagnosis: 'unreachable', detail: e.message };
-  }
-  return { diagnosis: 'rejected', detail: e.message };
-};
+} => diagnoseProviderFailure(e);
 
 export interface ProbeLlmSourceDeps {
   adapter: LLMAdapter;
@@ -259,6 +217,12 @@ const checkPictures = async (deps: ProbeLlmSourceDeps): Promise<Pick<
       noteImageInput(deps.slot, false);
       return { sees_pictures: false, picture_detail: (e as LLMError).message };
     }
+    if (stoppedAtOutputLimit(e)) {
+      // No verdict either way, like an empty answer; the tokens were still spent.
+      const used = (e.details?.usage as { total_tokens?: number } | undefined)?.total_tokens;
+      if (used !== undefined) deps.onUsage?.(used);
+      return { picture_detail: 'The model ran out of room before answering, so whether it can see pictures is unknown.' };
+    }
     return { picture_detail: diagnoseProbeFailure(e).detail };
   }
 };
@@ -286,21 +250,32 @@ export const probeLlmSource = async (
   // claimed it would report a failure the owner did not configure.
   const wantsJson = deps.slot.supports_json !== false;
   try {
-    const result = await completeWithFallbacks(
-      deps.adapter,
-      deps.slot,
-      [
-        { role: 'system', content: 'You are a connection test.' },
-        { role: 'user', content: PROBE_PROMPT },
-      ],
-      {
-        model: deps.slot.model,
-        max_tokens: 1,
-        json: wantsJson,
-        timeout_ms: deps.timeout_ms ?? LLM_PROBE_TIMEOUT_MS,
-      },
-    );
-    deps.onUsage?.(result.usage.total_tokens);
+    let usedTokens: number;
+    try {
+      const result = await completeWithFallbacks(
+        deps.adapter,
+        deps.slot,
+        [
+          { role: 'system', content: 'You are a connection test.' },
+          { role: 'user', content: PROBE_PROMPT },
+        ],
+        {
+          model: deps.slot.model,
+          max_tokens: 1,
+          json: wantsJson,
+          timeout_ms: deps.timeout_ms ?? LLM_PROBE_TIMEOUT_MS,
+        },
+      );
+      usedTokens = result.usage.total_tokens;
+    } catch (e) {
+      // ⚠ A model that thinks can spend the one token thinking and stop with no answer. The endpoint
+      // still took the request and answered it, which is the question, so that is a pass: this
+      // reported `gemini-3.8-flash` "rejected" (live 2026-11-16), and OpenAI's reasoning models
+      // would have been reported the same way.
+      if (!stoppedAtOutputLimit(e)) throw e;
+      usedTokens = (e.details?.usage as { total_tokens?: number } | undefined)?.total_tokens ?? 0;
+    }
+    deps.onUsage?.(usedTokens);
     const pictures = deps.pictures === true ? await checkPictures(deps) : {};
     return {
       ok: true,

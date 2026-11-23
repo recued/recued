@@ -29,6 +29,8 @@ export * from './file-ref-array.js';
 export * from './record-ref-variable.js';
 export * from './mail-template-variable.js';
 export * from './mailbox-variable.js';
+// D-402 slice H2b — a setting that names one of the owner's browsers.
+export * from './browser-variable.js';
 export * from './config-editor-overlay.js';
 export * from './connection-lines.js';
 export * from './connection-removal.js';
@@ -339,6 +341,7 @@ export {
 } from './focus-trap.js';
 export { taskDueShortcutDue, renderTaskDueActions, TASK_DUE_STYLES, type TaskDueShortcut } from './task-due.js';
 export { type WorkEntityNoteView } from './work-entity-page/note-reader.js';
+export { renderTaskBlockers, TASK_BLOCKERS_STYLES } from './work-entity-page/task-blockers.js';
 // D-145 PA6 — work-entity page substrate (Source dropdown + list/search view
 // + create/edit dialog). R18 dropped the per-kind nav (the Data route's grouped
 // tabs are the single kind nav).
@@ -347,6 +350,7 @@ export {
   renderSourceAffordanceChips,
   renderWorkEntityListView,
   renderWorkEntityDialog,
+  taskDeadlineLabel,
   renderWorkEntityPage,
   renderBookingDetail,
   projectRowText,

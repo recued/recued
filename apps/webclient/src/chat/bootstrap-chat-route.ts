@@ -1,9 +1,20 @@
 import { downloadStoredFile } from '../files/file-preview.js';
 import { mountPromptSchedulesPanel, type PromptScheduleClient } from '../automation/prompt-schedules-panel.js';
+import type { PromptRecoveryStore } from '../automation/prompt-draft-recovery.js';
 import { approvalValueLabel, episodeRecordChecklist, isMentionOnlyEmail, memorySaveConflictRows, renderResourceReview, tier1CallDetails, tier1CallTitle, type ApprovalValueLabels, type MemoryClaim } from '@recued/contracts';
-import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
+import { chatNextStepKey, chatNextStepRefsOf, chatNextStepsOfMessage, chatSetupFeaturesOf, type ChatNextStepRef } from '@recued/contracts';
+import { appendContinue, offersContinue } from './continue-answer.js';
+import { localUpdateUndoControl, hasLocalUpdateUndoWork, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
+import { chatStopAllowingControl, type ChatStopAllowingCaller } from './stop-allowing-control.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
-import { assetChatHref, assetChatMessage, readAssetChatMessage, type ChatAssetContext } from './asset-context.js';
+import { recordChatHref, recordChatMessage, readRecordChatMessage, recordContextFromRecovery, recordContextRecovery, isContactChatContext, isCalendarChatContext, isSelectedRecordsContext, baseRecordContext, pickedCalendarRefsOf, selectedRecordsOf, withSelectedRecords, withoutBaseRecordContext, type ChatRecordContext } from './record-context.js';
+import { pickedMailRefsOf, selectedRecordsWire } from './selected-records.js';
+import { createRecordChecksSurface, RECORD_CHECK_STYLES } from './record-checks-surface.js';
+import type { RecordCheckOwner } from './record-checks.js';
+import { createChatRecordPreview, CHAT_RECORD_PREVIEW_ATTR, CHAT_RECORD_PREVIEW_STYLES } from './record-preview.js';
+import { createPastedRecordLinksSurface, PASTED_RECORD_LINK_STYLES } from './pasted-record-links-surface.js';
+import type { PreparedRecordLink } from '../data/record-link-insert.js';
+import { createRecordLinkInsertSurface, RECORD_LINK_INSERT_STYLES, type RecordLinkPickerServices } from '../data/record-link-insert-surface.js';
 export type { ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { openExistingFilePicker, type ChatFileListCaller, type CloudFileCallers } from './existing-file-picker.js';
@@ -37,10 +48,12 @@ import { ANSWER_TEXT_STYLES, renderAnswerText } from './answer-text.js';
 import { formatChatMarkdownExport, type ChatExportFormat } from './transcript-export.js';
 import { createAnswerCodeCopy } from './answer-code-copy.js';
 import { createAnswerCopy, ANSWER_COPY_STYLES } from './answer-copy.js';
+import { createRequestRecipe, type RequestRecipeCallers } from './request-recipe.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 import { NOTICE_RULE_TEXT, noticeHeading, withoutAiLabel } from './message-labels.js';
 import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
 import { buildChatFixes, chatFixRows, CHAT_FIXES_STYLES } from './chat-fixes.js';
+import { loadChatHints } from './chat-hints.js';
 /** D-174 P2 — top-level Chat route.
  *
  *  This hosts the existing D-137 chat substrate at `#chat`: server-owned
@@ -54,7 +67,7 @@ import {
   REFERENCE_PROVENANCE_STYLES,
   buildReferenceDisclosure,
   renderActionIcon, renderActionLabel,
-  type Upload,
+  type IconName, type Upload,
 } from '@recued/ui-shared';
 import { createComposerAttachments } from './composer-attachments.js';
 import {
@@ -109,7 +122,7 @@ import {
   type TransparencyStreamSettings,
 } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { describeToolRow, planToolRows, readToolResult } from './tool-rows.js';
+import { describeToolRow, planToolRows, readToolResult, type LateToolResult } from './tool-rows.js';
 
 import {
   applyPlanResolution,
@@ -125,6 +138,7 @@ import {
   projectInFlightActivity,
   projectMessageActivity,
   projectSettledCallNotices,
+  callName,
   reduceChatThreadEvent,
   type ChatActivityRow,
   type ChatModelSourceOption,
@@ -352,6 +366,12 @@ export const CHAT_ROUTE_PLAN_CANCEL_ATTR =
  *  standing pre-approval its ask offers (`chat.plan.approve`'s `always_allow`). */
 export const CHAT_ROUTE_PLAN_ALWAYS_ATTR =
   'data-recued-chat-route-plan-always';
+/** D-177 §N.15.9 — the one card of a round's held writes of one kind, asked once: on the card,
+ *  its count of writes; on each of its writes' rows, that write's plan id. */
+export const CHAT_ROUTE_PLAN_GROUP_ATTR =
+  'data-recued-chat-route-plan-group';
+export const CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR =
+  'data-recued-chat-route-plan-group-item';
 /** Approved plans deliberately return through an editable Chat draft. The
  * continuation action fills the composer but never sends on Mary's behalf. */
 export const CHAT_ROUTE_PLAN_CONTINUE_ATTR =
@@ -455,10 +475,6 @@ export const CHAT_ROUTE_ACTIVATION_POINTER_ATTR =
   'data-recued-chat-route-activation-pointer';
 export const CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR =
   'data-recued-chat-route-activation-pointer-link';
-/** Where the pointer sends someone: the public first-steps guide, which can
- *  explain a connection, a model, a contract and a pack in one place without
- *  any of it having to live in the empty state of a chat. */
-export const ACTIVATION_GUIDE_URL = 'https://recued.com/first-steps';
 export const CHAT_ROUTE_ACTIVATION_CARD_ATTR =
   'data-recued-chat-route-activation-card';
 /** Primary action inside an activation card. Value matches the card intent. */
@@ -540,6 +556,11 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, Prom
   (method: 'chat.session.brief.clear', payload: { session_id: string }): Promise<{
     ok: true;
   }>;
+  /** D-404 slice B1 — of these steps under answers, the ones that landed (an offer installed, a thing
+   *  in Yours). A server before B1 refuses the method; nothing then reads as landed. */
+  (method: 'chat.next_steps.state', payload: { steps: ReadonlyArray<ChatNextStepRef> }): Promise<{
+    landed: ChatNextStepRef[];
+  }>;
   (method: 'chat.sessions.list', payload?: ChatSessionListRequest): Promise<ChatSessionListResult>;
   (
     method: 'chat.session.get',
@@ -566,6 +587,9 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, Prom
   (method: 'collection.connection.list'): Promise<{
     connections: ReadonlyArray<unknown>;
   }>;
+  /** D-405 slice 4b — mail, a calendar of the owner's, files: connected or not, the Set up page's own
+   *  fact. A server before it refuses the method; the API connections alone then decide, as before. */
+  (method: 'chat.setup.features'): Promise<{ features?: unknown }>;
   (method: 'recipe.list'): Promise<{ recipes: ReadonlyArray<unknown> }>;
   /** Paged form (`@recued/contracts` `rpc/list-page.ts`). The activation read
    *  asks for one row and reads `total`. */
@@ -588,6 +612,9 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient, Prom
       picker_state: ChatSession['picker_state'];
       /** D-172 P2 — finalized `data.file` ids attached to this turn. */
       attachments?: Array<{ file_id: string; media_class: string; selection_revision?: string }>;
+      /** D-406 — the emails among the records added to the message, read before the turn's first round. */
+      mail_refs?: Array<{ slug: string; record_id: string }>;
+      calendar_refs?: Array<{ slug: string; record_id: string }>;
       model_pref: {
         current: ChatModelRoutingLayer;
         model_hint?: ChatModelHint;
@@ -712,7 +739,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
      in dark mode (visual-UX review). */
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
-  padding: 16px;
+  padding: var(--wc-page-pad, 24px);
   color: var(--fg);
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-route-header {
@@ -728,8 +755,8 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-route-shell {
   display: grid;
-  grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+  gap: var(--wc-space-lg, 24px);
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-route-header button[${CHAT_ROUTE_HISTORY_TOGGLE_ATTR}] { display: none; }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-filter-panel > summary {
@@ -744,7 +771,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [data-chat-mail-work-handoff] > details > summary { cursor: pointer; min-height: var(--wc-control-h, 38px); align-content: center; }
 [${CHAT_ROUTE_SESSION_LIST_ATTR}],
 [${CHAT_ROUTE_THREAD_ATTR}] {
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--chat-radius-panel);
   background: var(--surface);
 }
@@ -766,8 +793,9 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   display: flex;
   flex-direction: column;
   gap: 10px;
-  height: min(720px, calc(100vh - 132px - var(--wc-connection-banner-h, 0px)));
-  padding: 12px;
+  height: min(720px, calc(100vh - 148px - var(--wc-connection-banner-h, 0px)));
+  padding: 16px;
+  background: var(--surface-sunk);
 }
 /* ⛔ THE THREAD HAD NO HEIGHT AND NO SCROLLER, so it grew the PAGE instead of
    scrolling inside itself — and the composer, being the last child, walked
@@ -777,7 +805,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_THREAD_ATTR}] {
   display: flex;
   flex-direction: column;
-  height: min(720px, calc(100vh - 132px - var(--wc-connection-banner-h, 0px)));
+  height: min(720px, calc(100vh - 148px - var(--wc-connection-banner-h, 0px)));
   overflow: hidden;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-head,
@@ -801,6 +829,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-context-remove,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-action {
   min-height: var(--wc-control-h, 38px);
   border: 1px solid var(--border);
@@ -1078,7 +1107,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HISTORY_EMPTY_ATTR}] {
   display: grid;
   gap: 4px;
-  padding: 14px 8px;
+  padding: 32px 8px;
   text-align: center;
   color: var(--muted);
   font-size: 12px;
@@ -1125,6 +1154,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-new:focus-visible,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action:focus-visible,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action:focus-visible,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-context-remove:focus-visible,
 [${CHAT_ROUTE_SESSION_ROW_ATTR}]:focus-visible,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-history-message-result:focus-visible,
 [${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary:focus-visible,
@@ -1398,14 +1428,23 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   50% { opacity: 1; transform: scale(1); }
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer {
+  position: relative;
   display: grid;
   grid-auto-rows: auto;
-  gap: 8px;
-  border-top: 1px solid var(--border-subtle);
-  padding: 10px;
+  gap: var(--wc-space-sm, 8px);
+  margin: 12px;
+  padding: 12px;
+  border: 1px solid var(--wc-field-edge, var(--border-strong));
+  border-radius: var(--wc-radius-lg, 14px);
+  background: var(--surface);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer:focus-within {
+  border-color: var(--accent);
 }
 [${CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR}],
 [data-recued-chat-asset-context],
+[data-recued-chat-contact-context],
+[data-recued-chat-calendar-context],
 [${CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR}],
 [${CHAT_ROUTE_PLAN_CONTEXT_ATTR}] {
   display: flex;
@@ -1418,8 +1457,9 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   border-radius: var(--chat-radius-panel);
   background: var(--accent-weak);
 }
-[data-recued-chat-asset-context] > div {min-width:0;overflow-wrap:anywhere}
-[data-recued-chat-asset-context] p {margin:4px 0 0;font-size:0.85rem}
+[data-recued-chat-asset-context] > div, [data-recued-chat-contact-context] > div, [data-recued-chat-calendar-context] > div {min-width:0;overflow-wrap:anywhere}
+[data-recued-chat-asset-context] p, [data-recued-chat-contact-context] p, [data-recued-chat-calendar-context] p {margin:4px 0 0;font-size:0.85rem}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-context-remove {flex-shrink:0;white-space:nowrap}
 [${CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR}] .chat-followup-context-copy,
 [${CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR}] .chat-followup-context-copy,
 [${CHAT_ROUTE_PLAN_CONTEXT_ATTR}] .chat-followup-context-copy {
@@ -1488,20 +1528,17 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   align-items: center;
   gap: 8px;
   min-height: 26px;
+  flex: 1 1 180px;
 }
-/* ⛔ WAS A TWO-COLUMN GRID TAKING THREE CHILDREN. The row holds attach,
-   textarea and Send, and "minmax(0, 1fr) auto" auto-placed them: the `+`
-   button landed in the 1fr column and stretched to ~420px, the textarea got
-   the "auto" column and collapsed to its ~203px intrinsic width, and Send
-   wrapped onto a second row. The count is also VARIABLE — attach only exists
-   when uploads are wired — so any fixed template misplaces one of the two
-   shapes. Flex has no such coupling: exactly one child grows, whoever else is
-   present. "flex-end" keeps the buttons on the textarea's last line when it is
-   dragged taller. */
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row {
-  position: relative;
   display: flex;
-  align-items: flex-end;
+}
+/* Controls share one footer below the full-width message field. Flex keeps
+   optional attachment and voice controls from changing the input's width. */
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_INPUT_ATTR}] {
@@ -1513,11 +1550,15 @@ export const CHAT_ROUTE_CHROME_STYLES = `
      than converging. If this row ever
      overflows, that is a finding about the FLOOR, to be fixed there once. */
 }
-[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_ATTACH_ATTR}],
-[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_VOICE_ATTR}],
-[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_SEND_ATTR}] {
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_ATTACH_ATTR}],
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [data-chat-attach-control],
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_VOICE_ATTR}],
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_SEND_ATTR}] {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   flex: 0 0 auto;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_SEND_ATTR}] {
+  margin-left: auto;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-model {
   display: flex;
@@ -1542,34 +1583,33 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_MODEL_CONFIGURE_ATTR}]:hover {
   text-decoration: underline;
 }
-/* Centered → docked (§D.L1): empty thread centers the greeting + composer;
-   the first send drops the composer to the bottom and lets messages fill. */
+/* Empty threads frame the composer with their greeting or starter guidance;
+   a conversation docks it below the scrolling message region. */
 [${CHAT_ROUTE_THREAD_ATTR}][data-empty="true"] {
   grid-template-rows: 1fr;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-hero {
   display: grid;
-  align-content: center;
+  align-content: start;
   justify-items: center;
-  gap: 16px;
-  padding: 24px;
+  gap: var(--wc-space-lg, 24px);
+  padding: 32px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-hero .chat-composer {
   width: 100%;
   max-width: 640px;
-  border-top: none;
-  padding: 0;
+  margin: 0;
 }
-/* ⛔ The welcome cards above the Chat box can be taller than the thread on a
-   phone — and with the connection banner up the thread is shorter still — so
-   the box began below the fold (about 100px below it while offline). Pinned to
-   the thread's bottom edge it stays in view and the cards scroll behind it. A
-   thread whose welcome fits never scrolls, so this changes nothing there. */
-[${CHAT_ROUTE_THREAD_ATTR}][data-empty="true"] .chat-thread-hero .chat-composer {
+/* A source handoff can be taller than the thread on a phone. Keep its composer
+   in view while that context scrolls. First-run guidance places the composer
+   before its choices instead, so those choices cannot push it below the fold. */
+[${CHAT_ROUTE_THREAD_ATTR}][data-empty="true"] .chat-thread-hero > .chat-composer {
   position: sticky;
   bottom: 0;
   z-index: 1;
-  padding-block: 8px 10px;
   background: var(--surface);
 }
 [${CHAT_ROUTE_GREETING_ATTR}] {
@@ -1803,18 +1843,18 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   color: var(--accent);
 }
 [${CHAT_ROUTE_ACTIVATION_ATTR}] {
-  width: min(100%, 760px);
+  width: min(100%, 640px);
   display: grid;
-  gap: 12px;
+  gap: var(--wc-space-lg, 24px);
 }
 [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-heading {
   display: grid;
-  gap: 4px;
-  text-align: center;
+  gap: 8px;
+  text-align: left;
 }
 [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-eyebrow {
   margin: 0;
-  color: var(--accent);
+  color: var(--fg-muted);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .08em;
@@ -1823,13 +1863,15 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-title {
   margin: 0;
   color: var(--fg);
-  font-size: 20px;
-  font-weight: 680;
+  font-size: var(--wc-font-title, 28px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
 }
 [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-intro {
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--wc-font-body, 14px);
   line-height: 1.45;
 }
 [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-grid {
@@ -1843,7 +1885,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
      renders this markup without the property on the old behaviour.
      NOTE: no backticks in this comment — it lives inside a template literal. */
   grid-template-columns: repeat(var(--activation-cols, 3), minmax(0, 1fr));
-  gap: 10px;
+  gap: 16px 24px;
 }
 /* Quiet by construction — it sits under a greeting, not in place of one. */
 [${CHAT_ROUTE_ACTIVATION_POINTER_ATTR}] {
@@ -1861,36 +1903,29 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   text-decoration: underline;
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] {
-  min-width: 0;
   display: grid;
   grid-template-rows: auto auto 1fr auto;
-  gap: 7px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--chat-radius-panel);
-  background: var(--surface-subtle);
+  gap: 4px;
+  padding: 4px 0;
   text-align: left;
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] .chat-activation-status {
   width: fit-content;
-  padding: 3px 7px;
-  border-radius: var(--chat-radius-pill);
-  background: var(--surface);
   color: var(--muted);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 400;
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] .chat-activation-status[data-state="ready"] {
-  color: var(--accent);
+  color: var(--fg-muted);
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] .chat-activation-status[data-state="needs-setup"] {
-  color: var(--fail);
+  color: var(--fg-muted);
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] .chat-activation-card-title {
   margin: 0;
   color: var(--fg);
-  font-size: 15px;
-  font-weight: 670;
+  font-size: 14px;
+  font-weight: 600;
 }
 [${CHAT_ROUTE_ACTIVATION_CARD_ATTR}] .chat-activation-card-copy {
   margin: 0;
@@ -1902,18 +1937,19 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   min-height: 44px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: 6px;
   box-sizing: border-box;
-  padding: 8px 11px;
-  border: 1px solid var(--border);
+  padding: 6px 0;
+  border: 0;
   border-radius: var(--chat-radius-control);
-  background: var(--surface);
-  color: var(--fg);
+  background: transparent;
+  color: var(--accent);
   font: inherit;
   font-size: 13px;
   font-weight: 650;
   line-height: 1.25;
-  text-align: center;
+  text-align: left;
   text-decoration: none;
   cursor: pointer;
 }
@@ -1922,27 +1958,23 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   border-color: var(--accent);
   color: var(--accent);
 }
-[${CHAT_ROUTE_ACTIVATION_CARD_ATTR}="ask"] [${CHAT_ROUTE_ACTIVATION_ACTION_ATTR}] {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-[${CHAT_ROUTE_ACTIVATION_CARD_ATTR}="ask"] [${CHAT_ROUTE_ACTIVATION_ACTION_ATTR}]:hover,
-[${CHAT_ROUTE_ACTIVATION_CARD_ATTR}="ask"] [${CHAT_ROUTE_ACTIVATION_ACTION_ATTR}]:focus-visible {
-  color: var(--on-accent);
-  filter: brightness(.96);
+[${CHAT_ROUTE_ACTIVATION_ACTION_ATTR}] > svg {
+  flex-shrink: 0;
 }
 [${CHAT_ROUTE_INPUT_ATTR}] {
   /* ⚠ NOT the control knob, on purpose. This is a multi-line text area, and
      its floor is "one comfortable line of prose plus room to grow", not "how
      tall is a button". Reconciling it would make the composer shorter than
      the Send button beside it. */
-  min-height: 42px;
+  min-height: 72px;
   resize: vertical;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--chat-radius-control);
-  padding: 8px;
+  padding: 8px 4px;
+  background: var(--surface);
+  color: var(--fg);
   font: inherit;
+  line-height: 1.5;
 }
 [${CHAT_ROUTE_ATTACHMENTS_ATTR}] {
   display: flex;
@@ -2040,8 +2072,11 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   font-size: 15px;
   line-height: 1;
 }
+[data-chat-attach-control] { position: relative; }
 [data-chat-attach-menu]:not([hidden]) {
-  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 10;
+  position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 10;
+  width: max-content; max-width: calc(100vw - 32px); box-sizing: border-box;
+  max-height: calc(100dvh - 32px); overflow: auto;
   display: flex; flex-direction: column; gap: 4px; padding: 6px;
   border: 1px solid var(--border); border-radius: var(--chat-radius-control);
   background: var(--surface); box-shadow: 0 4px 18px #0002;
@@ -2153,6 +2188,33 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 }
 [${CHAT_ROUTE_ACTIVITY_ROW_ATTR}][data-status="error"] {
   color: var(--fail);
+}
+/* The Undo of a confirmed change, on a call's line (D-348 §7.8) or a card's receipt: as Logs
+   draws it (.logs-confirmed-change button), so one control looks one way. Styled here, not
+   inline in the shared control: an inline size there overrode Logs' 44px. */
+[${CHAT_ROUTE_HOST_ATTR}] [data-local-update-undo] button {
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius, 6px);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_HOST_ATTR}] [data-local-update-undo] button:hover {
+  background: var(--surface-subtle);
+  border-color: var(--border-strong);
+}
+[${CHAT_ROUTE_HOST_ATTR}] [data-local-update-undo] button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] [data-local-update-undo] button:disabled {
+  opacity: .65;
+  cursor: not-allowed;
 }
 [${CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR}] {
   margin-left: 6px;
@@ -2267,6 +2329,31 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   color: var(--fg);
   font-size: 12px;
   line-height: 1.45;
+}
+[${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-group-items {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR}] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[${CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR}] .chat-plan-group-mark {
+  flex: 0 0 auto;
+  min-width: 1em;
+  color: var(--muted, var(--fg));
+}
+[${CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR}][data-status="failed"] .chat-plan-group-mark {
+  color: var(--danger);
 }
 [${CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR}] {
   display: grid;
@@ -2756,7 +2843,6 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   color: var(--accent);
 }
 [${CHAT_ROUTE_COMPOSER_MORE_ATTR}] {
-  position: relative;
   margin-left: auto;
 }
 [${CHAT_ROUTE_COMPOSER_MORE_ATTR}] > summary {
@@ -2779,6 +2865,8 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   display: none;
 }
 [${CHAT_ROUTE_COMPOSER_MORE_ATTR}] .chat-composer-actions--menu {
+  /* Anchor above the composer, leaving its message field available to
+     dismiss the menu by pointer or keyboard. */
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
@@ -2819,7 +2907,7 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
     max-height: none;
   }
   [${CHAT_ROUTE_SESSION_LIST_ATTR}], [${CHAT_ROUTE_THREAD_ATTR}] {
-    height: min(720px, calc(100dvh - 140px - var(--wc-connection-banner-h, 0px)));
+    height: min(720px, calc(100dvh - 152px - var(--wc-connection-banner-h, 0px)));
   }
   [${CHAT_ROUTE_HOST_ATTR}][data-history-open="true"] [${CHAT_ROUTE_SESSION_LIST_ATTR}] { display: flex; }
   [${CHAT_ROUTE_HOST_ATTR}][data-history-open="true"] [${CHAT_ROUTE_THREAD_ATTR}] { display: none; }
@@ -2831,10 +2919,8 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
     padding: 28px 20px;
   }
   [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-grid {
-    /* ⛔ ONE COLUMN UNTIL IT DOES NOT FIT. Four cards stacked on a 390x844
-       phone made the hero 964px tall and pushed the composer 8px past the
-       fold — a first-run screen whose message box you cannot see. Three or
-       four cards use two columns; one or two stay in one column. */
+    /* Tablet choices use the available width; phone choices stack below the
+       composer, which is already visible before the owner reaches them. */
     grid-template-columns: repeat(var(--activation-cols-narrow, 1), minmax(0, 1fr));
   }
   [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-hero {
@@ -2853,7 +2939,13 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 }
 @media (max-width: 520px) {
   [${CHAT_ROUTE_HOST_ATTR}] {
-    padding: 10px;
+    padding: var(--wc-page-pad, 16px);
+  }
+  [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-grid {
+    grid-template-columns: 1fr;
+  }
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > .chat-composer-toolbar {
+    flex-basis: 100%;
   }
   [${CHAT_ROUTE_HOST_ATTR}] .chat-history-new,
   [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action,
@@ -2871,15 +2963,17 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   }
   /* The composer's buttons and the attach menu are a finger's size. ⛔ Send
      was 32px tall and Attach 33 by 31. */
-  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_ATTACH_ATTR}],
-  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_VOICE_ATTR}],
-  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-input-row > [${CHAT_ROUTE_SEND_ATTR}] {
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_ATTACH_ATTR}],
+  [${CHAT_ROUTE_HOST_ATTR}] [data-chat-attach-control] > [${CHAT_ROUTE_ATTACH_ATTR}],
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_VOICE_ATTR}],
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-composer-footer > [${CHAT_ROUTE_SEND_ATTR}] {
     min-width: 44px;
     min-height: 44px;
   }
   [data-chat-attach-menu] button {
     min-height: 44px;
   }
+  [data-chat-attach-menu]:not([hidden]) { left: 0; right: auto; }
 }
 `;
 
@@ -2911,9 +3005,13 @@ export interface ChatConnectedSourcePollScheduler {
 
 export interface BootstrapChatRouteOptions {
   root: HTMLElement;
+  promptRecovery?: PromptRecoveryStore;
   document?: Document;
   conn: ChatRouteConn;
   localUndo?: LocalUpdateUndoCallers;
+  /** D-402 slice F5 — "Stop allowing" on the line of a call a standing permission of your chats ran
+   *  without asking (`collection.contract.stopAllowing`). Absent ⇒ no button; the chat still says it. */
+  stopAllowing?: ChatStopAllowingCaller;
   /** D-172 P2 — the `upload.*` control plane + the binary socket factory, the
    *  same pair Data → Files already receives. BOTH must be present for the
    *  attach control to render: half-wired, the button would open a picker that
@@ -2928,6 +3026,9 @@ export interface BootstrapChatRouteOptions {
   /** D-341 slice A — the switch beside Send that lets this conversation's browser actions run
    *  without asking (`collection.contract.get/setRequestPass`). Absent ⇒ no switch. */
   browserActions?: BrowserActionsSwitchCallers;
+  /** D-402 slice A4 — "Make a recipe" under an answer whose request worked in a web page
+   *  (`chat.execution.request_recipe`), and opening its draft in Kitchen. Absent ⇒ no button. */
+  requestRecipe?: RequestRecipeCallers;
   /** D-262 slice 4 — reply speech. Omitted in production (built from
    *  `speechSynthesis`); supplied by tests, which have no browser. `null`
    *  means this context cannot speak and the setting simply has no effect. */
@@ -2991,6 +3092,7 @@ export interface BootstrapChatRouteOptions {
   fileListCaller?: ChatFileListCaller;
   cloudFileCallers?: CloudFileCallers;
   conversationFilesCaller?: ConversationFilesCaller;
+  recordLinks?: RecordLinkPickerServices;
   fileSelectionCaller?: (args: { record_id: string }) => Promise<import('@recued/contracts').FileAttachmentSelection>;
   /** Transient Data → Chat handoff, appended after the intended thread loads. */
   initialFileAttachments?: import('@recued/contracts').FileAttachmentSelection[];
@@ -2999,6 +3101,9 @@ export interface BootstrapChatRouteOptions {
   initialSessionId?: string;
   /** Assistant message to reveal/focus after hydrating a durable session. */
   initialMessageId?: string;
+  /** The current universal-search visit, including unavailable/deleted messages.
+   * A live reader retires the link when the owner moves to another thread. */
+  searchReturn?: () => string | undefined;
   /** Exact reviewed action to reveal after hydration. `initialMessageId`
    * remains a calm fallback only when this durable plan is unavailable. */
   initialPlanId?: string;
@@ -3403,7 +3508,7 @@ const planStatusLabel = (card: PlanApprovalCard): string => {
     return 'Recued cannot show this';
   }
   if (card.status === 'proposed') return 'Needs a look';
-  if (card.status === 'cancelled') return card.lapsed === true ? 'Expired' : 'Cancelled';
+  if (card.status === 'cancelled') return card.replaced === true ? 'Replaced' : card.lapsed === true ? 'Expired' : 'Cancelled';
   if (card.execution?.status === 'running') return 'Running';
   if (card.execution?.status === 'completed') return 'Completed';
   if (card.execution?.status === 'held') return 'Paused';
@@ -3506,6 +3611,56 @@ const planExecutionRunId = (
     ? receipt.run_id
     : undefined;
 
+/** D-177 §N.15.9 — one write of a group, in a line: what its card leads with (a task's or an
+ *  event's title, a contact's name, whom an email goes to), else its kind. */
+const PLAN_GROUP_ITEM_LABELS: readonly string[] = ['Title', 'Name', 'Subject', 'To', 'Contact', 'Thing', 'Summary'];
+const planGroupItemLine = (card: PlanApprovalCard): string => {
+  if (card.payload_available === false) return 'Recued cannot show this one';
+  const entries = planDetailEntries(card.tool, card.args, card.value_labels);
+  const lead = entries.find(([label]) => PLAN_GROUP_ITEM_LABELS.includes(label)) ?? entries[0];
+  return lead === undefined ? planActionTitle(card.tool, card.args) : lead[1];
+};
+
+/** How one write of a group stands: waiting, done, not done, running, or unsure. */
+type PlanGroupItemStatus = 'proposed' | 'completed' | 'cancelled' | 'running' | 'failed';
+const planGroupItemStatus = (card: PlanApprovalCard): PlanGroupItemStatus => {
+  if (card.status === 'proposed') return 'proposed';
+  if (card.status === 'cancelled') return 'cancelled';
+  const execution = card.execution?.status;
+  if (execution === 'completed') return 'completed';
+  if (execution === 'failed' || execution === 'unknown') return 'failed';
+  return 'running';
+};
+const PLAN_GROUP_ITEM_MARKS: Readonly<Record<PlanGroupItemStatus, string>> = {
+  proposed: '•', completed: '✓', cancelled: '–', running: '…', failed: '!',
+};
+const PLAN_GROUP_ITEM_WORDS: Readonly<Record<PlanGroupItemStatus, string>> = {
+  proposed: 'waiting', completed: 'done', cancelled: 'not done', running: 'running', failed: 'not sure it finished',
+};
+/** How many writes of a group its card lists before "Show all". */
+const PLAN_GROUP_SHOWN = 5;
+
+/** The line under a group card's heading: the single card's (`planCardHint`), said of them all,
+ *  so an approval of several reads as one approval does and still says it is several. */
+const planGroupHint = (cards: readonly PlanApprovalCard[], statuses: readonly PlanGroupItemStatus[]): string => {
+  if (statuses.every((status) => status === 'proposed')) {
+    return cards.some((card) => card.payload_available === false)
+      ? 'Recued could not get the details back. You can still mark them cancelled so they can never run.'
+      // A group's writes are held writes: their one approval is on every approval channel (D-329).
+      : `Look at what is below. Saying yes does all ${String(cards.length)} now, each once, with exactly `
+        + 'these details. You can also answer it from your phone or your messages.';
+  }
+  if (statuses.every((status) => status === 'cancelled')) {
+    return cards.every((card) => card.lapsed === true)
+      ? 'Their approval expired before anyone answered it, so nothing ran. Ask Chat again if you still want them.'
+      : 'Nothing ran. Ask Chat again if you want to look at something different.';
+  }
+  if (statuses.some((status) => status === 'running')) return 'Chat is doing exactly what you said yes to.';
+  if (statuses.every((status) => status === 'completed')) return 'They are done. You do not need to do anything else.';
+  return 'Recued is not sure every one finished. Your yes was used. Check the other side for each one not marked done '
+    + 'before you try again.';
+};
+
 const planCardHint = (
   card: PlanApprovalCard,
   state: {
@@ -3533,6 +3688,8 @@ const planCardHint = (
       + 'with exactly these details. It does not run it yet.';
   }
   if (card.status === 'cancelled') {
+    // D-343 — no one said no: a newer version took its place.
+    if (card.replaced === true) return 'A newer version replaced it before anyone answered, so nothing ran. Answer the newer one.';
     // D-329 — no one said no: the approval waited too long and was withdrawn everywhere.
     if (card.lapsed === true) {
       return 'Its approval expired before anyone answered it, so nothing ran. '
@@ -3869,7 +4026,15 @@ export const bootstrapChatRoute = (
   if (doc.head.querySelector(`style[${CHAT_ROUTE_STYLES_MARKER}]`) === null) {
     const style = doc.createElement('style');
     style.setAttribute(CHAT_ROUTE_STYLES_MARKER, '');
-    style.textContent = CHAT_ROUTE_STYLES;
+    style.textContent = CHAT_ROUTE_STYLES + '\n' + RECORD_LINK_INSERT_STYLES + CHAT_RECORD_PREVIEW_STYLES + PASTED_RECORD_LINK_STYLES + RECORD_CHECK_STYLES + `
+.chat-composer-records { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; min-width:0; max-height:24dvh; overflow:auto; }
+.chat-record-chip { display:flex; gap:8px; align-items:start; min-width:0; max-width:100%; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }
+.chat-record-chip > div { min-width:0; overflow-wrap:anywhere; }
+.chat-record-chip p { margin:3px 0 0; color:var(--muted); font-size:.8rem; }
+.chat-record-chip button { flex-shrink:0; min-height:32px; font:inherit; color:inherit; background:transparent; border:1px solid var(--border); border-radius:6px; cursor:pointer; }
+.chat-composer-toolbar { flex-wrap:wrap; }
+.chat-composer-toolbar .record-link-insert-trigger { margin:0; }
+`;
     doc.head.appendChild(style);
   }
 
@@ -3920,7 +4085,13 @@ export const bootstrapChatRoute = (
   // unsaved user work. Typing, choosing a follow-up, or preparing an action
   // draft promotes the composer to protected work for the shell leave guard.
   let composerDraftProtected = false;
-  let composerAssetContext: ChatAssetContext | null = null;
+  let composerRecordContext: ChatRecordContext | null = null;
+  let recordPicker: ReturnType<typeof createRecordLinkInsertSurface> | null = null;
+  let recordPreview: ReturnType<typeof createChatRecordPreview> | null = null;
+  let recordPaste: ReturnType<typeof createPastedRecordLinksSurface> | null = null;
+  let recordChecks: ReturnType<typeof createRecordChecksSurface> | null = null;
+  let recordPickerEpoch = 0;
+  const recordPickerOwners = new WeakMap<typeof composerDraftOwner, string>();
   let composerReply: ChatReplyDraft | null = null;
   // Bare #chat is a deliberate returning-user history view. It retires as
   // soon as the owner opens a conversation or explicitly starts a draft;
@@ -4187,13 +4358,13 @@ export const bootstrapChatRoute = (
     // Check AFTER every await. Typing, uploading, recording, navigation and a
     // concurrent send all keep ownership of the current composer.
     if (!current() || disposed || state.thread.session?.id !== draft.session_id || openingSessionId !== null
-      || state.sending || composerDraft.length > 0 || composerReply !== null || composerAssetContext !== null
+      || state.sending || composerDraft.length > 0 || composerReply !== null || composerRecordContext !== null
       || composerAttachments.rows().length > 0 || pendingVoiceSend
       || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
       || approvedPlanContinuationDraft !== null || dataVerificationDiagnosisDraft !== null) return false;
-    const assetHandoff = readAssetChatMessage(draft.message);
-    composerDraft = assetHandoff?.question ?? draft.message;
-    composerAssetContext = assetHandoff?.context ?? null;
+    const recordHandoff = readRecordChatMessage(draft.message);
+    composerDraft = recordHandoff?.question ?? draft.message;
+    composerRecordContext = recordHandoff?.context ?? null;
     composerDraftProtected = true;
     composerReply = reply;
     pendingSubmission = null;
@@ -4573,6 +4744,11 @@ export const bootstrapChatRoute = (
   const expandedConnectedSourceReferenceTurns = new Set<string>();
   let connectedSourceFollowupDraft: ConnectedSourceFollowupDraft | null = null;
   let approvedPlanContinuationDraft: ApprovedPlanContinuationDraft | null = null;
+  // D-404 slice B1 — the steps under each answer that landed (an offer installed, a thing in Yours), as
+  // the server last said, by message; the answers being asked about now; and an empty answer.
+  const nextStepsLanded = new Map<string, ReadonlySet<string>>();
+  const nextStepsAsking = new Set<string>();
+  const NO_STEPS_LANDED: ReadonlySet<string> = new Set<string>();
   let dataVerificationDiagnosisDraft:
     DataVerificationDiagnosisDraft | null = null;
   let pendingDataDiagnosisTurn: PendingDataDiagnosisTurn | null = null;
@@ -4808,10 +4984,12 @@ export const bootstrapChatRoute = (
 
   const promptSchedulesHost = doc.createElement('div');
   const promptSchedules = mountPromptSchedulesPanel({ host: promptSchedulesHost, call: opts.conn, compact: true,
+    recovery: opts.promptRecovery,
     ...(opts.subscribe ? { subscribe: opts.subscribe } : {}) });
   const routeRoot = doc.createElement('div');
   const answerCodeCopy = createAnswerCodeCopy(doc, routeRoot);
   const answerCopy = createAnswerCopy(doc, routeRoot);
+  const requestRecipe = opts.requestRecipe ? createRequestRecipe(doc, opts.requestRecipe) : undefined;
   routeRoot.setAttribute(CHAT_ROUTE_HOST_ATTR, '');
 
   const dismissOpenHistoryActions = (restoreFocus: boolean): void => {
@@ -5221,7 +5399,7 @@ export const bootstrapChatRoute = (
     if (sessionId === undefined) return;
     const hash = serializeChatAnswerAddress({ sessionId, messageId });
     if (opts.onAddressChange !== undefined) {
-      opts.onAddressChange(hash, 'replace');
+      notifyAddressChange(hash, 'replace');
       return;
     }
     const history = doc.defaultView?.history;
@@ -5247,7 +5425,7 @@ export const bootstrapChatRoute = (
     answer: ConnectedSourceTurn,
     followup: ConnectedSourceFollowup,
   ): void => {
-    if (composerDraft.trim().length > 0 || composerAssetContext !== null) {
+    if (composerDraft.trim().length > 0 || composerRecordContext !== null) {
       focusComposer(false, 'end');
       return;
     }
@@ -5278,7 +5456,7 @@ export const bootstrapChatRoute = (
     origin: DataVerificationDiagnosisDraft['origin'] = 'data_return',
     mode: DataVerificationDiagnosisDraft['mode'] = 'explanation',
   ): void => {
-    if (composerDraft.trim().length > 0 || composerAssetContext !== null) {
+    if (composerDraft.trim().length > 0 || composerRecordContext !== null) {
       focusComposer(false, 'end');
       return;
     }
@@ -5313,7 +5491,7 @@ export const bootstrapChatRoute = (
     mode: ApprovedPlanContinuationDraft['mode'],
     sourceMessageId?: string,
   ): void => {
-    if (composerDraft.trim().length > 0 || composerAssetContext !== null) {
+    if (composerDraft.trim().length > 0 || composerRecordContext !== null) {
       focusComposer(false, 'end');
       return;
     }
@@ -5351,7 +5529,7 @@ export const bootstrapChatRoute = (
       || state.thread.messages.length > 0
       || state.thread.inflight !== null
       || composerDraft.trim().length > 0
-      || composerAssetContext !== null
+      || composerRecordContext !== null
     ) return false;
     composerDraft = connectedSourcePrompt;
     composerDraftProtected = false;
@@ -5360,8 +5538,29 @@ export const bootstrapChatRoute = (
   };
 
   // Owner disclosure choices survive repaints. Live progress and problems
-  // start expanded; completed successful calls start quiet.
+  // start expanded; completed successful calls start quiet, unless one made a
+  // change the owner can undo (D-348 §7.8): its Undo shows on its line.
   const activityExpansion = new Map<string, boolean>();
+  // One Undo control per receipt, kept across repaints so a review in progress
+  // is not lost (as Logs keeps its own).
+  const activityUndoControls = new Map<string, HTMLElement>();
+  const planUndoControls = new Map<string, HTMLElement>();
+  const undoControls = (): HTMLElement[] => [...activityUndoControls.values(), ...planUndoControls.values()];
+  const hasUndoWork = (): boolean => undoControls().some(hasLocalUpdateUndoWork);
+  const captureUndoPosition = () => {
+    const active = doc.activeElement as HTMLElement | null;
+    return {
+      focused: active && undoControls().some(control => control.contains(active)) ? active : null,
+      regions: undoControls().flatMap(control => [...control.querySelectorAll<HTMLElement>('pre')]
+        .map(element => ({ element, top: element.scrollTop, left: element.scrollLeft }))),
+    };
+  };
+  const restoreUndoPosition = (saved: ReturnType<typeof captureUndoPosition>): void => {
+    for (const region of saved.regions) if (region.element.isConnected) { region.element.scrollTop = region.top; region.element.scrollLeft = region.left; }
+    if (saved.focused?.isConnected && (!doc.activeElement || doc.activeElement === doc.body || routeRoot.contains(doc.activeElement))) saved.focused.focus({ preventScroll: true });
+  };
+  // D-402 slice F5 — one "Stop allowing" per call, kept across repaints the same way.
+  const activityStopAllowingControls = new Map<string, HTMLElement>();
   const expandedSourceDetails = new Set<string>();
   const expandedMailWorkContexts = new Set<string>();
   const expandedAssetContexts = new Set<string>();
@@ -5377,7 +5576,11 @@ export const bootstrapChatRoute = (
     block.setAttribute(CHAT_ROUTE_ACTIVITY_ATTR, '');
     const needsAttention = rows.some(row => row.kind === 'tool' && row.status === 'error');
     const ongoing = rows.some(row => row.kind === 'tool' && row.status === 'started');
-    const expanded = activityExpansion.get(key) ?? (live || ongoing || needsAttention);
+    const undoable = opts.localUndo !== undefined && rows.some(row => row.kind === 'tool' && row.local_receipt_id !== undefined);
+    // D-402 slice F5 — as D-348's: what a standing permission ran without asking shows, with its "Stop allowing".
+    const stoppable = opts.stopAllowing !== undefined
+      && rows.some(row => row.kind === 'tool' && row.stop_allowing_recipe_id !== undefined);
+    const expanded = activityExpansion.get(key) ?? (live || ongoing || needsAttention || undoable || stoppable);
     const toggle = doc.createElement('button');
     toggle.type = 'button';
     toggle.setAttribute(CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR, '');
@@ -5401,6 +5604,26 @@ export const bootstrapChatRoute = (
           status.textContent = 'Standing dish';
           line.appendChild(status);
         }
+        // D-348 §7.8 — a change a standing permission made without asking: undone from its line.
+        if (row.kind === 'tool' && row.local_receipt_id !== undefined && opts.localUndo) {
+          let control = activityUndoControls.get(row.local_receipt_id);
+          if (control === undefined) {
+            control = localUpdateUndoControl(doc, opts.localUndo, row.local_receipt_id);
+            activityUndoControls.set(row.local_receipt_id, control);
+          }
+          line.setAttribute('data-local-mutation-receipt', row.local_receipt_id);
+          line.appendChild(control);
+        }
+        // D-402 slice F5 — a run a standing permission of your chats let through: "Stop allowing".
+        if (row.kind === 'tool' && row.stop_allowing_recipe_id !== undefined && opts.stopAllowing) {
+          const key = `${row.run_id ?? ''}|${row.stop_allowing_recipe_id}`;
+          let control = activityStopAllowingControls.get(key);
+          if (control === undefined) {
+            control = chatStopAllowingControl(doc, opts.stopAllowing, row.stop_allowing_recipe_id);
+            activityStopAllowingControls.set(key, control);
+          }
+          line.appendChild(control);
+        }
         block.appendChild(line);
       }
     }
@@ -5410,11 +5633,11 @@ export const bootstrapChatRoute = (
   /** A late result under its answer: the recipe's own summary fields when it
    *  has them, a plain message when it carries one, the raw body behind a second
    *  disclosure either way — readable first, nothing dropped. */
-  const renderLateResult = (late: { run_id: string; tool_name: string; text: string }): HTMLElement => {
+  const renderLateResult = (late: LateToolResult): HTMLElement => {
     const block = doc.createElement('details');
     block.setAttribute(CHAT_ROUTE_LATE_RESULT_ATTR, late.run_id);
     const summary = doc.createElement('summary');
-    summary.textContent = `What ${late.tool_name} returned`;
+    summary.textContent = `What ${callName(late)} returned`;
     block.appendChild(summary);
     const readable = readToolResult(late.text);
     if (readable.summary.length > 0) {
@@ -5453,7 +5676,7 @@ export const bootstrapChatRoute = (
 
   const renderMessage = (
     host: HTMLElement,
-    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations' | 'execution_source' | 'notice' | 'answered_without_model'>,
+    message: Pick<ChatMessage, 'role' | 'content' | 'id' | 'turn_id' | 'tool_call' | 'reply_to' | 'attachments' | 'source_citations' | 'execution_source' | 'notice' | 'answered_without_model' | 'reached_round_limit'>,
     activity: ReadonlyArray<ChatActivityRow> = [],
     pendingText?: string,
   ): HTMLElement => {
@@ -5508,12 +5731,19 @@ export const bootstrapChatRoute = (
       renderAnswerText(doc, content, message.content, message.source_citations,
         JSON.stringify([quoteSession ?? '', completedTurnId ?? message.id]));
     } else {
-      const assetHandoff = message.role === 'user' ? readAssetChatMessage(message.content) : null;
+      const recordHandoff = message.role === 'user' ? readRecordChatMessage(message.content) : null;
       const handoff = message.role === 'user' ? readMailWorkChatPrompt(message.content) : null;
-      if (assetHandoff !== null) {
-        content.setAttribute('data-chat-asset-question', '');
-        const question = doc.createElement('p'); question.textContent = assetHandoff.question; content.appendChild(question);
-        const link = doc.createElement('a'); link.href = assetHandoff.href; link.textContent = 'Open selected asset'; content.appendChild(link);
+      if (recordHandoff !== null) {
+        content.setAttribute(isSelectedRecordsContext(recordHandoff.context) ? 'data-chat-records-question' : isContactChatContext(recordHandoff.context) ? 'data-chat-contact-question' : isCalendarChatContext(recordHandoff.context) ? 'data-chat-calendar-question' : 'data-chat-asset-question', '');
+        const question = doc.createElement('p'); question.textContent = recordHandoff.question; content.appendChild(question);
+        if (isSelectedRecordsContext(recordHandoff.context)) {
+          const links = doc.createElement('ul'); links.setAttribute('aria-label', 'Selected records');
+          for (const record of recordHandoff.context.records) { const item = doc.createElement('li'), link = doc.createElement('a'); link.href = record.reference.target.hash; link.textContent = record.reference.title; item.appendChild(link); links.appendChild(item); }
+          if (recordHandoff.context.base) { const item = doc.createElement('li'), link = doc.createElement('a'); link.href = recordChatHref(recordHandoff.context.base); link.textContent = 'Open original selected context'; item.appendChild(link); links.appendChild(item); }
+          content.appendChild(links);
+        } else {
+          const link = doc.createElement('a'); link.href = recordHandoff.href; link.textContent = isContactChatContext(recordHandoff.context) ? 'Open selected contact' : isCalendarChatContext(recordHandoff.context) ? 'Open selected event' : 'Open selected asset'; content.appendChild(link);
+        }
         const details = doc.createElement('details'); const summary = doc.createElement('summary'); summary.textContent = 'Context supplied to Recued';
         if (expandedAssetContexts.has(message.id)) details.setAttribute('open', '');
         details.addEventListener('toggle', () => {
@@ -5604,7 +5834,14 @@ export const bootstrapChatRoute = (
       }
       row.appendChild(attachments);
     }
-    if (message.role === 'assistant' && pendingText === undefined && message.content.trim()) answerCopy.append(row, message, quoteSession);
+    if (message.role === 'assistant' && pendingText === undefined && message.content.trim()) {
+      const actions = answerCopy.append(row, message, quoteSession);
+      requestRecipe?.append(actions, message, quoteSession);
+      // 2026-11-21 — the latest answer that stopped at its rounds offers Continue (`continue-answer.ts`).
+      if (offersContinue(message, state.thread.messages.at(-1)?.id)) {
+        appendContinue(doc, actions, message, (text) => { void sendMessage(text); }, state.sending);
+      }
+    }
     if (pendingText === undefined) renderActivity(row, activity, activityKey);
     host.appendChild(row);
     return row;
@@ -6626,7 +6863,184 @@ export const bootstrapChatRoute = (
     }
     return list;
   };
+  /** D-177 §N.15.9 — the cards of a round's group, in the thread's order, while there are two or
+   *  more (one alone is its own card). */
+  const planGroupOf = (card: PlanApprovalCard): readonly PlanApprovalCard[] | undefined => {
+    if (card.group === undefined) return undefined;
+    const members = state.thread.plan_cards.filter((candidate) => candidate.group === card.group);
+    return members.length > 1 ? members : undefined;
+  };
+
+  /** D-177 §N.15.9 — the one card of a round's held writes of one kind, asked once (Q7): it lists
+   *  each write and offers one answer for them all, given through its first write's plan, which the
+   *  server answers for each. Once answered, each write's row says how it went, with its run. A
+   *  change before approving is not offered here, as on any approval of several. ⚠ Its words are
+   *  the single card's, said of all of them ("Needs a look", "Say yes to all 3"): the owner reads
+   *  one approval the same way wherever it shows, and the count says it is several (owner,
+   *  2026-11-10). */
+  const renderPlanGroupCard = (host: HTMLElement, cards: readonly PlanApprovalCard[]): void => {
+    const lead = cards[0]!;
+    const count = cards.length;
+    const actionTitle = planActionTitle(lead.tool, lead.args);
+    const statuses = cards.map(planGroupItemStatus);
+    const waiting = statuses.every((status) => status === 'proposed');
+    const none = statuses.every((status) => status === 'cancelled');
+    const done = statuses.filter((status) => status === 'completed').length;
+    const unavailable = cards.some((card) => card.payload_available === false);
+    const el = doc.createElement('div');
+    el.setAttribute(CHAT_ROUTE_PLAN_CARD_ATTR, '');
+    el.setAttribute(CHAT_ROUTE_PLAN_GROUP_ATTR, String(count));
+    el.setAttribute('data-status', waiting ? 'proposed' : none ? 'cancelled' : 'approved');
+    el.setAttribute('data-plan-id', lead.plan_id);
+    if (cards.some((card) => card.plan_id === highlightedPlanId)) el.setAttribute(CHAT_ROUTE_PLAN_TARGET_ATTR, '');
+    const statusLabel = waiting
+      ? unavailable ? 'Recued cannot show this' : 'Needs a look'
+      : none
+        ? cards.every((card) => card.lapsed === true) ? 'Expired' : 'Cancelled'
+        : done === count
+          ? 'Completed'
+          : statuses.some((status) => status === 'running') ? 'Running' : 'Check what happened';
+    const scopeText = waiting
+      ? `One yes for all ${String(count)}`
+      : none
+        ? cards.every((card) => card.lapsed === true) ? 'No one answered in time' : 'You gave no permission'
+        : `${String(done)} of ${String(count)} done`;
+    el.setAttribute('role', 'group');
+    el.setAttribute('aria-label', `${statusLabel}: ${actionTitle}, ${scopeText}`);
+    el.setAttribute('tabindex', '-1');
+    const pendingAction = pendingPlanActions.get(lead.plan_id);
+    if (pendingAction !== undefined) el.setAttribute('aria-busy', 'true');
+
+    const header = doc.createElement('div');
+    header.className = 'chat-plan-card-header';
+    const status = doc.createElement('span');
+    status.className = 'chat-plan-card-status';
+    status.textContent = statusLabel;
+    header.appendChild(status);
+    const heading = doc.createElement('div');
+    heading.className = 'chat-plan-card-heading';
+    const tool = doc.createElement('span');
+    tool.className = 'chat-plan-card-tool';
+    tool.textContent = actionTitle;
+    heading.appendChild(tool);
+    const scope = doc.createElement('span');
+    scope.className = 'chat-plan-card-scope';
+    scope.textContent = scopeText;
+    heading.appendChild(scope);
+    header.appendChild(heading);
+    el.appendChild(header);
+    const hint = doc.createElement('p');
+    hint.className = 'chat-plan-card-hint';
+    hint.textContent = planGroupHint(cards, statuses);
+    el.appendChild(hint);
+
+    const row = (card: PlanApprovalCard, itemStatus: PlanGroupItemStatus): HTMLElement => {
+      const item = doc.createElement('li');
+      item.setAttribute(CHAT_ROUTE_PLAN_GROUP_ITEM_ATTR, card.plan_id);
+      item.setAttribute('data-status', itemStatus);
+      const mark = doc.createElement('span');
+      mark.className = 'chat-plan-group-mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = PLAN_GROUP_ITEM_MARKS[itemStatus];
+      item.appendChild(mark);
+      const text = doc.createElement('span');
+      text.className = 'chat-plan-group-text';
+      text.textContent = planGroupItemLine(card);
+      item.appendChild(text);
+      if (itemStatus !== 'proposed') {
+        // For a screen reader, the word the mark stands for.
+        const said = doc.createElement('span');
+        said.className = 'chat-plan-group-said';
+        said.textContent = `(${PLAN_GROUP_ITEM_WORDS[itemStatus]})`;
+        item.appendChild(said);
+      }
+      const runId = card.execution === undefined ? undefined : planExecutionRunId(card.execution);
+      const href = runId === undefined ? null : runReviewHref(runId, {
+        ...((state.thread.session?.id ?? state.activeSessionId) === null ? {} : {
+          returnToChat: { sessionId: (state.thread.session?.id ?? state.activeSessionId)!, planId: card.plan_id },
+        }),
+      });
+      if (href !== null) {
+        const runLink = doc.createElement('a');
+        runLink.setAttribute(CHAT_ROUTE_PLAN_RUN_ATTR, '');
+        runLink.setAttribute(RUN_REVIEW_LINK_ATTR, '');
+        runLink.setAttribute('href', href);
+        runLink.setAttribute('aria-label', `Review the run of ${planGroupItemLine(card)} in Logs`);
+        runLink.textContent = RUN_REVIEW_LABEL;
+        item.appendChild(runLink);
+      }
+      return item;
+    };
+    const list = doc.createElement('ul');
+    list.className = 'chat-plan-group-items';
+    list.setAttribute('aria-label', 'What it covers');
+    cards.slice(0, PLAN_GROUP_SHOWN).forEach((card, index) => list.appendChild(row(card, statuses[index]!)));
+    el.appendChild(list);
+    if (count > PLAN_GROUP_SHOWN) {
+      const rest = doc.createElement('details');
+      rest.className = 'chat-plan-card-technical';
+      const restSummary = doc.createElement('summary');
+      restSummary.textContent = `Show all ${String(count)}`;
+      rest.appendChild(restSummary);
+      const restList = doc.createElement('ul');
+      restList.className = 'chat-plan-group-items';
+      cards.slice(PLAN_GROUP_SHOWN).forEach((card, index) => restList.appendChild(row(card, statuses[PLAN_GROUP_SHOWN + index]!)));
+      rest.appendChild(restList);
+      el.appendChild(rest);
+    }
+
+    if (waiting) {
+      const actions = doc.createElement('div');
+      actions.className = 'chat-plan-card-actions';
+      const busy = pendingAction !== undefined;
+      const button = (attr: string, label: string, action: PlanAction, disabled: boolean): HTMLElement => {
+        const control = doc.createElement('button');
+        control.type = 'button';
+        control.setAttribute(attr, '');
+        control.textContent = label;
+        control.disabled = disabled;
+        if (busy || disabled) control.setAttribute('aria-disabled', 'true');
+        if (pendingAction === action) control.setAttribute('aria-busy', 'true');
+        control.addEventListener('click', () => {
+          if (pendingPlanActions.has(lead.plan_id) || disabled) return;
+          void resolvePlan(lead.plan_id, action);
+        });
+        return control;
+      };
+      actions.appendChild(button(CHAT_ROUTE_PLAN_APPROVE_ATTR,
+        pendingAction === 'approve' ? 'Approving…' : `Say yes to all ${String(count)}`, 'approve', unavailable));
+      if (lead.held === true && lead.always_allow !== undefined) {
+        actions.appendChild(button(CHAT_ROUTE_PLAN_ALWAYS_ATTR,
+          pendingAction === 'always' ? 'Allowing…' : lead.always_allow, 'always', unavailable));
+      }
+      actions.appendChild(button(CHAT_ROUTE_PLAN_CANCEL_ATTR,
+        pendingAction === 'cancel' ? 'Cancelling…' : 'Don’t approve', 'cancel', false));
+      const note = doc.createElement('span');
+      note.className = 'chat-plan-card-action-note';
+      if (pendingAction !== undefined) {
+        note.setAttribute('role', 'status');
+        note.setAttribute('aria-live', 'polite');
+      }
+      note.textContent = unavailable
+        ? 'Recued cannot get the exact details back. Mark them cancelled so they can never run.'
+        : pendingAction === 'approve' || pendingAction === 'always'
+          ? 'Saving your yes…'
+          : pendingAction === 'cancel'
+            ? 'Cancelling…'
+            : lead.always_allow !== undefined ? lead.always_allow_note ?? '' : '';
+      if (note.textContent !== '') actions.appendChild(note);
+      el.appendChild(actions);
+    }
+    host.appendChild(el);
+  };
+
   const renderPlanCard = (host: HTMLElement, card: PlanApprovalCard): void => {
+    // D-177 §N.15.9 — a card of a round's group is its group's one card, painted where its first is.
+    const group = planGroupOf(card);
+    if (group !== undefined) {
+      if (group[0]!.plan_id === card.plan_id) renderPlanGroupCard(host, group);
+      return;
+    }
     const actionTitle = planActionTitle(card.tool, card.args);
     // D-343 slice 5 — a day's records, kept: the card shows them as the day's checklist in place of
     // its details. They ran exactly as shown, so the details are what was recorded.
@@ -6701,7 +7115,7 @@ export const bootstrapChatRoute = (
     scope.className = 'chat-plan-card-scope';
     scope.textContent =
       card.status === 'cancelled'
-        ? card.lapsed === true ? 'No one answered in time' : 'You gave no permission'
+        ? card.replaced === true ? 'Replaced by a newer version' : card.lapsed === true ? 'No one answered in time' : 'You gave no permission'
         : card.retry_of_plan_id !== undefined
           ? 'A new one-off yes'
           : card.execution !== undefined
@@ -6774,7 +7188,12 @@ export const bootstrapChatRoute = (
       receiptDetail.textContent = planExecutionDetail(card.execution);
       if (card.execution.status === 'completed' && card.execution.local_receipt) {
         receipt.setAttribute('data-local-mutation-receipt', card.execution.local_receipt.receipt_id);
-        if (opts.localUndo) receipt.appendChild(localUpdateUndoControl(doc, opts.localUndo, card.execution.local_receipt.receipt_id));
+        if (opts.localUndo) {
+          const receiptId = card.execution.local_receipt.receipt_id;
+          let control = planUndoControls.get(receiptId);
+          if (!control) { control = localUpdateUndoControl(doc, opts.localUndo, receiptId); planUndoControls.set(receiptId, control); }
+          receipt.appendChild(control);
+        }
       }
       receipt.appendChild(checklist.length > 0 ? renderRecordChecklist(checklist) : receiptDetail);
       const runId = executionRunId;
@@ -8114,6 +8533,9 @@ export const bootstrapChatRoute = (
    *  precondition. Ask needs a model, connect needs an account, automate needs
    *  a recipe; a first run that wants none of those had nothing to click. */
   type ActivationIntent = 'ask' | 'connect' | 'automate' | 'capture';
+  const activationIcons: Record<ActivationIntent, IconName> = {
+    capture: 'rename', ask: 'chat', connect: 'link', automate: 'play',
+  };
 
   const buildActivationCard = (args: {
     intent: ActivationIntent;
@@ -8161,7 +8583,7 @@ export const bootstrapChatRoute = (
     const link = doc.createElement('a');
     link.setAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR, intent);
     link.setAttribute('href', href);
-    link.textContent = label;
+    link.innerHTML = renderActionLabel(activationIcons[intent], label);
     return link;
   };
 
@@ -8173,7 +8595,7 @@ export const bootstrapChatRoute = (
     const button = doc.createElement('button');
     button.type = 'button';
     button.setAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR, intent);
-    button.textContent = label;
+    button.innerHTML = renderActionLabel(activationIcons[intent], label);
     button.addEventListener('click', (event) => {
       if (event.isTrusted) button.focus?.({ preventScroll: true });
       onClick();
@@ -8181,7 +8603,7 @@ export const bootstrapChatRoute = (
     return button;
   };
 
-  const buildFirstRunActivation = (): HTMLElement => {
+  const buildFirstRunActivation = (composer: HTMLElement): HTMLElement => {
     const activation = doc.createElement('section');
     activation.setAttribute(CHAT_ROUTE_ACTIVATION_ATTR, '');
     const headingId = 'recued-chat-first-result';
@@ -8204,6 +8626,7 @@ export const bootstrapChatRoute = (
       'Pick somewhere to start. You can come back to the others whenever you like.';
     heading.appendChild(intro);
     activation.appendChild(heading);
+    activation.appendChild(composer);
 
     const grid = doc.createElement('div');
     grid.className = 'chat-activation-grid';
@@ -8226,7 +8649,7 @@ export const bootstrapChatRoute = (
       status: 'No setup needed',
       statusState: 'ready',
       title: 'Start with your own',
-      copy: 'Keep a task, a note, a contact, or something you promised. It stays on this server.',
+      copy: 'Keep a task, note, contact, or promise on this server.',
       action: activationButton('capture', 'Capture something', openCreateOverlay),
     }));
 
@@ -8254,7 +8677,7 @@ export const bootstrapChatRoute = (
         ? { statusId: CHAT_ROUTE_AI_UNAVAILABLE_ID }
         : {}),
       title: 'Ask Recued',
-      copy: 'Think through a question, make a plan, or get an idea going.',
+      copy: 'Think through a question, a plan, or an idea.',
       action: askAction,
     }));
 
@@ -8263,7 +8686,7 @@ export const bootstrapChatRoute = (
       status: 'Bring in your context',
       statusState: 'needs-setup',
       title: 'Connect my work',
-      copy: 'Add your mail, calendars, files, and the services you already use.',
+      copy: 'Bring in mail, calendars, files, and the services you use.',
       action: activationLink(
         'connect',
         'Connect an account',
@@ -8283,23 +8706,21 @@ export const bootstrapChatRoute = (
       status: 'Save repeat work',
       statusState: 'needs-setup',
       title: 'Automate a task',
-      copy: 'Use a ready-made Recipe now, on a schedule, or when something happens.',
+      copy: 'Run a recipe now, on a schedule, or when something happens.',
       action: automateAction,
     }));
 
     // ⛔ SET AFTER THE CARDS EXIST, FROM THE CARDS THEMSELVES — not from a
     // count re-derived by repeating the four `if`s above, which is the version
-    // that silently drifts the first time a card grows a condition. Four or
-    // more wraps to 2×2 rather than four ~178px columns: at the section's
-    // 760px a four-across card cannot hold its title on one line. Below 820px
-    // the media query takes over at one column and this is not consulted.
+    // that silently drifts the first time a card grows a condition. Four
+    // choices use two columns; fewer choices occupy their available columns.
     const cardCount = grid.children.length;
     grid.style?.setProperty?.(
       '--activation-cols',
       String(cardCount >= 4 ? 2 : Math.max(cardCount, 1)),
     );
-    // The narrow breakpoint stacks; three or four cards do not fit stacked, so they wrap
-    // there as well rather than pushing the composer off the screen.
+    // Tablets keep three or four choices in two columns. Phones stack them
+    // below the composer regardless of count.
     grid.style?.setProperty?.(
       '--activation-cols-narrow',
       String(cardCount >= 3 ? 2 : 1),
@@ -8327,11 +8748,9 @@ export const bootstrapChatRoute = (
     row.appendChild(lead);
     const link = doc.createElement('a');
     link.setAttribute(CHAT_ROUTE_ACTIVATION_POINTER_LINK_ATTR, '');
-    link.setAttribute('href', ACTIVATION_GUIDE_URL);
-    // ⚠ Leaves the app for the public site, so it says so and opens away —
-    // an in-app link that silently swapped origins would be worse.
-    link.setAttribute('target', '_blank');
-    link.setAttribute('rel', 'noreferrer noopener');
+    // D-405 slice 4b — the owner's own Set up page, in the app: what is connected and what is not, each
+    // with its step, where this used to open the public first-steps guide. Recipes alone go to Recipes.
+    link.setAttribute('href', connectOutstanding ? serializeShellRoute('setup') : serializeShellRoute('recipes'));
     link.textContent = connectOutstanding && automateOutstanding
       ? 'See what to set up next'
       : connectOutstanding
@@ -8341,8 +8760,8 @@ export const bootstrapChatRoute = (
     return row;
   };
 
-  // Shell-frame Step 3 — the composer: a toolbar row (model picker) above the
-  // input row (textarea + Send). Send stays ENABLED in the draft state (the
+  // One composer surface: context, a full-width message field, then its
+  // controls. Send stays ENABLED in the draft state (the
   // first send mints the session lazily); only the in-flight + AI-unavailable
   // reasons disable it now (the no-session reason is gone). Step 4 — when
   // `collapsed` (docked), the toolbar also carries the `+` actions menu.
@@ -8364,20 +8783,56 @@ export const bootstrapChatRoute = (
       const more = buildComposerActions(true);
       if (more !== null) toolbar.appendChild(more);
     }
-    composer.appendChild(toolbar);
-    if (composerAssetContext !== null) {
-      const context = composerAssetContext;
-      const row = doc.createElement('div'); row.setAttribute('data-recued-chat-asset-context', '');
-      row.setAttribute('role', 'group'); row.setAttribute('aria-label', 'Selected asset'); row.id = 'chat-asset-context';
+    const footer = doc.createElement('div');
+    footer.className = 'chat-composer-footer';
+    footer.appendChild(toolbar);
+    const records = selectedRecordsOf(composerRecordContext);
+    if (records.length) {
+      const group = doc.createElement('div'); group.className = 'chat-composer-records'; group.id = 'chat-records-context';
+      group.setAttribute('role', 'group'); group.setAttribute('aria-label', 'Selected records'); group.setAttribute('data-chat-selected-records', '');
+      const owner = composerDraftOwner;
+      for (const selected of records) {
+        const chip = doc.createElement('div'); chip.className = 'chat-record-chip';
+        const copy = doc.createElement('div'), title = doc.createElement('a'); title.href = selected.reference.target.hash; title.textContent = selected.reference.title; copy.appendChild(title);
+        const detail = doc.createElement('p'); detail.textContent = selected.reference.details.join(' · '); copy.appendChild(detail); chip.appendChild(copy);
+        if (recordPreview?.supported) {
+          const preview = doc.createElement('button'); preview.type = 'button'; preview.textContent = 'Preview'; preview.className = 'record-result-preview-trigger';
+          preview.setAttribute(CHAT_RECORD_PREVIEW_ATTR, selected.reference.target.hash); preview.setAttribute('aria-label', 'Preview ' + selected.reference.title);
+          preview.setAttribute('aria-haspopup', 'dialog'); preview.setAttribute('aria-expanded', 'false'); chip.appendChild(preview);
+        }
+        const remove = doc.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove'; remove.disabled = state.sending;
+        remove.setAttribute('data-chat-record-remove', selected.reference.target.hash); remove.setAttribute('aria-label', 'Remove ' + selected.reference.title + ' from chat');
+        remove.addEventListener('click', () => {
+          if (!remove.isConnected || disposed || owner !== composerDraftOwner || owner.discarded || state.sending) return;
+          const current = selectedRecordsOf(composerRecordContext), next = current.filter(row => row.reference.target.hash !== selected.reference.target.hash);
+          if (next.length === current.length) return;
+          composerRecordContext = withSelectedRecords(composerRecordContext, next); pendingSubmission = null;
+          renderPreservingHandoffFocus();
+          (routeRoot.querySelector<HTMLElement>('[data-chat-record-remove]') ?? routeRoot.querySelector<HTMLElement>('[data-record-link-insert]'))?.focus({ preventScroll: true });
+        });
+        chip.appendChild(remove); group.appendChild(chip);
+      }
+      composer.appendChild(group);
+    }
+    const legacyContext = baseRecordContext(composerRecordContext);
+    if (legacyContext !== null) {
+      const context = legacyContext;
+      const contact = isContactChatContext(context);
+      const calendar = isCalendarChatContext(context);
+      const row = doc.createElement('div'); row.setAttribute(contact ? 'data-recued-chat-contact-context' : calendar ? 'data-recued-chat-calendar-context' : 'data-recued-chat-asset-context', '');
+      row.setAttribute('role', 'group'); row.setAttribute('aria-label', contact ? 'Selected contact' : calendar ? 'Selected event' : 'Selected asset'); row.id = contact ? 'chat-contact-context' : calendar ? 'chat-calendar-context' : 'chat-asset-context';
       const copy = doc.createElement('div');
-      const title = doc.createElement('a'); title.href = assetChatHref(context); title.textContent = context.name; copy.appendChild(title);
+      const title = doc.createElement('a'); title.href = recordChatHref(context); title.textContent = context.name; copy.appendChild(title);
       const detail = doc.createElement('p');
-      detail.textContent = context.filesUnavailable ? 'Use this asset’s saved details as context. Its linked files could not be listed.' : context.fileIds.length > 0
+      detail.textContent = isContactChatContext(context) ? `${context.email ? context.email + ' · ' : ''}Use this contact’s current saved details as context.`
+        : isCalendarChatContext(context) ? `${context.calendarName} · Use this event’s current saved details as context.`
+        : context.filesUnavailable ? 'Use this asset’s saved details as context. Its linked files could not be listed.' : context.fileIds.length > 0
         ? `Use this asset’s saved details and ${context.fileIds.length} linked file${context.fileIds.length === 1 ? '' : 's'} as context.${context.omittedFiles ? ` ${context.omittedFiles} more linked files are not included.` : ''}`
         : 'Use this asset’s saved details as context.';
       copy.appendChild(detail); row.appendChild(copy);
-      const clear = doc.createElement('button'); clear.type = 'button'; clear.textContent = 'Remove asset context'; clear.disabled = state.sending;
-      clear.addEventListener('click', () => { composerAssetContext = null; renderPreservingHandoffFocus(); focusComposer(true); });
+      const clear = doc.createElement('button'); clear.type = 'button'; clear.className = 'chat-context-remove'; clear.textContent = contact || calendar ? 'Remove' : 'Remove asset context'; clear.disabled = state.sending;
+      if (contact || calendar) clear.setAttribute('aria-label', contact ? 'Remove contact context' : 'Remove event context');
+      clear.addEventListener('click', () => { composerRecordContext = withoutBaseRecordContext(composerRecordContext); pendingSubmission = null; renderPreservingHandoffFocus(); focusComposer(true); });
       row.appendChild(clear); composer.appendChild(row);
     }
     if (composerReply) {
@@ -8664,8 +9119,8 @@ export const bootstrapChatRoute = (
         'aria-describedby',
         CHAT_ROUTE_PLAN_CONTEXT_DESCRIPTION_ID,
       );
-    } else if (composerAssetContext !== null) {
-      input.setAttribute('aria-describedby', 'chat-asset-context');
+    } else if (composerRecordContext !== null) {
+      input.setAttribute('aria-describedby', isSelectedRecordsContext(composerRecordContext) ? 'chat-records-context' : isContactChatContext(composerRecordContext) ? 'chat-contact-context' : isCalendarChatContext(composerRecordContext) ? 'chat-calendar-context' : 'chat-asset-context');
     }
     if (hasPendingInitialDraft()) {
       input.readOnly = true;
@@ -8687,15 +9142,7 @@ export const bootstrapChatRoute = (
       composerDraftProtected = composerDraft.trim().length > 0;
       // Update the action name without replacing the textarea or its caret.
       updateVoiceLabel?.();
-      send.disabled =
-        state.sending
-        || composerDeletionInFlight()
-        || composerNavigationPending()
-        || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
-        || state.aiAvailable === false
-        || composerAttachments.hasUnfinished()
-        || hasPendingInitialDraft()
-        || (composerDraft.trim().length === 0 && composerAttachments.payload().length === 0);
+      send.disabled = composerSendDisabled();
       if (
         connectedSourcePromptSeeded
         && connectedSourcePrompt !== null
@@ -8892,19 +9339,7 @@ export const bootstrapChatRoute = (
     // is stored and Chat replies "Stored X. What would you like me to do with
     // it?" with NO ai call. So attached files satisfy the non-empty rule that
     // otherwise keeps an empty turn from being sent.
-    const hasAttached = (composerAttachments?.payload().length ?? 0) > 0;
-    if (
-      state.sending
-      || composerDeletionInFlight()
-      || composerNavigationPending()
-      || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
-      || aiUnavailable
-      || composerAttachments.hasUnfinished()
-      || hasPendingInitialDraft()
-      || (composerDraft.trim().length === 0 && !hasAttached)
-    ) {
-      send.disabled = true;
-    }
+    send.disabled = composerSendDisabled();
     if (composerAttachments.hasUnfinished() && !uploadInFlight && !state.sending && !aiUnavailable) {
       send.setAttribute('title', 'Choose the unfinished files again or remove them before sending.');
     }
@@ -8986,11 +9421,13 @@ export const bootstrapChatRoute = (
           menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false');
           filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
           attach.focus();
+          const returnFocus = captureAttachmentFocus();
           const sessionId = state.activeSessionId;
           void openExistingFilePicker(doc, opts.fileListCaller!, composerAttachments.payload().map(file => file.file_id), abort.signal, opts.cloudFileCallers, opts.filePreviewCallers)
             .then(files => {
-              if (!files?.length || disposed || abort.signal.aborted || state.sending
+              if (disposed || abort.signal.aborted || state.sending || fileOwner !== composerDraftOwner || fileOwner.discarded
                 || sessionId !== state.activeSessionId) return;
+              if (!files?.length) { restoreAttachmentFocus(returnFocus); return; }
               composerAttachments.restore(files); focusComposer(false, 'end');
             });
         });
@@ -9009,10 +9446,12 @@ export const bootstrapChatRoute = (
         menu.addEventListener('keydown', event => { if (event.key === 'Escape') {
           event.preventDefault(); menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false'); attach.focus();
         } });
-        inputRow.appendChild(menu);
-      } else attach.addEventListener('click', () => { fileInput.click(); });
-      inputRow.appendChild(fileInput);
-      inputRow.appendChild(attach);
+        // Anchor above this control, not the whole composer: selected records
+        // and long drafts can put the composer's top behind the Chat header.
+        const control = doc.createElement('div'); control.setAttribute('data-chat-attach-control', '');
+        control.appendChild(menu); control.appendChild(attach); footer.appendChild(control);
+      } else { attach.addEventListener('click', () => { fileInput.click(); }); footer.appendChild(attach); }
+      footer.appendChild(fileInput);
       // D-262 § 5 + § B8 — press to talk. Renders ONLY when this context can
       // record AND the server has a configured transcription source, so the
       // control's presence is itself the whole capability answer and there is
@@ -9050,7 +9489,7 @@ export const bootstrapChatRoute = (
         };
         updateVoiceLabel();
         mic.setAttribute('aria-pressed', phase === 'recording' ? 'true' : 'false');
-        mic.textContent = phase === 'recording' ? '\u25a0' : '\u25cf';
+        mic.innerHTML = renderActionIcon(phase === 'recording' ? 'stop' : 'microphone');
         // A pending permission prompt keeps its keyboard target. The voice
         // state machine ignores repeat presses while that prompt is open.
         // Admission blocks a new capture, but a live mic must stay stoppable.
@@ -9059,7 +9498,7 @@ export const bootstrapChatRoute = (
         mic.addEventListener('click', () => {
           voiceComposer?.toggle();
         });
-        inputRow.appendChild(mic);
+        footer.appendChild(mic);
         // Cancel retires a pending attempt; the controller closes a late grant.
         // A live recording can be discarded before its upload auto-sends.
         if (phase === 'opening' || phase === 'recording') {
@@ -9068,14 +9507,17 @@ export const bootstrapChatRoute = (
           dismiss.setAttribute(CHAT_ROUTE_VOICE_ATTR, 'discard');
           markAttachmentControl(dismiss, 'voice-discard');
           dismiss.setAttribute('aria-label', phase === 'opening' ? 'Cancel recording request' : 'Discard recording');
-          dismiss.textContent = phase === 'opening' ? 'Cancel' : '\u00d7';
+          if (phase === 'opening') dismiss.textContent = 'Cancel';
+          else dismiss.innerHTML = renderActionIcon('close');
           dismiss.addEventListener('click', () => { voiceComposer?.cancel(); });
-          inputRow.appendChild(dismiss);
+          footer.appendChild(dismiss);
         }
       }
     }
     inputRow.appendChild(input);
-    inputRow.appendChild(send);
+    composer.appendChild(inputRow);
+    footer.appendChild(send);
+    composer.appendChild(footer);
     // D-341 slice A — below the input, the switch that lets this conversation's browser actions run
     // without asking.
     const browserActionsRow = browserActionsFor(state.thread.session?.id);
@@ -9170,7 +9612,6 @@ export const bootstrapChatRoute = (
       }
       composer.appendChild(chips);
     }
-    composer.appendChild(inputRow);
     return composer;
   };
 
@@ -9323,7 +9764,7 @@ export const bootstrapChatRoute = (
     text: string;
     protected: boolean;
     reply: ChatReplyDraft | null;
-    assetContext: ChatAssetContext | null;
+    recordContext: ChatRecordContext | null;
     submission: { key: string; id: string } | null;
     creationId: string | null;
     owner: typeof composerDraftOwner;
@@ -9346,7 +9787,7 @@ export const bootstrapChatRoute = (
     const draft = copyComposerRecoveryDraft(parked.draft);
     parkedComposerDrafts.set(parked.sessionId, {
       text: draft.text, protected: draft.protected, reply: draft.replyTo ?? null,
-      assetContext: draft.assetContext ?? null,
+      recordContext: recordContextFromRecovery(draft),
       owner: { sessionId: parked.sessionId, discarded: false }, modelSourceId: draft.modelSourceId,
       submission: null, creationId: null, investigation: undefined,
       followup: null, continuation: null, diagnosis: null, verification: null, error: null,
@@ -9355,6 +9796,7 @@ export const bootstrapChatRoute = (
     composerAttachments.restoreInterrupted(draft.interruptedUploads ?? [], parked.sessionId);
   }
   const parkComposerDraft = (discard = false): void => {
+    recordPickerEpoch++; recordPicker?.cancel(); recordPreview?.reset(); recordPaste?.reset(); recordChecks?.cancel();
     const id = composerDraftOwner.sessionId;
     if (discard) {
       composerDraftOwner.discarded = true;
@@ -9363,7 +9805,7 @@ export const bootstrapChatRoute = (
     } else {
       parkedComposerDrafts.set(id, {
         text: composerDraft, protected: composerDraftProtected, reply: composerReply,
-        assetContext: composerAssetContext,
+        recordContext: composerRecordContext,
         submission: pendingSubmission, creationId: draftCreationId, owner: composerDraftOwner,
         investigation: workInvestigationDraft?.sessionId === id ? workInvestigationDraft : undefined,
         followup: connectedSourceFollowupDraft, continuation: approvedPlanContinuationDraft,
@@ -9383,13 +9825,14 @@ export const bootstrapChatRoute = (
     voiceComposer?.clearError();
   };
   const restoreComposerDraft = (id: string | null): void => {
+    recordPickerEpoch++; recordPicker?.cancel(); recordPreview?.reset(); recordPaste?.reset(); recordChecks?.cancel();
     const draft = parkedComposerDrafts.get(id);
     parkedComposerDrafts.delete(id);
     composerDraftOwner = draft?.owner ?? { sessionId: id, discarded: false };
     composerDraft = draft?.text ?? '';
     composerDraftProtected = draft?.protected ?? false;
     composerReply = draft?.reply ?? null;
-    composerAssetContext = draft?.assetContext ?? null;
+    composerRecordContext = draft?.recordContext ?? null;
     pendingSubmission = draft?.submission ?? null;
     draftCreationId = draft?.creationId ?? null;
     workInvestigationDraft = draft?.investigation
@@ -9406,12 +9849,90 @@ export const bootstrapChatRoute = (
   const hasComposerDraft = (id: string | null): boolean => {
     const draft = parkedComposerDrafts.get(id);
     return composerAttachments.hasDraft(id) || (id === composerDraftOwner.sessionId
-      ? composerReply !== null || composerAssetContext !== null || (composerDraftProtected && composerDraft.trim().length > 0)
-      : draft !== undefined && (draft.reply !== null || draft.assetContext !== null || (draft.protected && draft.text.trim().length > 0)));
+      ? composerReply !== null || composerRecordContext !== null || (composerDraftProtected && composerDraft.trim().length > 0)
+      : draft !== undefined && (draft.reply !== null || draft.recordContext !== null || (draft.protected && draft.text.trim().length > 0)));
   };
   const hasParkedComposerWork = (): boolean =>
     [...parkedComposerDrafts.values()].some(draft =>
-      draft.reply !== null || draft.assetContext !== null || (draft.protected && draft.text.trim().length > 0));
+      draft.reply !== null || draft.recordContext !== null || (draft.protected && draft.text.trim().length > 0));
+
+  const currentRecordDraftOwner = () => {
+    if (disposed || composerDraftOwner.discarded || state.phase !== 'ready' || composerNavigationPending()) return null;
+    let key = recordPickerOwners.get(composerDraftOwner);
+    if (!key) { key = crypto.randomUUID(); recordPickerOwners.set(composerDraftOwner, key); }
+    return { kind: 'chat' as const, key: JSON.stringify([key, recordPickerEpoch]) };
+  };
+  const currentRecordOwner = () => routeRoot.querySelector?.(`[${CHAT_ROUTE_COMPOSER_ATTR}]`) ? currentRecordDraftOwner() : null;
+  const recordControlsBlocked = () => state.sending || sendDispatches.has(state.activeSessionId) || composerDeletionInFlight() || composerNavigationPending() || hasPendingInitialDraft();
+  function composerSendDisabled(): boolean {
+    return state.sending || sendDispatches.has(state.activeSessionId) || composerDeletionInFlight() || composerNavigationPending()
+      || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
+      || state.aiAvailable === false || composerAttachments.hasUnfinished()
+      || hasPendingInitialDraft() || recordPaste?.hasPending() === true || recordChecks?.hasPending() === true
+      || (composerDraft.trim().length === 0 && composerAttachments.payload().length === 0);
+  }
+  const commitComposerRecords = (records: readonly PreparedRecordLink[]): string | null => {
+    try {
+      const before = selectedRecordsOf(composerRecordContext);
+      if (records.length === before.length && (!records.length || selectedRecordsWire(records) === selectedRecordsWire(before))) return null;
+      const next = withSelectedRecords(composerRecordContext, records);
+      if (next) recordChatMessage('Review these records.', next);
+      composerRecordContext = next; composerDraftProtected = composerDraftProtected || records.length > 0; pendingSubmission = null;
+      historyLandingActive = false; renderPreservingHandoffFocus(); return null;
+    } catch { return 'These records could not be included. Remove a selection and try again.'; }
+  };
+  if (opts.recordLinks) recordPicker = createRecordLinkInsertSurface({
+    ...opts.recordLinks, root: routeRoot, document: doc, href: () => doc.defaultView?.location.href ?? doc.URL,
+    owner: currentRecordOwner, blocked: recordControlsBlocked,
+    picker: {
+      host: () => routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_COMPOSER_ATTR}]`),
+      field: () => routeRoot.querySelector<HTMLTextAreaElement>(`[${CHAT_ROUTE_INPUT_ATTR}]`),
+      triggerHost: () => routeRoot.querySelector<HTMLElement>('.chat-composer-toolbar'),
+      selected: () => selectedRecordsOf(composerRecordContext),
+      commit: commitComposerRecords,
+    },
+  });
+  if (opts.recordLinks) recordPreview = createChatRecordPreview({
+    root: routeRoot, document: doc, owner: () => currentRecordOwner()?.key ?? null,
+    records: () => selectedRecordsOf(composerRecordContext), href: () => doc.defaultView?.location.href ?? doc.URL,
+    readers: { ...opts.recordLinks.readers, ...opts.recordLinks.shortcutReaders }, blocked: recordControlsBlocked,
+    input: () => routeRoot.querySelector<HTMLTextAreaElement>(`[${CHAT_ROUTE_INPUT_ATTR}]`),
+    scrollHosts: () => {
+      const nodes = new Map<string, HTMLElement>();
+      for (const attr of [CHAT_ROUTE_MESSAGES_ATTR, CHAT_ROUTE_COMPOSER_ATTR, 'data-chat-selected-records']) {
+        const node = routeRoot.querySelector<HTMLElement>(`[${attr}]`); if (node) nodes.set(attr, node);
+      }
+      return nodes;
+    },
+  });
+  if (opts.recordLinks) recordPaste = createPastedRecordLinksSurface({
+    root: routeRoot, document: doc,
+    owner: () => { const owner = currentRecordDraftOwner(); return owner ? { key: owner.key, scope: composerDraftOwner } : null; },
+    text: () => composerDraft, href: () => doc.defaultView?.location.href ?? doc.URL,
+    records: () => selectedRecordsOf(composerRecordContext),
+    readers: opts.recordLinks.readers, blocked: recordControlsBlocked, commit: commitComposerRecords,
+    input: () => routeRoot.querySelector<HTMLTextAreaElement>(`[${CHAT_ROUTE_INPUT_ATTR}]`),
+    host: () => routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_COMPOSER_ATTR}]`),
+    changed: () => {
+      const send = routeRoot.querySelector<HTMLButtonElement>(`[${CHAT_ROUTE_SEND_ATTR}]`);
+      if (send) send.disabled = composerSendDisabled();
+    },
+  });
+  if (opts.recordLinks) recordChecks = createRecordChecksSurface({
+    root: routeRoot, document: doc,
+    owner: () => { const owner = currentRecordDraftOwner(); return owner ? { key: owner.key, scope: composerDraftOwner } : null; },
+    records: () => selectedRecordsOf(composerRecordContext),
+    readers: { ...opts.recordLinks.readers, ...opts.recordLinks.shortcutReaders }, href: () => doc.defaultView?.location.href ?? doc.URL,
+    blocked: recordControlsBlocked,
+    input: () => routeRoot.querySelector<HTMLTextAreaElement>(`[${CHAT_ROUTE_INPUT_ATTR}]`),
+    send: () => routeRoot.querySelector<HTMLButtonElement>(`[${CHAT_ROUTE_SEND_ATTR}]`),
+    changed: () => {
+      const send = routeRoot.querySelector<HTMLButtonElement>(`[${CHAT_ROUTE_SEND_ATTR}]`);
+      if (send) send.disabled = composerSendDisabled();
+    },
+  });
+  const handleRecordPickerClick = (event: Event) => { if (recordPicker?.handleClick(event)) { recordPreview?.reset(); event.stopPropagation(); } };
+  if (recordPicker) routeRoot.addEventListener('click', handleRecordPickerClick);
 
   interface AttachmentFocus {
     readonly control: string;
@@ -9471,12 +9992,12 @@ export const bootstrapChatRoute = (
    *  stayed; the next keystrokes went nowhere, and text inserted while the
    *  render ran was lost whole. The paired browser drive typed a draft into Chat
    *  as it opened and found the box empty, in Chromium (2026-10-19). */
-  const captureComposerFocus = (): { start: number | null; end: number | null } | null => {
+  const captureComposerFocus = (): { start: number | null; end: number | null; direction: HTMLTextAreaElement['selectionDirection'] } | null => {
     const input = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
     ) as HTMLTextAreaElement | null | undefined;
     if (input == null || doc.activeElement !== input) return null;
-    return { start: input.selectionStart ?? null, end: input.selectionEnd ?? null };
+    return { start: input.selectionStart ?? null, end: input.selectionEnd ?? null, direction: input.selectionDirection ?? 'none' };
   };
   const restoreComposerFocus = (saved: ReturnType<typeof captureComposerFocus>): void => {
     if (saved === null || disposed) return;
@@ -9488,7 +10009,7 @@ export const bootstrapChatRoute = (
     ) as HTMLTextAreaElement | null | undefined;
     if (input == null) return;
     input.focus?.({ preventScroll: true });
-    if (saved.start !== null && saved.end !== null) input.setSelectionRange?.(saved.start, saved.end);
+    if (saved.start !== null && saved.end !== null) input.setSelectionRange?.(saved.start, saved.end, saved.direction);
   };
 
   let renderedSessionId: string | null = null;
@@ -9512,16 +10033,92 @@ export const bootstrapChatRoute = (
   };
   let followFirstTranscriptFor: string | null = null;
 
+  const notifyAddressChange = (hash: string, mode: 'push' | 'replace'): void => {
+    opts.onAddressChange?.(hash, mode);
+    // Some chat transitions write their address after rendering. Retire the
+    // visit link immediately, even when that transition needs no second paint.
+    const back = routeRoot.querySelector?.<HTMLAnchorElement>('[data-chat-search-return]');
+    if (back && back.getAttribute('href') !== opts.searchReturn?.()) back.remove();
+  };
+
+  // D-404 slice B1 — which steps under an answer landed: asked of the server once per answer, and again
+  // after a pack, a recipe or a thing changes (`refreshNextSteps`). Until it answers, or for a server
+  // that does not know the question, nothing reads as landed.
+  const askNextSteps = (messageId: string, steps: ChatNextStepRef[]): void => {
+    if (nextStepsAsking.has(messageId)) return;
+    nextStepsAsking.add(messageId);
+    void Promise.resolve()
+      .then(() => opts.conn('chat.next_steps.state', { steps }))
+      .then(
+        (answer) => { nextStepsLanded.set(messageId, new Set(chatNextStepRefsOf(answer?.landed).map(chatNextStepKey))); },
+        () => { nextStepsLanded.set(messageId, NO_STEPS_LANDED); },
+      )
+      .finally(() => { nextStepsAsking.delete(messageId); render(); });
+  };
+  const landedStepsOf = (message: ChatMessage): ReadonlySet<string> => {
+    const steps = chatNextStepsOfMessage(message);
+    if (steps.length === 0) return NO_STEPS_LANDED;
+    const known = nextStepsLanded.get(message.id);
+    if (known === undefined) askNextSteps(message.id, steps);
+    return known ?? NO_STEPS_LANDED;
+  };
+  /** Forget what was said of every answer with a step not landed yet, so the next paint asks again. */
+  let nextStepsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const refreshNextSteps = (): void => {
+    if (nextStepsRefreshTimer !== undefined) clearTimeout(nextStepsRefreshTimer);
+    nextStepsRefreshTimer = setTimeout(() => {
+      nextStepsRefreshTimer = undefined;
+      let stale = false;
+      for (const message of state.thread.messages) {
+        const known = nextStepsLanded.get(message.id);
+        if (known === undefined) continue;
+        if (chatNextStepsOfMessage(message).some((step) => !known.has(chatNextStepKey(step)))) {
+          nextStepsLanded.delete(message.id);
+          stale = true;
+        }
+      }
+      if (stale) render();
+    }, 400);
+  };
+  /** The owner's words that started an answer's turn: its own user message, else the one before it. */
+  const requestOf = (message: ChatMessage): string | undefined => {
+    const messages = state.thread.messages;
+    const byTurn = message.turn_id === undefined ? undefined
+      : messages.find((candidate) => candidate.role === 'user' && candidate.turn_id === message.turn_id);
+    if (byTurn !== undefined) return byTurn.content;
+    const at = messages.findIndex((candidate) => candidate.id === message.id);
+    for (let index = at - 1; index >= 0; index -= 1) {
+      if (messages[index]!.role === 'user') return messages[index]!.content;
+    }
+    return undefined;
+  };
+  /** D-404 P2 — Ask again: the request sent again, as it was, and nothing else. ⛔ Never with what the
+   *  composer holds: a send takes the composer's files, so a draft or a file there would ride along. */
+  const askAgainFor = async (message: ChatMessage): Promise<void> => {
+    const request = requestOf(message)?.trim() ?? '';
+    if (request.length === 0) throw new Error('The request this answered is not in this conversation any more.');
+    if (state.sending) throw new Error('Wait for the answer in progress, then ask again.');
+    if (composerDraft.trim().length > 0 || composerAttachments.rows().length > 0 || composerRecordContext !== null) {
+      throw new Error('Send or clear the message you are writing, then ask again.');
+    }
+    await sendMessage(request);
+  };
   const render = (): void => {
     if (disposed) return;
+    const undoPosition = captureUndoPosition();
     const scheduleFocus = promptSchedulesHost.contains?.(doc.activeElement) ? doc.activeElement as HTMLElement : null;
     const answerPosition = answerCodeCopy.capture();
     const queueFocus = queueView.captureFocus(doc, routeRoot);
+    const recordPickerFocus = recordPicker?.captureFocus() ?? null;
+    const recordPreviewFocus = recordPreview?.captureFocus() ?? null;
+    const recordPasteFocus = recordPaste?.captureFocus() ?? null;
+    const recordChecksFocus = recordChecks?.captureFocus() ?? null;
+    const recordTriggerOwner = doc.activeElement?.hasAttribute?.('data-record-link-insert') ? currentRecordOwner()?.key : null;
     const attachmentFocus = captureAttachmentFocus();
     const composerFocus = captureComposerFocus();
     const planClaimFocus = capturePlanClaimFocus();
     const historyTop = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_LIST_ATTR}]`)?.scrollTop;
-    renderContents();
+    renderContents(); recordPicker?.mount(); recordPreview?.mount(); recordPaste?.mount(); recordChecks?.mount();
     const codeScroller = answerPosition.horizontal.size > 0
       ? routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_MESSAGES_ATTR}]`) : null;
     const codePosition = codeScroller && codeScroller.clientHeight > 0
@@ -9532,10 +10129,16 @@ export const bootstrapChatRoute = (
     const history = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_SESSION_LIST_ATTR}]`);
     if (history && historyTop !== undefined) history.scrollTop = historyTop;
     restoreAttachmentFocus(attachmentFocus);
+    recordPicker?.restoreFocus(recordPickerFocus);
+    recordPreview?.restoreFocus(recordPreviewFocus);
+    recordPaste?.restoreFocus(recordPasteFocus);
+    if (recordTriggerOwner && currentRecordOwner()?.key === recordTriggerOwner) routeRoot.querySelector<HTMLElement>('[data-record-link-insert]')?.focus({ preventScroll: true });
     restoreComposerFocus(composerFocus);
+    recordChecks?.restoreFocus(recordChecksFocus);
     restorePlanClaimFocus(planClaimFocus);
     queueView.restoreFocus(doc, routeRoot, queueFocus, () => focusComposer(true));
     if (scheduleFocus?.isConnected) scheduleFocus.focus?.({ preventScroll: true });
+    restoreUndoPosition(undoPosition);
   };
 
   const renderContents = (): void => {
@@ -9575,6 +10178,12 @@ export const bootstrapChatRoute = (
     heading.setAttribute(CHAT_ROUTE_HEADING_ATTR, '');
     heading.textContent = 'Chat';
     header.appendChild(heading);
+    const searchReturn = opts.searchReturn?.();
+    if (searchReturn) {
+      const back = doc.createElement('a'); back.className = 'wc-button';
+      back.href = searchReturn; back.textContent = 'Back to search';
+      back.setAttribute('data-chat-search-return', ''); header.appendChild(back);
+    }
     const historyToggle = doc.createElement('button');
     historyToggle.type = 'button';
     historyToggle.className = 'wc-button';
@@ -10220,7 +10829,7 @@ export const bootstrapChatRoute = (
 
     const aiNotice = state.aiAvailable === false ? buildAiNotice() : null;
     const mailNotice = buildMailNotice();
-    const assetQuestion = composerAssetContext ?? pendingRecoveryDraft?.assetContext ?? null;
+    const recordQuestion = composerRecordContext ?? recordContextFromRecovery(pendingRecoveryDraft);
     const showConnectedSourceHandoff =
       isEmpty
       && connectedSourceHandoffActive
@@ -10253,7 +10862,7 @@ export const bootstrapChatRoute = (
     const automateOutstanding = hasInstalledRecipe === false;
     const showFirstRunActivation =
       isEmpty
-      && assetQuestion === null
+      && recordQuestion === null
       && !showConnectedSourceHandoff
       && !showReturningHistory
       // Someone who deliberately continued from a connected source has
@@ -10267,7 +10876,7 @@ export const bootstrapChatRoute = (
     // line offering the steps they have not taken, and nothing once they have.
     const showActivationPointer =
       isEmpty
-      && assetQuestion === null
+      && recordQuestion === null
       && !showFirstRunActivation
       && !showConnectedSourceHandoff
       && connectedSource === null
@@ -10332,16 +10941,17 @@ export const bootstrapChatRoute = (
       } else {
         const hero = doc.createElement('div');
         hero.className = 'chat-thread-hero';
+        const composer = buildComposer(false);
         if (showConnectedSourceHandoff) {
           const handoff = buildConnectedSourceHandoff();
           if (handoff !== null) hero.appendChild(handoff);
         } else if (showFirstRunActivation) {
-          hero.appendChild(buildFirstRunActivation());
+          hero.appendChild(buildFirstRunActivation(composer));
         } else {
           const greeting = doc.createElement('h2');
           greeting.className = 'chat-thread-greeting';
           greeting.setAttribute(CHAT_ROUTE_GREETING_ATTR, '');
-          greeting.textContent = assetQuestion === null ? 'What can Recued help you with?' : 'Ask about this asset';
+          greeting.textContent = recordQuestion === null ? 'What can Recued help you with?' : isSelectedRecordsContext(recordQuestion) ? 'Ask about these records' : isContactChatContext(recordQuestion) ? 'Ask about this contact' : isCalendarChatContext(recordQuestion) ? 'Ask about this event' : 'Ask about this asset';
           hero.appendChild(greeting);
           if (aiNotice !== null) hero.appendChild(aiNotice);
           if (showActivationPointer) {
@@ -10349,11 +10959,12 @@ export const bootstrapChatRoute = (
           }
         }
         if (mailNotice !== null) hero.appendChild(mailNotice);
-        // Empty hero — composer centered, the buttons expanded below it.
-        hero.appendChild(buildComposer(false));
+        // First-run guidance frames the composer above its starter actions.
+        // Other empty states keep their context before the same composer.
+        if (showConnectedSourceHandoff || !showFirstRunActivation) hero.appendChild(composer);
         // The activation cards already own the first-run actions; repeating the
         // Run/Create chip row underneath makes the landing harder to scan.
-        const actions = showFirstRunActivation || showConnectedSourceHandoff || assetQuestion !== null
+        const actions = showFirstRunActivation || showConnectedSourceHandoff || recordQuestion !== null
           ? null
           : buildComposerActions(false);
         if (actions !== null) hero.appendChild(actions);
@@ -10520,8 +11131,8 @@ export const bootstrapChatRoute = (
           messages,
           // A tool row no answer lists stays a row: a sentence, not its
           // recall-format body (which goes behind the disclosure below).
-          message.role === 'tool' ? { ...message, content: describeToolRow(message) } : message,
-          projectMessageActivity(message, state.thread.tool_call_records),
+          message.role === 'tool' ? { ...message, content: describeToolRow(message, state.thread.tool_call_records) } : message,
+          projectMessageActivity(message, state.thread.tool_call_records, state.thread.plan_cards),
         );
         if (message.role === 'tool') {
           const details = doc.createElement('details');
@@ -10581,14 +11192,18 @@ export const bootstrapChatRoute = (
         // D-323 — what the marketplace has for a request nothing installed
         // could do: links to install pages, never an install.
         const installOffers = chatInstallOfferLinks(message);
+        // D-404 slice B1 — which of the answer's steps landed, and Ask again once one has (P2).
+        const landedSteps = landedStepsOf(message);
+        const askAgain = (): Promise<void> => askAgainFor(message);
         if (installOffers.length > 0 && doc !== undefined) {
-          messageRow.appendChild(buildChatInstallOffers(doc, installOffers));
+          messageRow.appendChild(buildChatInstallOffers(doc, installOffers,
+            { messageId: message.id, landed: landedSteps, askAgain, repaint: render }));
         }
         // D-346 follow-up (2026-11-08) — what the answer's calls could not do and how the
         // owner fixes it: a link, or "Turn it on" for a switch of theirs.
-        const fixRows = chatFixRows(message);
+        const fixRows = chatFixRows(message, landedSteps);
         if (fixRows.length > 0 && doc !== undefined) {
-          messageRow.appendChild(buildChatFixes(doc, message.id, fixRows, render));
+          messageRow.appendChild(buildChatFixes(doc, message.id, fixRows, render, askAgain));
         }
         if (sourceTurn !== null) {
           const sourceFailure = state.thread.turn_failures.some(
@@ -11083,6 +11698,7 @@ export const bootstrapChatRoute = (
       && activePlanCard?.getAttribute('data-plan-id') === highlightedPlanId;
     const selectionStart = inputFocused ? input.selectionStart : null;
     const selectionEnd = inputFocused ? input.selectionEnd : null;
+    const selectionDirection = inputFocused ? input.selectionDirection : 'none';
     const historySelectionStart = historySearchFocused
       ? historySearch.selectionStart
       : null;
@@ -11106,7 +11722,7 @@ export const bootstrapChatRoute = (
         && selectionStart !== null
         && selectionEnd !== null
       ) {
-        nextInput.setSelectionRange?.(selectionStart, selectionEnd);
+        nextInput.setSelectionRange?.(selectionStart, selectionEnd, selectionDirection);
       }
     } else if (handoffFocused) {
       const nextHandoff = routeRoot.querySelector?.(
@@ -11397,7 +12013,7 @@ export const bootstrapChatRoute = (
       composerDraft = recovery.text;
       composerDraftProtected = recovery.protected;
       composerReply = recovery.replyTo ?? null;
-      composerAssetContext = recovery.assetContext ?? null;
+      composerRecordContext = recordContextFromRecovery(recovery);
       if (state.thread.session === null) state = { ...state, draftSourceId: recovery.modelSourceId };
     }
     historyLandingActive = false;
@@ -11580,8 +12196,17 @@ export const bootstrapChatRoute = (
     await Promise.all([
       (async () => {
         try {
-          const { connections } = await opts.conn('collection.connection.list');
-          if (!disposed) hasConnection = connections.length > 0;
+          // D-405 slice 4b — "connected" is the Set up page's own fact as well: a mailbox, a calendar
+          // of the owner's or a file source counts, beside any API connection. ⛔ It read the API
+          // connections alone, so a connected mailbox never counted and a HubSpot connection hid
+          // "Connect my work" from an owner with no mail at all. A server that refuses the method (one
+          // from before it) leaves the API connections to decide, as before; one that never answers
+          // leaves the card silent, as an unanswered roster always did.
+          const [{ connections }, features] = await Promise.all([
+            opts.conn('collection.connection.list'),
+            opts.conn('chat.setup.features').then((answer) => chatSetupFeaturesOf(answer?.features), () => []),
+          ]);
+          if (!disposed) hasConnection = connections.length > 0 || features.some((feature) => feature.connected === true);
         } catch {
           /* leave unknown — see the header */
         }
@@ -12005,7 +12630,7 @@ export const bootstrapChatRoute = (
         landingTargetReady = true;
         render();
         focusChatMessage(messageId);
-        opts.onAddressChange?.(serializeChatAnswerAddress({ sessionId, messageId }), 'push');
+        notifyAddressChange(serializeChatAnswerAddress({ sessionId, messageId }), 'push');
       }
       return;
     }
@@ -12031,7 +12656,7 @@ export const bootstrapChatRoute = (
         && state.activeSessionId === sessionId
         && state.thread.session?.id === sessionId
       ) {
-        opts.onAddressChange?.(
+        notifyAddressChange(
           messageId === undefined ? serializeChatSessionAddress({ sessionId })
             : serializeChatAnswerAddress({ sessionId, messageId }),
           'push',
@@ -12358,7 +12983,7 @@ export const bootstrapChatRoute = (
       requestedMessageId = null; requestedPlanId = null; highlightedMessageId = null;
       pendingReadingPosition = { sessionId, position: { atLatest: true, offset: 0, scrollTop: 0 } };
       renderPreservingHandoffFocus();
-      opts.onAddressChange?.(serializeShellRoute('chat', 'session', sessionId), 'push');
+      notifyAddressChange(serializeShellRoute('chat', 'session', sessionId), 'push');
       rememberReadingPosition();
       void markSessionSeen(sessionId);
       focusOpenThread();
@@ -12368,7 +12993,7 @@ export const bootstrapChatRoute = (
     try {
       const opened = await openSession(sessionId, null, null, false, false);
       if (opened && !disposed) {
-        opts.onAddressChange?.(serializeShellRoute('chat', 'session', sessionId), 'push');
+        notifyAddressChange(serializeShellRoute('chat', 'session', sessionId), 'push');
       }
     } finally {
       latestReadInFlight = false;
@@ -12392,7 +13017,7 @@ export const bootstrapChatRoute = (
       !discardProtectedDraft
       && (hasPendingInitialDraft() || recordingActive
         || (composerDraftOwner.sessionId === null && (composerReply !== null || composerAttachments.rows().length > 0
-          || composerAssetContext !== null
+          || composerRecordContext !== null
           || recordingFinishing || (composerDraftProtected && composerDraft.trim().length > 0))))
     ) {
       pendingDraftGuard = { kind: 'new' };
@@ -12405,7 +13030,7 @@ export const bootstrapChatRoute = (
       && state.activeSessionId === null
       && composerDraftOwner.sessionId === null
       && composerDraft.trim().length === 0
-      && composerAssetContext === null
+      && composerRecordContext === null
       && !connectedSourceHandoffActive
       && !historyLandingActive
       && !hasPendingInitialDraft()
@@ -12470,7 +13095,7 @@ export const bootstrapChatRoute = (
     };
     render();
     if (addressMode !== undefined) {
-      opts.onAddressChange?.(
+      notifyAddressChange(
         serializeShellRoute('chat', 'new'),
         addressMode,
       );
@@ -12549,7 +13174,7 @@ export const bootstrapChatRoute = (
       if (state.activeSessionId === session.id) {
         startNewChat(true);
         historyLandingActive = remaining.length > 0;
-        opts.onAddressChange?.(serializeShellRoute('chat'), 'replace');
+        notifyAddressChange(serializeShellRoute('chat'), 'replace');
       }
       render();
       focusHistoryHome();
@@ -12773,7 +13398,7 @@ export const bootstrapChatRoute = (
       };
       historyLandingActive = false;
       renderPreservingHandoffFocus();
-      opts.onAddressChange?.(
+      notifyAddressChange(
         serializeChatSessionAddress({ sessionId: session_id }),
         'replace',
       );
@@ -12798,7 +13423,7 @@ export const bootstrapChatRoute = (
       await loadSessions(true);
       await openSession(session_id);
       if (!disposed && state.activeSessionId === session_id) {
-        opts.onAddressChange?.(
+        notifyAddressChange(
           serializeChatSessionAddress({ sessionId: session_id }),
           'push',
         );
@@ -12827,10 +13452,13 @@ export const bootstrapChatRoute = (
       (trimmed.length === 0
         && (composerAttachments?.payload().length ?? 0) === 0)
       || state.sending
+      || sendDispatches.has(state.activeSessionId)
       || composerNavigationPending()
       || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || hasPendingInitialDraft()
       || composerAttachments.hasUnfinished()
+      || recordPaste?.hasPending() === true
+      || recordChecks?.hasPending() === true
     ) return;
     // ⛔⛔ D-262 — VOICE ORIGIN IS ATTRIBUTED HERE, where BOTH send paths meet.
     // It used to be set only on the auto-send branch, which silently coupled
@@ -12845,7 +13473,10 @@ export const bootstrapChatRoute = (
         (r) => voiceRowIds.has(r.id) && r.file_id !== undefined,
       )
     );
-    const assetContextAtSend = composerAssetContext;
+    const recordContextAtSend = composerRecordContext;
+    const selectedRecordsAtSend = selectedRecordsOf(recordContextAtSend);
+    const recordOwnerAtSend = composerDraftOwner;
+    const recordDraftAtSend = recordChecks?.captureDraft() ?? null;
     const activeBeforeSend = doc.activeElement as HTMLElement | null | undefined;
     const composerInputBeforeSend = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
@@ -12885,6 +13516,7 @@ export const bootstrapChatRoute = (
     // create — so a second click / Enter during create can't mint a second
     // session and dispatch a second turn (the draft Send is otherwise enabled).
     let dispatchSessionId = state.activeSessionId;
+    recordPicker?.cancel(); recordPreview?.reset(); recordPaste?.reset();
     sendDispatches.add(dispatchSessionId);
     state = { ...state, sending: true, error: null };
     renderPreservingHandoffFocus();
@@ -12897,7 +13529,12 @@ export const bootstrapChatRoute = (
     if (transcriptAtSend != null && typeof transcriptAtSend.scrollHeight === 'number') {
       transcriptAtSend.scrollTop = transcriptAtSend.scrollHeight;
     }
-    if (composerOwnedFocus) focusComposer(true, 'end');
+    if (composerOwnedFocus) {
+      if (selectedRecordsAtSend.length && recordChecks) {
+        routeRoot.querySelector<HTMLTextAreaElement>(`[${CHAT_ROUTE_INPUT_ATTR}]`)?.focus({ preventScroll: true });
+        recordChecks.restoreDraft(recordDraftAtSend);
+      } else focusComposer(true, 'end');
+    }
 
     // Lazy session — a DRAFT thread (no active session) mints + opens its
     // session HERE, on the first send, before the turn is dispatched. A blank
@@ -12951,6 +13588,8 @@ export const bootstrapChatRoute = (
             }
           : null;
     pendingConnectedSourceProvisionalTurnId = null;
+    const recordCheckBlocked = new Error('Selected records need attention.');
+    let recordIssueFocus: RecordCheckOwner | null = null;
     try {
       // D-193 — the browser's current IANA timezone. The server threads it
       // into the chat prompt's current-time anchor so the model resolves
@@ -12960,16 +13599,17 @@ export const bootstrapChatRoute = (
       if (replyAtSend && (replyAtSend.sessionId !== session.id || state.thread.quoted_replies_available !== true)) {
         throw new Error('You cannot send this reply in this chat. Remove the reply, or open the chat it belongs to on a server that handles replies.');
       }
+      const recordCheckEpoch = recordPickerEpoch;
       const queueGeneration = await queueView.generation(session.id);
       const sendPayload = {
         ...(queueGeneration ? { queue_generation: queueGeneration } : {}),
         session_id: session.id,
-        message: assetContextAtSend === null ? message : assetChatMessage(message, assetContextAtSend),
+        message: recordContextAtSend === null ? message : recordChatMessage(message, recordContextAtSend),
         // The prepared investigation reads mail other people wrote, so it runs
         // read-only: nothing in that mail can make the turn act. An edited
         // draft is the owner's own request and runs as an ordinary turn.
         ...(workInvestigationDraft?.sessionId === session.id && workInvestigationDraft.message === message
-          && replyAtSend === null && attachmentsAtSend.length === 0
+          && replyAtSend === null && attachmentsAtSend.length === 0 && selectedRecordsAtSend.length === 0
           ? { repeat: workInvestigationDraft.repeat !== false, read_only: true,
             ...(workInvestigationDraft.mailWork ? { mail_work: workInvestigationDraft.mailWork } : {}) } : {}),
         ...(replyAtSend ? { reply_to_message_id: replyAtSend.messageId } : {}),
@@ -12979,6 +13619,11 @@ export const bootstrapChatRoute = (
         ...(attachmentsAtSend.length > 0
           ? { attachments: attachmentsAtSend.map(({ id: _rowId, ...file }) => file) }
           : {}),
+        // D-406 slice 2 — the emails among the records added to the message, beside the references the
+        // message carries: the server reads the first 3 before the turn's first round.
+        ...(pickedMailRefsOf(selectedRecordsAtSend).length > 0 ? { mail_refs: pickedMailRefsOf(selectedRecordsAtSend) } : {}),
+        // D-406 (Q4) — and the calendar events it names, from "Ask about this event" or "Add records".
+        ...(pickedCalendarRefsOf(recordContextAtSend).length > 0 ? { calendar_refs: pickedCalendarRefsOf(recordContextAtSend) } : {}),
         model_pref: {
           current: session.model_routing.current,
           ...(session.model_routing.model_hint
@@ -13010,6 +13655,16 @@ export const bootstrapChatRoute = (
       // Preserve acknowledgement recovery: an identical retry must reach the
       // queue's replay check even if its accepted file was subsequently deleted.
       if (pendingSubmission?.key !== submissionKey) {
+        if (selectedRecordsAtSend.length) {
+          if (disposed || state.activeSessionId !== session.id || composerDraftOwner !== recordOwnerAtSend || recordPickerEpoch !== recordCheckEpoch) return;
+          if (!recordChecks) throw new Error('This server cannot check the selected records. Remove them or choose them again before sending.');
+          const checked = await recordChecks.checkAll(selectedRecordsAtSend);
+          if (!checked.current) throw recordCheckBlocked;
+          if (checked.issues.length) {
+            if (recordChecks.ownsFocus()) recordIssueFocus = checked.owner;
+            throw recordCheckBlocked;
+          }
+        }
         // A recovered selection must not silently downgrade to an unguarded file
         // ID when the server was replaced or downgraded during re-pair.
         for (const file of attachmentsAtSend) if (file.selection_revision !== undefined) {
@@ -13020,7 +13675,8 @@ export const bootstrapChatRoute = (
           }
         }
       }
-      if (disposed || state.activeSessionId !== session.id) return;
+      if (selectedRecordsAtSend.length && composerRecordContext !== recordContextAtSend) throw recordCheckBlocked;
+      if (disposed || state.activeSessionId !== session.id || selectedRecordsAtSend.length > 0 && (composerDraftOwner !== recordOwnerAtSend || recordPickerEpoch !== recordCheckEpoch)) return;
       if (pendingSubmission?.key !== submissionKey) pendingSubmission = { key: submissionKey, id: crypto.randomUUID() };
       const submission = pendingSubmission;
       // D-341 slice A — a message sent with the switch off ends a request approved ahead another
@@ -13029,8 +13685,8 @@ export const bootstrapChatRoute = (
       const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: submission.id });
       if (pendingSubmission === submission) pendingSubmission = null;
       const parked = parkedComposerDrafts.get(session.id);
-      if (parked?.assetContext === assetContextAtSend) parked.assetContext = null;
-      if (state.activeSessionId === session.id && composerAssetContext === assetContextAtSend) composerAssetContext = null;
+      if (parked?.recordContext === recordContextAtSend) parked.recordContext = null;
+      if (state.activeSessionId === session.id && composerRecordContext === recordContextAtSend) composerRecordContext = null;
       if (parked?.submission === submission) parked.submission = null;
       if (parked) {
         parked.investigation = undefined;
@@ -13206,6 +13862,7 @@ export const bootstrapChatRoute = (
         pendingConnectedSourceAnswer = null;
         pendingConnectedSourceProvisionalTurnId = null;
       }
+      if (err === recordCheckBlocked) return;
       const error = classifyRpcError(err);
       if (state.activeSessionId === session.id) {
         sendError = error;
@@ -13226,10 +13883,23 @@ export const bootstrapChatRoute = (
         // clears. Refresh the deletion controls once they can be used again.
         renderPreservingHandoffFocus();
       }
+      if (recordIssueFocus) recordChecks?.focusFirstIssue(recordIssueFocus);
+      if (!disposed && releasedDispatch) {
+        const send = routeRoot.querySelector?.<HTMLButtonElement>(`[${CHAT_ROUTE_SEND_ATTR}]`);
+        if (send) send.disabled = composerSendDisabled();
+      }
     }
   };
 
   const unsubscribers: Array<() => void> = [];
+  // D-404 slice B1 — a pack installed or removed, a recipe that can run now, or a change to the owner's
+  // things: an answer's steps may have landed. Asked again for the answers that had one to go.
+  if (opts.subscribe !== undefined) {
+    const subscribe = opts.subscribe;
+    for (const kind of ['pack_installed', 'pack_uninstalled', 'recipe_runnability_changed', 'warehouse'] as const) {
+      unsubscribers.push(subscribe(kind, () => { refreshNextSteps(); }));
+    }
+  }
   if (opts.subscribe !== undefined) {
     for (const kind of [
       'chat.token_streamed',
@@ -13666,6 +14336,9 @@ export const bootstrapChatRoute = (
   // An optional connections/recipes read must not keep a rescued draft blank
   // or prevent recovery from recognizing that the session has loaded.
   void loadActivationState();
+  // D-405 slice 3 — which hints under answers the owner said "Not now" to, read at each mount (another
+  // device may have changed them). Until it answers, no row offers "Not now".
+  loadChatHints(() => { if (!disposed) render(); });
   const initialLoad = Promise.all([
     loadSessions(),
     loadAiAvailability(),
@@ -13755,14 +14428,14 @@ export const bootstrapChatRoute = (
     openPlanLanding,
     getRecoveryDraft: () => {
       let active: ChatComposerRecoveryDraft | null;
-      if (composerDraft.trim().length === 0 && composerReply === null && composerAssetContext === null && composerAttachments.rows().length === 0) {
+      if (composerDraft.trim().length === 0 && composerReply === null && composerRecordContext === null && composerAttachments.rows().length === 0) {
         // Keep a pending rescue observable through a second immediate loss of
         // access, including the interval before its session has hydrated.
         active = pendingInitialFiles.length ? { ...(pendingRecoveryDraft ?? { text: '', protected: true, modelSourceId: null }),
           attachments: [...(pendingRecoveryDraft?.attachments ?? []), ...pendingInitialFiles] } : pendingRecoveryDraft;
       } else {
         active = { text: composerDraft, protected: composerDraftProtected,
-          ...(composerAssetContext ? { assetContext: composerAssetContext } : {}),
+          ...recordContextRecovery(composerRecordContext),
           ...(composerReply ? { replyTo: composerReply } : {}),
           ...((composerAttachments.payload().length || pendingInitialFiles.length)
             ? { attachments: [...composerAttachments.payload(), ...pendingInitialFiles] } : {}),
@@ -13772,7 +14445,7 @@ export const bootstrapChatRoute = (
       const parkedDrafts = [...parkedComposerDrafts].flatMap(([sessionId, parked]) => {
         const draft: ChatComposerRecoveryDraft = {
           text: parked.text, protected: parked.protected, modelSourceId: parked.modelSourceId ?? null,
-          ...(parked.assetContext ? { assetContext: parked.assetContext } : {}),
+          ...recordContextRecovery(parked.recordContext),
           ...(parked.reply ? { replyTo: parked.reply } : {}),
           attachments: composerAttachments.payload(sessionId),
           interruptedUploads: composerAttachments.recoveryUploads(sessionId),
@@ -13789,14 +14462,14 @@ export const bootstrapChatRoute = (
       || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
       || hasPendingVoiceRecordings()
       || composerReply !== null
-      || composerAssetContext !== null
+      || composerRecordContext !== null
       || pendingInitialFiles.length > 0
       || composerAttachments.hasDrafts()
       || hasParkedComposerWork()
       || (composerDraftProtected && composerDraft.trim().length > 0)
       || (
         pendingRecoveryDraft?.replyTo !== undefined
-        || pendingRecoveryDraft?.assetContext !== undefined
+        || recordContextFromRecovery(pendingRecoveryDraft) !== null
         || (pendingRecoveryDraft?.attachments?.length ?? 0) > 0
         || (pendingRecoveryDraft?.interruptedUploads?.length ?? 0) > 0
         || (pendingRecoveryDraft?.protected === true && pendingRecoveryDraft.text.trim().length > 0)
@@ -13813,7 +14486,7 @@ export const bootstrapChatRoute = (
               : hasPendingVoiceRecordings()
                 ? 'Discard unfinished voice notes and leave Chat?'
                 : null,
-    hasInFlightWork: () => promptSchedules.pending() || sendDispatches.size > 0 || state.sending
+    hasInFlightWork: () => hasUndoWork() || promptSchedules.pending() || sendDispatches.size > 0 || state.sending
       // A turn left running in another chat is still this tab's work.
       || turnsInFlightBySession.size > 0
       || pendingPlanActions.size > 0
@@ -13824,7 +14497,7 @@ export const bootstrapChatRoute = (
       || historyRename.pending()
       || createOverlay?.hasInFlightWork() === true
       || mailComposeMount?.hasInFlightWork() === true,
-    inFlightWorkPrompt: () =>
+    inFlightWorkPrompt: () => hasUndoWork() ? 'An undo action is still in progress. Leave Chat anyway?' :
       mailComposeMount?.hasInFlightWork() === true
         ? 'Recued is still sending mail. Leave anyway?'
         : createOverlay?.hasInFlightWork() === true
@@ -13840,14 +14513,19 @@ export const bootstrapChatRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      activityUndoControls.clear(); planUndoControls.clear();
       promptSchedules.dispose();
       filePickerAbort?.abort();
+      if (recordPicker) { recordPicker.dispose(); routeRoot.removeEventListener?.('click', handleRecordPickerClick); }
+      recordPreview?.dispose();
+      recordPaste?.dispose();
+      recordChecks?.dispose();
       conversationFiles?.dispose();
       historyMessageSearch.dispose();
       historyRename.dispose();
       historyPages.dispose(); clearTimeout(historyRefreshTimer);
       answerCodeCopy.dispose();
-      answerCopy.dispose();
+      answerCopy.dispose(); requestRecipe?.dispose();
       queueView.dispose(); deliveryView.dispose(); messengerList.dispose(); historyFilters.dispose();
       stopHistoryPauseListener();
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine

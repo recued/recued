@@ -66,6 +66,9 @@ export type PairListChangedEvent = Omit<
 export interface PairHandlerDeps {
   paired: PairedInstancesStore;
   wsServer: WsServerHandle;
+  /** D-402 slice H5 (§4.2 item 7) — told once an instance is revoked: a browser's remembered logins are
+   *  forgotten with it. Best-effort, after the revoke has landed. */
+  onRevoked?: (instance_id: string) => void;
   /** Audit sink. Optional — composer-side absence is a no-op (matches
    *  `mint-handler.ts` / `consume-handler.ts`). When present,
    *  `handlePairRevoke` emits one `pair_revoke` row on the success
@@ -286,6 +289,8 @@ export const handlePairRevoke = async (
       }
     } catch { /* the instance revoke + ws close already landed */ }
   }
+  // D-402 slice H5 — what was kept for it goes with it (a browser's remembered logins).
+  try { deps.onRevoked?.(args.instance_id); } catch { /* the revoke already landed */ }
 
   // High-assurance audit row — emit AFTER both the durable revoke
   // stamp + the live ws close so a storage-layer throw at the audit
@@ -355,7 +360,7 @@ export const handlePairRevoke = async (
 // Handler slice — composeHandlers factory
 // ────────────────────────────────────────────────────────────────
 
-export type PairMethods = 'pair.list' | 'pair.revoke' | 'pair.rename';
+export type PairMethods = 'pair.list' | 'pair.browsers' | 'pair.revoke' | 'pair.rename';
 
 /** `getHandle` is lazy because the WsServerHandle is defined AFTER the
  *  handler registry in ws-server.ts (the handle closes over state that
@@ -368,16 +373,25 @@ export type PairMethods = 'pair.list' | 'pair.revoke' | 'pair.rename';
  *  Composer-side absence is a no-op (matches mint/consume); the
  *  handler still revokes the device + closes the ws, just without
  *  emitting a `pair_revoke` ledger row. */
+/** D-402 slice H5 (§4.2 item 7) — what a revoke tells the logins remembered for browser steps: the revoked
+ *  instance's are forgotten (a browser's lasting id is its paired instance). Undefined without a store. */
+export const forgetLoginsOnRevoke = (
+  logins: { forgetBrowser(browser: string): number } | undefined,
+): ((instance_id: string) => void) | undefined =>
+  logins === undefined ? undefined : (instance_id) => { logins.forgetBrowser(instance_id); };
+
 export const makePairHandlers = (
   paired: PairedInstancesStore | undefined,
   getHandle: () => WsServerHandle,
   auditLog?: Pick<AuditLogStore, 'logActivity'>,
   clientTokens?: Pick<ClientTokenStore, 'revoke' | 'list'>,
   broadcast?: (event: PairListChangedEvent) => void,
+  /** D-402 slice H5 — told once an instance is revoked: a browser's remembered logins go with it. */
+  onRevoked?: (instance_id: string) => void,
 ): HandlerSlice<ServerRpcRegistry, PairMethods, WsClient> | undefined => {
   if (!paired) return undefined;
   return {
-    methods: ['pair.list', 'pair.revoke', 'pair.rename'],
+    methods: ['pair.list', 'pair.browsers', 'pair.revoke', 'pair.rename'],
     handlers: {
       'pair.list': async (_args, client) =>
         handlePairList(
@@ -388,6 +402,12 @@ export const makePairHandlers = (
           // own `/auth/pair`-seeded rows instead of the empty roster.
           resolveGatedClientOwnerId(client),
         ),
+      // D-402 slice H2b — the owner's paired browsers, for a recipe's browser setting: the server's own
+      // roster (`browser-identity.ts`), by lasting id and the name routing uses.
+      'pair.browsers': async (_args, client) => ({
+        browsers: resolveGatedClientOwnerId(client) === '' ? []
+          : (getHandle().bridgeDispatcher?.listBrowsers?.() ?? []).map(({ browser_id, name, online }) => ({ browser_id, name, online })),
+      }),
       'pair.revoke': async (args, client) =>
         handlePairRevoke(
           {
@@ -396,6 +416,7 @@ export const makePairHandlers = (
             ...(auditLog ? { auditLog } : {}),
             ...(clientTokens ? { clientTokens } : {}),
             ...(broadcast ? { broadcast } : {}),
+            ...(onRevoked ? { onRevoked } : {}),
           },
           resolveGatedClientOwnerId(client),
           args,

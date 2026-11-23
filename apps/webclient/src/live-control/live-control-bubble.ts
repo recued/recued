@@ -8,17 +8,20 @@
  * D-186 session-grant "Active passes" surface (ported from the Runs route) into
  * one panel, so the owner sees + controls everything in flight from any screen.
  *
- * Two sections, RUNNING above GRANTS, each with a scope label so "Kill" (a
- * server-wide execution op) is never confused with "Revoke" (a session grant):
+ * Three sections, RUNNING above GRANTS above RULES, each with a scope label so
+ * "Kill" (a server-wide execution op) is never confused with "Revoke" (a session
+ * grant) or "End" (a rule):
  *   RUNNING · server-wide (D-181) — run / queued / detached, with Kill or
  *     Promote+Cancel; the collapsed counter tints to DANGER when one is stalled.
  *   GRANTS  · your active passes (D-177 session grants, surfaced per D-186) —
  *     with Revoke.
+ *   RULES   · your rules (D-348) for the requests you repeat, each with its uses
+ *     left and until when — with End, asked once more since it is for good.
  *
- * Ambient: the bubble renders only while the total (running + grants) is > 0
- * (no clutter at idle). Collapsed it is a single `◉ N` counter that expands
+ * Ambient: the bubble renders only while the total (running + grants + rules) is
+ * > 0 (no clutter at idle). Collapsed it is a single `◉ N` counter that expands
  * UPWARD into the panel (it is bottom-anchored, so the panel grows above the
- * button and never displaces it). Both sections are gated on their caller being
+ * button and never displaces it). Each section is gated on its caller being
  * wired, so a host that passes only one set of callers gets only that section.
  *
  * Mirrors `mountApprovalAttentionPopover` (the bell): owns its host element, its
@@ -27,6 +30,7 @@
  */
 import type {
   ActiveExecutionEntry,
+  ChainRuleRow,
   ChatToolCallRecord,
   ExecutionActiveRequest,
   ExecutionActiveResponse,
@@ -41,10 +45,12 @@ import type {
   SessionGrantRevokeRequest,
   SessionGrantView,
 } from '@recued/contracts';
+import { activeEntryOriginWords, activeEntryTitle, isChainRuleLive, passActionNames, shownPassPermits } from '@recued/contracts';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
 import { serializeChatSessionAddress, serializeLogsRunAddress } from '../shell/route.js';
+import { callLabel } from '../chat/activity.js';
 
 // ════════════════════════════════════════════════════════════════
 // Attribute constants — stable hooks for tests + host introspection.
@@ -70,6 +76,10 @@ export const LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR =
 /** A Revoke button. Carries the `contract_id`. */
 export const LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR =
   'data-recued-live-control-grant-control';
+/** D-348 — one rule for a request the owner repeats. Carries the `rule_id`. */
+export const LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR = 'data-recued-live-control-chain-row';
+/** An End / End for good / Keep button on a rule. Carries the action. */
+export const LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR = 'data-recued-live-control-chain-control';
 /** A per-section non-terminal control verdict line. Carries the section. */
 export const LIVE_CONTROL_BUBBLE_NOTICE_ATTR =
   'data-recued-live-control-notice';
@@ -78,7 +88,8 @@ const LIVE_CONTROL_BUBBLE_STYLES_MARKER =
   'data-recued-live-control-bubble-styles';
 
 type LiveControlRunAction = 'kill' | 'promote' | 'cancel';
-type LiveControlAction = LiveControlRunAction | 'revoke' | 'review';
+type LiveControlChainAction = 'end' | 'end-confirm' | 'keep';
+type LiveControlAction = LiveControlRunAction | LiveControlChainAction | 'revoke' | 'review';
 
 const BUSY_CONTROL_LABELS: Readonly<Record<LiveControlAction, string>> = {
   kill: 'Killing…',
@@ -86,6 +97,9 @@ const BUSY_CONTROL_LABELS: Readonly<Record<LiveControlAction, string>> = {
   cancel: 'Cancelling…',
   revoke: 'Revoking…',
   review: 'Saving…',
+  end: 'Ending…',
+  'end-confirm': 'Ending…',
+  keep: 'Keep',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -112,6 +126,10 @@ export type LiveControlGrantsListCaller = (
 export type LiveControlGrantsRevokeCaller = (
   request: SessionGrantRevokeRequest,
 ) => Promise<SessionGrantView>;
+/** D-348 — the owner's live rules for the requests they repeat (`listChainRules`). */
+export type LiveControlChainsListCaller = () => Promise<{ readonly rules: ReadonlyArray<ChainRuleRow> }>;
+/** D-348 — end one, for good (`revokeChainRule`). */
+export type LiveControlChainsRevokeCaller = (request: { rule_id: string }) => Promise<unknown>;
 
 export interface MountLiveControlBubbleOptions {
   host: HTMLElement;
@@ -126,6 +144,9 @@ export interface MountLiveControlBubbleOptions {
   /** GRANTS section (D-186). Absent `grantsListCaller` → no GRANTS section. */
   grantsListCaller?: LiveControlGrantsListCaller;
   grantsRevokeCaller?: LiveControlGrantsRevokeCaller;
+  /** RULES section (D-348). Absent `chainsListCaller` → no RULES section. */
+  chainsListCaller?: LiveControlChainsListCaller;
+  chainsRevokeCaller?: LiveControlChainsRevokeCaller;
   subscribe?: BroadcastSubscriber['on'];
   /** Debounce (ms) for the bus-delta re-list. `<= 0` re-lists immediately. */
   activeRefreshDebounceMs?: number;
@@ -136,13 +157,16 @@ export interface LiveControlBubbleMount {
   getActiveEntries(): ReadonlyArray<ActiveExecutionEntry>;
   getToolCalls(): ReadonlyArray<ChatToolCallRecord>;
   getSessionGrants(): ReadonlyArray<SessionGrantView>;
+  getChainRules(): ReadonlyArray<ChainRuleRow>;
   isOpen(): boolean;
   refreshActive(): Promise<void>;
   refreshGrants(): Promise<void>;
+  refreshChains(): Promise<void>;
   killRun(run_id: string): Promise<void>;
   cancelCall(queued_call_id: string): Promise<void>;
   promoteCall(queued_call_id: string): Promise<void>;
   revokeGrant(contract_id: string): Promise<void>;
+  endChainRule(rule_id: string): Promise<void>;
   whenLoaded(): Promise<void>;
   dispose(): void;
 }
@@ -171,11 +195,6 @@ const formatElapsed = (ms: number): string => {
   return `${Math.floor(m / 60)}h`;
 };
 
-const activeEntryTitle = (entry: ActiveExecutionEntry): string =>
-  entry.step_id !== undefined && entry.step_id.length > 0
-    ? [entry.recipe_id, entry.step_id].join(' · ')
-    : entry.recipe_id;
-
 /** The id a control targets: a queued call cancels / promotes by its
  *  `queued_call_id`; a run / detached job kills by `run_id`. Falls back across
  *  the two so a row always renders even if one id is briefly absent. */
@@ -194,6 +213,8 @@ const PASS_MODE_LABELS: Record<SessionGrantView['grant_mode'], string> = {
   open: 'open-ended',
   scoped: 'scoped',
   raw_op: 'direct op',
+  // D-177 N.15 — "Allow in this chat": any call of one kind.
+  kind: 'one kind',
 };
 
 /** Compact duration (`45s` / `12m` / `3h`); `—` when non-positive/unknown. */
@@ -220,13 +241,12 @@ const formatExpiresIn = (grant: SessionGrantView, now: number): string => {
 
 /** What the pass lets through — prefer the operation(s), else the
  *  ingredient(s); append the bound connection as "via <conn>". */
-const passPermitsSummary = (permits: SessionGrantView['permits']): string => {
+const passPermitsSummary = (grant: SessionGrantView): string => {
   const parts: string[] = [];
-  const ops = permits.operation_ids ?? [];
-  const ingredients = permits.ingredient_ids ?? [];
-  if (ops.length > 0) parts.push(ops.join(', '));
-  else if (ingredients.length > 0) parts.push(ingredients.join(', '));
-  const conns = permits.connection_names ?? [];
+  // By the names the server gave them ("Send mail"), where it printed "send-email".
+  const actions = passActionNames(grant);
+  if (actions.length > 0) parts.push(actions.join(', '));
+  const conns = shownPassPermits(grant).connection_names ?? [];
   if (conns.length > 0) parts.push(`via ${conns.join(', ')}`);
   return parts.join(' ');
 };
@@ -245,6 +265,22 @@ const passBudgetSummary = (grant: SessionGrantView): string => {
   }
   return '';
 };
+
+// ════════════════════════════════════════════════════════════════
+// Pure helpers — rules (D-348; the Contracts card's wording, compact).
+// ════════════════════════════════════════════════════════════════
+
+/** The request a rule is for, in the owner's words. */
+const chainRuleTitle = (rule: ChainRuleRow): string =>
+  rule.words !== undefined && rule.words.trim() !== ''
+    ? ['“', rule.words.trim(), '”'].join('')
+    : 'A request you repeat';
+
+/** "12 of 100 left · until 12/10/2026". Built via join (no interpolation at a space boundary). */
+const chainRuleMeta = (rule: ChainRuleRow): string => [
+  [String(rule.uses_remaining), 'of', String(rule.max_uses), 'left'].join(' '),
+  ['until', Number.isFinite(rule.expires_at) ? new Date(rule.expires_at).toLocaleDateString() : '—'].join(' '),
+].join(' · ');
 
 const LIVE_CONTROL_BUBBLE_STYLES = `
 /* Bottom-anchored, route-independent shell chrome. §D.L1 wants it "by the
@@ -362,7 +398,8 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   color: var(--muted);
 }
 [${LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR}],
-[${LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR}] {
+[${LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR}],
+[${LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR}] {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -371,7 +408,8 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   padding-top: 6px;
 }
 [${LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR}]:first-of-type,
-[${LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR}]:first-of-type {
+[${LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR}]:first-of-type,
+[${LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR}]:first-of-type {
   border-top: none;
   padding-top: 0;
 }
@@ -390,6 +428,7 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
 }
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}],
 [${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}],
+[${LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR}],
 [${TOOL_REVIEW_ATTR}],
 [${TOOL_LINK_ATTR}] {
   min-width: 36px;
@@ -409,12 +448,14 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   box-sizing: border-box;
 }
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}][data-danger="true"],
-[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][data-danger="true"] {
+[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][data-danger="true"],
+[${LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR}][data-danger="true"] {
   border-color: var(--fail);
   color: var(--fail);
 }
 [${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}][aria-disabled="true"],
 [${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][aria-disabled="true"],
+[${LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR}][aria-disabled="true"],
 [${TOOL_REVIEW_ATTR}][aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
@@ -451,6 +492,7 @@ export const mountLiveControlBubble = (
 
   const hasRunning = opts.activeCaller !== undefined;
   const hasGrants = opts.grantsListCaller !== undefined;
+  const hasChains = opts.chainsListCaller !== undefined;
   const debounceMs = opts.activeRefreshDebounceMs ?? 250;
   const nowMs = (): number => opts.now?.() ?? Date.now();
 
@@ -473,6 +515,15 @@ export const mountLiveControlBubble = (
   const busyGrantIds = new Set<string>();
   let grantsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingGrantsLoad: Promise<void> = Promise.resolve();
+  // rules (D-348)
+  let chainRules: ReadonlyArray<ChainRuleRow> = [];
+  let chainsNotice: string | null = null;
+  let chainsSeq = 0;
+  const busyChainIds = new Set<string>();
+  /** The rule whose End waits for "End for good". */
+  let confirmingChainId: string | null = null;
+  let chainsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingChainsLoad: Promise<void> = Promise.resolve();
   const unsubscribers: Array<() => void> = [];
   const closeFocusKey = 'close';
   const toggleFocusKey = 'toggle';
@@ -480,11 +531,15 @@ export const mountLiveControlBubble = (
   const renderedFocusTargets = new Map<string, HTMLElement>();
   const renderedRunFocusKeys: string[] = [];
   const renderedGrantFocusKeys: string[] = [];
+  const renderedChainFocusKeys: string[] = [];
 
   const visibleActiveEntries = (): ReadonlyArray<ActiveExecutionEntry> => activeEntries.filter(entry =>
     entry.entry_kind !== 'run' || !toolCalls.some(call =>
       call.run_id === entry.run_id && call.state !== 'interrupted'));
-  const totalCount = (): number => visibleActiveEntries().length + toolCalls.length + sessionGrants.length;
+  /** A rule that ran out or ended between lists is not shown as live. */
+  const liveChainRules = (): ReadonlyArray<ChainRuleRow> => chainRules.filter((rule) => isChainRuleLive(rule, nowMs()));
+  const totalCount = (): number =>
+    visibleActiveEntries().length + toolCalls.length + sessionGrants.length + liveChainRules().length;
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -510,6 +565,7 @@ export const mountLiveControlBubble = (
     for (const attr of [
       LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
       LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+      LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR,
       TOOL_REVIEW_ATTR,
       TOOL_LINK_ATTR,
     ]) {
@@ -554,6 +610,8 @@ export const mountLiveControlBubble = (
       renderedRunFocusKeys.push(focusKey);
     } else if (rowAttr === LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR) {
       renderedGrantFocusKeys.push(focusKey);
+    } else if (rowAttr === LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR) {
+      renderedChainFocusKeys.push(focusKey);
     }
     button.addEventListener('click', () => {
       if (!guarded) onClick();
@@ -577,7 +635,7 @@ export const mountLiveControlBubble = (
 
   const appendNotice = (
     section: HTMLElement,
-    which: 'running' | 'grants',
+    which: 'running' | 'grants' | 'chains',
     text: string,
   ): void => {
     const notice = doc.createElement('div');
@@ -611,9 +669,10 @@ export const mountLiveControlBubble = (
       const meta = doc.createElement('span');
       meta.className = 'lc-row-meta';
       const sinceTs = entry.slot_acquired_at ?? entry.started_at;
+      const origin = activeEntryOriginWords(entry.origin);
       const metaParts: string[] = [
         ACTIVE_STATE_LABEL[entry.state],
-        entry.origin,
+        ...(origin !== undefined ? [origin] : []),
       ];
       const elapsed =
         Number.isFinite(now) && now >= sinceTs
@@ -696,7 +755,7 @@ export const mountLiveControlBubble = (
 
       const meta = doc.createElement('span');
       meta.className = 'lc-row-meta';
-      const permits = passPermitsSummary(grant.permits);
+      const permits = passPermitsSummary(grant);
       const budget = passBudgetSummary(grant);
       const metaParts: string[] = [PASS_MODE_LABELS[grant.grant_mode]];
       if (permits.length > 0) metaParts.push(permits);
@@ -719,6 +778,58 @@ export const mountLiveControlBubble = (
         busyGrantIds.has(grant.contract_id),
         () => void revokeGrant(grant.contract_id),
       );
+      row.appendChild(controls);
+      section.appendChild(row);
+    }
+    return section;
+  };
+
+  const buildChainsSection = (): HTMLElement => {
+    const section = doc.createElement('div');
+    section.className = 'lc-section';
+    section.appendChild(buildSectionHead('Requests that run without asking', 'your rules'));
+    if (chainsNotice !== null) appendNotice(section, 'chains', chainsNotice);
+    for (const rule of liveChainRules()) {
+      const id = rule.rule_id;
+      const ownerLabel = chainRuleTitle(rule);
+      const row = doc.createElement('div');
+      row.setAttribute(LIVE_CONTROL_BUBBLE_CHAIN_ROW_ATTR, id);
+
+      const title = doc.createElement('span');
+      title.className = 'lc-row-title';
+      title.textContent = ownerLabel;
+      row.appendChild(title);
+
+      const meta = doc.createElement('span');
+      meta.className = 'lc-row-meta';
+      meta.textContent = chainRuleMeta(rule);
+      row.appendChild(meta);
+
+      const busy = busyChainIds.has(id);
+      const controls = doc.createElement('span');
+      controls.className = 'lc-row-controls';
+      if (confirmingChainId === id || busy) {
+        // Asked once more, as on Contracts: an ended rule is never suggested again.
+        const prompt = doc.createElement('span');
+        prompt.className = 'lc-row-meta';
+        prompt.textContent = 'It asks again from now on, and is not suggested again.';
+        row.appendChild(prompt);
+        appendControl(controls, LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR, 'end-confirm', id, 'End for good',
+          ownerLabel, true, busy, busy, () => void endChainRule(id));
+        appendControl(controls, LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR, 'keep', id, 'Keep',
+          ownerLabel, false, busy, false, () => {
+            confirmingChainId = null;
+            requestedFocusKey = controlFocusKey(LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR, 'end', id);
+            render();
+          });
+      } else {
+        appendControl(controls, LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR, 'end', id, 'End',
+          ownerLabel, false, false, false, () => {
+            confirmingChainId = id;
+            requestedFocusKey = controlFocusKey(LIVE_CONTROL_BUBBLE_CHAIN_CONTROL_ATTR, 'end-confirm', id);
+            render();
+          });
+      }
       row.appendChild(controls);
       section.appendChild(row);
     }
@@ -751,6 +862,7 @@ export const mountLiveControlBubble = (
     if (toolCalls.length > 0) panel.appendChild(buildToolCallsSection());
     if (visibleActiveEntries().length > 0) panel.appendChild(buildRunningSection());
     if (sessionGrants.length > 0) panel.appendChild(buildGrantsSection());
+    if (liveChainRules().length > 0) panel.appendChild(buildChainsSection());
     return panel;
   };
 
@@ -772,9 +884,11 @@ export const mountLiveControlBubble = (
       row.setAttribute(LIVE_CONTROL_BUBBLE_TOOL_ROW_ATTR, call.message_id);
       const live = call.state === 'interrupted' ? undefined : activeEntries.find(entry =>
         entry.entry_kind === 'run' && entry.run_id === call.run_id);
+      // In the chat's own words ("Change a calendar event", "Run “Weekly digest”"), not its tool's.
+      const callTitle = callLabel(call);
       const title = doc.createElement('span');
       title.className = 'lc-row-title';
-      title.textContent = call.tool_name;
+      title.textContent = callTitle;
       row.appendChild(title);
       const meta = doc.createElement('span');
       meta.className = 'lc-row-meta';
@@ -804,12 +918,12 @@ export const mountLiveControlBubble = (
       if (live?.run_id && opts.killCaller) {
         const id = live.run_id;
         appendControl(controls, LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR, 'kill', id,
-          'Kill', call.tool_name, true, busyControlActions.has(id),
+          'Kill', callTitle, true, busyControlActions.has(id),
           busyControlActions.get(id) === 'kill', () => void killRun(id));
       }
       if (call.state === 'interrupted' && opts.dismissToolCall) {
         appendControl(controls, TOOL_REVIEW_ATTR, 'review', call.message_id,
-          'Mark as looked at', call.tool_name, false, reviewingCalls.has(call.message_id),
+          'Mark as looked at', callTitle, false, reviewingCalls.has(call.message_id),
           reviewingCalls.has(call.message_id), () => {
           if (reviewingCalls.has(call.message_id)) return;
           reviewingCalls.add(call.message_id);
@@ -839,10 +953,14 @@ export const mountLiveControlBubble = (
     const previousGrantIndex = preservedFocusKey === null
       ? -1
       : renderedGrantFocusKeys.indexOf(preservedFocusKey);
+    const previousChainIndex = preservedFocusKey === null
+      ? -1
+      : renderedChainFocusKeys.indexOf(preservedFocusKey);
     requestedFocusKey = null;
     renderedFocusTargets.clear();
     renderedRunFocusKeys.length = 0;
     renderedGrantFocusKeys.length = 0;
+    renderedChainFocusKeys.length = 0;
     clearChildren(bubbleRoot);
     const total = totalCount();
     if (total === 0) return; // ambient: nothing in flight → no bubble
@@ -874,10 +992,14 @@ export const mountLiveControlBubble = (
         ? renderedRunFocusKeys
         : previousGrantIndex >= 0
           ? renderedGrantFocusKeys
-          : [];
+          : previousChainIndex >= 0
+            ? renderedChainFocusKeys
+            : [];
       const previousIndex = previousRunIndex >= 0
         ? previousRunIndex
-        : previousGrantIndex;
+        : previousGrantIndex >= 0
+          ? previousGrantIndex
+          : previousChainIndex;
       resolvedFocusKey = survivingKeys.length > 0
         ? survivingKeys[Math.min(previousIndex, survivingKeys.length - 1)]!
         : expanded
@@ -900,11 +1022,14 @@ export const mountLiveControlBubble = (
     if (!next) {
       activeNotice = null;
       grantsNotice = null;
+      chainsNotice = null;
+      confirmingChainId = null;
     }
     render();
     if (next) {
       if (hasRunning) void loadActive();
       if (hasGrants) void loadGrants();
+      if (hasChains) void loadChains();
     }
   };
 
@@ -915,6 +1040,7 @@ export const mountLiveControlBubble = (
   const reconcileEmpty = (): void => {
     if (activeEntries.length === 0 && toolCalls.length === 0) activeNotice = null;
     if (sessionGrants.length === 0) grantsNotice = null;
+    if (liveChainRules().length === 0) chainsNotice = null;
     if (totalCount() === 0) expanded = false;
   };
 
@@ -1089,6 +1215,69 @@ export const mountLiveControlBubble = (
     }
   };
 
+  // ── RULES loaders + actions (D-348) ────────────────────────────────
+  const loadChains = (): Promise<void> => {
+    if (opts.chainsListCaller === undefined || disposed) return Promise.resolve();
+    const seq = ++chainsSeq;
+    const caller = opts.chainsListCaller;
+    pendingChainsLoad = (async () => {
+      try {
+        const response = await caller();
+        if (disposed || seq !== chainsSeq) return;
+        chainRules = response.rules;
+        if (confirmingChainId !== null && !chainRules.some((rule) => rule.rule_id === confirmingChainId)) {
+          confirmingChainId = null;
+        }
+        reconcileEmpty();
+        render();
+      } catch (err) {
+        if (disposed || seq !== chainsSeq) return;
+        // Shown only beside a rule it lists: a server without rules says nothing.
+        chainsNotice = errMessage(err);
+        render();
+      }
+    })();
+    return pendingChainsLoad;
+  };
+
+  const scheduleChainsRefresh = (): void => {
+    if (opts.chainsListCaller === undefined || disposed) return;
+    if (debounceMs <= 0) {
+      void loadChains();
+      return;
+    }
+    if (chainsRefreshTimer !== null) clearTimeout(chainsRefreshTimer);
+    chainsRefreshTimer = setTimeout(() => {
+      chainsRefreshTimer = null;
+      void loadChains();
+    }, debounceMs);
+  };
+
+  const endChainRule = async (rule_id: string): Promise<void> => {
+    if (rule_id.length === 0 || busyChainIds.has(rule_id)) return;
+    busyChainIds.add(rule_id);
+    chainsNotice = null;
+    render();
+    try {
+      if (opts.chainsRevokeCaller === undefined) {
+        chainsNotice = 'You cannot end it from here.';
+        return;
+      }
+      await opts.chainsRevokeCaller({ rule_id });
+      // Success stays silent: the row drops on the re-list below, and the server's
+      // `contract.chain_rule_changed` re-lists every other paired client.
+    } catch (err) {
+      if (disposed) return;
+      chainsNotice = errMessage(err);
+    } finally {
+      // Busy through the re-list, so the row stays guarded until it drops off.
+      if (!disposed) await loadChains();
+      busyChainIds.delete(rule_id);
+      if (confirmingChainId === rule_id) confirmingChainId = null;
+      if (!disposed) render();
+    }
+  };
+
   // ── Bus + boot ─────────────────────────────────────────────────────
   if (opts.subscribe !== undefined) {
     if (hasRunning) {
@@ -1115,29 +1304,43 @@ export const mountLiveControlBubble = (
         }),
       );
     }
+    if (hasChains) {
+      unsubscribers.push(
+        // D-348 — a rule made, ended or used (its uses left moved). Debounced.
+        opts.subscribe('contract.chain_rule_changed', () => {
+          if (disposed) return;
+          scheduleChainsRefresh();
+        }),
+      );
+    }
   }
 
   render();
   if (opts.reconnect) unsubscribers.push(opts.reconnect(() => {
     void loadActive();
     void loadGrants();
+    void loadChains();
   }));
   if (hasRunning) void loadActive();
   if (hasGrants) void loadGrants();
+  if (hasChains) void loadChains();
 
   return {
     getActiveEntries: () => activeEntries,
     getToolCalls: () => toolCalls,
     getSessionGrants: () => sessionGrants,
+    getChainRules: () => chainRules,
     isOpen: () => expanded,
     refreshActive: loadActive,
     refreshGrants: loadGrants,
+    refreshChains: loadChains,
     killRun,
     cancelCall,
     promoteCall,
     revokeGrant,
+    endChainRule,
     whenLoaded: async () => {
-      await Promise.all([pendingActiveLoad, pendingGrantsLoad]);
+      await Promise.all([pendingActiveLoad, pendingGrantsLoad, pendingChainsLoad]);
     },
     dispose: () => {
       if (disposed) return;
@@ -1149,6 +1352,10 @@ export const mountLiveControlBubble = (
       if (grantsRefreshTimer !== null) {
         clearTimeout(grantsRefreshTimer);
         grantsRefreshTimer = null;
+      }
+      if (chainsRefreshTimer !== null) {
+        clearTimeout(chainsRefreshTimer);
+        chainsRefreshTimer = null;
       }
       for (const unsub of unsubscribers) {
         try {

@@ -1,5 +1,8 @@
-import type { Asset, SituationAssetDetails } from '@recued/contracts';
+import { BODY_GOAL_SETTING, BODY_RANGES_SETTING, readBodyGoal, readBodyRanges, type Asset, type BodyGoal, type BodyGoalProgress,
+  type SituationAssetDetails } from '@recued/contracts';
 import { assetTypeAttributeNames } from './asset-types.js';
+import { situationGoalDetails } from './body-goals.js';
+import { readingWords } from './values-on-request.js';
 
 /** One asset's details as JSON, at most, before `left_out`. In the chat lookup's
  * 6,000 bytes they give way before their item does (`prefetch.ts`). */
@@ -23,6 +26,9 @@ const shortened = (value: string): string => {
  * D-342): a model that changes it reads its name here. */
 export const situationAssetDetails = (
   asset: Pick<Asset, 'class_id' | 'status' | 'dates' | 'readings' | 'settings' | 'attributes'>,
+  /** D-339 slice 15 — a body goal's progress, worked out from its Body. Without it, the goal shows what
+   *  it keeps: its reading, its target and where it started. */
+  goalProgress?: (goal: BodyGoal) => BodyGoalProgress | undefined,
 ): SituationAssetDetails => {
   const details: SituationAssetDetails = { ...(asset.class_id ? { class_id: asset.class_id } : {}), status: asset.status };
   const left: string[] = [];
@@ -38,13 +44,21 @@ export const situationAssetDetails = (
     map[name] = value;
     fits(() => { delete map[name]; if (!Object.keys(map).length) delete details[group]; }, group, name);
   };
+  // D-339 slice 15 (D-342 §17) — a pursuit's body goal, first: it is what the pursuit is for. Kept in its
+  // settings as a structure, which the loop below would only name as left out.
+  const goal = readBodyGoal(asset.settings);
+  if (goal) details.goal = situationGoalDetails(goal, goalProgress?.(goal));
+  // D-339 slice 16 — a Body's own ranges, as the owner set them, each on its reading.
+  const ranges = Object.entries(readBodyRanges(asset.settings));
+  if (ranges.length) details.ranges = ranges.map(([reading, range]) => ({ reading: readingWords(reading), ...range }));
   for (const [name, value] of Object.entries(asset.dates ?? {})) put('dates', name, value);
   for (const [name, reading] of Object.entries(asset.readings ?? {})) {
     put('readings', name, reading ? { value: reading.value, unit: reading.unit, as_of: reading.as_of } : null);
   }
   for (const group of ['settings', 'attributes'] as const) {
     for (const [name, raw] of Object.entries(asset[group] ?? {})) {
-      if (raw === null || raw === undefined) continue;
+      if (raw === null || raw === undefined || goal && group === 'settings' && name === BODY_GOAL_SETTING
+        || ranges.length && group === 'settings' && name === BODY_RANGES_SETTING) continue;
       if (typeof raw === 'string') put(group, name, shortened(raw));
       else if (typeof raw === 'boolean' || (typeof raw === 'number' && Number.isFinite(raw))) put(group, name, raw);
       else leave(group, name);

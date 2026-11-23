@@ -1,6 +1,9 @@
 import { hostname } from 'node:os';
 
-import type { BatchAskRecord } from '@recued/contracts';
+import { withheldValuesOf } from '../situations/values-on-request.js';
+import { markPrivateSituationItems } from '../situations/model-projection.js';
+import { withBodyNumbers } from '../body-numbers-setting.js';
+import type { BatchAskRecord, ExecutionSource } from '@recued/contracts';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
 import type { BatchApprovalCoordinator } from '../batch-approval.js';
 import type { BridgeSink, Channel, NotificationBlock, RemoteChannel } from '@recued/notification';
@@ -40,6 +43,7 @@ import { createReminderMailReconciler } from '../reminders/mail-delivery-reconci
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import type { PreflightResumer, TornSagaSweepResult } from '@recued/gateway';
+import type { ServerPreflightResumer } from '../preflight-resumer.js';
 import { runTornSagaSweep } from '../saga-server-wiring.js';
 import { createSellerCustomerAccessLifecycle } from '../seller/customer-access-lifecycle.js';
 import {
@@ -179,8 +183,11 @@ export interface ComposeExecutionContextOptions {
     | 'mcpActionStore'
     | 'gatedActionStore'
     | 'writeRuleStore'
+    | 'chainEvidenceStore'
+    | 'chainRuleStore'
     | 'browserPassStore'
     | 'triggerPreapprovalStore'
+    | 'bodyNumbers'
     | 'settledRunResults'
     | 'fileStack'
     | 'workEntityStoreRef'
@@ -260,6 +267,7 @@ export interface ComposeExecutionContextOptions {
     | 'internalRegistryRef'
     // D-336 slice O's open item — the chat bundle's "a Tier-1 call was held" step.
     | 'tier1HeldRef'
+    | 'tier1ApprovedRunRef'
     | 'isVaultUnlocked'
     | 'webhookConsumerStoreRef'
     | 'webhookDeliveryStoreRef'
@@ -333,6 +341,15 @@ export interface ExecutionContext {
    *  and the pre-existing raise-failed accident). Same instance every other
    *  approval surface uses — see `ExecuteDepsBundle.preflightResumer`. */
   preflightResumer: PreflightResumer | undefined;
+  /** D-201 Slice 10W — the owner's try again of a held approved webhook run,
+   *  for the webhook runner (`ExecuteDepsBundle.continueHeldRun`). */
+  continueHeldRun: ServerPreflightResumer['continueHeldRun'] | undefined;
+  /** D-201 Slice 10AB — settles a try again the process went during, for the
+   *  webhook runner (`ExecuteDepsBundle.settleDiedTryAgain`). */
+  settleDiedTryAgain: ServerPreflightResumer['settleDiedTryAgain'] | undefined;
+  /** D-201 Slice 10AP — whether an answer's resume of a run is still under
+   *  way, for the webhook reconcile (`ExecuteDepsBundle.isResumingRun`). */
+  isResumingRun: ServerPreflightResumer['isResumingRun'] | undefined;
   /** D-207 slice 1c — the contract substrate the reception door is minted into, surfaced
    *  so the boot site can hand the SAME instances to the door bind. A second store over
    *  the same table would let the mint write grants the gate cannot see. */
@@ -407,7 +424,14 @@ export const composeExecutionContext = async (
         // D-338 — a day a caller names is read on the server's clock unless the chat gives its turn's,
         // and a model is told which items the Agenda keeps private.
         ...(collection.serverTimeZone ? { timeZone: collection.serverTimeZone } : {}),
+        // D-339 slice 6 — a Body set to "AI reads the numbers only when you allow it" shows a model's
+        // general reads the names of its readings and states, never their values.
+        // Slice 12a: and the owner's chats their switch for a Body's numbers.
+        ...(storage.workEntityStoreRef ? { withheldValues: (assetId: string, source: ExecutionSource | undefined) =>
+          withBodyNumbers(withheldValuesOf(storage.workEntityStoreRef!.readAsset(assetId)), storage.bodyNumbers, source) } : {}),
         ...(collection.scheduledSituations ? { isPrivate: item => collection.scheduledSituations!.isPrivateItem(item),
+          // D-339 slice 6 — except to a stream's own suggestions while it includes private items.
+          showsWithheldValues: source => collection.scheduledSituations!.showsWithheldValues(source),
           // D-342 §5 — and the Agenda suggestions' own run reads the owner's pursuits.
           readsPursuits: source => collection.scheduledSituations!.readsPursuits(source),
           // D-343 slice 4 — a reply to the evening notice lists the pursuits it asked about.
@@ -433,7 +457,10 @@ export const composeExecutionContext = async (
   );
 
   const executorConfig = await composeExecutorConfig({
-    ...(situationAccess ? { situationQuery: (input, source) => situationAccess.read(input, source), situationAccess } : {}),
+    // D-407 slice 3 (I4) — a recipe's or an MCP app's read is a model's copy too: an item the Agenda keeps
+    // private says so, as in the chat's.
+    ...(situationAccess ? { situationQuery: async (input, source, reservation) => markPrivateSituationItems(
+      await situationAccess.read(input, source, undefined, undefined, { reservation }), item => situationAccess.isPrivate(item)), situationAccess } : {}),
     piiKnownValues,
     // D-234 § 234.4 — the inbound peer door needs the notification block, which
     // is composed after this config. Same late-binding seam the container-pick
@@ -770,6 +797,9 @@ export const composeExecutionContext = async (
   const beforePreflightResume = storage.auditLog
     ? createFormResponsePromotion({
         auditLog: storage.auditLog,
+        ...(storage.gatedActionStore
+          ? { gatedActionStore: storage.gatedActionStore }
+          : {}),
         ...(storage.intakeFormSubmissionStoreRef
           ? { submissionStore: storage.intakeFormSubmissionStoreRef }
           : {}),
@@ -803,6 +833,9 @@ export const composeExecutionContext = async (
     tier1Registry: () => app.internalRegistryRef,
     // D-336 slice O's open item — a held save marks the earlier saves of its fact still waiting.
     onTier1Held: async (call) => { await app.tier1HeldRef?.(call); },
+    // A held Tier-1 call, approved, runs under its proposal's reviewed change (chat's, once built).
+    runApprovedTier1Write: (call, dispatch) =>
+      (app.tier1ApprovedRunRef !== undefined ? app.tier1ApprovedRunRef(call, dispatch) : dispatch()),
     // The page that started a held run reads its result from here once the
     // approval lets it finish (`execution.get`).
     settledRunResults: storage.settledRunResults,
@@ -836,8 +869,17 @@ export const composeExecutionContext = async (
     mcpActionStore: storage.mcpActionStore,
     gatedActionStore: storage.gatedActionStore,
     writeRules: storage.writeRuleStore,
+    chainEvidence: storage.chainEvidenceStore,
+    chainRules: storage.chainRuleStore,
     browserPasses: storage.browserPassStore,
     triggerPreapprovals: storage.triggerPreapprovalStore,
+    // D-339 slice 12a — the owner's chats' "Allow" for a Body's numbers, at the catalog gate.
+    bodyNumbers: storage.bodyNumbers,
+    // D-402 slice F3d — an AI app's name, as the owner gave its key, for the question before its run.
+    ...(app.chatInboundTokenStoreRef !== undefined && app.chatInboundTokenStoreRef !== null ? { aiAppNameOf: (contract_id: string) =>
+      app.chatInboundTokenStoreRef!.listTokens().find((token) => token.contract_id === contract_id && token.revoked_at === null)?.label,
+      aiAppContractOf: (name: string) => app.chatInboundTokenStoreRef!.listTokens().find((token) => token.revoked_at === null
+        && token.label.trim().toLowerCase() === name.trim().toLowerCase())?.contract_id } : {}),
     annotationStore: app.annotationStoreRef,
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path R1
     // pre-pass builds the merged convention-family vendor registry (built-ins +
@@ -1138,6 +1180,9 @@ export const composeExecutionContext = async (
       }
       : {}),
     preflightResumer: executeDepsBundle.preflightResumer,
+    continueHeldRun: executeDepsBundle.continueHeldRun,
+    settleDiedTryAgain: executeDepsBundle.settleDiedTryAgain,
+    isResumingRun: executeDepsBundle.isResumingRun,
     // D-207 slice 1c — the contract substrate a reception door is minted into. Surfaced
     // from the SAME bundle the Gateway's verdict path was built from, so the mint's grant
     // rows and the gate's reads are the same instances (see `ExecuteDepsBundle`).

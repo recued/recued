@@ -8,7 +8,8 @@
  *
  *  Scaffolding from `allow-session-send-fixes-recipient.test.ts`: the real gate, the real
  *  notification block and answer path, and the real session-grant store. Only the notice is
- *  recorded instead of sent.
+ *  recorded instead of sent. As there, the notice comes from an AI app over MCP: since D-177
+ *  §N.15.8 the owner's own chat offers "Allow in this chat" on it instead.
  *
  *  Below, that file's own header: */
 /** What "Allow this session" lets a chat send do afterwards, and what the
@@ -29,7 +30,8 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  D165_CONTRACT_SCHEMA, type Checkpoint, type Commit, type ExecutionSource, type OpenProjection, type RecipeDefinition,
+  D165_CONTRACT_SCHEMA, type Checkpoint, type Commit, type ContractSnapshot, type ExecutionSource, type OpenProjection,
+  type RecipeDefinition,
 } from '@recued/contracts';
 import { registerPreflightHandler } from '@recued/gateway';
 import {
@@ -69,6 +71,13 @@ const RECIPE = {
 const FIRST = { booking_id: 'booking-a', sender_mail_instance: 'recueddev' };
 
 const NOW = 1_700_000_000_000;
+const APP_TOKEN = 'tok-app';
+const APP_CONTRACT = 'ct-app';
+/** As the MCP server sends it: the app's contract, which allows the notice and asks before a write. */
+const APP_SNAPSHOT: ContractSnapshot = {
+  contract_id: APP_CONTRACT, contract_version: 'v1', allowed_tools: ['notify-booking-visitor'],
+  approval_required: ['write', 'admin'], scope_restrictions: [], resolved_at: NOW,
+};
 let db: Database.Database;
 let definitionStore: ContractDefinitionStore;
 let nowMs: number;
@@ -132,6 +141,12 @@ const session = async (extra: Partial<ExecuteHandlerDeps> = {}) => {
     // The mint happens at the commit Gateway, which runs only with a commit store.
     commitStore: createCommitStore(createInMemoryCollection<Commit>()),
     sessionGrantResolver: createSessionGrantResolver({ definitionStore, now: () => nowMs }),
+    // An AI app's approved run resumes only when the app still holds its contract; here it does.
+    approvalResumeAuthority: {
+      resolve: ({ execution_source }: { execution_source: ExecutionSource }) => ({
+        admitted: true, execution_source, contract_snapshot: APP_SNAPSHOT,
+      }),
+    },
     listSendCapableMailboxes: () => [
       { name: 'recueddev', address: 'recued.dev@gmail.com', provider: 'Gmail' },
       { name: 'outlook', address: 'recued.dev@outlook.com', provider: 'Outlook' },
@@ -147,11 +162,13 @@ const session = async (extra: Partial<ExecuteHandlerDeps> = {}) => {
   const send = async (config: Record<string, unknown>) => {
     turn += 1;
     const source = {
-      channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner-1', turn_id: `turn-${turn}`,
+      channel: 'mcp', actor: 'contracted_user', agent_id: 'agent-1', tool_call_id: `call-${turn}`,
+      mcp_token_id: APP_TOKEN, contract_id: APP_CONTRACT,
     } as ExecutionSource;
     const before = (await askStore.listByStatus('open')).length;
     const result = await handleExecute(deps, {
-      recipe_id: RECIPE.recipe_id, trigger_source: 'chat', execution_source: source, config,
+      recipe_id: RECIPE.recipe_id, trigger_source: 'mcp', execution_source: source, config,
+      contract_snapshot: APP_SNAPSHOT,
     } as never);
     const open = await askStore.listByStatus('open');
     return {
@@ -166,7 +183,7 @@ const session = async (extra: Partial<ExecuteHandlerDeps> = {}) => {
   expect(first.held).toBe(true);
   expect(first.ask!.options.map((o) => o.id)).toContain('allow_session');
   await block.submitAnswer({ ask_id: first.ask!.ask_id, option: 'allow_session', via: 'ui' });
-  const grants = definitionStore.listSessionGrants('chat:chat-1');
+  const grants = definitionStore.listSessionGrants(`mcp:${APP_TOKEN}`);
   expect(grants, 'pressing it mints one grant').toHaveLength(1);
   expect(sent, 'the approved send went out').toHaveLength(1);
   return { send, sent, grants, firstAsk: first.ask! };

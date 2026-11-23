@@ -127,6 +127,7 @@ import type { QuoteSignoffReminderOptions } from './quote-signoff-reminders.js';
 import {
   mountReceptionInboxPanel,
 } from './inbox-panel.js';
+import { RECEPTION_INBOX_RECORDS_WORKSPACE_STYLES } from './inbox-records-workspace-styles.js';
 import { parseShellRoute } from '../shell/route.js';
 import {
   createTriggerPreapprovalSupport,
@@ -162,6 +163,7 @@ export const RECEPTION_BOOTSTRAP_STYLES = [
   RECEPTION_INTAKE_RECIPE_PAIR_SECTION_STYLES,
   // D-341 slice B4 — "What it may do without asking", beside the pairing.
   TRIGGER_PREAPPROVAL_PANEL_STYLES,
+  RECEPTION_INBOX_RECORDS_WORKSPACE_STYLES,
 ].join('\n');
 
 // ════════════════════════════════════════════════════════════════
@@ -363,9 +365,7 @@ export const bootstrapReceptionRoute = (
   // a full config.
   const onEnterAuthoring = (target: EnterAuthoringTarget): void => {
     if (target.kind === 'status_link') return;
-    if (target.seedConfig !== undefined && target.seedConfig !== null) {
-      stashReceptionAuthoringSeed(target.kind, target.seedConfig);
-    }
+    stashReceptionAuthoringSeed(target.kind, target.seedConfig ?? null);
     navigate(
       receptionEndpointAuthoringAddress(target.mode, target.kind).hash,
     );
@@ -491,11 +491,13 @@ export const bootstrapReceptionRoute = (
           grant: (args) => opts.conn('collection.contract.grantTriggerPreapproval', args),
           revoke: (args) => opts.conn('collection.contract.revokeTriggerPreapproval', args),
         },
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       });
     });
     mount = {
       ...pairMount,
-      hasInFlightWork: () => preapprovalPanel?.pending() ?? false,
+      hasInFlightWork: () => pairMount.hasInFlightWork() || (preapprovalPanel?.pending() ?? false),
+      hasUnsavedChanges: () => pairMount.hasUnsavedChanges(),
       dispose: () => {
         pairDisposed = true;
         preapprovalPanel?.dispose();

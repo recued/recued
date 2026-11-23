@@ -5,6 +5,14 @@ import type { ContactStore } from '../storage/contact-store.js';
 import type { CalendarCollectionTable } from '../collections/calendar/calendar-table.js';
 
 export const declaredOccasionId = (source: SituationRef): string => `occasion-${createHash('sha256').update(JSON.stringify([source.collection, source.id, source.field ?? null])).digest('hex')}`;
+/** A series is its master, never its UID: Graph gives each occurrence its own iCalUId, which would make a new
+ *  occasion every year. A one-off event is a series of one. */
+export const calendarSeriesKey = (row: { hot: { calendar_id: string }; event: { recurring_event_id?: string }; source_id: string }): string =>
+  JSON.stringify([row.hot.calendar_id, row.event.recurring_event_id ?? row.source_id]);
+/** The occasion a yearly calendar series declares, found from any of its instances (D-407 slice 3: they follow
+ *  its privacy). Only a yearly series has one. */
+export const calendarSeriesOccasionId = (slug: string, row: Parameters<typeof calendarSeriesKey>[0]): string =>
+  declaredOccasionId({ collection: 'calendar', id: `${slug}:${calendarSeriesKey(row)}` });
 export const declaredOccasions = (deps: {
   contacts?: ContactStore;
   calendars(): ReadonlyArray<{ slug: string; table: Pick<CalendarCollectionTable, 'listSnapshots'> }>;
@@ -35,19 +43,16 @@ export const declaredOccasions = (deps: {
     for (let offset = 0; ; offset += 500) {
       const page = calendar.table.listSnapshots({ order_by: 'start_at', limit: 500, offset }); all.push(...page); if (page.length < 500) break;
     }
-    // A series is its master, never its UID: Graph gives each occurrence its own
-    // iCalUId, which would make a new occasion every year.
-    const seriesKey = (row: Snapshot) => JSON.stringify([row.hot.calendar_id, row.event.recurring_event_id ?? row.source_id]);
-    const yearly = new Set(all.filter(row => /(?:^|;)FREQ=YEARLY(?:;|$)/u.test(row.event.recurrence_rule?.replace(/^RRULE:/u, '') ?? '')).map(seriesKey));
+    const yearly = new Set(all.filter(row => /(?:^|;)FREQ=YEARLY(?:;|$)/u.test(row.event.recurrence_rule?.replace(/^RRULE:/u, '') ?? '')).map(calendarSeriesKey));
     for (const key of yearly) {
-      const instances = all.filter(row => seriesKey(row) === key && row.hot.status !== 'cancelled'); if (!instances.length) continue;
+      const instances = all.filter(row => calendarSeriesKey(row) === key && row.hot.status !== 'cancelled'); if (!instances.length) continue;
       const day = (row: Snapshot) => assetDateAt(row.hot.start_at, row.hot.is_all_day ? 'UTC' : deps.timeZone());
       const next = instances.find(row => day(row) >= today); const row = next ?? instances.at(-1)!;
       const source: SituationRef = { collection: 'calendar', id: `${calendar.slug}:${row.record_id}` };
       // Only the provider/adapter's expanded instances decide the date. COUNT,
       // UNTIL, INTERVAL, moved occurrences and calendar exceptions are not
       // silently replaced by a home-grown every-year calculation.
-      result.push({ id: declaredOccasionId({ collection: 'calendar', id: `${calendar.slug}:${key}` }), source,
+      result.push({ id: calendarSeriesOccasionId(calendar.slug, row), source,
         title: row.hot.summary, class_id: 'annual_calendar', month_day: day(row).slice(-5), source_next_on: next ? day(next) : null, people: [],
         ...(row.hot.location && deps.place ? { where: deps.place(row.hot.location) } : {}),
         sphere: deps.sphere?.(source, `calendar:${calendar.slug}:${row.hot.calendar_id}`), muted: false, rules: [] });

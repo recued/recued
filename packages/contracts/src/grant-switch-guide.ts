@@ -23,7 +23,7 @@
  *  different op must change the list here: `d-327-tool-needs.test.ts` compares it
  *  with the handlers' own constants. */
 
-import { ANY_ARGUMENT, type ApprovalValueLabels } from './ask-detail-label.js';
+import { ANY_ARGUMENT, approvalValueLabel, type ApprovalValueLabels } from './ask-detail-label.js';
 import { isAssetDate } from './assets.js';
 import type { Tier1ToolName } from './chat.js';
 import { COLLECTION_GRANT_PREFIX, PRIMITIVE_GRANT_PREFIX } from './grant-entry.js';
@@ -47,8 +47,9 @@ export interface Tier1ToolNeed {
   readonly when?: string;
   /** Set when the need applies to one kind of item only, and the switch's own title
    *  already names that kind ("Your tasks", "Create a task"). The page then shows
-   *  the title alone; the docs, which show ids, keep `when`. */
-  readonly kind?: WorkEntityKind;
+   *  the title alone, under "One switch per kind"; the docs, which show ids, keep `when`.
+   *  An occasion is no work item, but a work tool takes it as a kind (D-407). */
+  readonly kind?: WorkEntityKind | 'occasion';
 }
 
 /** An AI tool's text, plus what else it needs. */
@@ -161,6 +162,9 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.situation.read': t('Read what is going on', 'Reads a short, ranked picture of what is going on around a time. Each kind of item also needs its own switches.'),
   'core.situation.prefetch': t('Look ahead before each chat turn', 'Lets Recued add a short picture of what is going on to your chat before the AI answers.'),
   'core.situation.record': t('Record your day', 'Lets an AI record what you did or skipped on a day, in your words. Each day it records waits for your yes.'),
+  'core.situation.occasion-update': t('Change an occasion', 'Lets an AI rename, move or mute an occasion you made in Yours. It can also say whether it is private, change its place or add a step. A safety, legal or travel reminder stays on, and each change waits for your yes.'),
+  // D-407 slice 1 — the chat's new occasion.
+  'core.situation.occasion-create': t('Add an occasion', 'Lets an AI add a date of yours that matters, like a doctor\'s appointment or a reunion. It sets who and where, whether it is private, its reminders and the steps before it. Each one waits for your yes.'),
 
   // ── Memory, notes on records, links and history
   'core.memory.annotation.create': t('Add a note to a record', 'Sticks a small labelled fact onto a record, like a contact or an email.'),
@@ -245,6 +249,7 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.kitchen.draft.list': t('List Kitchen drafts', 'Lists drafts created through this connection without returning their source.'),
   'core.kitchen.draft.get': t('Read Kitchen draft source', 'Reads source from a draft created through this connection.'),
   'core.kitchen.draft.update': t('Update Kitchen draft source', 'Saves edited source to a draft created through this connection, checking its revision. It does not install or run it.'),
+  'core.kitchen.draft.from_job': t('Make a recipe from a job', 'Makes a recipe draft of a job this connection recorded, for your review. It does not install or run it.'),
   // ── Schedules
   'core.schedule.prompt': t('Scheduled prompts', 'Lets your own chat create and manage scheduled AI requests.'),
   'core.schedule.recipe': t('Schedule recipes', 'Lets your own chat set a recipe to run later or on a timer. An AI app cannot schedule recipes.'),
@@ -286,6 +291,7 @@ export const KERNEL_OP_GUIDE: Readonly<Record<string, GrantSwitchText>> = {
   'core.dom.click': t('Click on a web page', 'Clicks a link or a button, or presses a key, on a web page in your browser. It goes through the Browser Bridge. A click or a key can send, post or delete, and cannot be undone.'),
   'core.dom.act': t('Act on web pages', 'Reads, types, clicks and sends forms on web pages in your browser, through the Browser Bridge. It does several steps at once, across tabs. A click or a sent form cannot be undone.'),
   'core.dom.tabs': t('See your open tabs', 'Lists the tabs open in your browser on a site, with their titles, through the Browser Bridge. It can list the ones showing an address.'),
+  'core.dom.bridges': t('See your paired browsers', 'Lists Browser Bridge IDs, names and connection status. Reads no pages and changes nothing.'),
   'core.dom.open': t('Open a web page', 'Opens a web page in a new tab of your browser, through the Browser Bridge. The page is asked for as you, signed in, and the address can carry data to that site.'),
   'core.dom.scroll': t('Scroll a web page', 'Scrolls a web page in your browser a screen at a time. It goes through the Browser Bridge, so what loads as you scroll shows. Changes nothing on the page.'),
   'core.dom.wait': t('Wait for a web page', 'Waits until part of a web page open in your browser shows or goes, through the Browser Bridge. Changes nothing on the page.'),
@@ -332,6 +338,38 @@ const recordsByOutcome = (records: unknown, outcome: 'done' | 'skipped'): string
     const row = record !== null && typeof record === 'object' && !Array.isArray(record) ? record as Record<string, unknown> : {};
     return row.outcome === outcome && typeof row.title === 'string' ? [row.title] : [];
   });
+/** D-343 (the owner, 2026-11-14: "it takes up two approvals which should have been just one") — the
+ *  records of an `episode.record` call that tick a task off: each one done that cites a task, in the
+ *  owner's words. The call ticks them off with the record, so the day is one approval. */
+export const episodeRecordTickOffs = (args: unknown, labels?: unknown): string[] => {
+  const records = args !== null && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>).records : undefined;
+  // The task by its own name when the ask was given it ("Spanish lesson"), else the owner's words.
+  const named = labels !== null && typeof labels === 'object' && !Array.isArray(labels) ? (labels as Record<string, unknown>).item : undefined;
+  const nameOf = (id: unknown): string | undefined => {
+    if (typeof id !== 'string' || named === null || typeof named !== 'object' || !Object.hasOwn(named, id)) return undefined;
+    const name = (named as Record<string, unknown>)[id];
+    return typeof name === 'string' && name.trim() !== '' ? name.trim() : undefined;
+  };
+  return (Array.isArray(records) ? records : []).flatMap((record: unknown) => {
+    const row = record !== null && typeof record === 'object' && !Array.isArray(record) ? record as Record<string, unknown> : {};
+    const item = row.item !== null && typeof row.item === 'object' && !Array.isArray(row.item) ? row.item as Record<string, unknown> : {};
+    return row.outcome === 'done' && item.collection === 'task' && typeof row.title === 'string' ? [nameOf(item.id) ?? row.title] : [];
+  });
+};
+/** A record's words without the "did" / "didn't" / "did not" its heading already says, first letter
+ *  raised: "Didn't call the plumber" → "Call the plumber". Words that are nothing else stay. */
+const withoutOutcomeVerb = (title: string): string => {
+  const rest = title.replace(/^\s*(?:did\s+not|didn['’]t|did)\s+/iu, '');
+  return rest === '' || rest === title ? title : `${rest.charAt(0).toUpperCase()}${rest.slice(1)}`;
+};
+/** D-343 (2026-11-15) — what a day already holds when its record is asked for (the ask's
+ *  `recorded_before` labels, in the order kept), at most five and how many more. */
+export const episodeRecordEarlier = (labels?: unknown): string[] => {
+  const earlier = labels !== null && typeof labels === 'object' && !Array.isArray(labels) ? (labels as Record<string, unknown>).recorded_before : undefined;
+  if (earlier === null || typeof earlier !== 'object' || Array.isArray(earlier)) return [];
+  const lines = Object.values(earlier as Record<string, unknown>).filter((line): line is string => typeof line === 'string' && line.trim() !== '');
+  return lines.length > 5 ? [...lines.slice(0, 5), `${lines.length - 5} more`] : lines;
+};
 /** D-343 slice 5 — a day's records as its checklist: what was done, then what was skipped, each in
  *  the owner's words and in the order the call gives them. The card that records them shows it once
  *  they are kept ("✓ Ran 5 km · – Spanish lesson, skipped"). */
@@ -348,10 +386,14 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
   const call = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
   const words = typeof call.kind === 'string' && Object.hasOwn(WORK_KIND_WORDS, call.kind)
     ? WORK_KIND_WORDS[call.kind as WorkEntityKind] : undefined;
+  // D-407 slice 1 (§4.1, Q4) — a new occasion, and whether it is private, which the owner sees before saying yes.
+  if (tool === 'work.create' && call.kind === 'occasion') return call.private === true ? 'Add a private occasion' : 'Add an occasion';
   // D-342 slice 4 — a pursuit is an asset of its own type, and no thing the owner owns.
   if (words !== undefined && tool === 'work.create') return call.kind === 'asset' && call.type === PURSUIT_CLASS_ID ? 'Add a pursuit' : `Add ${words}`;
-  // D-343 slice 2 — the day the records are for, as the card heads them ("Record your day · Thu 6 Nov").
-  if (tool === 'episode.record') return `Record your day${typeof call.day === 'string' && isAssetDate(call.day) ? ` · ${dayWords(call.day)}` : ''}`;
+  // D-343 slice 2 — the day the records are for, as the card heads them ("Record your day, Thu 6 Nov").
+  // D-343 (the owner's day audit, 2026-11-15) — a comma, not "·": the title is read inside a sentence
+  // too ("The AI in your Telegram chat wants to record your day, Sun 15 Nov:").
+  if (tool === 'episode.record') return `Record your day${typeof call.day === 'string' && isAssetDate(call.day) ? `, ${dayWords(call.day)}` : ''}`;
   // D-343 slice 1 — an occasion made in Yours, which is no work row.
   if (tool === 'work.update' && call.kind === 'occasion') return call.muted === true ? 'Stop an occasion’s reminders' : 'Change an occasion';
   // D-343 slice 1 (ruling 15) — a mail fact closed, in the words its grants use.
@@ -376,11 +418,47 @@ export const tier1CallTitle = (tool: string, args: unknown): string | undefined 
   return TIER1_TOOL_GUIDE[tool as Tier1ToolName].title;
 };
 
+/** The kinds a call's title names, and how several of them read. Longest first, so "a thing you
+ *  own" is never read as something shorter. */
+const TITLE_KIND_PLURALS: ReadonlyArray<readonly [string, string]> = [
+  ['a thing you own', 'things you own'], ['a commitment', 'commitments'], ['a reservation', 'reservations'],
+  ['an occasion', 'occasions'], ['a mail fact', 'mail facts'], ['a booking', 'bookings'], ['a project', 'projects'],
+  ['a pursuit', 'pursuits'], ['a contact', 'contacts'], ['a task', 'tasks'], ['a note', 'notes'],
+];
+const kindIn = (title: string): readonly [string, string, number] | undefined => {
+  for (const [one, many] of TITLE_KIND_PLURALS) {
+    // A whole phrase only: "an occasion’s reminders" names no occasion to count.
+    const at = ` ${title} `.indexOf(` ${one} `);
+    if (at !== -1) return [one, many, at];
+  }
+  return undefined;
+};
+/** A held call's title for several of them, as a message names them (D-343, the owner 2026-11-14:
+ *  "the approval message can be more human friendly"): "Tick off 2 tasks", "Add 3 notes". A title
+ *  that names no kind it can count says how many times: "Record your day, Sat 14 Nov, 2 times". */
+export const tier1CallsTitle = (title: string, count: number): string => {
+  if (count <= 1) return title;
+  if (title === 'Tick a task off') return `Tick off ${String(count)} tasks`;
+  const kind = kindIn(title);
+  return kind === undefined ? `${title}, ${String(count)} times`
+    : `${title.slice(0, kind[2])}${String(count)} ${kind[1]}${title.slice(kind[2] + kind[0].length)}`;
+};
+/** A switch's name for any number of its calls: "Change a task" → "Change tasks". */
+export const tier1KindsPhrase = (title: string): string => {
+  const kind = kindIn(title);
+  return kind === undefined ? title : `${title.slice(0, kind[2])}${kind[1]}${title.slice(kind[2] + kind[0].length)}`;
+};
+
 /** What a work tool's call names by its `id`, in the owner's words. */
 const WORK_KIND_NOUNS: Readonly<Partial<Record<WorkEntityKind | 'occasion' | 'mail_fact', string>>> = {
   task: 'Task', note: 'Note', commitment: 'Commitment', project: 'Project', asset: 'Thing', booking: 'Booking', occasion: 'Occasion',
   mail_fact: 'Mail fact',
 };
+/** Whether a field of a held call's details is the record it is about ("Task: Call the plumber"),
+ *  which a message names by its name alone. */
+export const isTier1RecordLabel = (label: string): boolean =>
+  label === 'title' || label === 'name' || label === 'Event' || label === 'Contact'
+  || Object.values(WORK_KIND_NOUNS).includes(label);
 /** D-336 slice G (§3.9) — a held save's conflicts as an approval lists them, after its
  *  arguments: what it contradicts, in memory or (slice S) among the saves asked while it
  *  waits, the same fact saved already (slice J), asked already (slice O) or asked again after
@@ -415,6 +493,52 @@ export const memorySaveConflictRows = (conflicts: unknown): Record<string, strin
   return rows;
 };
 
+/** D-407 slice 1 — "Blood test, 7 days before" for each step of an occasion a call carries. */
+const occasionStepWords = (steps: unknown): string[] => (Array.isArray(steps) ? steps : []).flatMap((step) => {
+  if (step === null || typeof step !== 'object' || Array.isArray(step)) return [];
+  const { title, days_before } = step as { title?: unknown; days_before?: unknown };
+  if (typeof title !== 'string' || typeof days_before !== 'number') return [];
+  return [`${title}, ${days_before === 0 ? 'on the day' : `${String(days_before)} day${days_before === 1 ? '' : 's'} before`}`];
+});
+/** D-407 slice 1 (§4.1, Q4, Q6) — a new occasion as its approval lists it. Private is always said, the default
+ *  too, so a health one the AI made private is seen before it is kept. A person the call names who is no contact
+ *  yet reads as new (`value_labels.people`, `workAskLabels`): the save adds them. */
+/** An occasion's alert as its card says it: "2 hours before", "at the time". */
+const occasionAlertCardWords = (minutes: number): string => minutes === 0 ? 'At the time'
+  : minutes === 1440 ? '1 day before' : minutes % 60 === 0 ? `${String(minutes / 60)} hour${minutes === 60 ? '' : 's'} before` : `${String(minutes)} minutes before`;
+/** D-407 slice 4 (U4, §4.1) — where an occasion's own event goes, as its card says it: Recued only, or the calendar the
+ *  owner chose, which only the server knows (`value_labels.in_calendar.true`, `workAskLabels`). A new occasion the AI
+ *  left it out of goes in that calendar, so its card says so as well: the owner sees both before saying yes. Undefined,
+ *  no row, when nothing says where. */
+const occasionCalendarWords = (inCalendar: boolean, labels: unknown): string | undefined =>
+  inCalendar ? approvalValueLabel(labels, 'in_calendar', 'true') : 'Recued only, no calendar entry';
+const occasionCreateRows = (args: Readonly<Record<string, unknown>>, labels?: ApprovalValueLabels): Record<string, unknown> => {
+  const rows: Record<string, unknown> = {};
+  if (typeof args.title === 'string') rows.Occasion = args.title;
+  // D-407 slice 2 — its time of day and "whenever the last one says", which this card left out.
+  if (typeof args.on === 'string') rows.Date = `${isAssetDate(args.on) ? dayWords(args.on) : args.on}${
+    typeof args.time === 'string' ? ` at ${args.time}${typeof args.time_zone === 'string' ? ` (${args.time_zone})` : ''}` : ''}${
+    args.repeat === 'yearly' ? ', every year' : args.repeat === 'after_each' ? ', then whenever the last one says' : ''}`;
+  // D-407 — its alert before that time, sent by the occasion itself.
+  if (typeof args.alert_minutes_before === 'number') rows.Alert = occasionAlertCardWords(args.alert_minutes_before);
+  // D-407 slice 4 (U4) — Recued only, or its event in the calendar chosen, whether the AI said so or left it out.
+  const calendar = occasionCalendarWords(args.in_calendar !== false, labels);
+  if (calendar !== undefined) rows.Calendar = calendar;
+  const known = labels !== null && typeof labels === 'object' && !Array.isArray(labels) ? (labels as Record<string, unknown>).people : undefined;
+  const names = known !== null && typeof known === 'object' && !Array.isArray(known) ? known as Record<string, unknown> : {};
+  const people = (Array.isArray(args.people) ? args.people : []).filter((person): person is string => typeof person === 'string');
+  if (people.length > 0) rows.People = people.map((person) => typeof names[person] === 'string' ? names[person] as string : person).join(', ');
+  if (typeof args.where === 'string') rows.Where = args.where;
+  rows.Private = args.private === true ? 'Yes' : args.private === false ? 'No, shown by name'
+    : people.length > 0 ? 'Yes, a person is in it' : 'No, shown by name';
+  const steps = occasionStepWords(args.steps);
+  if (steps.length > 0) rows.Steps = steps.join(' · ');
+  const before = (Array.isArray(args.remind_days_before) ? args.remind_days_before : []).filter((days): days is number => typeof days === 'number');
+  rows.Reminders = before.length > 0
+    ? `${before.map(String).join(' and ')} day${before.length === 1 && before[0] === 1 ? '' : 's'} before, and on the day`
+    : 'A week before, and on the day';
+  return rows;
+};
 /** D-329 — one call of an AI tool's arguments as an approval lists them: the record it
  *  changes named as what it is ("Thing: Family car", not "id: Family car"), and its `kind`
  *  left to the title, which already says it ("Change a thing you own"). The names recorded
@@ -431,15 +555,35 @@ export const tier1CallDetails = (
   // D-343 slice 2 — a day's records as a checklist: what was done and what was skipped. The day
   // is in the title.
   if (tool === 'episode.record') {
-    const done = recordsByOutcome(args.records, 'done'); const skipped = recordsByOutcome(args.records, 'skipped');
-    return { args: { ...(done.length > 0 ? { Done: done } : {}), ...(skipped.length > 0 ? { Skipped: skipped } : {}) } };
+    // D-343 (the owner's day audit, 2026-11-15) — under "Done" and "Skipped" a record's own "did" /
+    // "didn't" says it twice ("Skipped: Didn't call the plumber"): shown without it. The record keeps
+    // the owner's words as they were said.
+    const done = recordsByOutcome(args.records, 'done').map(withoutOutcomeVerb);
+    const skipped = recordsByOutcome(args.records, 'skipped').map(withoutOutcomeVerb);
+    // D-343 (the owner, 2026-11-14: one approval for the day) — a task recorded as done is ticked
+    // off by the same call, and its ask says so.
+    const ticks = episodeRecordTickOffs(args, labels);
+    // D-343 (2026-11-15) — what the day already holds, recorded earlier from any conversation; a
+    // record of the same item replaces its earlier one.
+    const before = episodeRecordEarlier(labels);
+    return { args: { ...(done.length > 0 ? { Done: done } : {}), ...(skipped.length > 0 ? { Skipped: skipped } : {}),
+      ...(ticks.length > 0 ? { 'Ticks off': ticks } : {}), ...(before.length > 0 ? { 'Already recorded': before } : {}) } };
   }
+  // D-407 slice 1 — a new occasion in the owner's words: when, who, where, whether it is private, and what comes first.
+  if (tool === 'work.create' && args.kind === 'occasion') return { args: occasionCreateRows(args, labels) };
   // A key's name on the approval, or `null` for a key the title already says.
   const shownAs: Record<string, string | null> = {};
   const noun = typeof args.kind === 'string' && Object.hasOwn(WORK_KIND_NOUNS, args.kind)
     ? WORK_KIND_NOUNS[args.kind as keyof typeof WORK_KIND_NOUNS] : undefined;
   if (noun !== undefined && (tool === 'work.create' || tool === 'work.update')) {
     Object.assign(shownAs, { kind: null, id: noun, belongs_to: 'Part of' });
+    // D-343 — a due date named on the owner's clock reads as "Due"; with no such name it keeps its
+    // key, which the renderer reads as a date (renamed, it would show the bare Unix ms).
+    const dueNames = labels !== null && typeof labels === 'object' && !Array.isArray(labels) ? (labels as Record<string, unknown>).due_at : undefined;
+    if (dueNames !== null && typeof dueNames === 'object' && Object.hasOwn(dueNames, String(args.due_at))) shownAs.due_at = 'Due';
+  }
+  if (tool === 'work.update' && args.kind === 'occasion') {
+    Object.assign(shownAs, { private: 'Private', where: 'Where', add_steps: null, in_calendar: null });
   }
   if (tool === 'calendar.update') shownAs.source_id = 'Event';
   if (tool === 'contact.write') shownAs.target_id = 'Contact';
@@ -462,6 +606,14 @@ export const tier1CallDetails = (
     const as = renamed !== key && Object.hasOwn(args, renamed) ? key : renamed;
     shown[as] = value;
     if (Object.hasOwn(known, key)) named[as] = known[key]!;
+  }
+  // D-407 slice 1 — the steps a change adds to an occasion, in words.
+  if (tool === 'work.update' && args.kind === 'occasion') {
+    const steps = occasionStepWords(args.add_steps);
+    if (steps.length > 0) shown['Adds steps'] = steps.join(' · ');
+    // D-407 slice 4 — into the calendar chosen, or out of it, in words.
+    const calendar = typeof args.in_calendar === 'boolean' ? occasionCalendarWords(args.in_calendar, labels) : undefined;
+    if (calendar !== undefined) shown.Calendar = calendar;
   }
   if (tool === 'memory.write') {
     for (const [row, said] of Object.entries(memorySaveConflictRows(conflicts))) {
@@ -592,13 +744,15 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
   },
   'work.create': {
     title: 'Add a task, note or more',
-    summary: 'Adds a task, note, commitment, project or thing you own.',
+    summary: 'Adds a task, note, commitment, project, thing you own or occasion.',
     needs: [
       { entry: 'core.work-entity.task.create', when: 'to add tasks', kind: 'task' },
       { entry: 'core.work-entity.note.create', when: 'to add notes', kind: 'note' },
       { entry: 'core.work-entity.commitment.create', when: 'to add commitments', kind: 'commitment' },
       { entry: 'core.work-entity.project.create', when: 'to add projects', kind: 'project' },
       { entry: 'core.work-entity.asset.create', when: 'to add things you own', kind: 'asset' },
+      // D-407 slice 1 — the handler checks it for an occasion; the page could not show it.
+      { entry: 'core.situation.occasion-create', when: 'to add occasions', kind: 'occasion' },
     ],
   },
   'calendar.create': {
@@ -613,7 +767,7 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
   },
   'work.update': {
     title: 'Change a task, note or more',
-    summary: 'Changes a task, note, commitment, project or thing you own, or ticks a task off.',
+    summary: 'Changes a task, note, commitment, project, booking, thing you own or occasion, or ticks a task off.',
     needs: [
       { entry: 'core.work-entity.task.update', when: 'to change tasks', kind: 'task' },
       { entry: 'core.work-entity.note.update', when: 'to change notes', kind: 'note' },
@@ -621,12 +775,18 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
       { entry: 'core.work-entity.project.update', when: 'to change projects', kind: 'project' },
       { entry: 'core.work-entity.asset.update', when: 'to change things you own', kind: 'asset' },
       { entry: 'core.work-entity.task.mark-done', when: 'to tick a task off', kind: 'task' },
+      // The handler checks these two as well; the page could not show them (D-343, D-407).
+      { entry: 'core.work-entity.booking.update', when: 'to change bookings', kind: 'booking' },
+      { entry: 'core.situation.occasion-update', when: 'to change occasions', kind: 'occasion' },
     ],
+    // `mailFactCloseOps`: the switches depend on the fact, so no fixed need can name them.
+    note: 'Closing something from your email, like a bill or a parcel, makes the item it becomes. That needs the '
+      + 'switches for a commitment (a bill), a booking (a reservation) or a task (anything else).',
   },
   'episode.record': {
     title: 'Record your day',
-    summary: 'Records what you did or skipped on a day, in your words, as your history.',
-    needs: [{ entry: 'core.situation.record' }],
+    summary: 'Records what you did or skipped on a day, in your words, and ticks off tasks you did.',
+    needs: [{ entry: 'core.situation.record' }, { entry: 'core.work-entity.task.mark-done', when: 'to tick off a task you did' }],
     note: 'Naming an item from your agenda also needs the read switch for that kind of item.',
   },
   'file.search': {
@@ -643,6 +803,11 @@ export const TIER1_TOOL_GUIDE: Readonly<Record<Tier1ToolName, Tier1ToolGuide>> =
   'recipe.stop': {
     title: 'Stop a recipe',
     summary: 'Stops a recipe run that the same conversation started.',
+    needs: [],
+  },
+  'recipe.stop_allowing': {
+    title: 'Stop allowing a recipe',
+    summary: 'Ends what your chats, or an AI app, may do with a recipe without asking you. Only your own chat can.',
     needs: [],
   },
   'schedule.run_prompt': { title: 'Schedule an AI request', summary: 'Runs a saved request later in its own conversation.', needs: [{ entry: 'core.schedule.prompt' }] },

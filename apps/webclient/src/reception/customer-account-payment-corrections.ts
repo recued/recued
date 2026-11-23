@@ -14,12 +14,13 @@ export const mountCustomerAccountPaymentCorrections = (opts: {
   const button = (text: string,host: HTMLElement,fn: () => void) => { const n = add('button',text,host);n.type = 'button';n.addEventListener('click',fn);return n; };
   const heading = add('h4','Correct account payment',root);const status = add('p','',root);status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   add('p','Correct the original invoice entries together. Enter zero to remove an active allocation. Removed entries cannot be restored. This changes recorded payments only.',root);
-  const refresh = button('Refresh account correction',root,() => { if (!dirty && !busy && !queued) void load(); });
-  const close = button('Close account payment correction',root,() => { if (reset()) focus?.(); });
+  const actions = add('div','',root);actions.className = 'financial-actions';
+  const refresh = button('Refresh account correction',actions,() => { if (!dirty && !busy && !queued) void load(); });
+  const close = button('Close account payment correction',actions,() => { if (reset()) focus?.(); });
   const form = add('form','',root);form.setAttribute('aria-label','Correct customer account payment');
-  const actionLabel = add('label','Account correction action',form);const mode = add('select','',form);mode.id = 'recued-account-payment-correction-action';actionLabel.setAttribute('for',mode.id);
+  const actionField = add('div','',form);actionField.className = 'financial-field';const actionLabel = add('label','Account correction action',actionField);const mode = add('select','',actionField);mode.id = 'recued-account-payment-correction-action';actionLabel.setAttribute('for',mode.id);
   for (const [value,text] of [['correct','Correct payment and allocations'],['void','Void all active allocations']]) { const n = add('option',text!,mode);n.value = value!; }
-  const fields = add('div','',form);
+  const fields = add('div','',form);fields.className = 'financial-fields';
   const input = (label: string,name: string,type = 'text',required = false,max = 512) => { const host = add('label',label,fields);const n = add('input','',host);n.name = name;n.type = type;n.required = required;n.maxLength = max;return n; };
   const amount = input('Correct account payment total','account_correction_amount','text',true,24);amount.inputMode = 'decimal';
   const received = input('Correct account received date','account_correction_date','date',true);
@@ -33,8 +34,9 @@ export const mountCustomerAccountPaymentCorrections = (opts: {
   add('h4','Account payment correction history',root);const historyStatus = add('p','',root);historyStatus.setAttribute('role','status');
   const history = add('div','',root);history.setAttribute('data-account-correction-history','');
   const historyRefresh = button('Refresh account correction history',root,() => { void loadHistory(cursor,[...previous]); });
-  const newer = button('Newer account corrections',root,() => { if (previous.length) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
-  const older = button('Older account corrections',root,() => { if (next) void loadHistory(next,[...previous,cursor]); });
+  const paging = add('div','',root);paging.className = 'financial-actions';
+  const newer = button('Newer account corrections',paging,() => { if (previous.length) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
+  const older = button('Older account corrections',paging,() => { if (next) void loadHistory(next,[...previous,cursor]); });
   let disposed = false;let busy = false;let historyBusy = false;let dirty = false;let queued = false;let generation = 0;let historyGeneration = 0;let paymentId = '';
   let copy: CustomerAccountPaymentReceipt | null = null;let prepared: CustomerAccountPaymentCorrectionPreview | null = null;let requestKey = crypto.randomUUID();let focus: (() => void) | undefined;
   let cursor: string | undefined,next: string | undefined,previous: Array<string | undefined> = [];const allocations = new Map<string,HTMLInputElement>();

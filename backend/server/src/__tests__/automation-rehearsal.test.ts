@@ -1,16 +1,40 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { MAIL_FACT_EVENT_PLATFORM, parseRehearsalDocument } from '@recued/contracts';
 import { rehearsalFixture } from './automation-rehearsal-fixture.js';
-import { resourceFixtureDisposers } from './preapproval-resources-fixture.js';
+import { CRASH_CASE_TIMEOUT_MS, CRASH_WRITER_LIMIT_MS, resourceFixtureDisposers } from './preapproval-resources-fixture.js';
 import { createAutomationRehearsalStore } from '../storage/automation-rehearsal-store.js';
 import { createScheduler } from '../scheduler.js';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { createEventTriggerDispatcher } from '../triggers/dispatcher.js';
+
+/** Use the same whole-writer deadline as the resource crash tests. These cases
+ * prove commit recovery, with no activation latency contract. Retain the phase
+ * and signal so CPU-starved children remain distinguishable from wrong state. */
+const runCrashChild = (child: string, root: string) => new Promise<{ status: number | null; signal: NodeJS.Signals | null; timedOut: boolean; diagnostic: string }>(resolve => {
+  const begun = performance.now(); let phase = 'startup', timedOut = false, output = '';
+  const processChild = spawn(process.execPath, ['--import', pathToFileURL(join(root, 'node_modules/tsx/dist/loader.mjs')).href, child], {
+    cwd: root, env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'tsconfig.test.json') }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+  });
+  const expire = () => { timedOut = true; processChild.kill('SIGKILL'); };
+  const timer = setTimeout(expire, CRASH_WRITER_LIMIT_MS);
+  processChild.on('message', message => {
+    if (phase === 'startup' && message && typeof message === 'object' && 'phase' in message && message.phase === 'activation') {
+      phase = 'activation';
+    }
+  });
+  const append = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-64_000); };
+  processChild.stdout!.on('data', append); processChild.stderr!.on('data', append); // Both streams are configured as pipes above.
+  processChild.on('error', error => { output += String(error); });
+  processChild.on('close', (status, signal) => {
+    clearTimeout(timer); resolve({ status, signal, timedOut, diagnostic: JSON.stringify({ phase, timedOut, signal,
+      elapsed_ms: Math.round(performance.now() - begun), output }) });
+  });
+});
 
 afterEach(async () => { vi.restoreAllMocks(); for (const close of resourceFixtureDisposers.splice(0).reverse()) await close(); });
 for (const kind of ['trigger', 'schedule', 'timer'] as const) {
@@ -157,26 +181,34 @@ for (const kind of ['trigger', 'schedule', 'timer'] as const) for (const point o
   it(`recovers ${kind} activation after actual process death ${point}`, async () => {
     const f = await rehearsalFixture(kind), { request } = await f.ready(), root = fileURLToPath(new URL('../../../../', import.meta.url)), child = join(f.dir, 'rehearsal-child.mts');
     const url = (path: string) => pathToFileURL(join(root, path)).href;
+    const cut = join(f.dir, 'rehearsal-cut.json'), orderlyExit = join(f.dir, 'rehearsal-orderly-exit');
     writeFileSync(child, [
+      `import {writeFileSync} from 'node:fs';`,
       `import {resourceFixture} from ${JSON.stringify(url('backend/server/src/__tests__/preapproval-resources-fixture.ts'))};`,
       `import {rehearsalStores} from ${JSON.stringify(url('backend/server/src/__tests__/automation-rehearsal-fixture.ts'))};`,
       `import {createPreapprovalCodec} from ${JSON.stringify(url('backend/server/src/storage/preapproval-codec.ts'))};`,
+      // A crash must bypass shutdown hooks; the marker also proves which cut was reached.
+      `process.on('exit',()=>writeFileSync(${JSON.stringify(orderlyExit)},'orderly exit'));`,
+      `const crash=cutPoint=>{writeFileSync(${JSON.stringify(cut)},JSON.stringify({kind:${JSON.stringify(kind)},point:cutPoint}));process.kill(process.pid,'SIGKILL');throw new Error('Crash writer survived SIGKILL');};`,
       `const spies={fn:()=>Object.assign(()=>{},{mockClear(){}}),spyOn:(object,key)=>object[key].bind(object)};`,
       `const f=await resourceFixture(${JSON.stringify({ dir: f.dir, clock: f.clock, token: f.token })},{spies});`,
       `const {host,store}=rehearsalStores(f,createPreapprovalCodec(()=>new Uint8Array(32).fill(9)));`,
-      ...(point === 'inside-transaction' ? [`const apply=host.apply.bind(host);host.apply=(...args)=>{apply(...args);process.exit(86);};`] : []),
-      ...(point === 'before-refresh' ? [`host.refresh=()=>process.exit(88);`] : []),
-      `await store.activate(${JSON.stringify(request)},${JSON.stringify(f.actor)},()=>{});process.exit(87);`,
+      ...(point === 'inside-transaction' ? [`const apply=host.apply.bind(host);host.apply=(...args)=>{apply(...args);crash('inside-transaction');};`] : []),
+      ...(point === 'before-refresh' ? [`host.refresh=()=>crash('before-refresh');`] : []),
+      `process.send?.({phase:'activation'});`,
+      `await store.activate(${JSON.stringify(request)},${JSON.stringify(f.actor)},()=>{});crash('after-commit');`,
     ].join('\n'));
     await f.close();
-    const result = spawnSync(process.execPath, ['--import', url('node_modules/tsx/dist/loader.mjs'), child], { cwd: root, encoding: 'utf8', timeout: 30_000,
-      env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'tsconfig.test.json') } });
-    expect(result.status, result.stdout + result.stderr).toBe(point === 'inside-transaction' ? 86 : point === 'before-refresh' ? 88 : 87);
+    const result = await runCrashChild(child, root);
+    const reached = existsSync(cut) ? readFileSync(cut, 'utf8') : null;
+    expect({ ...result, cut: reached, orderly_exit: existsSync(orderlyExit) }, result.diagnostic).toMatchObject({
+      status: null, signal: 'SIGKILL', timedOut: false, cut: JSON.stringify({ kind, point }), orderly_exit: false,
+    });
     const next = await f.reopenRehearsals(); expect(next.host.context(f.target).current?.enabled).toBe(point !== 'inside-transaction');
     const recovered = await next.store.activate(request, f.actor, () => {}); expect(recovered.activated?.sequence).toBe(1);
     if (point === 'before-refresh') expect(recovered.refresh_warning).toContain('Configuration committed'); else expect(recovered.activated?.refresh_confirmed).toBe(true);
     expect((await next.store.read(f.target, f.actor, () => {})).history.map(item => item.sequence)).toEqual([1]);
-  }, 45_000);
+  }, CRASH_CASE_TIMEOUT_MS);
 }
 
 it('retains unconfirmed runtime refresh on retry and reopen without resetting a later circuit', async () => {

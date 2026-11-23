@@ -910,23 +910,35 @@ export const createGatedActionStore = (
   };
 
   return {
-    createHeld(input) {
+    createHeld(requested) {
       return mutate(async () => {
-        if (input.run_id.length === 0
-          || input.gated_step_id.length === 0
-          || input.checkpoint_id.length === 0
-          || input.predecessor_action_ref === '') {
+        if (requested.run_id.length === 0
+          || requested.gated_step_id.length === 0
+          || requested.checkpoint_id.length === 0
+          || requested.predecessor_action_ref === '') {
           throw new Error('gated action run, step, and checkpoint identities must be non-empty');
         }
-        const checkpointMatch = await findCheckpoint(input.checkpoint_id);
+        const checkpointMatch = await findCheckpoint(requested.checkpoint_id);
         if (checkpointMatch !== null) {
-          if (checkpointMatch.run_id !== input.run_id
-            || checkpointMatch.gated_step_id !== input.gated_step_id) {
+          if (checkpointMatch.run_id !== requested.run_id
+            || checkpointMatch.gated_step_id !== requested.gated_step_id) {
             throw new Error('gated action checkpoint collided with another subject');
           }
-          return renewHeld(checkpointMatch, input);
+          return renewHeld(checkpointMatch, requested);
         }
-        const existing = await findSubject(input.run_id, input.gated_step_id);
+        const existing = await findSubject(requested.run_id, requested.gated_step_id);
+        // D-201 Slice 10N (10L finding 2) — a NEW hold of a step whose receipt
+        // is closed is a new decision: the run ran again on its run id (a
+        // delivery tried again after a dead letter). It gets a receipt of its
+        // own, after the closed one, so the owner's answer to it runs it.
+        // Renewing handed back the closed receipt unchanged, the new checkpoint
+        // read as superseded, and the answer ran nothing. A stale create for
+        // the closed receipt's own checkpoint still finds it above, unchanged.
+        const input: CreateHeldGatedActionInput = requested.predecessor_action_ref === undefined
+          && existing !== null
+          && isGatedActionTerminal(existing.status)
+          ? { ...requested, predecessor_action_ref: existing.action_ref }
+          : requested;
         if (input.predecessor_action_ref === undefined && existing !== null) {
           return renewHeld(existing, input);
         }

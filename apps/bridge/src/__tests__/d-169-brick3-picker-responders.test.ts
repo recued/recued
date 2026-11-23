@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WebclientTokenRecord } from '@recued/contracts';
+import { PICKER_SESSION_TTL_MS } from '../picker/picker-sessions.js';
 import {
   bootBridgeServiceWorker,
   type BridgeServiceWorkerDeps,
@@ -35,6 +36,8 @@ import type { WsTransport, WsTransportFactory } from '../transport/ws-client.js'
 
 const NOW = 1_800_000_000_000;
 const LAUNCH = 'recued.bridge.side-panel.launch-picker';
+const DOCUMENT = { tab_id: 7, document_id: 'document-7', page_url: 'https://app.hubspot.com/contacts/123' };
+const SENDER = { tab: { id: 7 }, frameId: 0, documentId: DOCUMENT.document_id, url: DOCUMENT.page_url };
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -200,7 +203,10 @@ const buildPairedStorage = (): ChromeStorageLocal =>
 const stubInjector = (
   outcome: PickerInjectOutcome,
 ): BridgePickerInjector & { injectIntoActiveTab: ReturnType<typeof vi.fn> } => ({
-  injectIntoActiveTab: vi.fn(async () => outcome),
+  injectIntoActiveTab: vi.fn(async launch => {
+    if (outcome.ok) launch.bind(DOCUMENT);
+    return outcome;
+  }),
 });
 
 const baseDeps = (
@@ -229,16 +235,19 @@ const pickerResultMessage = (
   result:
     | { status: 'picked'; selector: string; page_url: string; sample_text: string | null }
     | { status: 'cancelled' },
-): unknown => ({ type: PICKER_RESULT_MESSAGE_TYPE, result });
+  launch_id = 'unmatched',
+): unknown => ({ type: PICKER_RESULT_MESSAGE_TYPE, launch_id, result });
 
 describe('D-169 brick 3 — SW picker responders', () => {
   let factory: CapturedWsTransportFactory;
   let runtime: CapturedOnMessage;
   let pushes: unknown[];
   let sendMessage: (message: unknown) => Promise<unknown>;
+  let handles: Awaited<ReturnType<typeof bootBridgeServiceWorker>>[];
 
   beforeEach(() => {
     factory = buildCapturedWsTransportFactory();
+    handles = [];
     runtime = buildCapturedOnMessage();
     pushes = [];
     sendMessage = (message: unknown): Promise<unknown> => {
@@ -246,7 +255,8 @@ describe('D-169 brick 3 — SW picker responders', () => {
       return Promise.resolve(undefined);
     };
   });
-  afterEach(() => {
+  afterEach(async () => {
+    for (const handle of handles) await handle.stop();
     vi.restoreAllMocks();
   });
 
@@ -285,8 +295,128 @@ describe('D-169 brick 3 — SW picker responders', () => {
       }),
     );
     await flushAsyncWork();
+    handles.push(handle);
     return handle;
   };
+  const launchPicker = async (): Promise<string> => {
+    const response = vi.fn();
+    runtime.handlers[0]!({ type: LAUNCH }, {}, response);
+    await flushMicrotasks();
+    const reply = response.mock.calls[0]?.[0] as { ok: boolean; launch_id: string };
+    expect(reply?.ok).toBe(true);
+    expect(reply.launch_id).toBeTruthy();
+    return reply.launch_id;
+  };
+  const picked = { status: 'picked' as const, selector: '[data-test="deal-stage"]',
+    page_url: DOCUMENT.page_url, sample_text: 'Closed Won' };
+  const pickerPushes = () => pushes.filter(p => (p as { type?: string }).type === 'recued.bridge.side-panel.picker-result');
+
+  it('rejects a result without a preceding launch', async () => {
+    await bootPaired();
+    await drainSeedRpcs();
+    const response = vi.fn();
+    runtime.handlers[0]!(pickerResultMessage(picked, 'unsolicited'), SENDER, response);
+    await flushMicrotasks();
+    expect(findCreateFrame()).toBeUndefined();
+    expect(response).toHaveBeenCalledWith({ ok: false, error: 'picker_session_invalid' });
+    expect(pickerPushes()).toEqual([]);
+  });
+
+  it('requires matching tab, top frame, document, sender URL and launch ID without consuming a valid launch', async () => {
+    await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const launch_id = await launchPicker();
+    const responder = runtime.handlers[0]!;
+    for (const sender of [{}, { ...SENDER, tab: { id: 8 } }, { ...SENDER, frameId: 1 },
+      { ...SENDER, documentId: 'same-url-new-document' }, { ...SENDER, url: 'https://other.example/' }]) {
+      const response = vi.fn();
+      responder(pickerResultMessage(picked, launch_id), sender, response);
+      expect(response).toHaveBeenCalledWith({ ok: false, error: 'picker_session_invalid' });
+    }
+    responder(pickerResultMessage(picked, 'wrong-launch'), SENDER, vi.fn());
+    expect(findCreateFrame()).toBeUndefined();
+    responder(pickerResultMessage(picked, launch_id), SENDER, vi.fn());
+    expect(findCreateFrame()).toBeDefined();
+  });
+
+  it('consumes before awaiting the RPC, and cannot replay a failed creation', async () => {
+    await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const launch_id = await launchPicker();
+    const responder = runtime.handlers[0]!;
+    const response = vi.fn();
+    responder(pickerResultMessage(picked, launch_id), SENDER, response);
+    responder(pickerResultMessage(picked, launch_id), SENDER, response);
+    expect(rpcFrames().filter(f => f.method === 'triggers.createElementWatch')).toHaveLength(1);
+    const frame = findCreateFrame()!;
+    factory.fireMessage(JSON.stringify({ type: 'rpc_result', request_id: frame.request_id,
+      error: { code: 'failed', message: 'creation failed' } }));
+    await flushMicrotasks();
+    expect(response).toHaveBeenLastCalledWith({ ok: false, error: 'creation failed' });
+    responder(pickerResultMessage(picked, launch_id), SENDER, response);
+    expect(rpcFrames().filter(f => f.method === 'triggers.createElementWatch')).toHaveLength(1);
+    expect(response).toHaveBeenLastCalledWith({ ok: false, error: 'picker_session_invalid' });
+  });
+
+  it('expires unused launches and reports expiry only for the matching document', async () => {
+    let clock = NOW;
+    await bootPaired({ pickerInjector: stubInjector({ ok: true }), now: () => clock });
+    const launch_id = await launchPicker();
+    clock += PICKER_SESSION_TTL_MS;
+    const response = vi.fn();
+    runtime.handlers[0]!(pickerResultMessage(picked, launch_id), SENDER, response);
+    expect(findCreateFrame()).toBeUndefined();
+    expect(response).toHaveBeenCalledWith({ ok: false, error: 'picker_session_expired' });
+    expect(pickerPushes()).toEqual([{ type: 'recued.bridge.side-panel.picker-result', launch_id,
+      ok: false, error: 'picker_session_expired' }]);
+  });
+
+  it('retires on same-tab navigation and suppresses an already-dispatched result after a new launch', async () => {
+    const handle = await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const retired = await launchPicker();
+    handle.retirePickerForTab(7);
+    runtime.handlers[0]!(pickerResultMessage(picked, retired), SENDER, vi.fn());
+    expect(findCreateFrame()).toBeUndefined();
+    const first = await launchPicker();
+    handle.retirePickerForTab(8); // another tab does not retire this bound document
+    runtime.handlers[0]!(pickerResultMessage(picked, first), SENDER, vi.fn());
+    const frame = findCreateFrame()!;
+    expect(frame).toBeDefined();
+    const next = await launchPicker();
+    expect(next).not.toBe(first);
+    factory.fireMessage(JSON.stringify({ type: 'rpc_result', request_id: frame.request_id,
+      result: { recipe_id: 'old-watch', created: true } }));
+    await flushMicrotasks();
+    expect(pickerPushes()).toEqual([]);
+  });
+
+  it('retires a launch during preparation, and refuses overlapping injections', async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const injector: BridgePickerInjector = { async injectIntoActiveTab(launch) {
+      await pending;
+      launch.bind(DOCUMENT);
+      return { ok: true };
+    } };
+    const handle = await bootPaired({ pickerInjector: injector });
+    const first = vi.fn(), second = vi.fn();
+    runtime.handlers[0]!({ type: LAUNCH }, {}, first);
+    runtime.handlers[0]!({ type: LAUNCH }, {}, second);
+    expect(second).toHaveBeenCalledWith({ ok: false, reason: 'picker_busy' });
+    handle.retirePickerForTab(7);
+    finish();
+    await flushMicrotasks();
+    expect(first).toHaveBeenCalledWith({ ok: false, reason: 'picker_session_invalid' });
+    expect(findCreateFrame()).toBeUndefined();
+  });
+
+  it('retires the pairing before an old RPC completion can publish panel feedback', async () => {
+    const handle = await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const launch_id = await launchPicker();
+    runtime.handlers[0]!(pickerResultMessage(picked, launch_id), SENDER, vi.fn());
+    expect(findCreateFrame()).toBeDefined();
+    await handle.stop();
+    await flushMicrotasks();
+    expect(pickerPushes()).toEqual([]);
+  });
 
   it('launch-picker calls the injector and replies its outcome', async () => {
     const injector = stubInjector({ ok: true });
@@ -299,7 +429,7 @@ describe('D-169 brick 3 — SW picker responders', () => {
     await flushMicrotasks();
 
     expect(injector.injectIntoActiveTab).toHaveBeenCalledTimes(1);
-    expect(sendResponse).toHaveBeenCalledWith({ ok: true });
+    expect(sendResponse).toHaveBeenCalledWith({ ok: true, launch_id: expect.any(String) });
     await handle.stop();
   });
 
@@ -320,6 +450,7 @@ describe('D-169 brick 3 — SW picker responders', () => {
 
   it('a picked result derives the url + creates the watch + pushes the outcome', async () => {
     const handle = await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const launch_id = await launchPicker();
     await drainSeedRpcs();
     if (factory.transport) factory.transport.sent.length = 0;
 
@@ -331,8 +462,8 @@ describe('D-169 brick 3 — SW picker responders', () => {
         selector: '[data-test="deal-stage"]',
         page_url: 'https://app.hubspot.com/contacts/123',
         sample_text: 'Closed Won',
-      }),
-      {},
+      }, launch_id),
+      SENDER,
       sendResponse,
     );
     await flushMicrotasks();
@@ -363,6 +494,7 @@ describe('D-169 brick 3 — SW picker responders', () => {
     // The side panel got the create-outcome push for its confirmation line.
     expect(pushes).toContainEqual({
       type: 'recued.bridge.side-panel.picker-result',
+      launch_id,
       ok: true,
       created: true,
       recipe_id: 'rec-1',
@@ -373,21 +505,26 @@ describe('D-169 brick 3 — SW picker responders', () => {
 
   it('a cancelled result creates no watch', async () => {
     const handle = await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const launch_id = await launchPicker();
     await drainSeedRpcs();
     if (factory.transport) factory.transport.sent.length = 0;
 
     const responder = runtime.handlers[0]!;
     const sendResponse = vi.fn();
-    responder(pickerResultMessage({ status: 'cancelled' }), {}, sendResponse);
+    responder(pickerResultMessage({ status: 'cancelled' }, launch_id), SENDER, sendResponse);
     await flushMicrotasks();
 
     expect(findCreateFrame()).toBeUndefined();
     expect(sendResponse).toHaveBeenCalledWith({ ok: true, cancelled: true });
+    responder(pickerResultMessage(picked, launch_id), SENDER, sendResponse);
+    expect(findCreateFrame()).toBeUndefined();
+    expect(sendResponse).toHaveBeenLastCalledWith({ ok: false, error: 'picker_session_invalid' });
     await handle.stop();
   });
 
-  it('a picked result on a non-web page creates no watch (unsupported_page)', async () => {
+  it('rejects a result claiming a URL other than its launch document', async () => {
     const handle = await bootPaired({ pickerInjector: stubInjector({ ok: true }) });
+    const launch_id = await launchPicker();
     await drainSeedRpcs();
     if (factory.transport) factory.transport.sent.length = 0;
 
@@ -399,23 +536,19 @@ describe('D-169 brick 3 — SW picker responders', () => {
         selector: '.x',
         page_url: 'chrome://extensions/',
         sample_text: null,
-      }),
-      {},
+      }, launch_id),
+      SENDER,
       sendResponse,
     );
     await flushMicrotasks();
 
     expect(findCreateFrame()).toBeUndefined();
-    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'unsupported_page' });
-    expect(pushes).toContainEqual({
-      type: 'recued.bridge.side-panel.picker-result',
-      ok: false,
-      error: 'unsupported_page',
-    });
+    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'picker_session_invalid' });
+    expect(pushes.some(p => (p as { type?: string }).type === 'recued.bridge.side-panel.picker-result')).toBe(false);
     await handle.stop();
   });
 
-  it('a picked result while unpaired creates no watch (bridge_not_paired)', async () => {
+  it('an unpaired worker cannot launch or accept a picker result', async () => {
     const handle = await bootBridgeServiceWorker(
       baseDeps({
         chromeRuntimeOnMessage: runtime,
@@ -428,6 +561,9 @@ describe('D-169 brick 3 — SW picker responders', () => {
 
     const responder = runtime.handlers[0]!;
     const sendResponse = vi.fn();
+    responder({ type: LAUNCH }, {}, sendResponse);
+    await flushMicrotasks();
+    expect(sendResponse).toHaveBeenCalledWith({ ok: false, reason: 'bridge_not_paired' });
     responder(
       pickerResultMessage({
         status: 'picked',
@@ -441,7 +577,7 @@ describe('D-169 brick 3 — SW picker responders', () => {
     await flushMicrotasks();
 
     expect(findCreateFrame()).toBeUndefined();
-    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'bridge_not_paired' });
+    expect(sendResponse).toHaveBeenCalledWith({ ok: false, error: 'picker_session_invalid' });
     await handle.stop();
   });
 });

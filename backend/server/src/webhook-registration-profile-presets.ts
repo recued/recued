@@ -7,7 +7,12 @@
  * cannot select a connection kind, vendor, auth projection, URL, or adapter.
  */
 
-import type { ConnectionKind } from '@recued/contracts';
+import {
+  webhookPairedConnectionKind,
+  webhookProfile,
+  type ConnectionKind,
+  type WebhookProfileId,
+} from '@recued/contracts';
 import { decodeAuthFromStorage } from './connection-handler.js';
 import {
   createGitHubWebhookRegistrationAdapter,
@@ -34,7 +39,6 @@ import {
 } from './webhook-registration-runtime.js';
 import {
   webhookAsciiEventTypeProfilePreset,
-  webhookAsciiIdentifierEventTypeProfilePreset,
   webhookBoundedAsciiCredentialProfilePreset,
   webhookBoundedPrefixRegistrationRemoteIdProfilePreset,
   webhookFixedPrefixRegistrationRemoteIdProfilePreset,
@@ -64,9 +68,6 @@ import {
 import {
   createWebhookHttpOrOpaqueDestinationParser,
 } from './webhook-http-or-opaque-destination-parser.js';
-import {
-  createWebhookAsciiIdentifierParser,
-} from './webhook-ascii-identifier-parser.js';
 import {
   createWebhookDotSegmentEventTypeParser,
 } from './webhook-dot-segment-event-type-parser.js';
@@ -357,14 +358,14 @@ if (paddleDestinationPreset === null) {
 const paddleRegistrationDestinationParser =
   createWebhookHttpOrOpaqueDestinationParser(paddleDestinationPreset.parser);
 
-const telegramEventTypePreset = webhookAsciiIdentifierEventTypeProfilePreset(
+const telegramEventTypePreset = webhookLowercaseIdentifierEventTypeProfilePreset(
   'telegram.bot-webhook.v1',
 );
 if (telegramEventTypePreset === null) {
   throw new Error('Telegram registration event-type preset is unavailable');
 }
 const telegramRegistrationEventTypeParser =
-  createWebhookAsciiIdentifierParser(telegramEventTypePreset.parser);
+  createWebhookLowercaseIdentifierEventTypeParser(telegramEventTypePreset.parser);
 
 const telegramCredentialPreset = webhookBoundedAsciiCredentialProfilePreset(
   'telegram.bot-webhook.v1',
@@ -434,6 +435,16 @@ interface ConnectionPreset {
   label: string;
 }
 
+/** D-201 Slice 10AW (10AS finding 8) — the connection a registration reads,
+ *  of the kind its profile pairs with (`webhookPairedConnectionKind`): the one
+ *  truth readiness and a connection's deletion read too. Each kept its own,
+ *  and only this one knew a Telegram bot is a notification connection. */
+const presetConnection = (profileId: WebhookProfileId, vendor: string, label: string): ConnectionPreset => {
+  const profile = webhookProfile(profileId);
+  if (profile === null) throw new Error(`webhook profile ${profileId} is not registered`);
+  return Object.freeze({ kind: webhookPairedConnectionKind(profile), vendor, label });
+};
+
 const resolvePresetAuth = async (
   deps: BuiltinWebhookRegistrationProfilePresetDeps,
   preset: ConnectionPreset,
@@ -459,12 +470,18 @@ const resolveSoleActiveSecret = async (
   ingressId: string,
   field: string,
   label: string,
+  /** D-201 Slice 10AD (10AA finding 10) — the version a webhook had when it
+   *  was retired, its vendor's cleanup still pending, rather than an active
+   *  one: the retire retires them before the cleanup runs. */
+  which: 'active' | 'retiring' = 'active',
 ): Promise<string | null> => {
   let versions: Awaited<ReturnType<
     WebhookIngressStore['readActiveCredentialVersions']
   >> = [];
   try {
-    versions = await deps.ingressStore.readActiveCredentialVersions(ingressId);
+    versions = which === 'active'
+      ? await deps.ingressStore.readActiveCredentialVersions(ingressId)
+      : await deps.ingressStore.readRetiringCredentialVersions(ingressId);
     if (versions.length !== 1) return null;
     const credentials = versions[0]!.credentials;
     return Object.keys(credentials).length === 1
@@ -508,26 +525,10 @@ const resolveSoleActiveSecret = async (
 export const createBuiltinWebhookRegistrationProfileRegistry = (
   deps: BuiltinWebhookRegistrationProfilePresetDeps,
 ): WebhookRegistrationRuntimeRegistry => {
-  const stripeConnection = Object.freeze({
-    kind: 'api',
-    vendor: 'stripe',
-    label: 'Stripe',
-  } as const);
-  const telegramConnection = Object.freeze({
-    kind: 'notification',
-    vendor: 'telegram',
-    label: 'Telegram bot',
-  } as const);
-  const githubConnection = Object.freeze({
-    kind: 'api',
-    vendor: 'github',
-    label: 'GitHub',
-  } as const);
-  const paddleConnection = Object.freeze({
-    kind: 'api',
-    vendor: 'paddle',
-    label: 'Paddle',
-  } as const);
+  const stripeConnection = presetConnection('stripe.event.v1', 'stripe', 'Stripe');
+  const telegramConnection = presetConnection('telegram.bot-webhook.v1', 'telegram', 'Telegram bot');
+  const githubConnection = presetConnection('github.webhook.v1', 'github', 'GitHub');
+  const paddleConnection = presetConnection('paddle.notification.v1', 'paddle', 'Paddle');
 
   return createWebhookRegistrationRuntimeRegistry([
     createStripeWebhookRegistrationAdapter({
@@ -659,11 +660,21 @@ export const createBuiltinWebhookRegistrationProfileRegistry = (
             'Paddle managed webhook ownership state is incomplete',
           );
         }
+        // D-201 Slice 10AD (10AA finding 10) — retired, its cleanup pending:
+        // the secret it had then proves the destination is this webhook's.
+        // The retire retires the secret before the cleanup, so the delete
+        // refused on every try, and the destination stayed at Paddle.
         const endpointSecret = await resolveSoleActiveSecret(
           deps,
           ingressId,
           'endpoint_secret_key',
           'Paddle',
+        ) ?? await resolveSoleActiveSecret(
+          deps,
+          ingressId,
+          'endpoint_secret_key',
+          'Paddle',
+          'retiring',
         );
         if (endpointSecret === null) {
           throw new WebhookRegistrationAdapterError(

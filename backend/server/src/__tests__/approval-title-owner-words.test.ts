@@ -24,6 +24,7 @@ import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
 import { handleExecute, type ExecuteHandlerDeps } from '../execute-handler.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import { RUN_INGREDIENT_RECIPE } from '../run-ingredient-recipe.js';
 
 interface FakeEl {
   tagName: string; className: string; textContent: string; type: string;
@@ -176,7 +177,8 @@ describe('a held run records its recipe\'s title, and its ask is titled by it', 
       auditLog: createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>()),
       preflightNotifier: { ask, registerAskHandler: vi.fn(), notify: vi.fn(async () => undefined) },
     };
-    const owner: ExecutionSource = { channel: 'user', actor: 'user_self', user_id: 'owner-1', client_token_id: 'client-1' };
+    // The owner's chat, where a send asks (D-177 §N.15.7); from the app it follows the owner's ceiling and runs.
+    const owner: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner-1' };
     const response = await handleExecute(deps, { recipe_id: 'send-a-note', trigger_source: 'chat', execution_source: owner });
     expect(response.awaiting_approval).toBe(true);
     expect(checkpoints[0]!.preflight_context?.recipe_title).toBe('Send a note');
@@ -186,6 +188,40 @@ describe('a held run records its recipe\'s title, and its ask is titled by it', 
     // The body opens with the title too; the ids sit on line 3, where the card reads them.
     expect(message.text.split('\n')[0]).toBe('"Send a note" is waiting for your approval.');
     expect(message.text.split('\n')[2]).toBe('Technical: recipe send-a-note, step send, action mail-send.');
+  });
+
+  it('a kernel run (an MCP ingredient tool, the chat\'s own action) is titled by the action it holds, never "Run Ingredient"', async () => {
+    const manifests = createManifestRegistry('/nonexistent');
+    manifests.register({
+      slug: 'mail-send', name: 'Send mail', description: 'Test mail-send manifest',
+      author: 'recued', kind: 'storage', risk_tier: 'write', version: 1,
+      category: 'action', input: {}, output: { message_id: 'message_id' },
+    } as unknown as IngredientManifest);
+    const checkpoints: Checkpoint[] = [];
+    const ask = vi.fn(async () => ({ ask_id: 'ask-1' }));
+    const deps: ExecuteHandlerDeps = {
+      recipeStore: createRecipeStore('/nonexistent'),
+      executorConfig: { manifests, kernelDispatchers: { mailSend: vi.fn() } as never },
+      baseVault: {},
+      instanceId: 'approval-title-kernel',
+      checkpointStore: {
+        write: vi.fn(async (cp: Checkpoint) => { checkpoints.push(cp); }),
+      } as unknown as ExecuteHandlerDeps['checkpointStore'],
+      auditLog: createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>()),
+      preflightNotifier: { ask, registerAskHandler: vi.fn(), notify: vi.fn(async () => undefined) },
+    };
+    const owner: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner-1' };
+    const response = await handleExecute(deps, {
+      recipe: RUN_INGREDIENT_RECIPE as unknown as RecipeDefinition,
+      config: { ingredient_slug: 'mail-send',
+        input: { sender_mail_instance: 'work', to: ['bob@example.com'], subject: 'hi', body: 'hello' } },
+      trigger_source: 'chat', execution_source: owner,
+    } as never);
+    expect(response.awaiting_approval).toBe(true);
+    expect(checkpoints[0]!.preflight_context?.recipe_title).toBe('Send mail');
+    const message = (ask.mock.calls[0] as unknown as [{ title?: string }])[0];
+    expect(message.title).toBe('Approve: Send mail');
+    expect(message.title).not.toContain('Run Ingredient');
   });
 });
 
@@ -426,7 +462,8 @@ describe("D-336 (spec §52) — a held run's ask says what it changes, and the c
       ...(heldCallDetails !== undefined ? { heldCallDetails } : {}),
       ...extra,
     };
-    const owner: ExecutionSource = { channel: 'user', actor: 'user_self', user_id: 'owner-1', client_token_id: 'client-1' };
+    // The owner's chat, where a send asks (D-177 §N.15.7); from the app it follows the owner's ceiling and runs.
+    const owner: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner-1' };
     const response = await handleExecute(deps, { recipe_id: 'send-a-note', trigger_source: 'chat', execution_source: owner });
     expect(response.awaiting_approval).toBe(true);
     expect(ask).toHaveBeenCalledTimes(1);

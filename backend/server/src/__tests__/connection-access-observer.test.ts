@@ -184,7 +184,7 @@ describe('API access observations from real encrypted connection rows', () => {
         access_checks: expect.arrayContaining([{ key: privateKey, status: recovery ? 'ok' : 'auth_failed', at: clock + 1 }]) });
       now = clock + 3; await runtime.tick();
       expect(notify).toHaveBeenCalledTimes(recovery ? 2 : 1);
-      expect(notify.mock.calls.at(-1)![0].title).toBe(recovery ? 'Connection operation succeeded again' : 'Connection access was rejected');
+      expect(notify.mock.calls.at(-1)![0].title).toMatch(recovery ? /^Connection operation succeeded again$/ : /^Recued can't sign in to /);
     } finally { release(); await runtime.stop(); }
   });
 

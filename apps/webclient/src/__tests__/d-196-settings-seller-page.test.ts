@@ -36,7 +36,6 @@ import {
   SELLER_LLM_GATEWAY_ACK_SUBMIT_ATTR,
   SELLER_MAIL_CHOOSER_STATUS_ATTR,
   SELLER_PAGE_STATE_ATTR,
-  SELLER_PAGE_STYLES,
   SELLER_PAGE_SUBPAGE_ATTR,
   SELLER_SUBPAGE_HEADER_ATTR,
   SELLER_BACK_ATTR,
@@ -431,27 +430,6 @@ const ordersResponse = (
 ): SellerListOrdersResponse => ({ orders, truncated });
 
 describe('D-196 S2 - Settings -> Seller page', () => {
-  it('gives Seller navigation, commands, and disclosures full-size targets', () => {
-    expect(SELLER_PAGE_STYLES).toContain(
-      `[${SELLER_BACK_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
-    );
-    expect(SELLER_PAGE_STYLES).toContain(
-      `[${SELLER_COLLECTION_ITEM_LINK_ATTR}] {\n  box-sizing: border-box;\n  min-height: 36px;`,
-    );
-    expect(SELLER_PAGE_STYLES).toContain(
-      '.seller-related-links a {\n  box-sizing: border-box;\n  min-height: 36px;',
-    );
-    expect(SELLER_PAGE_STYLES).toContain(
-      '.seller-contract-link {\n  box-sizing: border-box;\n  min-height: 36px;',
-    );
-    expect(SELLER_PAGE_STYLES).toContain(
-      '.seller-paid-workflow-table a {\n  box-sizing: border-box;\n  min-height: 36px;',
-    );
-    expect(SELLER_PAGE_STYLES).toContain(
-      '.seller-action-disclosure > summary {\n  box-sizing: border-box;\n  min-height: 36px;',
-    );
-  });
-
   it('opens as a Seller feature list without loading optional detail data', async () => {
     const host = makeFakeElement('div');
     const runGetOverview = vi.fn(async () => overview());

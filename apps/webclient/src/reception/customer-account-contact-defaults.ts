@@ -1,3 +1,4 @@
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { parseCustomerAccountContactDefaults,type CustomerAccountContactDefaults,type CustomerAccountContactDefaultsRecord,type CustomerAccount,
   type Conn,type ServerRpcRegistry } from '@recued/contracts';
 import type { MailComposeDeps } from '../mail/mail-compose-host.js';
@@ -23,6 +24,7 @@ export const mountCustomerAccountContactDefaults = (opts: {
   canChange: () => boolean;onStateChanged: () => void;
 }) => {
   const doc = opts.document;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const add = <K extends keyof HTMLElementTagNameMap>(tag: K,text: string,host: HTMLElement) => {
     const node = doc.createElement(tag);node.textContent = text;host.appendChild(node);return node;
   };
@@ -37,7 +39,7 @@ export const mountCustomerAccountContactDefaults = (opts: {
   const form = add('form','',root);form.setAttribute('aria-label','Edit account contact defaults');
   const field = (label: string,type: string,maxLength: number) => { const wrap = add('label',label,form);const node = add('input','',wrap);node.type = type;node.maxLength = maxLength;return node; };
   const name = field('Contact name (optional)','text',200);const email = field('Default customer email (optional)','email',254);
-  const senderLabel = add('label','Default Mail account (optional)',form);const sender = add('select','',form);sender.id = 'recued-account-contact-default-sender';senderLabel.setAttribute('for',sender.id);
+  const senderField = add('div','',form);senderField.className = 'financial-field';const senderLabel = add('label','Default Mail account (optional)',senderField);const sender = add('select','',senderField);sender.id = 'recued-account-contact-default-sender';senderLabel.setAttribute('for',sender.id);
   const mailStatus = add('p','',form);const actions = add('div','',form);actions.setAttribute('data-contact-default-actions','');
   const save = add('button','Save contact defaults',actions);save.type = 'submit';
   const clear = add('button','Clear contact fields',actions);clear.type = 'button';
@@ -58,7 +60,7 @@ export const mountCustomerAccountContactDefaults = (opts: {
   const load = async () => {
     if (disposed || busy || !account) return;
     if (dirty) { status.textContent = 'Save or discard your contact edits before refreshing.';return; }
-    const target = account;const current = ++generation;busy = true;record = null;name.value = email.value = '';sender.replaceChildren();controls();status.textContent = 'Loading saved contact defaults…';
+    const ownsFocus = focusOwner.capture();const target = account;const current = ++generation;busy = true;record = null;name.value = email.value = '';sender.replaceChildren();controls();status.textContent = 'Loading saved contact defaults…';
     try {
       const [defaults,mail] = await Promise.allSettled([readCustomerAccountContactDefaults(opts.conn,target.account_id),
         opts.mail?.listMailInstances() ?? Promise.resolve({ instances: [] })]);
@@ -76,7 +78,7 @@ export const mountCustomerAccountContactDefaults = (opts: {
         : mail.status === 'rejected' ? 'Mail accounts could not be loaded. You can still save the contact name and email.'
           : !senders.length ? 'Connect a Mail account that can send to choose a default sender.' : 'The default Mail account must be available when you prepare an email.';
     } catch (error) { if (!disposed && current === generation) status.textContent = error instanceof Error ? error.message : 'Contact defaults could not be loaded.'; }
-    finally { if (!disposed && current === generation) { busy = false;controls();name.focus(); } }
+    finally { if (!disposed && current === generation) { busy = false;controls();if (ownsFocus()) name.focus(); } }
   };
   name.addEventListener('input',changed);email.addEventListener('input',changed);sender.addEventListener('change',changed);
   clear.addEventListener('click',() => { if (busy) return;name.value = email.value = sender.value = '';changed();status.textContent = 'Contact fields cleared in this form. Save to clear the saved defaults.';name.focus(); });
@@ -103,5 +105,5 @@ export const mountCustomerAccountContactDefaults = (opts: {
     if (disposed || busy || dirty || !opts.canChange()) return;
     account = value;returnFocus = onClosed;root.hidden = false;heading.textContent = 'Account contact defaults — '+value.customer;root.focus();await load();
   },isOpen: () => !root.hidden,hasUnsavedChanges: () => dirty,hasInFlightWork: () => busy,
-  dispose: () => { disposed = true;generation++;root.remove(); } };
+  dispose: () => { disposed = true;generation++;focusOwner.dispose();root.remove(); } };
 };

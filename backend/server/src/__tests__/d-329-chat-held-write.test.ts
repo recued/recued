@@ -417,11 +417,18 @@ describe('D-329 B — a chat\'s Tier-1 write is held', () => {
     });
   });
 
+  it('names the card it waits on, for its line: the plan its detail names, which an older call keeps alone', async () => {
+    const h = harness();
+    const result = await h.dispatch('turn-1');
+    expect(result).toMatchObject({ ok: false, reason: 'awaiting_approval', awaiting_plan_id: planIdOf(result) });
+    expect(await h.record(planIdOf(result))).toBeDefined();
+  });
+
   it('names the chat in the ask', async () => {
     const h = harness();
     await h.dispatch('turn-1');
     expect(h.asks).toHaveLength(1);
-    expect(h.asks[0]!.message.text.split('\n')[0]).toBe('Your chat wants to add a calendar event.');
+    expect(h.asks[0]!.message.text.split('\n')[0]).toBe('The AI in your chat wants to add a calendar event.');
   });
 
   it('asked again in a later turn while the ask is out, it is that ask', async () => {
@@ -893,7 +900,7 @@ describe('D-329 B — a messenger chat', () => {
   it('names the messenger, runs on approval, and replies into that conversation', async () => {
     const h = harness({ source: () => ({ channel: 'messenger', actor: 'user_self', vendor: 'telegram', from: '42' }) });
     const plan_id = planIdOf(await h.dispatch('turn-1'));
-    expect(h.asks[0]!.message.text.split('\n')[0]).toBe('Your Telegram chat wants to add a calendar event.');
+    expect(h.asks[0]!.message.text.split('\n')[0]).toBe('The AI in your Telegram chat wants to add a calendar event.');
     await h.answerTurn('turn-1');
     await h.answerElsewhere('approve');
     await flush();

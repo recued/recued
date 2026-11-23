@@ -1,4 +1,5 @@
-import type { Asset, AssetPatch } from '@recued/contracts';
+import { readBodyGoal, type Asset, type AssetPatch } from '@recued/contracts';
+import { assetFieldName, nameInSentence } from './reading-words.js';
 import { yoursChoice, yoursInput, yoursNode } from './yours-view.js';
 import { yoursFieldError } from './yours-field-errors.js';
 import { PursuitFieldError, pursuitDraft, pursuitPartChoices, pursuitPatch, type PursuitDraft } from './pursuits.js';
@@ -24,7 +25,14 @@ export const mountPursuitEditor = (host: HTMLFormElement, own: Asset | undefined
   const row = yoursNode(host, 'div', 'yours-pursuit-progress');
   const progress = yoursInput(row, 'Progress (optional)', 'pursuit-progress', draft.progress, changed, 'number'); progress.step = 'any';
   const unit = yoursInput(row, 'Counted in', 'pursuit-unit', draft.unit, changed);
-  yoursNode(host, 'small', 'yours-muted', 'A number and what it counts, such as 12 books. Each update is kept with its time.');
+  const counted = yoursNode(host, 'small', 'yours-muted', 'A number and what it counts, such as 12 books. Each update is kept with its time.');
+  // D-339 slice 15 — a goal on a Body takes its progress from the Body's reading, so there is none to type.
+  const goal = own ? readBodyGoal(own.settings) : undefined;
+  if (goal) {
+    row.hidden = true; counted.hidden = true;
+    yoursNode(host, 'small', 'yours-muted', `Its progress is the Body's ${nameInSentence(assetFieldName(goal.reading))}, so there is none to type. `
+      + 'Change its number with Change goal.').dataset.yoursPursuitGoalNote = '';
+  }
   const target = yoursInput(host, 'Target date (optional)', 'pursuit-target', draft.target_on, changed, 'date');
   const partOf = yoursChoice(host, 'Part of (optional)', 'pursuit-part-of', pursuitPartChoices(own, pursuits, options.parentName), draft.part_of, changed);
   const privacy = yoursInput(host, 'Private', 'pursuit-private', '', changed, 'checkbox'); privacy.checked = draft.private;

@@ -358,7 +358,7 @@ describe('D-166 contract_definition schema substrate', () => {
         grant_kind: 'enum:standing|session|delegation|customer_template|customer_instance|quality_delegation?',
         // D-177 N.11 rule 5 (slice A) — 'scoped' joins the mode vocabulary;
         // D-182 §8 — 'raw_op' (recipe-less raw-op door grant).
-        grant_mode: 'enum:exact|batch|open|scoped|raw_op?',
+        grant_mode: 'enum:exact|batch|open|scoped|raw_op|kind?',
         channel_session_id: 'string?',
         bound_recipe: 'bound_recipe_ref?',
         bound_contract_id: 'string?',

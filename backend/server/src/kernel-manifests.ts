@@ -39,6 +39,16 @@ const MANIFESTS = [
       revision: 'revision', validation: 'validation', replayed: 'replayed', kitchen_path: 'kitchen_path', installed: 'installed',
       created_at: 'created_at', updated_at: 'updated_at' },
   },
+  // D-402 slice A5 — an AI app's draft request: Recued compiles the recipe from its own record of
+  // the job; the app sends no source, and the draft is Recued's, beyond the app's reach.
+  {
+    slug: 'kitchen-draft-from-job', name: 'Make a recipe from a job', mcp_exposed: true,
+    description: 'Make a recipe draft of a job you recorded with recued_startJob, once you have ended it with recued_endJob and draft. Recued makes the recipe from what it recorded in the job, never from source you send, and keeps it in the owner\'s Kitchen for them to check and save; you cannot read or change it afterwards. The owner is asked once. It never installs, runs or publishes the recipe. Returns the draft\'s Kitchen path, relative to this Recued server, and the notes the owner will see.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'action' as const,
+    risk_tier: 'write' as const, tags: ['kernel', 'kitchen', 'recipe', 'draft', 'job'],
+    input: { job_id: null },
+    output: { draft_id: 'draft_id', title: 'title', kitchen_path: 'kitchen_path', notes: 'notes', installed: 'installed' },
+  },
   { slug: 'customer-account-payment-correct',name: 'Correct a customer account payment',mcp_exposed: false,
     description: 'After fresh owner review, correct or void the original allocations of one recorded account payment. Apply every invoice change and correction history atomically. Keep original payment identity and reject stale ledgers or linked refund entries.',
     author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
@@ -1235,7 +1245,7 @@ const MANIFESTS = [
   {
     "slug": "connection-mcp-write",
     "name": "MCP Tool Call (write)",
-    "description": "Kernel dispatch surface for a WRITE-classified tool on an enrolled MCP connection (D-177 P2b). Backs the chat Tier-3 path: the chat agent's `<connection>.<tool>` call routes through the run-ingredient kernel recipe onto this manifest, so the commit Gateway stamps the action envelope and the policy verdict applies like every other dispatch — and because this slug is in OUTBOUND_SEND_INGREDIENT_SLUGS, an attended user_self dispatch is lifted to a preflight ask: a write-classified external tool call holds for approval instead of dispatching immediately (the D-177 N.12 hole closure). The server's connection-adapter gate re-checks the user's per-tool classification (Settings → Connections → Tools) at dispatch and refuses any tool the user has not enabled and classified (MCP_TOOL_NOT_CLASSIFIED); read-classified tools pass (over-gating is safe). connection_kind is pinned to 'mcp' by the same gate. Recipes may bind this directly, subject to the identical gates. ⛔ There is no escape hatch for an UNCLASSIFIED tool: the admin-tier `connection` slug this line used to name is a host primitive recipes are now refused on (§ 234.4p.16c). Classify the tool under Settings → Connections → Tools, or call the op the connection's generated pack declares for it.",
+    "description": "Kernel dispatch surface for a WRITE-classified tool on an enrolled MCP connection (D-177 P2b). Backs the chat Tier-3 path: the chat agent's `<connection>.<tool>` call routes through the run-ingredient kernel recipe onto this manifest, so the commit Gateway stamps the action envelope and the policy verdict applies like every other dispatch — and because it is a write, in the owner's chat (which follows each op's approval) a write-classified external tool call holds for approval instead of dispatching immediately (the D-177 N.12 hole closure). The server's connection-adapter gate re-checks the user's per-tool classification (Settings → Connections → Tools) at dispatch and refuses any tool the user has not enabled and classified (MCP_TOOL_NOT_CLASSIFIED); read-classified tools pass (over-gating is safe). connection_kind is pinned to 'mcp' by the same gate. Recipes may bind this directly, subject to the identical gates. ⛔ There is no escape hatch for an UNCLASSIFIED tool: the admin-tier `connection` slug this line used to name is a host primitive recipes are now refused on (§ 234.4p.16c). Classify the tool under Settings → Connections → Tools, or call the op the connection's generated pack declares for it.",
     "author": "recued",
     "kind": "connection",
     "version": 1,
@@ -2854,6 +2864,7 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "selector": null
     },
@@ -2879,6 +2890,7 @@ const MANIFESTS = [
       "write"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "selector": null,
       "page": null,
@@ -2912,6 +2924,7 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "ref": null,
@@ -2955,6 +2968,7 @@ const MANIFESTS = [
       "write"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "ref": null,
@@ -2987,6 +3001,7 @@ const MANIFESTS = [
       "write"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "steps": null
@@ -3003,9 +3018,16 @@ const MANIFESTS = [
     }
   },
   {
+    slug: 'dom-bridges', name: 'List browser bridges',
+    description: 'List paired Browser Bridge IDs, labels and online status from the server. Reads no page and works while all browsers are offline.',
+    author: 'recued', kind: 'dom' as const, surface_kind: 'reading' as const, version: 1, category: 'data' as const,
+    risk_tier: 'read' as const, tags: ['kernel', 'dom', 'core.dom', 'browser', 'read'], input: { target: null },
+    output: { bridges: 'bridges', complete: 'complete' },
+  },
+  {
     "slug": "dom-tabs",
     "name": "DOM Tabs",
-    "description": "Kernel backing ingredient for the Tier-K `core.dom.tabs` op (D-335). Given a `target` URL pattern (op arg), lists the tabs open in the browser of the paired Browser Bridge on that site, each as `{ page, url, title }` read from the page itself, where `page` is the handle `core.dom.inspect`, `core.dom.write` and `core.dom.click` take. The owner's own Recued client is never listed. Returns `{ tabs, truncated }`: at most 50 tabs, with `truncated: true` when there were more. D-335 slice X: with `address`, only the tabs showing that address (host without www., path without a trailing slash, query; the scheme and the fragment ignored), which Open a web page looks for before it opens a tab. Extension-actuated: SERVER_NOT_REACHABLE without a paired Bridge.",
+    "description": "List readable tabs across paired Browser Bridges, or only bridge_id. Each tab includes its browser ID, label and a browser-bound page handle. Also returns per-browser status, complete and truncated; empty, unavailable and partial lists stay distinct. With address, resolve within one selected browser and return matching tabs. Several eligible browsers require bridge_id before a URL workflow; subsequent page handles keep their owning browser. Discovery changes no browser selection and sends no writes.",
     "author": "recued",
     "kind": "dom",
     "surface_kind": "reading",
@@ -3020,11 +3042,14 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "address": null
     },
     "output": {
       "tabs": "tabs",
+      "bridges": "bridges",
+      "complete": "complete",
       "truncated": "truncated"
     }
   },
@@ -3046,6 +3071,7 @@ const MANIFESTS = [
       "write"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "address": null
     },
@@ -3073,6 +3099,7 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "selector": null,
@@ -3107,6 +3134,7 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "ref": null,
@@ -3139,6 +3167,7 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "ref": null,
@@ -3174,6 +3203,7 @@ const MANIFESTS = [
       "read"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "ref": null,
@@ -3209,6 +3239,7 @@ const MANIFESTS = [
       "file"
     ],
     "input": {
+      "bridge_id": null,
       "target": null,
       "page": null,
       "ref": null,

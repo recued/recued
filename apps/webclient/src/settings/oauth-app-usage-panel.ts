@@ -16,6 +16,7 @@ export const createOAuthAppUsagePanel = (deps: {
   let requestedExpiry: string | null | undefined; let expiryUnconfirmed = false;
   let attempt: string | undefined; let outcome: OAuthAppSecretRotationOutcome | undefined; let error = ''; let pending = Promise.resolve();
   let renewalApp: SavedOAuthApp | undefined;
+  let returnFocus: (() => void) | undefined;
   let poll: ReturnType<typeof setTimeout> | undefined; let polls = 0; let visible = true;
   const now = deps.now ?? Date.now;
   const storage = () => { try { return deps.storage ?? deps.host.ownerDocument?.defaultView?.sessionStorage; } catch { return undefined; } };
@@ -26,6 +27,10 @@ export const createOAuthAppUsagePanel = (deps: {
     + (action === 'apply' ? 'rx-btn-primary' : 'rx-btn-outline') + '" data-app-usage-action="' + action + '"' + (busy || disabled ? ' disabled' : '') + '>' + e(label) + '</button>';
   const render = () => {
     const host = deps.host.querySelector?.<HTMLElement>('[data-oauth-app-usage-host]'); if (!host || disposed) return;
+    const active = deps.host.ownerDocument?.activeElement;
+    const within = active && host.contains?.(active);
+    const action = within ? active.getAttribute('data-app-usage-action') : null;
+    const copy = within ? active.getAttribute('data-app-usage-copy') : null;
     if (!visible || !app && !attempt && !outcome) { host.innerHTML = ''; return; }
     host.innerHTML = '<section class="oauth-app-usage" aria-label="Saved app usage and secret rotation"><h3 tabindex="-1" data-app-usage-heading>Usage and rotate secret</h3>'
       + (app ? '<p><strong>' + e(app.label) + '</strong> · ' + e(app.issuer === 'google' ? 'Google' : 'Microsoft') + '<br>Client ID: <code>' + e(app.client_id) + '</code></p>' : '')
@@ -34,8 +39,8 @@ export const createOAuthAppUsagePanel = (deps: {
         + (supportsExpiry ? '<p>Current recorded secret expiry: ' + e(review.app.secret_expires_on ?? 'not recorded') + '. This date is not checked with the vendor.</p>' : '')
         + (review.native_accounts.length ? '<ul>' + review.native_accounts.map(a => '<li>' + e(a.platform + ' ' + a.slug) + '</li>').join('') + '</ul><p>These accounts read this app’s secret when renewing access. They pick up the new secret automatically.</p>' : '<p>No native Mail or Calendar account uses this saved app.</p>')
         + '<h4>API credential copies</h4><p>Confirmed copies are selected by default. You can exclude them. Connections sharing one authorization must stay together.</p>'
-        + (review.connections.length ? '<ul>' + review.connections.map(c => '<li><label><input type="checkbox" data-app-usage-copy="' + e(c.name) + '"'
-          + (chosen.has(c.name) ? ' checked' : '') + (busy || confirming || !c.group_complete ? ' disabled' : '') + '> <strong>' + e(c.display_name) + '</strong> <code>' + e(c.name) + '</code></label>'
+        + (review.connections.length ? '<ul class="oauth-maintenance-choices">' + review.connections.map(c => '<li><label><input type="checkbox" data-app-usage-copy="' + e(c.name) + '"'
+          + (chosen.has(c.name) ? ' checked' : '') + (busy || confirming || !c.group_complete ? ' disabled' : '') + '> <span><strong>' + e(c.display_name) + '</strong> <code>' + e(c.name) + '</code></span></label>'
           + '<p>' + (c.origin === 'confirmed' ? 'Confirmed copy from this saved app.' : 'Same Client ID; saved app origin unknown.')
           + (c.secret_matches ? ' Its secret matches this app.' : ' Its secret differs or could not be compared.')
           + (!c.client_id_matches ? ' Its Client ID differs from the saved app. Reconnect it before using this app’s secret.' : '')
@@ -68,6 +73,8 @@ export const createOAuthAppUsagePanel = (deps: {
       + (error ? '<p role="alert">' + e(error) + '</p>' : '')
       + (attempt ? button('status', 'Check rotation result') : '')
       + button('close', 'Close review') + '</section>';
+    if (action) [...host.querySelectorAll<HTMLElement>('[data-app-usage-action]')].find(n => n.dataset.appUsageAction === action)?.focus({ preventScroll: true });
+    else if (copy) [...host.querySelectorAll<HTMLElement>('[data-app-usage-copy]')].find(n => n.dataset.appUsageCopy === copy)?.focus({ preventScroll: true });
   };
   const finish = (value: OAuthAppSecretRotationOutcome) => {
     outcome = value;
@@ -99,14 +106,15 @@ export const createOAuthAppUsagePanel = (deps: {
   };
   const close = () => {
     if (busy) return;
-    generation++; clearPoll(); retire(); app = undefined; renewalApp = undefined; chosen.clear(); secret = ''; expiryDate = ''; expiryInvalid = false; supportsExpiry = false; expiryUnconfirmed = false; confirming = false; outcome = undefined; error = ''; visible = false; render();
+    generation++; clearPoll(); retire(); app = undefined; renewalApp = undefined; returnFocus = undefined; chosen.clear(); secret = ''; expiryDate = ''; expiryInvalid = false; supportsExpiry = false; expiryUnconfirmed = false; confirming = false; outcome = undefined; error = ''; visible = false; render();
     if (!attempt) requestedExpiry = undefined;
   };
-  const open = (selected: SavedOAuthApp): Promise<void> => {
+  const open = (selected: SavedOAuthApp, onClose?: () => void): Promise<void> => {
     if (busy || disposed) return pending;
     visible = true;
-    if (attempt) { pending = check(); return pending; }
-    close(); visible = true; app = selected; const gen = generation; busy = true; render();
+    if (attempt) { returnFocus = onClose ?? returnFocus; pending = check(); return pending; }
+    close(); visible = true; app = selected; returnFocus = onClose; const gen = generation; busy = true;
+    const focus = deps.host.ownerDocument?.activeElement; render();
     pending = (async () => {
       try {
         const response = await deps.call({ action: 'usage', issuer: selected.issuer, id: selected.id, expected_revision: selected.revision });
@@ -120,7 +128,7 @@ export const createOAuthAppUsagePanel = (deps: {
         review = response.usage; chosen = new Set(review.connections.filter(c => c.selected_by_default).map(c => c.name));
         supportsExpiry = response.secret_expiry_supported === true;
       } catch (err) { if (!disposed && gen === generation) error = err instanceof Error ? err.message : 'Usage could not be read.'; }
-      finally { if (!disposed && gen === generation) { busy = false; render(); deps.host.querySelector<HTMLElement>('[data-app-usage-heading]')?.focus(); } }
+      finally { if (!disposed && gen === generation) { busy = false; render(); if (deps.host.ownerDocument?.activeElement === focus) deps.host.querySelector<HTMLElement>('[data-app-usage-heading]')?.focus({ preventScroll: true }); } }
     })(); return pending;
   };
   const apply = async () => {
@@ -147,13 +155,13 @@ export const createOAuthAppUsagePanel = (deps: {
     const target = (event.target as HTMLElement | null)?.closest?.<HTMLElement>('[data-app-usage-action]');
     if (!target || !deps.host.contains(target) || target.hasAttribute('disabled') || busy) return;
     const action = target.dataset.appUsageAction; event.preventDefault(); error = '';
-    if (action === 'close') close();
+    if (action === 'close') { const restore = returnFocus; close(); restore?.(); }
     else if (action === 'verify-renewal' && outcome?.status === 'applied' && renewalApp) deps.verifyRenewal?.(renewalApp);
     else if (!attempt && action === 'clear-expiry' && review?.can_rotate && supportsExpiry && !confirming) {
       expiryDate = ''; expiryInvalid = false; render(); deps.host.querySelector<HTMLElement>('[data-app-usage-expiry]')?.focus({ preventScroll: true });
     }
     else if (action === 'status') pending = check();
-    else if (!attempt && action === 'refresh' && app) pending = open(app);
+    else if (!attempt && action === 'refresh' && app) pending = open(app, returnFocus);
     else if (!attempt && action === 'back') { confirming = false; render(); }
     else if (!attempt && action === 'review' && review) {
       if (!secret.trim()) error = 'Enter the new client secret before reviewing the rotation.';

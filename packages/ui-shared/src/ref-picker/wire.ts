@@ -37,6 +37,7 @@ import {
   REF_PICKER_RECOVERY_ATTR,
   REF_PICKER_RECOVERY_MESSAGE_ATTR,
   REF_PICKER_RETRY_ATTR,
+  REF_PICKER_KEEP_QUERY_ATTR,
   REF_PICKER_VALUE_ATTR,
   refPickerOptionDomId,
   refPickerResultsVisible,
@@ -68,6 +69,7 @@ interface ElementLike {
 }
 interface EventLike {
   target?: unknown;
+  relatedTarget?: unknown;
   key?: string;
   isComposing?: boolean;
   preventDefault?: () => void;
@@ -98,6 +100,7 @@ export const wireRefPicker = (
   let retryEl: ElementLike | null = null;
   let lastSearchQuery = '';
   let hadFocus = false;
+  let keepQueryOnBlur = false;
   let restoringFocus = false;
   let destroyed = false;
   let searchSeq = 0;
@@ -189,7 +192,7 @@ export const wireRefPicker = (
         (result) => {
           if (destroyed || seq !== searchSeq) return;
           const page = asRefPickerSearchPage(result);
-          state = setResults(state, page.options, page.truncated === true, page.retryableError ?? null);
+          state = setResults(state, page.options, page.truncated === true, page.retryableError ?? null, page.emptyText);
           paint();
         },
         (err: unknown) => {
@@ -279,6 +282,7 @@ export const wireRefPicker = (
   // preventDefault, so the input never blurs first — the canonical fix for
   // the option-click-vs-blur race. Pointer events also cover touch + pen.
   const onPress = (event: EventLike): void => {
+    keepQueryOnBlur = closestWithAttr(event.target, REF_PICKER_KEEP_QUERY_ATTR, shellEl) !== null;
     const optionEl = closestWithAttr(
       event.target,
       REF_PICKER_OPTION_INDEX_ATTR,
@@ -294,6 +298,7 @@ export const wireRefPicker = (
   };
 
   const onClick = (event: EventLike): void => {
+    keepQueryOnBlur = false;
     if (closestWithAttr(event.target, REF_PICKER_RETRY_ATTR, shellEl) !== null) {
       prevent(event);
       if (destroyed || state.loading || state.retryableError === null) return;
@@ -316,6 +321,7 @@ export const wireRefPicker = (
 
   const onFocusin = (event: EventLike): void => {
     if (!isInput(event.target)) return;
+    keepQueryOnBlur = false;
     hadFocus = true;
     // A host repaint can replace the focused input immediately after a
     // selection. Rewire restores that focus, but the synthetic focus-in must
@@ -336,13 +342,19 @@ export const wireRefPicker = (
     runSearch(query, true);
   };
 
-  // A genuine blur (tab away / click elsewhere) closes + reverts the input
-  // text to the committed label. Option pointerdown keeps focus. The clear
+  // Moving to controls inside the picker closes the list and retains the
+  // query. Leaving the picker reverts to the committed label. The clear
   // button may take focus normally, then its click clears and returns focus —
   // important on touch, where cancelling pointerdown can suppress click.
-  const onFocusout = (): void => {
+  const onFocusout = (event: EventLike): void => {
     if (restoringFocus) return;
     hadFocus = false;
+    const keep = keepQueryOnBlur; keepQueryOnBlur = false;
+    if (keep || shellEl !== null && closestWithAttr(event.relatedTarget, 'data-ref-picker', shellEl) === shellEl) {
+      state = closeList(state);
+      paint();
+      return;
+    }
     state = revertQuery(closeList(state));
     paint();
   };
@@ -381,6 +393,7 @@ export const wireRefPicker = (
     const pointerEventsAvailable =
       typeof (globalThis as { PointerEvent?: unknown }).PointerEvent === 'function';
     bind(shellEl, pointerEventsAvailable ? 'pointerdown' : 'mousedown', onPress);
+    bind(shellEl, 'pointercancel', () => { keepQueryOnBlur = false; });
     bind(shellEl, 'click', onClick);
     bind(shellEl, 'focusin', onFocusin);
     bind(shellEl, 'focusout', onFocusout);
@@ -418,6 +431,7 @@ export const wireRefPicker = (
         ? { id: state.selectedId, label: state.selectedLabel ?? '' }
         : null,
     getQuery: () => state.query,
+    refresh: () => { if (!destroyed) runSearch(lastSearchQuery, true); },
     setQuery: (query: string) => {
       if (destroyed) return;
       state = setQuery(state, query);
@@ -445,6 +459,7 @@ export const wireRefPicker = (
       }
       paint();
     },
+    beforeRender: () => { keepQueryOnBlur = false; if (!destroyed) detach(); },
     rewire: (nextRoot: ParentNode) => {
       if (destroyed) return;
       attach(nextRoot);

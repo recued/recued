@@ -116,7 +116,7 @@ const openFailureCopy = (err: unknown): string => {
 
 /** One row's opened record, held only while this panel lives. */
 type RecordDetails =
-  | { readonly state: 'loading' }
+  | { readonly state: 'loading'; readonly retrying?: boolean }
   | { readonly state: 'open'; readonly result: ReceptionRecordOpenResult }
   | { readonly state: 'error'; readonly message: string };
 
@@ -210,7 +210,10 @@ const renderDetails = (record_id: string, details: RecordDetails): string => {
   const id = escapeHtml(record_id);
   const domId = escapeHtml(detailsDomId(record_id));
   if (details.state === 'loading') {
-    return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}" role="status">Opening…</div>`;
+    const retry = details.retrying
+      ? ` <button type="button" class="reception-records-details-button" ${RECEPTION_RECORDS_DETAILS_RETRY_ATTR}="${id}" aria-disabled="true" aria-busy="true">${renderActionLabel('refresh', 'Trying again…')}</button>`
+      : '';
+    return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}" role="status">Opening…${retry}</div>`;
   }
   if (details.state === 'error') {
     return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}">`
@@ -434,11 +437,41 @@ export const mountReceptionRecordsPanel = (
     return activeElement != null && activeElement === detailsButton(record_id);
   };
 
+  // Opening one record repaints its neighbors too. Keep the control the owner
+  // is using now, including a different record's reply link, through that paint.
+  // A detail Retry remains the focus owner while pending and returns to the
+  // same record's disclosure once the retry succeeds.
+  const rememberFocus = (): { attr: string; value: string } | { reply: string } | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (active == null || typeof root.contains !== 'function' || !root.contains(active)) return null;
+    for (const attr of [RECEPTION_RECORDS_KIND_ATTR, RECEPTION_RECORDS_OUTCOME_ATTR, RECEPTION_RECORDS_RETRY_ATTR,
+      RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, RECEPTION_RECORDS_DETAILS_RETRY_ATTR]) {
+      const value = active.getAttribute?.(attr);
+      if (value != null) return { attr, value };
+    }
+    if (active.tagName === 'A') {
+      const reply = active.closest?.(`[${RECEPTION_RECORDS_DETAILS_ATTR}]`)?.getAttribute(RECEPTION_RECORDS_DETAILS_ATTR);
+      if (reply != null) return { reply };
+    }
+    return null;
+  };
+
+  const restoreFocus = (focus: ReturnType<typeof rememberFocus>): void => {
+    if (focus === null || typeof root.querySelector !== 'function') return;
+    const value = 'reply' in focus ? focus.reply : focus.value;
+    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(value) : value.replace(/["\\]/g, '\\$&');
+    const selector = 'reply' in focus ? `[${RECEPTION_RECORDS_DETAILS_ATTR}="${escaped}"] a[href]` : `[${focus.attr}="${escaped}"]`;
+    const candidate = root.querySelector<HTMLElement>(selector)
+      ?? ('attr' in focus && focus.attr === RECEPTION_RECORDS_DETAILS_RETRY_ATTR ? detailsButton(focus.value) : null);
+    candidate?.focus?.({ preventScroll: true });
+  };
+
   const render = (
     focus: FilterFocus | null = null,
     focusRetry = false,
   ): void => {
     if (disposed) return;
+    const focused = rememberFocus();
     const summary = loading
       ? 'Loading records...'
       : model.total === 0
@@ -489,6 +522,7 @@ export const mountReceptionRecordsPanel = (
         ${body}
       </div>
     `;
+    restoreFocus(focused);
     restoreFilterFocus(focus);
     if (focusRetry) retryButton()?.focus?.({ preventScroll: true });
   };
@@ -548,11 +582,13 @@ export const mountReceptionRecordsPanel = (
   };
 
   /** Open one record. Asked once; a second click while it is opening does nothing. */
-  const openDetails = async (record_id: string): Promise<void> => {
+  const openDetails = async (record_id: string, retrying = false): Promise<void> => {
+    if (disposed) return;
     const current = details.get(record_id);
     if (current?.state === 'loading' || current?.state === 'open') return;
     const hadFocus = ownsDetailsFocus(record_id);
-    details.set(record_id, { state: 'loading' });
+    const opening: RecordDetails = { state: 'loading', retrying };
+    details.set(record_id, opening);
     render();
     if (hadFocus) detailsButton(record_id)?.focus?.({ preventScroll: true });
     let next: RecordDetails;
@@ -563,7 +599,7 @@ export const mountReceptionRecordsPanel = (
       next = { state: 'error', message: openFailureCopy(err) };
     }
     // Hidden or disposed while it was opening: drop the answer, never paint it.
-    if (disposed || details.get(record_id)?.state !== 'loading') return;
+    if (disposed || details.get(record_id) !== opening) return;
     const stillFocused = ownsDetailsFocus(record_id);
     details.set(record_id, next);
     render();
@@ -582,6 +618,7 @@ export const mountReceptionRecordsPanel = (
     const origin = ev.target as HTMLElement | null;
     const target = origin?.closest?.('button') ?? origin;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    target.focus?.({ preventScroll: true });
     const toggleId = target.getAttribute(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR);
     if (toggleId !== null) {
       if (details.has(toggleId)) closeDetails(toggleId);
@@ -590,8 +627,8 @@ export const mountReceptionRecordsPanel = (
     }
     const retryId = target.getAttribute(RECEPTION_RECORDS_DETAILS_RETRY_ATTR);
     if (retryId !== null) {
-      details.delete(retryId);
-      void openDetails(retryId);
+      if (details.get(retryId)?.state === 'loading') return;
+      void openDetails(retryId, true);
       return;
     }
     const nextKind = target.getAttribute(RECEPTION_RECORDS_KIND_ATTR);

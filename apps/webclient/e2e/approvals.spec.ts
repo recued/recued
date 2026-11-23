@@ -15,10 +15,13 @@ for (const width of [280, 1280]) {
     const card = page.locator('[data-recued-approvals-focus="ask-attention-1"]');
     const review = card.getByRole('region', { name: 'Reviewed changes' });
     await expect(review).toBeVisible();
-    await expect(review).toContainText('Before: Does not exist');
+    await expect(review).toContainText('New note (new)');
     await expect(review).toContainText('Intermediate edit');
-    await expect(review).toContainText('2. delete');
-    await expect(review).toContainText('3. create');
+    await expect(review).toContainText('2. Delete');
+    await expect(review).toContainText('3. Add');
+    // In the owner's words: no snapshot as JSON, no version it was checked against.
+    await expect(review).not.toContainText('reviewed-v1');
+    await expect(review).not.toContainText('"title"');
     await expect(review).toContainText('Inserted note');
     await expect(review.locator('script')).toHaveCount(0);
     await review.focus();

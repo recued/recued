@@ -339,3 +339,26 @@ describe('Tier 2 lookup by name, read alone (`recipeNamed`)', () => {
     expect(listings()).toBe(1);
   });
 });
+
+// "Turn it on" under the owner's answer names a switched-off recipe by its title, where it read
+// "recued-core/weekly-digest is turned off for you"; the refusal the model reads keeps the name
+// it calls.
+describe('a switched-off recipe, offered to turn on', () => {
+  const recipes: Tier2RecipeEntry[] = [{
+    recipe_id: 'weekly-digest', publisher_id: 'recued-core',
+    recipe: baseRecipe({ recipe_id: 'weekly-digest', metadata: { ...baseRecipe().metadata, name: 'Weekly digest' } }),
+  }];
+  const own = { ...ctxInternal(), execution_source: { channel: 'chat', actor: 'user_self' } as never };
+
+  it('labels the offer by the recipe\'s title, through either lookup', async () => {
+    for (const tier2Source of [
+      { listRecipes: () => recipes },
+      { listRecipes: () => recipes, recipeNamed: (name: string) => recipes.find(r => `${r.publisher_id}/${r.recipe_id}` === name) ?? null },
+    ]) {
+      const registry = createInternalToolRegistry({ tier2Source, admitTier2: () => false });
+      const res = await registry.dispatch('recued-core/weekly-digest', {}, own) as { detail: string; fixes?: unknown };
+      expect(res.fixes).toEqual([{ kind: 'switch', entry_key: 'recipe.recued-core/weekly-digest', label: '“Weekly digest”' }]);
+      expect(res.detail).toContain("'recued-core/weekly-digest'");
+    }
+  });
+});

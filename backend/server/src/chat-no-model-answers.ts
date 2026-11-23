@@ -15,7 +15,7 @@
 import type { ChatAnswerSource } from '@recued/contracts';
 import type { TurnContext } from '@recued/middleware';
 import { GATE_SHORT_CIRCUIT_STATE_KEY } from '@recued/middleware-prompt-cache';
-import { hasAnchor, mergeBriefs, parseBrief, type RollingBrief } from './chat-rolling-brief.js';
+import { hasAnchor, mergeBriefs, parseStoredBrief, type RollingBrief } from './chat-rolling-brief.js';
 import type { ChatStore } from './storage/chat-store.js';
 
 const SOURCES: ReadonlySet<string> = new Set<ChatAnswerSource>(['contacts', 'calendar', 'mail']);
@@ -53,7 +53,7 @@ export const recordAnswerInBrief = async (
   const stored = await store.readSessionBrief(session_id);
   let previous: RollingBrief | null = null;
   if (stored !== null) {
-    try { previous = parseBrief(JSON.parse(stored)); } catch { previous = null; }
+    try { previous = parseStoredBrief(JSON.parse(stored)); } catch { previous = null; }
   }
   const produced: RollingBrief = {
     intent: previous === null ? question.trim() : '',

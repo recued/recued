@@ -115,8 +115,9 @@ export interface Channel {
   /** Resolve a delivered ask prompt — because it was answered here, or
    *  closed after being answered on another channel (I-6 multi-channel
    *  close). MUST be idempotent: closing an already-closed or unknown
-   *  prompt is a no-op. */
-  closeAsk(ask_id: string): Promise<void>;
+   *  prompt is a no-op. D-343 — `note`: why it closed when no one answered it ("Replaced by a newer
+   *  version."), which a channel that edits its message shows beneath it; others ignore it. */
+  closeAsk(ask_id: string, note?: string): Promise<void>;
 
   /** D-325's receipt-aware path. A definite refusal is not_delivered; a timeout,
    * disconnect or lost acknowledgement is unknown. Never silently fall back to

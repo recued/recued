@@ -38,6 +38,7 @@ import {
   PACKS_DIALOG_TRIGGER_OFF_ATTR,
   PACKS_DIALOG_WEBHOOK_OPTION_ATTR,
   PACKS_DIALOG_WEBHOOKS_ATTR,
+  PACKS_DIALOG_WEBHOOK_SETUP_ATTR,
   type InstallPreview,
 } from '../settings/packs-install-dialog.js';
 import {
@@ -631,6 +632,20 @@ describe('D-295 — a webhook pack\'s dialog asks which webhook, and the install
     await open(h);
     const section = findByAttr(h.host, PACKS_DIALOG_WEBHOOKS_ATTR)!;
     expect(text(section)).toContain('Set one up in Connections → Webhooks');
+    // Only a pack set up on its thing's page offers that page (D-339 slice 24).
+    expect(findByAttr(section, PACKS_DIALOG_WEBHOOK_SETUP_ATTR)).toBeNull();
+    expect(installButton(h.host).disabled).toBe(true);
+  });
+
+  it('D-339 slice 24 — none fits Apple Health\'s: Connect Apple Health makes one in one step, the way by hand beside it', async () => {
+    const h = mountWith([planEntry({ pack_slug: 'body-signals-apple-health', pack_name: 'Body signals from Apple Health', binding: 'apple_health_body_metrics', candidates: [] })]);
+    await open(h);
+    const section = findByAttr(h.host, PACKS_DIALOG_WEBHOOKS_ATTR)!;
+    const setup = findByAttr(section, PACKS_DIALOG_WEBHOOK_SETUP_ATTR)!;
+    expect(setup.tagName).toBe('A');
+    expect(setup.getAttribute('href')).toBe('#yours/setup/body-signals-apple-health');
+    expect(text(setup)).toBe('Connect Apple Health');
+    expect(text(section)).toContain('None of your webhooks can deliver these yet. Connect Apple Health makes one in one step. Or set one up in Connections → Webhooks');
     expect(installButton(h.host).disabled).toBe(true);
   });
 

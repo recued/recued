@@ -42,6 +42,14 @@ export interface ClosingRecords {
   today(time_zone?: string): string;
   /** A day's records, written together. */
   record(input: { day: string; records: readonly ClosingRecordInput[]; time_zone?: string }): Episode[];
+  /** D-343 (2026-11-15) — what is already recorded for a day, from any conversation (a Telegram
+   *  chat, the app's, an email's): each record's words, outcome, the item it cites if any, and when
+   *  it was written. A record of the same item on the same day replaces it (`recordId`). */
+  recorded(day: string, time_zone?: string): RecordedOfDay[];
+}
+export interface RecordedOfDay {
+  readonly title: string; readonly outcome: ClosingOutcome;
+  readonly ref?: SituationRef; readonly recorded_at: number;
 }
 
 const DAY = 86_400_000;
@@ -59,6 +67,9 @@ export const createClosingRecords = (deps: {
   reminders?: Pick<ReminderStore, 'get'>;
   timeZone: () => string;
   now?: () => number;
+  /** A day's records were written (closing from Telegram, Slack or the chat): an open Yours or
+   *  Today refreshes from it, as from any warehouse change. */
+  onRecorded?: (episodes: readonly Episode[]) => void;
 }): ClosingRecords => {
   const now = deps.now ?? Date.now;
   const resolver = createWorkEntityResolver(deps.work);
@@ -99,7 +110,12 @@ export const createClosingRecords = (deps: {
       return { ref: local, people: row._kind === 'commitment' ? known([row.counterparty_contact_id]) : [] };
     }
     if (ref.collection === 'asset') {
-      const asset = deps.work.readAsset(ref.id);
+      // By its local id, or the id `work.search` gives (the owner's day, 2026-11-14: a record that
+      // cited a pursuit by that id was refused as naming no item).
+      let qualified: ReturnType<typeof parseQualifiedWorkEntityId> = null;
+      try { qualified = parseQualifiedWorkEntityId(ref.id); } catch { qualified = null; }
+      const local = qualified !== null && qualified.kind === 'asset' && qualified.identity !== 'source' ? qualified.record_id : ref.id;
+      const asset = deps.work.readAsset(local);
       return asset && asset.deleted_at == null ? { ref: { collection: 'asset', id: asset.id, ...(ref.field ? { field: ref.field } : {}) }, people: [] } : null;
     }
     if (ref.collection === 'occasion') return deps.history.occasion(ref.id) ? { ref: { collection: 'occasion', id: ref.id }, people: [] } : null;
@@ -113,12 +129,20 @@ export const createClosingRecords = (deps: {
   return {
     item,
     today: time_zone => assetDateAt(now(), zoneOf(time_zone)),
+    recorded(day, time_zone) {
+      const zone = zoneOf(time_zone);
+      const from = zonedWallClockToEpochMs(day, zone); const until = zonedWallClockToEpochMs(isoDay(Date.parse(`${day}T00:00:00Z`) + DAY), zone);
+      if (from === null || until === null) return [];
+      return deps.history.ownerRecordsIn(from, until).flatMap(episode => episode.outcome === 'done' || episode.outcome === 'skipped'
+        ? [{ title: episode.title, outcome: episode.outcome, ...(episode.subjects[0] ? { ref: episode.subjects[0] } : {}), recorded_at: episode.recorded_at }]
+        : []);
+    },
     record({ day, records, time_zone }) {
       const zone = zoneOf(time_zone); const at = now();
       const from = zonedWallClockToEpochMs(day, zone); const until = zonedWallClockToEpochMs(isoDay(Date.parse(`${day}T00:00:00Z`) + DAY), zone);
       if (from === null || until === null || from > at) throw new Error(`A day's record is for a day that has begun, not ${day}`);
       const whole = { from, to: Math.min(until, at) };
-      return deps.db.transaction(() => records.map(record => {
+      const saved = deps.db.transaction(() => records.map(record => {
         const span = record.item?.when;
         // An item's own window when it fell on that day and has ended; otherwise the day.
         const when = span && span.to <= at && span.from < until && span.to > from ? span : whole;
@@ -127,6 +151,10 @@ export const createClosingRecords = (deps: {
           subjects: refs, evidence: refs, basis: 'declared', assembly_rule: 'owner_record.v1', storage_reason: 'owner_record', sensitive: [],
           outcome: record.outcome, ...(record.item?.place ? { where: deps.history.place(record.item.place) } : {}) }, at);
       }))();
+      // After the commit, so an open Yours or Today re-reads what is there. A failing listener
+      // never undoes the records.
+      if (saved.length > 0) try { deps.onRecorded?.(saved); } catch { /* the records stand */ }
+      return saved;
     },
   };
 };

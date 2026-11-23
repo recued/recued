@@ -83,6 +83,8 @@ export interface CalendarEventDetails {
   description: string;
   description_truncated?: true;
   location: string;
+  /** The provider's saved conference link, when available. */
+  conference_url?: string;
   start_at: number;
   end_at: number;
   updated_at: number;
@@ -97,8 +99,33 @@ export interface CalendarEventDetails {
   attendee_count?: number;
 }
 
+/** D-407 slice 5 (§4.1, Q4, Q5) — the event's *Occasion* tick, from the calendar side. Present only on a server that
+ *  offers it, and only for an event an occasion may hold: not cancelled, not past, not one occurrence of a repeating
+ *  event. Absent, the app offers no tick (§10.5 I5). */
+export interface CalendarEventOccasion {
+  /** The occasion that holds this event; absent while none does. */
+  owner?: {
+    occasion_id: string;
+    title: string;
+    /** Private, or Shown by name (`occasionIsPrivate`). */
+    private: boolean;
+    /** The occasion wrote this event itself (*In my calendar*): it is changed in Yours, so no tick is offered. */
+    written_by_occasion?: true;
+  };
+  /** Occasions waiting for their next date (they come back whenever the last one says), the one matching this event's
+   *  organizer or place first, marked `match`. Ticking asks which one this is, or a new occasion. Empty when owned. */
+  waiting: Array<{ occasion_id: string; title: string; private: boolean; match?: true }>;
+  /** The event's own calendar marks it private (Q8). That marking stays the calendar's. */
+  marked_private?: true;
+}
+
 export interface CalendarEventSnapshot {
   event: CalendarEventDetails;
+  /** D-407 slice 5 — the *Occasion* tick (`CalendarEventOccasion`); absent from an older server. */
+  occasion?: CalendarEventOccasion;
+  /** Explicit saved Mail links from the full description, including a body
+   * whose displayed preview is truncated. Discovery only, never authority. */
+  mail_links?: string[];
   /** The same warehouse version, including its inline or blob-backed body. */
   record: CollectionRecord;
   resource_version: string;
@@ -148,7 +175,17 @@ export interface CalendarEventPatch {
   location?: string;
   start_at?: number;
   end_at?: number;
+  /** D-407 slice 4 — marked private at its provider (Google `visibility`, Outlook `sensitivity`, CalDAV `CLASS`), or
+   *  not: read back on the event as `marked_private` (Q8). */
+  marked_private?: boolean;
+  /** D-407 slice 4 — its one alert, in minutes before it, written as the provider's own; `null` for none. */
+  alert_minutes?: number | null;
 }
+/** The most minutes before an event its alert may come: four weeks, Google's limit. */
+export const CALENDAR_EVENT_ALERT_MINUTES_MAX = 40_320;
+/** An event alert's minutes: a whole number from 0 to four weeks. */
+export const isCalendarEventAlertMinutes = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= CALENDAR_EVENT_ALERT_MINUTES_MAX;
 
 export interface CalendarEventUpdateRequest extends CalendarEventRef {
   expected_version: string;
@@ -208,6 +245,10 @@ export interface CalendarEventCreateRequest {
   guests?: CalendarEventGuest[];
   /** Explicit owner intent; required together with a nonempty guest list. */
   send_invitations?: true;
+  /** D-407 slice 4 — marked private at its provider. */
+  marked_private?: true;
+  /** D-407 slice 4 — its one alert, minutes before it; `null` for none. Absent: the calendar's own default. */
+  alert_minutes?: number | null;
 }
 
 export interface CalendarEventCreateResult {

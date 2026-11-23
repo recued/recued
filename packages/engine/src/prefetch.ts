@@ -11,6 +11,7 @@ import {
   SLOT_CANCELLED_ERROR_CODE,
   isPreflightRequiredSignal,
   isPeerAnswerRequiredSignal,
+  readBrowserFailure,
 } from '@recued/contracts';
 import type { ExecutionContext, StepLog } from './types.js';
 import { requireRecipe } from './require-recipe.js';
@@ -295,7 +296,8 @@ const makeErrorLog = (
   // D-181 §7c — preserve the `slot_cancelled` marker for a non-optional prefetch
   // whose gated slot was cancelled (mirrors the step-runner sequential path), so
   // the host labels the run `cancelled_before_dispatch` rather than a generic
-  // failure. It is the only carrier kept; `details` stay dropped, as there.
+  // failure. Arbitrary details stay dropped; the bounded browser carrier below
+  // follows the same rule as the sequential path.
   const slotCancelled =
     reason !== null && typeof reason === 'object'
     && (reason as { code?: unknown }).code === SLOT_CANCELLED_ERROR_CODE;
@@ -303,11 +305,12 @@ const makeErrorLog = (
   // This used to be `NETWORK_ERROR` whatever was thrown, so a Records refusal in
   // a prefetch op read "check your connection".
   const code = adapterErrorCode(reason) ?? 'NETWORK_ERROR';
+  const browserFailure = readBrowserFailure(reason);
   return {
     id: ps.id, type: 'prefetch', skipped: false, result: null, duration_ms: 0,
     error: { error_id: '', code, message: String(reason), severity: ERR[code],
-      source: { recipe_id: requireRecipe(ctx).recipe_id, step_id: ps.id, ingredient_slug: null },
-      details: slotCancelled ? { slot_cancelled: true } : {},
+      source: { recipe_id: requireRecipe(ctx).recipe_id, step_id: ps.id, ingredient_slug: browserFailure?.slug ?? null },
+      details: { ...browserFailure?.details, ...(slotCancelled ? { slot_cancelled: true } : {}) },
       timestamp: new Date().toISOString(), retryable: false },
   };
 };

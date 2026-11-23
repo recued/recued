@@ -21,6 +21,64 @@ const fixture = () => {
 };
 
 describe('D-261 encrypted governed draft storage', () => {
+  it('searches subjects and recipients beyond an empty scan page, retaining ownership and match cursors', async () => {
+    const f = fixture();
+    const saved = [];
+    for (let n = 0; n < 105; n++) saved.push(await f.store.create({ idempotency_key: `draft-${n}`, content }, contract));
+    saved.sort((a, b) => a.draft_id.localeCompare(b.draft_id));
+    const first = saved[103]!, last = saved[104]!;
+    await f.store.update({ draft_id: first.draft_id, expected_revision: 1,
+      content: { ...content, subject: 'Ｑｕｏｔｅ 100%', bcc: ['private@example.test'] } }, contract);
+    await f.store.update({ draft_id: last.draft_id, expected_revision: 1,
+      content: { ...content, cc: ['QUOTE@example.test'] } }, contract);
+    await f.store.create({ idempotency_key: 'other-contract', content: { ...content, subject: 'Quote' } }, principal('contract-b'));
+    await f.store.create({ idempotency_key: 'other-owner', content: { ...content, subject: 'Quote' } }, { ...owner, owner_id: 'other-realm' });
+    const empty = await f.store.list({ query: 'quote', limit: 1 }, contract);
+    expect(empty).toEqual({ drafts: [], next_cursor: saved[99]!.draft_id });
+    const page = await f.store.list({ query: 'quote', limit: 1, cursor: empty.next_cursor }, contract);
+    expect(page.drafts).toEqual([expect.objectContaining({ draft_id: first.draft_id, to: content.to, bcc: ['private@example.test'] })]);
+    expect(page.next_cursor).toBe(first.draft_id);
+    const final = await f.store.list({ query: 'quote', limit: 1, cursor: page.next_cursor }, contract);
+    expect(final.drafts.map(row => row.draft_id)).toEqual([last.draft_id]);
+    expect(final.next_cursor).toBeNull();
+    expect(final.drafts[0]).not.toHaveProperty('content');
+    expect(final.drafts[0]).not.toHaveProperty('body');
+  });
+  it('combines an exact sender with literal recipient or subject matching, excluding message bodies and deleted drafts', async () => {
+    const f = fixture();
+    const work = await f.store.create({ idempotency_key: 'work', content: { ...content, subject: '100% renewal', bcc: ['Secret@example.test'] } }, owner);
+    await f.store.create({ idempotency_key: 'personal', content: { ...content, subject: '100% renewal', sender_mail_instance: 'personal' } }, owner);
+    const deleted = await f.store.create({ idempotency_key: 'deleted', content: { ...content, subject: '100% renewal' } }, owner);
+    f.store.delete({ draft_id: deleted.draft_id, expected_revision: 1 }, owner);
+    for (const query of ['%', 'SECRET@']) {
+      const result = await f.store.list({ query, sender_mail_instance: 'work' }, owner);
+      expect(result.drafts.map(row => row.draft_id)).toEqual([work.draft_id]);
+    }
+    expect((await f.store.list({ query: 'Private complete' }, owner)).drafts).toEqual([]);
+    for (const request of [{ query: 4 }, { query: 'x'.repeat(201) }, { sender_mail_instance: '' },
+      { sender_mail_instance: 4 }, { owner_id: 'other-realm' }, { cursor: 'bogus' }]) {
+      await expect(f.store.list(request, owner)).rejects.toMatchObject({ code: 'BAD_INPUT' });
+    }
+  });
+  it.each(['edit', 'delete', 'revoke'] as const)('does not return an earlier match after a later decrypt yields to %s', async action => {
+    const f = fixture(); let live = true, opened = 0;
+    const saved = await Promise.all(['one', 'two'].map(idempotency_key => f.store.create({ idempotency_key, content }, owner)));
+    saved.sort((a, b) => a.draft_id.localeCompare(b.draft_id));
+    const actor = { ...owner, validate() { if (!live) throw new Error('Read grant revoked'); } };
+    const store = createMailDraftStore(f.db, { ...f.codec, async open(value) {
+      const result = await f.codec.open(value);
+      if (++opened === 2) {
+        const target = { draft_id: saved[0]!.draft_id, expected_revision: 1 };
+        if (action === 'edit') await f.store.update({ ...target, content: { ...content, subject: 'Changed' } }, owner);
+        if (action === 'delete') f.store.delete(target, owner);
+        if (action === 'revoke') live = false;
+      }
+      return result;
+    } });
+    const pending = store.list({ query: 'report' }, actor);
+    if (action === 'revoke') await expect(pending).rejects.toThrow('Read grant revoked');
+    else await expect(pending).rejects.toMatchObject({ code: action === 'edit' ? 'mail_draft_stale' : 'mail_draft_not_found' });
+  });
   it('opens, lists and deletes a draft saved before one address per entry, and saves it once each recipient has an entry', async () => {
     const f = fixture();
     // What a server before the rule stored: two addresses in one entry, sealed and hashed as any save is.
@@ -34,6 +92,8 @@ describe('D-261 encrypted governed draft storage', () => {
     const kept = await stored('keep'); const dropped = await stored('drop');
     await expect(f.store.get({ draft_id: kept.draft_id }, owner)).resolves.toMatchObject({ content: legacy });
     expect((await f.store.list({}, owner)).drafts.map(draft => draft.draft_id).sort())
+      .toEqual([kept.draft_id, dropped.draft_id].sort());
+    expect((await f.store.list({ query: 'BOB@example.test' }, owner)).drafts.map(draft => draft.draft_id).sort())
       .toEqual([kept.draft_id, dropped.draft_id].sort());
     expect(f.store.delete({ draft_id: dropped.draft_id, expected_revision: dropped.revision }, owner)).toEqual({ deleted: true });
     await expect(f.store.update({ draft_id: kept.draft_id, expected_revision: kept.revision, content: legacy }, owner))

@@ -12,9 +12,16 @@ import type { LLMConfig, LLMSlot } from '@recued/llm';
  *    RECUED_LLM_SLOT2_API_KEY=sk-ant-...   (slot_2 API key)
  *    RECUED_LLM_THINKING=off               (D-344: slot_1's thinking, on | off; unset, the provider's default)
  *    RECUED_LLM_SLOT2_THINKING=on          (D-344: slot_2's thinking)
+ *    RECUED_LLM_CONTEXT_WINDOW_TOKENS=128000 (slot_1's context window, as Settings → AI models takes it; unset, none)
+ *    RECUED_LLM_SLOT2_CONTEXT_WINDOW_TOKENS=200000 (slot_2's)
  */
 const thinkingOf = (value: string | undefined): LLMSlot['thinking'] =>
   value === 'on' || value === 'off' ? value : undefined;
+/** A window in whole tokens; anything else is no window, as an empty Settings field is. */
+const windowOf = (value: string | undefined): { context_window_tokens: number } | Record<string, never> => {
+  const tokens = value !== undefined && /^[1-9]\d{0,9}$/.test(value.trim()) ? Number(value.trim()) : undefined;
+  return tokens !== undefined && Number.isSafeInteger(tokens) ? { context_window_tokens: tokens } : {};
+};
 
 export const resolveLLMConfigFromEnv = (
   env: Record<string, string | undefined> = process.env,
@@ -31,6 +38,7 @@ export const resolveLLMConfigFromEnv = (
     api_key: apiKey,
     base_url: env.RECUED_LLM_BASE_URL,
     ...(thinkingOf(env.RECUED_LLM_THINKING) !== undefined ? { thinking: thinkingOf(env.RECUED_LLM_THINKING) } : {}),
+    ...windowOf(env.RECUED_LLM_CONTEXT_WINDOW_TOKENS),
   };
 
   const config: LLMConfig = { slot_1 };
@@ -45,6 +53,7 @@ export const resolveLLMConfigFromEnv = (
       api_key: k2,
       base_url: env.RECUED_LLM_SLOT2_BASE_URL,
       ...(thinkingOf(env.RECUED_LLM_SLOT2_THINKING) !== undefined ? { thinking: thinkingOf(env.RECUED_LLM_SLOT2_THINKING) } : {}),
+      ...windowOf(env.RECUED_LLM_SLOT2_CONTEXT_WINDOW_TOKENS),
     };
   }
 

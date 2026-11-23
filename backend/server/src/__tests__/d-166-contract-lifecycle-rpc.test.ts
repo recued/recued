@@ -334,6 +334,20 @@ describe('D-166 contract_id lifecycle RPCs', () => {
     );
   });
 
+  // D-201 Slice 10AC (10AA finding 8) — a door revoked with one of these would
+  // read as Recued's own retirement, and a later update would make it again.
+  it("refuses a reason Recued keeps for retiring a door itself; any other is the owner's", async () => {
+    const { handlers } = makeHarness();
+    const door = await mintContract(handlers, { display_name: 'A door', scope: {} });
+    for (const reason of ['pack_reinstalled', 'resaved', 'owner_reopened']) {
+      await expect(revokeContract(handlers, { contract_id: door.contract_id, reason }))
+        .rejects.toMatchObject({ code: 'bad_request' });
+    }
+    now = NOW + 3_000;
+    await expect(revokeContract(handlers, { contract_id: door.contract_id, reason: 'not needed now' }))
+      .resolves.toEqual(expect.objectContaining({ revoked_at: NOW + 3_000, revocation_reason: 'not needed now' }));
+  });
+
   it('revokes with provenance, default reason, idempotence, and not_found errors', async () => {
     const { handlers } = makeHarness();
     const first = await mintContract(handlers, {

@@ -110,6 +110,9 @@ export interface CollectionHandlerDeps {
    *  shows the stored copy and holds the read at the account (`pause-rpc-gate.ts` leaves those
    *  two open for it). */
   isServerPaused?: () => boolean;
+  /** D-407 slice 5 — an event's *Occasion* tick (`CalendarEventSnapshot.occasion`): undefined where no occasion may
+   *  hold it. Absent on a server that offers no tick. */
+  calendarEventOccasion?: (slug: string, source_id: string) => import('@recued/contracts').CalendarEventOccasion | undefined;
   ownerDocumentSearch?: OwnerDocumentSearch;
   /** D-236 — injectable clock for the source-freshness verdict on
    *  `collection.list` / `.get` / `.search`. Defaults to `Date.now`. Present because a verdict
@@ -257,12 +260,22 @@ const requireCollection = (
 
 export const handleCollectionList = async (
   deps: CollectionHandlerDeps,
-  args: { platform?: unknown; slug?: unknown; filters?: unknown; since?: unknown; until?: unknown; limit?: unknown; calendar_window?: unknown; offset?: unknown },
+  args: { platform?: unknown; slug?: unknown; filters?: unknown; since?: unknown; until?: unknown; limit?: unknown; calendar_window?: unknown; offset?: unknown; before?: unknown },
 ): Promise<{ records: CollectionRecord[]; source_freshness: CollectionSourceFreshness }> => {
   const platform = requirePlatform(args.platform);
   const slug = requireSlug(args.slug);
   const collection = requireCollection(deps, platform, slug);
   const query: CollectionListQuery = { platform, slug };
+  if (args.before !== undefined) {
+    const before = args.before;
+    if (before === null || typeof before !== 'object' || Array.isArray(before)
+      || !('received_at' in before) || !('record_id' in before) || Object.keys(before).length !== 2
+      || typeof before.received_at !== 'number' || !Number.isSafeInteger(before.received_at) || Math.abs(before.received_at) > 8.64e15
+      || typeof before.record_id !== 'string' || before.record_id.length === 0 || before.record_id.length > 2048) {
+      throw new RpcError('bad_request', 'before requires the last row { received_at, record_id }', 400);
+    }
+    query.before = { received_at: before.received_at, record_id: before.record_id };
+  }
   if (args.calendar_window !== undefined) {
     const window = args.calendar_window;
     if (platform !== 'calendar' || window === null || typeof window !== 'object'
@@ -379,6 +392,7 @@ export const handleCollectionSearchAll = async (
   args: { query?: unknown; per_group?: unknown; platforms?: unknown },
 ): Promise<{
   groups: CollectionSearchGroup[];
+  unavailable_sources?: Array<{ platform: CollectionPlatform; slug: string }>;
   did_you_mean?: CollectionSearchDidYouMean;
   absent_words?: string[];
 }> => {
@@ -409,6 +423,7 @@ export const handleCollectionSearchAll = async (
   const now = (deps.now ?? Date.now)();
   const groups: CollectionSearchGroup[] = [];
   const searched: Collection[] = [];
+  const unavailable: Array<{ platform: CollectionPlatform; slug: string }> = [];
   for (const c of deps.registry.list()) {
     if (platforms !== undefined && !platforms.has(c.platform)) continue;
     searched.push(c);
@@ -422,6 +437,7 @@ export const handleCollectionSearchAll = async (
       // store mid-migration throws; the other collections still have answers,
       // and a universal search that returns nothing because one shelf is on
       // fire is worse than one that returns the rest.
+      unavailable.push({ platform: c.platform, slug: c.slug });
       continue;
     }
     if (matches.length === 0) continue;
@@ -435,7 +451,7 @@ export const handleCollectionSearchAll = async (
   }
   // Hit count first, then slug — deterministic, and NOT a relevance claim.
   groups.sort((a, b) => (b.matches.length - a.matches.length) || a.slug.localeCompare(b.slug));
-  return { groups, ...searchAllSpelling(searched, query) };
+  return { groups, ...(unavailable.length ? { unavailable_sources: unavailable } : {}), ...searchAllSpelling(searched, query) };
 };
 
 /** ⛔⛔ CALENDAR'S `Collection.search()` IS A NO-OP (calendar-collection.ts) —
@@ -451,6 +467,9 @@ const calendarSearchMatches = (
 ): CollectionSearchMatch[] =>
   c.table.search({ query, limit }).map((m) => ({
     record_id: m.record_id,
+    // The contract's "every collection search path populates it", true here at last: "Add records" checks
+    // a picked match by its record id AND this stamp, and refused every event without it.
+    received_at: m.received_at,
     hot_fields: { ...m.hot },
     rank: m.rank,
     ...(typeof m.body === 'string' ? { body: m.body } : {}),
@@ -1371,7 +1390,12 @@ export const makeCollectionHandlers = (
       'collection.calendar.updateCredentials': async (args) => repairCollectionPasswords('calendar', requireCalendarEnroll(deps), args),
       'collection.calendar.list': async () =>
         handleCalendarEnrollList(requireCalendarEnroll(deps)),
-      'collection.calendar.event.get': async (args, client) => getOwnerCalendarEvent(calendarEventDeps(client), args),
+      'collection.calendar.event.get': async (args, client) => {
+        const snapshot = await getOwnerCalendarEvent(calendarEventDeps(client), args);
+        // D-407 slice 5 — the Occasion tick, read after the event so it sees the event as this read left it.
+        const occasion = deps.calendarEventOccasion?.(args.slug, snapshot.event.source_id);
+        return occasion === undefined ? snapshot : { ...snapshot, occasion };
+      },
       'collection.calendar.event.overlaps': async (args, client) => readCalendarOverlaps(calendarEventDeps(client), args),
       'collection.calendar.event.destinations': async (_args, client) => listCalendarEventDestinations(calendarEventDeps(client)),
       'collection.calendar.event.create': async (args, client) => {

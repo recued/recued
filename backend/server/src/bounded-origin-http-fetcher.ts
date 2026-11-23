@@ -22,6 +22,9 @@ export type BoundedHttpFetcher = (
     headers?: Record<string, string>;
     body?: string;
     signal?: AbortSignal;
+    /** A longer deadline for this one request, for a body that takes longer to
+     *  send (a mail message with files). It can only lengthen the fetcher's own. */
+    timeoutMs?: number;
   },
 ) => Promise<BoundedHttpResponse>;
 
@@ -64,7 +67,11 @@ export const makeBoundedOriginHttpFetcher = (
     const abortFromCaller = (): void => controller.abort(callerSignal?.reason);
     if (callerSignal?.aborted) abortFromCaller();
     else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const requested = init?.timeoutMs;
+    const deadlineMs = requested !== undefined && Number.isSafeInteger(requested) && requested > timeoutMs
+      ? requested
+      : timeoutMs;
+    const timer = setTimeout(() => controller.abort(), deadlineMs);
     let response: Response | undefined;
     try {
       const requestInit: RequestInit = {

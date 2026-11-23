@@ -66,9 +66,9 @@ import type {
   ActiveExecutionEntry,
   ExecutionActiveResponse,
   LaneStatus,
-  SessionGrantPermits,
   SessionGrantView,
 } from '@recued/contracts';
+import { activeEntryOriginWords, activeEntryRecipeTitle, activeEntryTitle, executionLaneWords, passActionNames, shownPassPermits } from '@recued/contracts';
 import type { InFlightRegistry } from '../../execution/in-flight-registry.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
@@ -181,17 +181,13 @@ const fmtElapsed = (ms: number): string => {
 const clip = (label: string): string =>
   label.length > MAX_LABEL_LEN ? `${label.slice(0, MAX_LABEL_LEN - 1)}…` : label;
 
-const entryTitle = (entry: ActiveExecutionEntry): string =>
-  entry.step_id !== undefined && entry.step_id.length > 0
-    ? `${entry.recipe_id} · ${entry.step_id}`
-    : entry.recipe_id;
-
 const renderEntryLine = (entry: ActiveExecutionEntry, now: number): string => {
   const since = entry.slot_acquired_at ?? entry.started_at;
-  const parts = [STATE_LABEL[entry.state], entry.origin];
+  const origin = activeEntryOriginWords(entry.origin);
+  const parts = [STATE_LABEL[entry.state], ...(origin !== undefined ? [origin] : [])];
   if (Number.isFinite(now) && now >= since) parts.push(fmtElapsed(now - since));
   if (entry.progress.stalled === true) parts.push('stalled');
-  return `• ${entryTitle(entry)} — ${parts.join(' · ')}`;
+  return `• ${activeEntryTitle(entry)} — ${parts.join(' · ')}`;
 };
 
 const renderLaneLine = (lane: LaneStatus): string => {
@@ -199,7 +195,7 @@ const renderLaneLine = (lane: LaneStatus): string => {
     lane.queued > 0
       ? ` · ${lane.queued} queued, oldest ${fmtElapsed(lane.oldest_wait_ms)}`
       : '';
-  return `${lane.lane} ${lane.in_use}/${lane.capacity}${queued}`;
+  return `${executionLaneWords(lane.lane)} ${lane.in_use}/${lane.capacity}${queued}`;
 };
 
 /** The button id targeting one entry's control action — `<action>:<target_id>`.
@@ -208,10 +204,10 @@ const renderLaneLine = (lane: LaneStatus): string => {
 const controlOption = (
   action: ControlAction,
   target: string,
-  recipe_id: string,
+  label: string,
 ): OutboundPromptOption => ({
   id: `${action}:${target}`,
-  label: clip(`${action[0]!.toUpperCase()}${action.slice(1)} ${recipe_id}`),
+  label: clip(`${action[0]!.toUpperCase()}${action.slice(1)} ${label}`),
 });
 
 /** Build the active-list message: the rendered text + the control buttons. An
@@ -245,12 +241,12 @@ const buildActiveListMessage = (
     if (entry.entry_kind === 'queued-call') {
       const target = entry.queued_call_id;
       if (target === undefined || target.length === 0) continue;
-      candidates.push(controlOption('promote', target, entry.recipe_id));
-      candidates.push(controlOption('cancel', target, entry.recipe_id));
+      candidates.push(controlOption('promote', target, activeEntryRecipeTitle(entry)));
+      candidates.push(controlOption('cancel', target, activeEntryRecipeTitle(entry)));
     } else {
       const target = entry.run_id;
       if (target === undefined || target.length === 0) continue;
-      candidates.push(controlOption('kill', target, entry.recipe_id));
+      candidates.push(controlOption('kill', target, activeEntryRecipeTitle(entry)));
     }
   }
 
@@ -263,33 +259,33 @@ const PASS_MODE_LABEL: Record<SessionGrantView['grant_mode'], string> = {
   open: 'open',
   scoped: 'scoped',
   raw_op: 'raw op',
+  // D-177 N.15 — "Allow in this chat": any call of one kind.
+  kind: 'one kind',
 };
 
 /** A compact "what this pass permits" hint for the list line — the first
  *  op-scope axis present, by specificity (operations → ingredients →
  *  connections), or `any op` when the pass is unscoped (every axis "any"). */
-const permitsSummary = (permits: SessionGrantPermits): string => {
-  const ops = permits.operation_ids;
-  if (ops !== undefined && ops.length > 0) {
-    return ops.length === 1 ? ops[0]! : `${ops.length} ops`;
-  }
-  const ingredients = permits.ingredient_ids;
-  if (ingredients !== undefined && ingredients.length > 0) {
-    return ingredients.length === 1
-      ? ingredients[0]!
-      : `${ingredients.length} ingredients`;
-  }
+const permitsSummary = (grant: SessionGrantView): string => {
+  // By the names the server gave them ("Send mail"), where it printed "send-email" / "3 ops".
+  const actions = passActionNames(grant);
+  if (actions.length > 0) return actions.length === 1 ? actions[0]! : `${actions.length} actions`;
+  const permits = shownPassPermits(grant);
   const connections = permits.connection_names;
   if (connections !== undefined && connections.length > 0) {
     return connections.length === 1
       ? connections[0]!
       : `${connections.length} connections`;
   }
-  return 'any op';
+  return 'any action';
 };
 
 const renderPassLine = (grant: SessionGrantView, now: number): string => {
-  const parts = [PASS_MODE_LABEL[grant.grant_mode], permitsSummary(grant.permits)];
+  // D-177 N.15 — a kind pass shows only a connection it names (`shownPassPermits`), never "any op".
+  const shown = shownPassPermits(grant);
+  const parts = grant.grant_mode !== 'kind' || shown.connection_names !== undefined
+    ? [PASS_MODE_LABEL[grant.grant_mode], permitsSummary(grant)]
+    : [PASS_MODE_LABEL[grant.grant_mode]];
   if (grant.expiry_at !== undefined && Number.isFinite(now)) {
     parts.push(`expires in ${fmtElapsed(Math.max(0, grant.expiry_at - now))}`);
   }

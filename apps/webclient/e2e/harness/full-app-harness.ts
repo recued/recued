@@ -62,7 +62,9 @@ import {
   HARNESS_SERVER_PUBLIC_KEY,
 } from './server-identity.js';
 import { savedViewsDemoReply } from './saved-data-views.js';
-import { ordinaryLocalChatFixture } from './ordinary-local-receipts.js';
+import { ordinaryLocalChatFixture, ruledLocalChatFixture } from './ordinary-local-receipts.js';
+import { nextStepsChatFixture, nextStepsRpc } from './next-steps-fixture.js';
+import { setupRpc } from './setup-fixture.js';
 import { localUpdateUndoDemoReply } from './local-update-undo.js';
 import { localChangesDemoReply } from './local-change-sets.js';
 import { recordsBrowseReply } from './records-browse.js';
@@ -75,6 +77,7 @@ import { createYoursFixture } from './yours-fixture.js';
 import { recipeSimulationDemoReply } from './recipe-simulation.js';
 import { preapprovalDemoReply } from './preapproval.js';
 import { triggerPreapprovalDemoReply } from './trigger-preapproval.js';
+import { callerPreapprovalDemoReply, withCallerPreapprovedRun } from './caller-preapproval.js';
 import type { GrantRecipeOpUsageCaller } from '../../src/contracts/contract-grants-panel.js';
 import { HOUSEKEEPING_PRESET_DEFAULTS, HOUSEKEEPING_CYCLE_BUDGET_MIN_MS, HOUSEKEEPING_CYCLE_BUDGET_MAX_MS } from '@recued/contracts';
 import {
@@ -688,6 +691,27 @@ const WEBHOOK_DEMO_PROFILES: readonly WebhookProfileRuntimeCapabilityView[] = [{
   deduplication: WEBHOOK_PROFILE_REGISTRY[WEBHOOK_DEMO_PROFILE_ID].deduplication,
 }];
 
+/** D-201 Slice 10C — `webhook_open_catalog=1`: GitHub and Lemon Squeezy as a
+ *  10C server projects them, each event catalog with its grammar, and the
+ *  demo webhook a GitHub one holding a name outside the known list. */
+const WEBHOOK_OPEN_CATALOG_PROFILES: readonly WebhookProfileRuntimeCapabilityView[] = [
+  ...WEBHOOK_DEMO_PROFILES,
+  ...(['github.webhook.v1', 'lemonsqueezy.webhook.v1'] as const).map((profileId) => ({
+    profile_id: profileId,
+    registration_modes: ['manual' as const],
+    deduplication: WEBHOOK_PROFILE_REGISTRY[profileId].deduplication,
+    event_types: WEBHOOK_PROFILE_REGISTRY[profileId].event_types,
+  })),
+];
+
+const demoOpenCatalogWebhookIngress = (): WebhookIngressView => ({
+  ...demoWebhookIngress(),
+  display_name: 'Repository events',
+  profile_id: 'github.webhook.v1',
+  selected_event_types: ['issues', 'merge_group'],
+  configured_fields: ['webhook_secret'],
+});
+
 const demoCreatedWebhookIngress = (
   displayName: string,
   credentialsComplete: boolean,
@@ -1043,9 +1067,71 @@ const buildFakeTransport = (
   const delayAutomationDishUpdate =
     searchParams.get('automation_dish_response') === 'slow';
   let runPaletteRecipeListFailuresRemaining = runPaletteRecipeListFailures;
-  let webhookDemoIngress = demoWebhookIngress();
+  const webhookOpenCatalogOn = searchParams.get('webhook_open_catalog') === '1';
+  let webhookDemoIngress = webhookOpenCatalogOn
+    ? demoOpenCatalogWebhookIngress()
+    : demoWebhookIngress();
   let webhookCreatedIngress: WebhookIngressView | null = null;
   let webhookDemoRetired = false;
+  // D-201 Slice 10B — `webhook_dead_letters=1` gives the demo webhook two
+  // messages that did not reach their recipes; trying one again or closing it
+  // takes it off the list.
+  const webhookDemoDeadLetters: Array<import('@recued/contracts').WebhookDeadLetterView> =
+    searchParams.get('webhook_dead_letters') === '1'
+      ? [
+          {
+            kind: 'target',
+            dead_letter_id: 'whx_browserdemo0123456789abcdef000001',
+            ingress_id: WEBHOOK_DEMO_INGRESS_ID,
+            delivery_id: 'whd_browserdemo0123456789abcdef000001',
+            event_id: 'whe_browserdemo0123456789abcdef000001',
+            provider_event_type: 'order.paid',
+            received_at: FIXED_NOW - 600_000,
+            recipe_id: 'record-paid-orders-with-a-very-long-recipe-name-that-wraps',
+            attempt_count: 8,
+            last_error_code: 'run_failed',
+            dead_lettered_at: FIXED_NOW - 300_000,
+            payload_retained: true,
+          },
+          {
+            kind: 'event',
+            dead_letter_id: 'who_browserdemo0123456789abcdef000002',
+            ingress_id: WEBHOOK_DEMO_INGRESS_ID,
+            delivery_id: 'whd_browserdemo0123456789abcdef000002',
+            event_id: 'whe_browserdemo0123456789abcdef000002',
+            provider_event_type: 'order.refunded',
+            received_at: FIXED_NOW - 900_000,
+            recipe_id: null,
+            attempt_count: 8,
+            last_error_code: 'dispatch_failed',
+            dead_lettered_at: FIXED_NOW - 400_000,
+            payload_retained: false,
+          },
+        ]
+      : [];
+  const webhookDemoDeadLettersOn = searchParams.get('webhook_dead_letters') === '1';
+  // D-201 Slice 10F — the closed ones, newest first: one Recued closed at the
+  // review limit, then each the owner closes here and what a retire closes.
+  const webhookDemoClosedDeadLetters: Array<import('@recued/contracts').WebhookDeadLetterView> =
+    webhookDemoDeadLettersOn
+      ? [
+          {
+            kind: 'target',
+            dead_letter_id: 'whx_browserdemo0123456789abcdef000003',
+            ingress_id: WEBHOOK_DEMO_INGRESS_ID,
+            delivery_id: 'whd_browserdemo0123456789abcdef000003',
+            event_id: 'whe_browserdemo0123456789abcdef000003',
+            provider_event_type: 'order.paid',
+            received_at: FIXED_NOW - 9_000_000,
+            recipe_id: 'record-paid-orders-with-a-very-long-recipe-name-that-wraps',
+            attempt_count: 8,
+            last_error_code: 'run_failed',
+            dead_lettered_at: FIXED_NOW - 8_000_000,
+            payload_retained: false,
+            closure: { closed_at: FIXED_NOW - 8_000_000, closed_by: 'server', reason: 'review_limit' },
+          },
+        ]
+      : [];
   const webhookIngressFor = (ingressId: unknown): WebhookIngressView | null => {
     if (ingressId === WEBHOOK_DEMO_INGRESS_ID) return webhookDemoIngress;
     if (ingressId === WEBHOOK_CREATED_INGRESS_ID) return webhookCreatedIngress;
@@ -1296,6 +1382,8 @@ const buildFakeTransport = (
   let durableToolReviewed = false;
   const revokedLogsPassIds = new Set<string>();
   const longLogsTextDemo = searchParams.get('logs_text') === 'long';
+  // A server that names its running recipes: one installed, one passed in with its run.
+  const liveNamesDemo = searchParams.get('live_names') === '1';
   const logsPasses = [
     {
       contract_id: 'pass-live-control-1',
@@ -2368,8 +2456,14 @@ const buildFakeTransport = (
                     : { overridden: false }),
                 },
                 messages: [],
-                ...(new URLSearchParams(location.search).has('local_mutation_receipt')
-                  ? ordinaryLocalChatFixture(FIXED_NOW, new URLSearchParams(location.search).get('local_mutation_receipt') !== 'live') : {}),
+                // D-404 slice B1 — an answer with a thing to add and a pack offered (D-405 slice 7:
+                // `chat_steps=mail`, one with no mailbox connected).
+                ...(new URLSearchParams(location.search).has('chat_steps')
+                  ? nextStepsChatFixture(FIXED_NOW, new URLSearchParams(location.search).get('chat_steps')) : {}),
+                ...(new URLSearchParams(location.search).get('local_mutation_receipt') === 'line'
+                  ? ruledLocalChatFixture(FIXED_NOW)
+                  : new URLSearchParams(location.search).has('local_mutation_receipt')
+                    ? ordinaryLocalChatFixture(FIXED_NOW, new URLSearchParams(location.search).get('local_mutation_receipt') !== 'live') : {}),
               }
             : rpc.method === 'server.getLLMConfig'
               // A current server: it keeps a slot's provider_name.
@@ -2385,6 +2479,10 @@ const buildFakeTransport = (
                     ? { recipes: [] }
                     : rpc.method === 'auto_run.list'
                       ? { entries: [] }
+                      : rpc.method === 'chat.messages.search'
+                        ? { matches: [], incomplete: false }
+                      : rpc.method === 'mail.drafts.list'
+                        ? { drafts: [], next_cursor: null }
                       : rpc.method === 'collection.mail.list'
                         ? { instances: mailInstances() }
                         : rpc.method === 'collection.calendar.list'
@@ -3967,6 +4065,7 @@ const buildFakeTransport = (
                 slot_acquired_at: FIXED_NOW - 60_000,
                 progress: { contract: 'silent', stalled: false },
                 kill: { mechanism: 'sigkill', pid: 4242 },
+                ...(liveNamesDemo ? { recipe_name: 'Daily brief', step_name: 'Summarize text' } : {}),
               },
               {
                 entry_kind: 'run',
@@ -3986,6 +4085,7 @@ const buildFakeTransport = (
                 slot_acquired_at: FIXED_NOW - 30_000,
                 progress: { contract: 'silent', stalled: false },
                 kill: { mechanism: 'sigkill', pid: 4243 },
+                ...(liveNamesDemo ? { recipe_inline: true as const, intent: 'Review the week' } : {}),
               },
               ].filter(
                 (entry) => liveControlDemo !== 'interrupted' && !liveControlRetiredRunIds.has(entry.run_id),
@@ -4350,19 +4450,95 @@ const buildFakeTransport = (
         if (webhooksDemo && rpc.method === 'webhook.ingress.list') {
           result = {
             ingresses: [
-              ...(!webhookDemoRetired ? [webhookDemoIngress] : []),
+              ...(!webhookDemoRetired
+                ? [webhookDemoDeadLettersOn
+                    ? { ...webhookDemoIngress, dead_letters_unresolved: webhookDemoDeadLetters.length }
+                    : webhookDemoIngress]
+                : []),
               ...(webhookCreatedIngress === null ? [] : [webhookCreatedIngress]),
             ],
-            profiles: WEBHOOK_DEMO_PROFILES,
+            profiles: webhookOpenCatalogOn
+              ? WEBHOOK_OPEN_CATALOG_PROFILES
+              : WEBHOOK_DEMO_PROFILES,
+            ...(webhookDemoDeadLettersOn
+              ? { dead_letter_review: { unresolved: webhookDemoDeadLetters.length, limit: 1_000 } }
+              : {}),
+          };
+        }
+        if (webhooksDemo && rpc.method === 'webhook.delivery.dead_letter.list') {
+          result = {
+            dead_letters: (rpc.args as { closed?: unknown }).closed === true
+              ? [...webhookDemoClosedDeadLetters]
+              : [...webhookDemoDeadLetters],
+            next_cursor: null,
+            review: { unresolved: webhookDemoDeadLetters.length, limit: 1_000 },
+          };
+        }
+        if (webhooksDemo && (rpc.method === 'webhook.delivery.dead_letter.requeue'
+          || rpc.method === 'webhook.delivery.dead_letter.resolve')) {
+          const args = rpc.args as {
+            dead_letter?: { kind?: unknown; dead_letter_id?: unknown };
+            reason?: unknown;
+          };
+          const index = webhookDemoDeadLetters.findIndex((row) =>
+            row.dead_letter_id === args.dead_letter?.dead_letter_id);
+          const [acted] = index >= 0 ? webhookDemoDeadLetters.splice(index, 1) : [];
+          if (acted !== undefined && rpc.method === 'webhook.delivery.dead_letter.resolve') {
+            webhookDemoClosedDeadLetters.unshift({
+              ...acted,
+              dead_lettered_at: FIXED_NOW,
+              closure: {
+                closed_at: FIXED_NOW,
+                closed_by: 'owner',
+                reason: typeof args.reason === 'string' ? args.reason : null,
+              },
+            });
+          }
+          result = {
+            dead_letter: args.dead_letter,
+            outcome: rpc.method === 'webhook.delivery.dead_letter.requeue' ? 'requeued' : 'resolved',
+            review_id: 'whv_browserdemo0123456789abcdef000001',
+            acted_at: FIXED_NOW,
           };
         }
         if (webhooksDemo && rpc.method === 'webhook.ingress.create') {
-          const args = rpc.args as { display_name?: unknown };
+          const args = rpc.args as {
+            display_name?: unknown;
+            profile_id?: WebhookIngressView['profile_id'];
+            selected_event_types?: string[];
+          };
           webhookCreatedIngress = demoCreatedWebhookIngress(
             typeof args.display_name === 'string' ? args.display_name : 'Created webhook',
             false,
           );
+          if (webhookOpenCatalogOn) {
+            // D-201 Slice 10C — keep what was sent, so its card shows it.
+            webhookCreatedIngress = {
+              ...webhookCreatedIngress,
+              profile_id: args.profile_id ?? webhookCreatedIngress.profile_id,
+              selected_event_types: [...(args.selected_event_types ?? [])],
+            };
+          }
           result = { ingress: webhookCreatedIngress };
+        }
+        if (webhooksDemo && rpc.method === 'webhook.ingress.update') {
+          // D-201 Slice 10C — the events editor.
+          const args = rpc.args as {
+            ingress_id?: unknown;
+            patch?: { selected_event_types?: string[] };
+          };
+          const ingress = webhookIngressFor(args.ingress_id);
+          if (ingress !== null) {
+            const updated: WebhookIngressView = {
+              ...ingress,
+              selected_event_types: [
+                ...(args.patch?.selected_event_types ?? ingress.selected_event_types),
+              ],
+              updated_at: FIXED_NOW + 180_000,
+            };
+            storeWebhookIngress(updated);
+            result = { ingress: updated };
+          }
         }
         if (webhooksDemo && rpc.method === 'webhook.ingress.credentials.write') {
           const args = rpc.args as { ingress_id?: unknown };
@@ -4487,13 +4663,27 @@ const buildFakeTransport = (
               enabled_at: null,
               updated_at: FIXED_NOW + 180_000,
             } satisfies WebhookIngressView;
+            // D-201 Slice 10F — a retire closes the webhook's open dead
+            // letters, and says how many.
+            let deadLettersClosed = 0;
             if (retired.ingress_id === WEBHOOK_DEMO_INGRESS_ID) {
               webhookDemoIngress = retired;
               webhookDemoRetired = true;
+              deadLettersClosed = webhookDemoDeadLetters.length;
+              for (const row of webhookDemoDeadLetters.splice(0)) {
+                webhookDemoClosedDeadLetters.unshift({
+                  ...row,
+                  dead_lettered_at: FIXED_NOW + 180_000,
+                  closure: { closed_at: FIXED_NOW + 180_000, closed_by: 'server', reason: 'webhook_retired' },
+                });
+              }
             } else {
               webhookCreatedIngress = null;
             }
-            result = { ingress: retired };
+            result = {
+              ingress: retired,
+              ...(deadLettersClosed > 0 ? { dead_letters_closed: deadLettersClosed } : {}),
+            };
           }
         }
         if (webhooksDemo && rpc.method === 'webhook.ingress.test.deliver') {
@@ -4828,6 +5018,10 @@ const buildFakeTransport = (
                 ? { required_scopes_by_connection: { hubspot: ['crm.objects.deals.write'] } }
                 : {}),
               installed_any_version: packsInstalled,
+              // D-404 slice E — `&pack_things=1`: the installed pack works on things in Yours, and there is none yet.
+              ...(new URLSearchParams(location.search).has('pack_things')
+                ? { missing_things: [{ type_id: 'travel_passport', type_name: 'Passport' }, { type_id: 'travel_id_card', type_name: 'ID card' }] }
+                : {}),
               pre_install: false,
               name: packDemoName,
               description: packDemoDescription,
@@ -5731,6 +5925,16 @@ const buildFakeTransport = (
           sourceAnswerSessionCreated = true;
           result = { session_id: sourceAnswerSession.id };
         }
+        // D-404 slice B1 — `&chat_steps=1`: which steps landed, and what Ask again sent.
+        if (new URLSearchParams(location.search).has('chat_steps')) {
+          const steps = nextStepsRpc(rpc.method, rpc.args);
+          if (steps !== undefined) result = steps.result;
+        }
+        // D-405 slice 4 — `?setup=demo`: the Set up page's reads.
+        if (new URLSearchParams(location.search).get('setup') === 'demo') {
+          const setup = setupRpc(rpc.method, rpc.args);
+          if (setup !== undefined) result = setup.result;
+        }
         if (rpc.method === 'chat.send' && withChatSession) {
           if (chatSendFailuresRemaining > 0) {
             chatSendFailuresRemaining -= 1;
@@ -6107,6 +6311,14 @@ const buildFakeTransport = (
             };
           } else if (rpc.method === 'data.timeline') {
             result = { entries: [] };
+          } else if (rpc.method === 'approval.list') {
+            result = { approvals: [] };
+          } else if (rpc.method === 'approval.subscribe') {
+            result = { approvals: [], seq: 0 };
+          } else if (rpc.method === 'notification.pending_asks') {
+            result = { asks: [] };
+          } else if (rpc.method === 'chat.plans.pending.list') {
+            result = { plans: [] };
           }
         }
         if (attentionDemo) {
@@ -7086,6 +7298,12 @@ const buildFakeTransport = (
         ) {
           result = { connections: [] };
         }
+        // D-405 slice 4b — the Set up page's mail, calendar and files, as the base fixture has them: none
+        // connected. The first-run card reads it beside the roster above and stays silent until both answer.
+        if (rpc.method === 'chat.setup.features' && result === undefined && error === undefined) {
+          result = { features: [{ feature: 'mail', connected: false }, { feature: 'calendar', connected: false },
+            { feature: 'file', connected: false }] };
+        }
         // ── `settle_reads=1` — settle the background reads a route waits on. ──
         //
         // ⛔ An unrecognised method below is left PENDING FOREVER, and a route
@@ -7101,6 +7319,10 @@ const buildFakeTransport = (
         // object is worse than an honest failure.
         if (settleBackgroundReads && result === undefined && error === undefined) {
           const empty: Record<string, unknown> = {
+            'approval.list': { approvals: [] },
+            'approval.subscribe': { approvals: [], seq: 0 },
+            'notification.pending_asks': { asks: [] },
+            'chat.plans.pending.list': { plans: [] },
             'ingredient.draft.list': { drafts: [] },
             'collection.contract.listDelegationSuggestions': { suggestions: [] },
             'collection.contract.listScopedGrantSuggestions': { suggestions: [] },
@@ -7698,9 +7920,17 @@ const buildFakeTransport = (
         if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
         const triggerPreapprovalReply = triggerPreapprovalDemoReply(rpc.method, rpc.args);
         if (triggerPreapprovalReply !== null) { result = triggerPreapprovalReply.result; error = triggerPreapprovalReply.error; }
-        const localChangesReply = localChangesDemoReply(rpc.method,rpc.args);
+        const callerPreapprovalReply = callerPreapprovalDemoReply(rpc.method, rpc.args);
+        if (callerPreapprovalReply !== null) { result = callerPreapprovalReply.result; error = callerPreapprovalReply.error; }
+        result = withCallerPreapprovedRun(rpc.method, result);
+        // This fixture can stop an owner-review request before the demo applies
+        // it. The later Connections hook changes replies after demo dispatch.
+        const localReviewFixture = (window as Window & { __localChangeFixture?: (method: string, args: unknown) => Promise<{ result?: unknown; error?: { code: string; message: string } } | undefined> }).__localChangeFixture;
+        const localReviewReply = localReviewFixture && (rpc.method.startsWith('local_changes.') || rpc.method.startsWith('local_undo.'))
+          ? await localReviewFixture(rpc.method, rpc.args) : undefined;
+        const localChangesReply = localReviewReply ?? localChangesDemoReply(rpc.method, rpc.args);
         if (localChangesReply !== null) { result = localChangesReply.result; error = localChangesReply.error; }
-        const undoReply = localUpdateUndoDemoReply(rpc.method, rpc.args);
+        const undoReply = localReviewReply === undefined ? localUpdateUndoDemoReply(rpc.method, rpc.args) : null;
         if (undoReply !== null) { result = undoReply.result; error = undoReply.error; }
         const todayReply: ReturnType<typeof todayDemoReply> = todayDemoReply(rpc.method, rpc.args)
           ?? todayEmptyDemoReply(rpc.method);
@@ -7781,6 +8011,14 @@ const buildFakeTransport = (
         // normal harness and production transport have no override.
         const receptionFixture=(window as Window & {__receptionFixture?: (method:string,args:unknown)=>Promise<{result?:unknown;error?:{code:string;message:string}}|undefined>}).__receptionFixture;
         if(receptionFixture){const receptionReply=await receptionFixture(rpc.method,rpc.args);if(receptionReply){result=receptionReply.result;error=receptionReply.error;}}
+        // Empty baselines for Today and exact-record reminder reads. Populated
+        // journeys override these with the real SQLite owner handlers below.
+        if (rpc.method === 'reminder.list' && result === undefined && error === undefined) {
+          const scope = (rpc.args as import('@recued/contracts').ReminderListRequest)?.page;
+          if (scope?.record_ref || scope?.state === 'pending' && typeof scope.before === 'number')
+            result = { reminders: [], count: 0, page: { state: scope.state ?? 'pending', matched_count: 0, next_cursor: null,
+              ...(scope.record_ref ? { record_ref: scope.record_ref } : {}), ...(scope.history_only ? { history_only: true } : {}) } };
+        }
         const connectionsFixture = (window as Window & { __connectionsFixture?: (method: string, args: unknown) => Promise<{ result?: unknown; error?: { code: string; message: string } } | undefined> }).__connectionsFixture;
         if (connectionsFixture) { const reply = await connectionsFixture(rpc.method, rpc.args); if (reply) { result = reply.result; error = reply.error; } }
         // An opt-in persisted anchor lets result-navigation tests reach a real
@@ -8654,6 +8892,9 @@ interface FullAppHooks {
   releaseRpcResponses?(method: string, index?: number): number;
   /** Hold subsequent saved-config reads after the initial page load. */
   holdRpcResponses?(method: string): void;
+  queueServerProfileRead?(mode: 'hold' | 'error' | 'empty'): void;
+  releaseServerProfileRead?(reply: 'success' | 'error' | 'empty'): void;
+  serverProfileReadCount?(): number;
   setAiModelsConfig?(config: Record<string, unknown>): void;
   failNextAiModelsConfigRead?(): void;
   failNextAiSettingsRead?(method: AiSettingsReadMethod): void;
@@ -9088,6 +9329,29 @@ const localStore = multiTabJourney
 const profileStore = multiTabJourney
   ? undefined
   : localStore as WebclientProfileAwareStore;
+// Fault only an explicitly queued browser-local roster read after startup.
+// Every other read uses the existing store; nothing is written or re-paired.
+type ProfileReadReply = 'success' | 'error' | 'empty';
+const profileReadQueue: Array<'hold' | 'error' | 'empty'> = [];
+const heldProfileReads: Array<(reply: ProfileReadReply) => void> = [];
+let profileReadCount = 0;
+if (profileStore) {
+  const read = profileStore.listProfiles.bind(profileStore);
+  profileStore.listProfiles = async () => {
+    profileReadCount++;
+    const mode = profileReadQueue.shift();
+    if (mode === undefined) return read();
+    if (mode === 'empty') return [];
+    if (mode === 'error') throw new Error('private fixture roster read failure');
+    return new Promise((resolve, reject) => {
+      heldProfileReads.push(reply => {
+        if (reply === 'error') reject(new Error('private fixture roster read failure'));
+        else if (reply === 'empty') resolve([]);
+        else void read().then(resolve, reject);
+      });
+    });
+  };
+}
 const tokenStore = buildFakeTokenStore();
 const requestedColdStartupFailures = Number.parseInt(
   searchParams.get('startup_failure_attempts') ?? '2',
@@ -9627,7 +9891,9 @@ void (async (): Promise<void> => {
       const officeId = await profileStore.ensureProfile(
         'wss://office.recued.cloud:9443/ws',
       );
-      await profileStore.set('server_public_key', 'office-spki-base64');
+      // A synthetic test pin lets the address journey answer a real anonymous
+      // identity challenge; no production store or server is involved.
+      await profileStore.set('server_public_key', searchParams.get('server_address_test_pin') ?? 'office-spki-base64');
       await profileStore.set('webclient_token', sampleToken('tok-office'));
       await profileStore.set('pair_metadata', {
         paired_at: FIXED_NOW,
@@ -10403,7 +10669,9 @@ void (async (): Promise<void> => {
       exposureProfile: 'community-shareable',
       hashSource,
       document,
-      now: () => FIXED_NOW,
+      // Let time-sensitive review workflows advance the same clock used by
+      // their transport fixtures without changing the ordinary fixed-time lane.
+      now: searchParams.get('review_clock') === 'browser' ? () => Date.now() : () => FIXED_NOW,
       // Match the production pair-fallback composition: recovery deep links
       // can land on Settings -> Server -> Reachability. The cloud probe stays
       // inert until its explicit button is clicked, so this adds no network
@@ -10444,6 +10712,13 @@ void (async (): Promise<void> => {
         transport.releaseServerControlResponses(),
       releaseRpcResponses: (method, index) => transport.releaseRpcResponses(method, index),
       holdRpcResponses: (method) => transport.holdRpcResponses(method),
+      queueServerProfileRead: mode => { profileReadQueue.push(mode); },
+      releaseServerProfileRead: reply => {
+        const finish = heldProfileReads.shift();
+        if (!finish) throw new Error('No held profile read');
+        finish(reply);
+      },
+      serverProfileReadCount: () => profileReadCount,
       setAiModelsConfig: (config) => transport.setAiModelsConfig(config),
       failNextAiModelsConfigRead: () => transport.failNextAiModelsConfigRead(),
       failNextAiSettingsRead: (method) => transport.failNextAiSettingsRead(method),

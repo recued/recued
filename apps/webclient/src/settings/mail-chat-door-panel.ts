@@ -135,6 +135,8 @@ export interface MountMailChatDoorPanelOptions {
 export interface MailChatDoorPanelMount {
   getState(): 'loading' | 'ready' | 'error';
   getError(): string | null;
+  hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   refresh(): Promise<void>;
   dispose(): void;
 }
@@ -210,6 +212,10 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
   let pickChat = '';
   const pickOwners = new Set<string>();
   let confirmed = false;
+  let setupBaseline = { chat: '', owners: new Set<string>(), confirmed: false };
+  const rememberSetup = (): void => {
+    setupBaseline = { chat: pickChat, owners: new Set(pickOwners), confirmed };
+  };
   let checks: MailChatDoorCheckResult | null = null;
   /** The owner's mailboxes already named start ticked, once. */
   let ownersSeeded = false;
@@ -237,6 +243,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       prefixDraft = null;
       staleDraft = null;
       enrolDraft = '';
+      rememberSetup();
     }
     settings = normalize(next);
   };
@@ -425,7 +432,9 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     if (error === null) return;
     const p = el('p', error);
     p.setAttribute(MAIL_CHAT_DOOR_ERROR_ATTR, '');
+    p.setAttribute('role', 'alert');
     into.appendChild(p);
+    if (retryOffered) renderReadRetry(into);
   };
 
   const renderChecks = (into: HTMLElement): void => {
@@ -892,7 +901,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     }
   };
 
-  const renderReadRetry = (): void => {
+  const renderReadRetry = (into: HTMLElement = opts.host): void => {
     const retry = button(pendingRead === null ? 'Retry Email chat settings' : 'Retrying…',
       MAIL_CHAT_DOOR_RETRY_ATTR, () => { void refresh(); });
     if (pendingRead !== null) {
@@ -900,7 +909,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       retry.setAttribute('aria-busy', 'true');
     }
     retryNode = retry;
-    opts.host.appendChild(retry);
+    into.appendChild(retry);
   };
 
   const render = (): void => {
@@ -984,6 +993,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
         if (!ownersSeeded) {
           ownersSeeded = true;
           for (const slug of next.owner_mailboxes) if (mailboxes.some((row) => row.slug === slug)) pickOwners.add(slug);
+          rememberSetup();
         }
         if (next.chat_mailbox !== null) await loadRecent();
         if (disposed || version !== settingsVersion) return;
@@ -1001,7 +1011,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       pendingRead = null;
       if (!disposed) render();
     });
-    if (settings === null) render();
+    if (settings === null || retryOffered) render();
     return pendingRead;
   };
 
@@ -1011,6 +1021,20 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
   return {
     getState: () => state,
     getError: () => error,
+    hasInFlightWork: () => !disposed && busy,
+    hasUnsavedChanges: () => {
+      if (disposed || settings === null) return false;
+      if (settings.chat_mailbox === null) {
+        return pickChat !== setupBaseline.chat || confirmed !== setupBaseline.confirmed
+          || pickOwners.size !== setupBaseline.owners.size
+          || [...setupBaseline.owners].some(slug => !pickOwners.has(slug));
+      }
+      const prefix = prefixDraft === null ? settings.ask_prefix
+        : (prefixDraft.enabled || isMailChatOneMailbox(settings) ? prefixDraft.text.trim() : null);
+      return prefix !== settings.ask_prefix
+        || (staleDraft !== null && staleDraft !== String(settings.stale_after_minutes))
+        || enrolDraft !== '';
+    },
     refresh,
     dispose: () => {
       disposed = true;

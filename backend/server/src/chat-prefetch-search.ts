@@ -39,6 +39,7 @@
  */
 
 import { buildQueryContext, scorePrefetchCandidates } from './chat-prefetch-score.js';
+import { pickedContacts } from './chat-picked-contacts.js';
 
 import type { EntitySearchPort } from '@recued/middleware-prompt-cache';
 
@@ -67,12 +68,22 @@ export const createContactPrefetchSearch = (
     [...qctx.queryTokens, ...qctx.phoneRunSet].filter((t) => /^\d+$/.test(t)),
   )];
 
+  // D-406 follow-up (2026-11-20) — the contacts the message carries by their exact id, the records the owner picked
+  // ("Add records", "Chat about this"): pinned, and read by their email even when the message holds none of their
+  // words (`chat-picked-contacts.ts`). A failed lookup leaves the message matched as before.
+  let pickedEmails: ReadonlySet<string> = new Set();
+  try {
+    pickedEmails = new Set(pickedContacts(qctx.queryTokens, store).map((contact) => contact.email));
+  } catch {
+    pickedEmails = new Set();
+  }
+
   let rows: ReturnType<ContactStore['prefetchCandidates']>;
   try {
     rows = store.prefetchCandidates({
       tokens: [...qctx.queryTokens],
       forms,
-      emails: [...qctx.emailRunSet],
+      emails: [...new Set([...qctx.emailRunSet, ...pickedEmails])],
     });
   } catch {
     return [];
@@ -94,5 +105,6 @@ export const createContactPrefetchSearch = (
     fuzzyComplete: true,
     phoneFormsComplete: true,
     isUnique,
+    ...(pickedEmails.size > 0 ? { pickedEmails } : {}),
   });
 };

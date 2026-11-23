@@ -25,7 +25,7 @@ import {
   type WorkEntityPageState,
 } from '@recued/contracts';
 
-import { renderWorkEntityPage } from '../work-entity-page/page.js';
+import { renderWorkEntityPage, renderWorkEntityPageHeader } from '../work-entity-page/page.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -110,6 +110,28 @@ describe('D-145 PA6 — renderWorkEntityPage', () => {
     const state = initialWorkEntityPageState({ kind: 'task' });
     const html = renderWorkEntityPage(baseProps(state));
     expect(html).toContain('class="work-entity-list-row-source"');
+  });
+
+  it('keeps source selection and capability guidance when the host owns the heading and create action', () => {
+    const state = selectSourceTransition(initialWorkEntityPageState({ kind: 'task' }), 'recued.task');
+    for (const canCreate of [true, false]) {
+      const body = renderWorkEntityPage({
+        ...baseProps(state), header_external: true, can_create: canCreate,
+        source_options: baseProps(state).source_options.map(option => option.id === 'recued.task'
+          ? { ...option, write_capable: canCreate } : option),
+      });
+      const page = renderWorkEntityPageHeader('task', canCreate) + body;
+      expect(page.match(/id="work-entity-page-task-heading"/g)).toHaveLength(1);
+      expect(body).toContain('aria-labelledby="work-entity-page-task-heading"');
+      expect(body).toContain('aria-label="Source"');
+      expect(body).toContain('value="recued.task" data-source-kind="builtin" selected');
+      expect(body).toContain('Buy milk');
+      expect(page.match(/data-action="open-create-work-entity-dialog"/g) ?? []).toHaveLength(canCreate ? 1 : 0);
+      if (!canCreate) {
+        expect(body).toContain('read-only</span>');
+        expect(page.match(/No write-capable Source/g)).toHaveLength(1);
+      }
+    }
   });
 
   it('concrete Source mode hides per-row Source label', () => {

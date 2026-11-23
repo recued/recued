@@ -34,6 +34,7 @@ export type {
   OutboundPromptOption,
   ParsedInboundChoice,
   ClosePrompt,
+  DeleteMessage,
 } from './types.js';
 export { createSlackTransport, type SlackTransportOptions } from './slack.js';
 /** Bounded, timed vendor JSON requests; also used to verify bot identity. */

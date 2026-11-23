@@ -653,6 +653,9 @@ export type ServerEvent =
       tool_name: string;
       tier: 1 | 2 | 3;
       args: unknown;
+      /** The installed recipe the call runs, schedules or stops, by its name
+       *  (`ChatToolCall.recipe_name`), so its line names it while it runs. */
+      recipe_name?: string;
       /** Present only when this dispatch consumed the exact reviewed
        *  write-plan approval. Links the live tool lifecycle back to the
        *  original approval card; absence means the call was not authorised
@@ -748,6 +751,10 @@ export type ServerEvent =
       always_allow?: string;
       /** D-341 — what that answer lets happen, in the ask's words (`hold.always_allow_note`). */
       always_allow_note?: string;
+      /** D-177 §N.15.9 — the round's group this held write was asked in, once, with the others
+       *  of its kind (`ChatPlanProposal.hold.group`): the cards of one group are one card. An
+       *  older client ignores it and shows each card, any of which answers them all. */
+      group?: string;
       cursor: number;
     }
   | {
@@ -1028,6 +1035,30 @@ export type ServerEvent =
       kind: 'contract.scoped_grant_suggestion_resolved';
       key_hash: string;
       resolution: 'accepted' | 'dismissed';
+      cursor: number;
+    }
+  | {
+      /** D-348 — a rule for a request the owner repeats changed: accepted (`mint`), ended
+       *  (`revoke`, a longer chain's replacing it too), or a use spent (`use`). Live control's
+       *  list of them re-lists (`collection.contract.listChainRules`), its uses left with it.
+       *  Narrow payload, never the owner's words or whom a call reaches; NOT session-scoped, the
+       *  rule store is per-pair. */
+      kind: 'contract.chain_rule_changed';
+      op: 'mint' | 'revoke' | 'use';
+      rule_id: string;
+      cursor: number;
+    }
+  | {
+      /** D-402 slice F5 (§7.10) — a pre-approval changed: granted (a trigger's from its page, or the
+       *  "Always" / "Yes, this time" the owner answered before a run), a use spent (a write it let
+       *  through), or ended (revoked, "Stop allowing", a run's own row ending with the run). The
+       *  owner's pages that list them read again (`listCallerPreapprovals`, the triggers' lists).
+       *  Narrow payload: the row and whose it is, never its writes or its caller; NOT
+       *  session-scoped, the store is per-pair. */
+      kind: 'contract.preapproval_changed';
+      change: 'granted' | 'used' | 'ended';
+      id: string;
+      holder: 'trigger' | 'caller';
       cursor: number;
     }
   | {
@@ -1403,9 +1434,11 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'chat.tool_catalog_scope_changed',
   'chat.transparency',
   'connection.vendor_oauth_completed',
+  'contract.chain_rule_changed',
   'contract.contract_definition_changed',
   'contract.delegation_rule_suggested',
   'contract.delegation_rule_suggestion_resolved',
+  'contract.preapproval_changed',
   'contract.scoped_grant_suggested',
   'contract.scoped_grant_suggestion_resolved',
   'enrichment_drift_detected',

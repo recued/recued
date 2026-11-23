@@ -64,11 +64,12 @@ const ownerFiles = () => {
   return { kept, files: createBrowserFiles(() => collection) };
 };
 
-/** The adapter; its Bridge reads a page linking to `links` and fetches any file as the page would. */
-const adapterFor = (base: string, links: Record<string, string> = {}) => {
+/** The adapter; its Bridge reads a page linking to `links` (shown as `labels` names them, else by
+ *  ref) and fetches any file as the page would. */
+const adapterFor = (base: string, links: Record<string, string> = {}, labels: Record<string, string> = {}) => {
   const requests: DispatchRequest[] = [];
   const page = { page: '7:DOC', url: `${base}/files`, title: 'Files' };
-  const html = `<body>${Object.entries(links).map(([ref, href]) => `<a ref="${ref}" href="${href}">${ref}</a>`).join('')}</body>`;
+  const html = `<body>${Object.entries(links).map(([ref, href]) => `<a ref="${ref}" href="${href}">${labels[ref] ?? ref}</a>`).join('')}</body>`;
   const dispatch = vi.fn<BridgeDispatcher['dispatch']>(async (request) => {
     requests.push(request);
     if (request.action === 'inspect') return ok({ url: page.url, title: page.title, html, truncated: false });
@@ -160,6 +161,21 @@ describe('D-345 slice E — a sequence\'s download step, server first', () => {
     expect(actions(requests)).not.toContain('download_file');
     expect(done.tabs[0]!.files[0]).toMatchObject({ filename: 'Annual report.pdf', mime_type: 'application/pdf' });
     expect(done.tabs[0]!.steps.join(' ')).toContain('among your files as Annual report.pdf');
+  });
+
+  it('a step by its link\'s text (D-402 §4 rule 3, as a recipe made from a job names it): found on the page, '
+    + 'and the address it leads to fetched by the server; one it cannot fetch, by the Bridge from the link found', async () => {
+    const base = await site();
+    const labels = { e4: 'Annual report', e5: 'Your statement' };
+    const { adapter, requests } = adapterFor(base, { e4: '/report.pdf', e5: '/statement.pdf' }, labels);
+    const done = await adapter(act({ page: '7:DOC', steps: [{ do: 'download', text: 'Annual report' }] })) as {
+      tabs: Array<{ files: Array<Record<string, unknown>> }> };
+    expect(actions(requests)).toEqual(['inspect']);
+    expect(done.tabs[0]!.files[0]).toMatchObject({ filename: 'Annual report.pdf', mime_type: 'application/pdf' });
+    const signedIn = adapterFor(base, { e4: '/report.pdf', e5: '/statement.pdf' }, labels);
+    await signedIn.adapter(act({ page: '7:DOC', steps: [{ do: 'download', text: 'Your statement' }] }));
+    expect(actions(signedIn.requests)).toEqual(['inspect', 'download_file']);
+    expect(signedIn.requests[1]!.args).toMatchObject({ ref: 'e5' });
   });
 
   it('downloads by address alone need no tab; one the server cannot fetch says to name a tab', async () => {

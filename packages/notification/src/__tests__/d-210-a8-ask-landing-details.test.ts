@@ -238,6 +238,18 @@ describe('D-210 A.8 3d-2c — parseAskLandingSubmission with edits', () => {
     });
   });
 
+  it('preserves edit intent when a marked form submits no checked boxes', () => {
+    expect(parseAskLandingSubmission(body({ ...base, edit_form: '1' }))).toEqual({
+      reply: { ask_id: 'ask-1', option: 'approve', via: 'email' }, form_nonce: 'n1', edits: {},
+    });
+  });
+
+  it('refuses invalid or ambiguous edit-form markers', () => {
+    for (const suffix of ['edit_form=', 'edit_form=0', 'edit_form=true', 'edit_form=1&edit_form=1']) {
+      expect(parseAskLandingSubmission(`${body(base)}&${suffix}`)).toEqual({ error: 'malformed' });
+    }
+  });
+
   it('omits edits entirely when the body carries none', () => {
     const out = parseAskLandingSubmission(body(base));
     expect(Object.hasOwn(out as object, 'edits')).toBe(false);
@@ -266,7 +278,7 @@ describe('D-210 A.8 3d-2c — parseAskLandingSubmission with edits', () => {
   });
 
   it('keeps an empty edit value — that is how a field is cleared', () => {
-    const out = parseAskLandingSubmission(body({ ...base, 'edit.body': '' }));
+    const out = parseAskLandingSubmission(body({ ...base, edit_form: '1', 'edit.body': '' }));
     expect((out as { edits?: Record<string, string> }).edits).toEqual({ body: '' });
   });
 });

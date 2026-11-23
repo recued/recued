@@ -85,6 +85,20 @@ const exited = (child: ChildProcess): Promise<number | null> => new Promise((res
   else child.once('exit', (code) => resolve(code));
 });
 
+/** A stand-in server: runs `body`, with `createWatchHost` in scope, in a
+ *  process of its own whose event loop nothing else holds, as the server's is
+ *  at boot before it listens. Resolves with its exit code and what it printed. */
+const standIn = async (body: string): Promise<{ code: number | null; out: string }> => {
+  const module = fileURLToPath(new URL('../collections/file/watch-host.ts', import.meta.url));
+  const program = `import(${JSON.stringify(module)}).then(async ({ createWatchHost }) => {\n${body}\n});`;
+  const server = spawn(process.execPath, ['--import', 'tsx', '-e', program], { stdio: ['ignore', 'pipe', 'inherit'] });
+  children.push(server);
+  let out = '';
+  server.stdout!.on('data', (chunk: Buffer) => { out += chunk.toString(); });
+  const code = await new Promise<number | null>((resolve) => { server.once('close', (exit) => resolve(exit)); });
+  return { code, out };
+};
+
 describe('the watch process', () => {
   it('gives each watch its own events, and nothing once it is closed', async () => {
     const scripted = host(SCRIPTED);
@@ -253,6 +267,36 @@ process.on('disconnect', () => {
     const server = spawn(process.execPath, ['--import', 'tsx', '-e', program], { stdio: ['ignore', 'ignore', 'inherit'] });
     children.push(server);
     expect(await exited(server)).toBe(0);
+  }, 120_000);
+
+  it('a server waiting for a watch to attach, with nothing else to do, hears it attach or fail before it exits', async () => {
+    // Boot awaits each folder's attach before the server listens, with nothing
+    // else holding its event loop. A wait nothing held let Node exit there on
+    // its own: code 0, nothing logged, and launchd restarts the server only
+    // after a failure (found 2026-11-22, a Mac server with one watched folder).
+    expect(await standIn(`
+      const host = createWatchHost();
+      await host.watch(${JSON.stringify(folder())}, () => {}).ready;
+      process.stdout.write('attached');
+      host.stop();`)).toEqual({ code: 0, out: 'attached' });
+    expect(await standIn(`
+      const host = createWatchHost();
+      try { await host.watch(${JSON.stringify(join(folder(), 'missing'))}, () => {}).ready; process.stdout.write('attached'); }
+      catch (err) { process.stdout.write('failed ' + err.code); }
+      host.stop();`)).toEqual({ code: 0, out: 'failed ENOENT' });
+    // A process that dies before it answers: its exit still reaches the server.
+    expect(await standIn(`
+      const host = createWatchHost({ source: 'process.exit(3)' });
+      try { await host.watch('/never', () => {}).ready; process.stdout.write('attached'); }
+      catch (err) { process.stdout.write('failed ' + err.message); }
+      host.stop();`)).toEqual({ code: 0, out: 'failed fs.watch process exited with code 3' });
+  }, 120_000);
+
+  it('a server whose watches have all attached is not held: two attached, then nothing to do, it exits', async () => {
+    expect(await standIn(`
+      const host = createWatchHost();
+      await Promise.all([host.watch(${JSON.stringify(folder())}, () => {}).ready, host.watch(${JSON.stringify(folder())}, () => {}).ready]);
+      process.stdout.write('attached');`)).toEqual({ code: 0, out: 'attached' });
   }, 120_000);
 
   it('leaves when the server lets go of it, and not on a signal meant for the server', async () => {

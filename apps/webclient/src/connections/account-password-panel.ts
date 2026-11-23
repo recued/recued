@@ -21,8 +21,10 @@ export const createAccountPasswordPanel = (deps: {
         ${selected.smtp ? `<label>New SMTP password (optional)<input type="password" autocomplete="new-password" data-account-password-field="smtp" value="${e(smtpPassword)}"${busy ? ' readonly' : ''}></label>
           <p>Leave either field blank to keep its saved password. If no separate SMTP password was saved, SMTP continues using the IMAP password.</p>` : ''}
         ${error ? `<p role="alert">${e(error)}</p>` : ''}${notice ? `<p role="status">${e(notice)}</p>` : ''}
-        <button class="rx-btn rx-btn-primary rx-btn-sm" type="submit" data-account-password-action="save"${!password && !smtpPassword ? ' disabled' : ''} aria-disabled="${busy}" aria-busy="${busy}">${busy ? 'Verifying credentials…' : 'Verify and save credentials'}</button>
-        <button class="rx-btn rx-btn-secondary rx-btn-sm" type="button" data-account-password-action="close"${busy ? ' disabled' : ''}>Close</button>
+        <div class="accounts-password-actions">
+          <button class="rx-btn rx-btn-primary rx-btn-sm" type="submit" data-account-password-action="save"${!password && !smtpPassword ? ' disabled' : ''} aria-disabled="${busy}" aria-busy="${busy}">${busy ? 'Verifying credentials…' : 'Verify and save credentials'}</button>
+          <button class="rx-btn rx-btn-secondary rx-btn-sm" type="button" data-account-password-action="close"${busy ? ' disabled' : ''}>Close</button>
+        </div>
       </form></section>` : '';
     for (const control of deps.host.querySelectorAll<HTMLButtonElement>('[data-action="accounts-back-to-list"],[data-action="accounts-manage-authentication"],[data-action="accounts-delete"],[data-action="accounts-resync"],[data-action="accounts-update-credentials"]')) {
       if (busy && !control.disabled) { control.disabled = true; control.setAttribute('data-password-repair-locked', ''); }

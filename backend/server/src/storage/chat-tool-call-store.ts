@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { isChatToolCallRecord, isToolProgress, TOOL_PROGRESS_INTERVAL_MS, type ChatToolCallRecord, type ToolProgress } from '@recued/contracts';
+import { isChatToolCallRecord, isToolProgress, TOOL_PROGRESS_INTERVAL_MS, type ChatToolCallRecord,
+  type ExecutionSource, type ResourceReview, type ToolProgress } from '@recued/contracts';
+import { withLocalMutationScope } from '../local-mutation-context.js';
+import { localMutationSummary } from '../ordinary-local-mutations.js';
 import type { AppendMessageInput } from './chat-store.js';
+import { createOrdinaryLocalMutationReceipts, reviewedLocalMutationKind } from './ordinary-local-mutation-receipts.js';
 
 // Shared by all chat-store adapters in this server process. Opening another
 // adapter is not a restart. No old call is ever resumed by this read model.
@@ -78,9 +82,16 @@ export interface ChatToolCallTracker {
   /** Called only when an existing authorized continuation actually dispatches. */
   resumeRun(session_id: string, run_id: string): string[];
   dismiss(session_id: string, message_id: string): boolean;
+  /** D-348 §7.8 — a running call a standing permission let through without asking: `dispatch`
+   *  runs under its reviewed change and a receipt the call owns, stamped on its row in the same
+   *  transaction (`local_receipt`), so its line offers Undo. A change Recued cannot undo, or a call
+   *  not running here, runs as before. */
+  runLocalMutation<T>(message_id: string, source: ExecutionSource, review: ResourceReview,
+    dispatch: () => T | Promise<T>): Promise<T>;
 }
 export interface ChatToolCallStore extends ChatToolCallTracker {
-  start(input: AppendMessageInput & { turn_id: string; tool_name: string }): Promise<string>;
+  /** `recipe_name`: the installed recipe the call names, kept on its record for Live control. */
+  start(input: AppendMessageInput & { turn_id: string; tool_name: string; recipe_name?: string }): Promise<string>;
 }
 
 export const createChatToolCallTracker = (
@@ -106,6 +117,10 @@ export const createChatToolCallTracker = (
     return update.run({ message_id: call.message_id, pair_id: call.run_id ?? call.message_id,
       previous: JSON.stringify(previous), call: JSON.stringify(call) }).changes > 0;
   };
+  const receipts = createOrdinaryLocalMutationReceipts(db);
+  const stampReceipt = db.prepare(`UPDATE chat_messages
+    SET metadata_blob = json_set(metadata_blob, '$.tool_call.local_receipt', json(@receipt))
+    WHERE message_id = @message_id AND role = 'tool' AND json_valid(metadata_blob)`);
   return {
     get(message_id) {
       const row = get.get(message_id) as { metadata_blob: string | null } | undefined;
@@ -206,6 +221,20 @@ export const createChatToolCallTracker = (
       if (!stored) return false;
       return write(stored, { ...stored, state: 'interrupted', reviewed_at: Date.now() });
     },
+    async runLocalMutation(message_id, source, review, dispatch) {
+      const call = read(message_id);
+      if (!call || call.process_id !== processId || call.state !== 'running'
+        || reviewedLocalMutationKind(review) === null) return withLocalMutationScope(undefined, dispatch);
+      // The call's own row names it; the permission that let it through was spent at the gate.
+      const identity = { message_id, session_id: call.session_id, tool_name: call.tool_name };
+      const scope = receipts.begin({ owner: 'chat_call', ref: message_id, identity, source, review,
+        current: () => identity, validate: () => undefined });
+      return withLocalMutationScope({ record(connection, kind, actual) {
+        scope.record(connection, kind, actual);
+        const proof = receipts.proof('chat_call', message_id, identity);
+        if (proof) stampReceipt.run({ message_id, receipt: JSON.stringify(localMutationSummary(proof)) });
+      } }, dispatch);
+    },
   };
 };
 
@@ -215,12 +244,12 @@ export const createChatToolCallStore = (
   processId: string = PROCESS_ID,
 ): ChatToolCallStore => ({
   ...createChatToolCallTracker(db, processId),
-  async start(input) {
+  async start({ recipe_name, ...input }) {
     const ts = input.ts ?? Date.now();
     await append({ ...input, role: 'tool', pair_id: input.id, tool_call: {
       message_id: input.id, session_id: input.session_id, turn_id: input.turn_id,
-      tool_name: input.tool_name, state: 'running', started_at: ts, updated_at: ts,
-      process_id: processId,
+      tool_name: input.tool_name, ...(recipe_name !== undefined ? { recipe_name } : {}),
+      state: 'running', started_at: ts, updated_at: ts, process_id: processId,
     } });
     return input.id;
   },

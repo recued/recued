@@ -41,6 +41,23 @@ const sourceOver = (copy: MarketplaceCatalogueSnapshot) => createInstallOfferSou
 });
 
 describe('the offer source', () => {
+  // D-405 slice 3 — "Not now" on an offer: keyed as the row keys it, read at each search.
+  it('⛔ leaves out an offer the owner said "Not now" to, and offers it again once it comes back', async () => {
+    let hidden = new Set(['offer:pack:expense-ledger']);
+    const source = createInstallOfferSource({
+      catalogue: catalogue(SNAPSHOT),
+      enabled: () => true,
+      installedPackSlugs: () => new Set(),
+      hasRecipe: () => false,
+      hidden: (key) => hidden.has(key),
+    });
+    expect((await source('receipt', [])).map((offer) => offer.slug)).toEqual(['extract-receipt']);
+    hidden = new Set(['offer:recipe:extract-receipt']);
+    expect((await source('receipt', [])).map((offer) => offer.slug)).toEqual(['expense-ledger']);
+    hidden = new Set();
+    expect((await source('receipt', [])).map((offer) => offer.slug).sort()).toEqual(['expense-ledger', 'extract-receipt']);
+  });
+
   it('offers from the catalogue, leaving out what is installed, read at each search', async () => {
     let installed = new Set<string>();
     const source = createInstallOfferSource({

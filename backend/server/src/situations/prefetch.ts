@@ -74,6 +74,10 @@ export const createSituationPrefetch = (deps: {
   getAccess: () => SituationAccess | undefined;
   /** A contact's name by an id an item's `who` carries (`situationPersonName`). */
   personName?: (id: string) => string | undefined;
+  /** D-406 follow-up (2026-11-20) — for a message carrying a contact the owner picked by its exact id, whether a
+   *  person is that contact's namesake, reached only through its name's words (`createSituationPickSettlement`);
+   *  null when it carries none. */
+  settledByPick?: (message: string) => ((personId: string) => boolean) | null;
   measure?: (name: string, value: number, labels: Record<string, string>) => void;
   budget_ms?: number;
 }): Middleware => ({
@@ -94,10 +98,22 @@ export const createSituationPrefetch = (deps: {
       const capture = situationPrefetchSourceCapture(ctx.state);
       const result = await Promise.race([access.prefetch(message, ctx.source, controller.signal, Boolean(capture)), timeout]);
       if (!result || controller.signal.aborted || performance.now() - started > budget) { outcome = 'timeout'; return; }
+      // D-406 follow-up (2026-11-20) — a contact the owner picked settles its own name: a namesake's items are
+      // left out, and an ambiguity only between them is none. Before, the pick's own title brought both people's
+      // birthdays, each `ambiguous`, under "ask which one before acting" (`chat-picked-contacts.ts`).
+      const settles = deps.settledByPick?.(message) ?? null;
+      const settledAway = (item: SituationItem): boolean => settles !== null && Boolean(item.who.value?.length) && item.who.value!.every(settles);
+      const clusters = settles === null ? result.clusters
+        : result.clusters.map(cluster => ({ ...cluster, items: cluster.items.filter(item => !settledAway(item)) })).filter(cluster => cluster.items.length > 0);
+      const refKeyOf = (ref: { collection: string; id: string }): string => JSON.stringify([ref.collection, ref.id]);
+      const leftOut = new Set(settles === null ? [] : result.clusters.flatMap(cluster => cluster.items.filter(settledAway).map(item => refKeyOf(item.ref))));
       // Everything the message matched, shown or not; the rows below are at most three of it.
-      const matched = result.omitted + result.clusters.reduce((sum, cluster) => sum + cluster.items.length, 0);
+      const matched = result.omitted + clusters.reduce((sum, cluster) => sum + cluster.items.length, 0);
       const partial = Boolean(result.partial?.length);
-      const ambiguous = new Set(result.ambiguous.flatMap(entry => entry.choices.map(ref => JSON.stringify([ref.collection, ref.id]))));
+      const ambiguous = new Set(result.ambiguous.flatMap(entry => {
+        const choices = entry.choices.map(refKeyOf).filter(key => !leftOut.has(key));
+        return choices.length > 1 ? choices : [];
+      }));
       const payload: Record<string, unknown>[] = [];
       // Keep the query's consequence/person/name priorities across groups, too.
       // Round-robin only inside each tier: weaker keyword hits must not push a
@@ -105,7 +121,7 @@ export const createSituationPrefetch = (deps: {
       const text = situationText({ text: message, surface: 'prefetch' });
       // D-338 — each row says when it happens on the turn's clock, as the tool's items do.
       const zone = chatTurnTimeZoneOf(ctx.state);
-      const queues = result.clusters.map(cluster => cluster.items.map(item => ({ cluster_id: cluster.id, floor: item.consequence === 'floor',
+      const queues = clusters.map(cluster => cluster.items.map(item => ({ cluster_id: cluster.id, floor: item.consequence === 'floor',
         person: ['match', 'near'].includes(item.who.verdict), direct: text.title(item.what.value ?? ''),
         item: situationItemForModel(item, deps.personName, { zone, isPrivate: access.isPrivate }) })));
       const tiers = [true, false].flatMap(floor => [true, false].flatMap(person => [true, false].map(direct =>
@@ -116,7 +132,7 @@ export const createSituationPrefetch = (deps: {
         const row: PrefetchRow = { ...item, cluster_id,
           what: { ...item.what, value: item.what.value?.slice(0, 240) ?? null },
           evidence: item.evidence.slice(0, 3),
-          ...(ambiguous.has(JSON.stringify([item.ref.collection, item.ref.id])) ? { ambiguous: true } : {}),
+          ...(ambiguous.has(refKeyOf(item.ref)) ? { ambiguous: true } : {}),
         };
         // A row fits when the block it renders into does, header and count line included.
         // Rows measured as a bare array fitted only because their markers, which rendering

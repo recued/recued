@@ -5,7 +5,8 @@
  *
  *  ⛔⛔ THE GUARD IS TESTED AT THE STORE, NOT AT A HANDLER, BECAUSE THE HANDLERS
  *  HAVE ALREADY DIVERGED TWICE. `recipe.save` refuses a pack-owned WEBHOOK
- *  recipe; `recued_saveRecipe` has no ownership check at all;
+ *  recipe; `recued_saveRecipe` had no ownership check at all (since 2026-11-22 it
+ *  changes only the owner's own recipe, by publisher, which is not pack ownership);
  *  `recipe.installBySlug` mirrors neither. A store-level test is the only one that
  *  covers the writer nobody remembered — including the next one. */
 
@@ -167,15 +168,29 @@ describe('D-247 D14.1 — recipe.delete', () => {
     // A delete is the uninstall teardown for one recipe. Without this the
     // consumer stays bound to a recipe that no longer exists — the same orphan
     // class as the grant row this decision is about.
-    const replaceConsumer = vi.fn();
+    const order: string[] = [];
+    const prior = { consumer_kind: 'local_recipe', consumer_id: 'hooked', bindings: [], triggers: [] };
+    const replaceConsumer = vi.fn(() => { order.push('replace'); return prior; });
+    // D-201 Slice 10I — and finalizes it once the row is gone, so what its
+    // webhook held is closed or cancelled rather than stranded.
+    const finalizeConsumerReplacement = vi.fn(() => { order.push('finalize'); });
+    const restoreConsumer = vi.fn();
     store.save(recipe('hooked'), 'kitchen', 'inline', NOW);
     const r = deleteRecipe(
-      { store, contractStore, webhookConsumerStore: { replaceConsumer } as never },
+      {
+        store,
+        contractStore,
+        webhookConsumerStore: { replaceConsumer, finalizeConsumerReplacement, restoreConsumer } as never,
+      },
       'hooked',
     );
     expect(r).toEqual({ deleted: true });
     expect(replaceConsumer).toHaveBeenCalledWith(
       expect.objectContaining({ consumer_kind: 'local_recipe', consumer_id: 'hooked', enabled: false }),
     );
+    expect(finalizeConsumerReplacement).toHaveBeenCalledWith(prior);
+    expect(order).toEqual(['replace', 'finalize']);
+    expect(restoreConsumer).not.toHaveBeenCalled();
+    expect(store.get('hooked')).toBeNull();
   });
 });

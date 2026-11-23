@@ -1442,7 +1442,7 @@ test('Chat preserves its Activity disclosure through owner and live repaints', a
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(toggle).toBeFocused();
   await expect(page.locator('[data-recued-chat-route-activity-row]'))
-    .toContainText('used mail.search');
+    .toContainText('searched your mail');
   await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
     kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'turn_activity_focus', cursor: 3,
     final: { id: 'activity-final', session_id: 'chat_1', turn_id: 'turn_activity_focus', role: 'assistant', contributor: 'model',
@@ -1453,6 +1453,74 @@ test('Chat preserves its Activity disclosure through owner and live repaints', a
   } }));
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(toggle).toBeFocused();
+});
+
+test('Chat names a call that ran an installed recipe by the recipe\'s name, live and once answered', async ({ page }) => {
+  // The owner, 2026-11-13: its line read the tool's name ("used recued-core/control-device ✓").
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const row = page.locator('[data-recued-chat-route-activity-row]');
+  const fire = (event: Record<string, unknown>) => page.evaluate((event) =>
+    window.__app.fireMessage({ type: 'server_event', event }), event);
+  const call = { session_id: 'chat_1', turn_id: 'turn_recipe_name', tool_name: 'recued-core/weekly-digest', tier: 2 };
+
+  await fire({ ...call, kind: 'chat.tool_call_started', args: {}, recipe_name: 'Weekly digest', cursor: 1 });
+  await expect(row).toHaveText('running “Weekly digest”...');
+  await fire({ ...call, kind: 'chat.tool_call_completed', status: 'ok', result_ref: 'chat_1:turn_recipe_name:x', cursor: 2 });
+  await expect(row).toContainText('ran “Weekly digest”');
+  await fire({ kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'turn_recipe_name', cursor: 3,
+    final: { id: 'recipe-final', session_id: 'chat_1', turn_id: 'turn_recipe_name', role: 'assistant', contributor: 'model',
+      content: 'Sent the digest.', target_server: 'self', ts: 3,
+      picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: '1', instance_id: 'fixture' } },
+      model_used: { provider: 'local', model_id: 'fixture' },
+      tool_calls: [{ tool_name: 'recued-core/weekly-digest', tier: 2, args: {}, recipe_name: 'Weekly digest',
+        status: 'ok', started_at: 1, completed_at: 2 }] } });
+  await expect(page.getByText('Sent the digest.')).toBeVisible();
+  // An answered turn's activity starts folded.
+  const toggle = page.locator('[data-recued-chat-route-activity-toggle]');
+  await expect(toggle).toHaveText('▸ Activity (1)');
+  await toggle.click();
+  await expect(row).toHaveText('ran “Weekly digest” ✓');
+  await expect(page.locator('[data-recued-chat-route]')).not.toContainText('recued-core/weekly-digest');
+});
+
+test('A change the chat waited on reads as its card does, waiting and then done', async ({ page }) => {
+  // Live, 2026-11-13: its line read "couldn't change a calendar event: it is waiting for your yes",
+  // and still did once its card said the change was done.
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const fire = (event: Record<string, unknown>) => page.evaluate((event) =>
+    window.__app.fireMessage({ type: 'server_event', event }), event);
+  const args = { source_id: 'meeting', summary: 'Team meeting' };
+  const proposal = { plan_id: 'awaited-rename', session_id: 'chat_1', turn_id: 'awaited-turn', tool: 'calendar.update', tier: 1,
+    classification: 'write', args, args_hash: 'h'.repeat(64), status: 'proposed', created_at: 1 };
+  await fire({ kind: 'chat.plan_proposed', session_id: 'chat_1', turn_id: 'awaited-turn', plan_id: 'awaited-rename',
+    tool: 'calendar.update', tier: 1, args, args_hash: proposal.args_hash, created_at: 1, held: true, cursor: 1 });
+  await fire({ kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'awaited-turn', cursor: 2,
+    final: { id: 'awaited-answer', session_id: 'chat_1', turn_id: 'awaited-turn', role: 'assistant', contributor: 'model',
+      content: 'I asked you to approve the rename.', target_server: 'self', ts: 2,
+      picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: '1', instance_id: 'fixture' } },
+      model_used: { provider: 'local', model_id: 'fixture' },
+      tool_calls: [{ tool_name: 'calendar.update', tier: 1, args, status: 'error', reason: 'awaiting_approval',
+        detail: 'plan_id=awaited-rename. Sent to the owner to approve.', awaiting_plan_id: 'awaited-rename',
+        started_at: 1, completed_at: 2 }] } });
+  await expect(page.getByText('I asked you to approve the rename.')).toBeVisible();
+  const row = page.locator('[data-recued-chat-route-activity-row]');
+  // Waiting is no failure: the activity stays open, and says what it waits for.
+  await expect(row).toHaveText('waiting for your yes: change a calendar event');
+  await expect(page.locator('[data-recued-chat-route-activity-toggle]')).not.toContainText('Needs attention');
+
+  await fire({ kind: 'chat.plan_resolved', session_id: 'chat_1', turn_id: 'awaited-turn',
+    plan: { ...proposal, status: 'approved', resolved_at: 3 }, cursor: 3 });
+  await fire({ kind: 'chat.tool_call_completed', session_id: 'chat_1', turn_id: 'awaited-run', tool_name: 'calendar.update',
+    tier: 1, plan_id: 'awaited-rename', status: 'ok', result_ref: 'chat_1:awaited-run:calendar.update', cursor: 4 });
+  const card = page.locator(`[${CHAT_PLAN_CARD}][data-plan-id="awaited-rename"]`);
+  await expect(card).toContainText('Completed');
+  // Done, it folds like any finished turn's activity.
+  const toggle = page.locator('[data-recued-chat-route-activity-toggle]');
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  await expect(row).toHaveText('changed a calendar event ✓');
+  await expect(page.locator('[data-recued-chat-route]')).not.toContainText("couldn't change a calendar event");
 });
 
 test('Chat contains long live Activity text on a narrow phone', async ({ page }) => {
@@ -2071,10 +2139,12 @@ for (const width of [280, 1280]) {
     const card = page.locator('[' + CHAT_PLAN_CARD + '][data-plan-id="resource-review-calendar"]');
     const review = card.locator('[data-resource-review]');
     await expect(review).toBeVisible();
-    await expect(review).toContainText('Before:');
-    await expect(review).toContainText('After:');
-    await expect(review).toContainText('changes require a fresh review');
-    await expect(review).toContainText('2026-10-17T14:00:00.000Z');
+    // What changes, in the owner's words: the moment in their own zone, never an ISO stamp, the
+    // snapshot as JSON or the version it was checked against.
+    await expect(review).toContainText('Meeting');
+    await expect(review).toContainText(/Starts: .*2026.* → .*2026/);
+    await expect(review).not.toContainText('2026-10-17T');
+    await expect(review).not.toContainText('"start_at"');
     await expect(review.locator('script')).toHaveCount(0);
     await expect(card.locator('[' + CHAT_PLAN_APPROVE + ']')).toBeEnabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

@@ -61,7 +61,7 @@ import {
   type PacksSurfaceMount,
 } from './packs-surface.js';
 import { mountPackDiscovery, type PackNeed } from '../discover/pack-discovery.js';
-import { serializeShellRoute } from '../shell/route.js';
+import { serializeChatAnswerAddress, serializeShellRoute, type ChatAnswerAddress } from '../shell/route.js';
 import { DISCOVER_PANEL_STYLES } from '../discover/discover-panel.js';
 // The Use tab's surface styles — inert until a recipe-owning pack's detail
 // renders one.
@@ -248,6 +248,8 @@ export const PACKS_ROUTE_STYLES = [
   PACKS_SURFACE_STYLES,
   DISCOVER_PANEL_STYLES,
   PACK_APP_STYLES,
+  // D-404 slice B2 — the way back to the chat answer whose install offer opened the page.
+  '.packs-back-to-chat { display: inline-block; margin: 0 0 8px; font-size: 13px; font-weight: 600; text-decoration: none; } .packs-back-to-chat:hover, .packs-back-to-chat:focus-visible { text-decoration: underline; }',
   RECIPE_RESULT_PANEL_STYLES,
   PACKS_ROUTE_CHROME_STYLES,
 ].join('\n');
@@ -374,6 +376,9 @@ export interface BootstrapPacksRouteOptions {
    *  DETAIL view on mount; the panel keeps the hierarchical address aligned as
    *  the pack and its runtime-generated read view change. */
   initialPackSlug?: string;
+  /** D-404 slice B2 (D-323's P6) — the chat answer whose install offer opened this pack's page: the
+   *  page offers "Back to chat", where the offer then says the pack is installed and offers Ask again. */
+  returnToChat?: ChatAnswerAddress;
   /** Runtime-generated read view selected by
    * `#packs/<slug>/use/<recipe-id>`. Ignored without `initialPackSlug`. */
   /** D-282 slice C — the drawer pins, and the writer. Forwarded straight to
@@ -478,6 +483,14 @@ export const bootstrapPacksRoute = (
 
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(PACKS_ROUTE_HOST_ATTR, '');
+  if (opts.returnToChat !== undefined && opts.initialPackSlug !== undefined) {
+    const back = doc.createElement('a');
+    back.className = 'packs-back-to-chat';
+    back.setAttribute('data-packs-back-to-chat', '');
+    back.href = serializeChatAnswerAddress(opts.returnToChat);
+    back.textContent = 'Back to chat';
+    routeRoot.appendChild(back);
+  }
 
   const header = doc.createElement('header');
   header.className = 'packs-route-header';

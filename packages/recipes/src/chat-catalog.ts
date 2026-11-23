@@ -35,6 +35,7 @@
  *  Spec: § A.1.1 (Tier 2 surface enumeration) + § P1 phase notes.
  */
 
+import { BROWSER_ACT_STEPS_ARGUMENT_SCHEMA, recipeBrowserSettings } from '@recued/contracts';
 import type {
   IngredientKind,
   IngredientManifest,
@@ -55,6 +56,7 @@ import {
 } from '@recued/contracts';
 
 import { mailSenderSettings } from './mail-sender-settings.js';
+import { browserArgumentKinds } from './browser-argument-kinds.js';
 
 /** Spec § A.1.1, amended 2026-07-02 (the 300-pack-wave default flip) —
  *  chat exposure default is SOURCE-DEPENDENT:
@@ -679,6 +681,7 @@ export const deriveTier2ArgSchema = (
 ): Record<string, unknown> => {
   const properties: Record<string, Record<string, unknown>> = {};
   const required: string[] = [];
+  const browserConstraints: Record<string, unknown>[] = [];
   const vars = recipe.variables ?? {};
   // ⛔ The GUARD is the authority on requiredness, not the presence of a default.
   // See {@link guardRequiredVariables}: a recipe that refuses to run without a
@@ -695,7 +698,11 @@ export const deriveTier2ArgSchema = (
   // owner's catalog says so. A door's run fills it too since 2026-11-03, its
   // refusal naming no mailbox, so a door's catalog says that.
   const filledByRun = mailSenderSettings(recipe);
+  // D-402 slice H2 — a browser is the account the recipe acts in, set per dish by its owner, never by a
+  // caller (`browser-settings.ts`); left out, `additionalProperties: false` refuses it from any caller.
+  const browserSettings = new Set(recipeBrowserSettings(recipe).map((setting) => setting.key));
   for (const key of Object.keys(vars).sort()) {
+    if (browserSettings.has(key)) continue;
     const prop = variableToArgProp(vars[key]);
     if (!prop) continue; // credential → not an AI-settable arg
     if (filledByRun.has(key)) {
@@ -704,6 +711,47 @@ export const deriveTier2ArgSchema = (
     }
     properties[key] = prop.schema;
     if (prop.required || guardRequired.has(key)) required.push(key);
+  }
+  const browserKinds = browserArgumentKinds(recipe);
+  for (const [name, kind] of browserKinds) {
+    if (kind !== 'steps' && properties[name]?.type === 'string') properties[name] = {
+      ...properties[name], 'x-recued-browser-argument': kind,
+    };
+  }
+  // Derive from the actual op binding, not a recipe name or publisher. This
+  // applies equally to installed Toolkit recipes and owner-authored wrappers.
+  for (const step of recipe.steps ?? []) {
+    if ('op' in step && step.op === 'core.dom.inspect' && 'args' in step && step.args
+      && Object.keys(step).every(key => ['id', 'op', 'args'].includes(key))) {
+      const args = step.args as Record<string, unknown>;
+      const binding = (value: unknown) => typeof value === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(value)?.[1] : undefined;
+      const find = binding(args.find), from = binding(args.from), block = binding(args.block);
+      if (find && from && browserKinds.get(find) === 'text' && properties[from]?.type === 'number') {
+        const emptyScope = { [find]: { const: '' }, ...(block && properties[block] ? { [block]: { const: '' } } : {}) };
+        browserConstraints.push({ anyOf: [{ properties: { [from]: { const: 0 } } }, { properties: emptyScope }] });
+        if (block && properties[block]) browserConstraints.push({ anyOf: [find, block].map(key => ({ properties: { [key]: { const: '' } } })) });
+      }
+    }
+    if (!('op' in step) || step.op !== 'core.dom.act' || !('args' in step) || !step.args) continue;
+    const binding = (step.args as { steps?: unknown }).steps;
+    const name = typeof binding === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(binding)?.[1] : undefined;
+    if (name && browserKinds.get(name) === 'steps' && properties[name]?.type === 'array') properties[name] = { ...properties[name], ...BROWSER_ACT_STEPS_ARGUMENT_SCHEMA,
+      // A direct unconditional Act wrapper can classify parser failure as
+      // deterministic for unchanged-call suppression. The data DSL marker alone
+      // must not grant that inference to conditional or multi-step recipes.
+      ...(recipe.steps.length === 1 && !recipe.prefetch_steps?.length && !recipe.depends_on?.length
+        && Object.keys(step).every(key => ['id', 'op', 'args'].includes(key))
+        ? { 'x-recued-browser-act-direct': true } : {}),
+    };
+    if (name && properties[name]?.['x-recued-browser-act-direct'] === true) {
+      const pageBinding = (step.args as { page?: unknown }).page;
+      const page = typeof pageBinding === 'string' ? /^\{\{config\.([A-Za-z0-9_]+)\}\}$/.exec(pageBinding)?.[1] : undefined;
+      if (page && properties[page]?.type === 'string') browserConstraints.push({ anyOf: [
+        { required: [page], properties: { [page]: { type: 'string', minLength: 1 } } },
+        { properties: { [name]: { items: { properties: { do: { const: 'data' } } } } } },
+        { properties: { [name]: { items: [{ anyOf: ['page', 'url'].map(key => ({ required: [key], properties: { [key]: { type: 'string', minLength: 1 } } })) }] } } },
+      ] });
+    }
   }
   // D-320 §3.5 — the run's own choice of connection, offered only where there is
   // one to make (two or more connections on a slot's list), so a recipe whose
@@ -733,6 +781,7 @@ export const deriveTier2ArgSchema = (
     additionalProperties: false,
   };
   if (required.length > 0) schema.required = required;
+  if (browserConstraints.length) schema.allOf = browserConstraints;
   return schema;
 };
 

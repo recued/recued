@@ -97,8 +97,8 @@ describe('D-337 — a turn whose rest waits for an approval ends there', () => {
     expect(dispatchTool).toHaveBeenCalledTimes(3);
     expect(executeAiCall).toHaveBeenCalledTimes(3);
     expect(ended).toMatchObject({ termination_reason: 'waiting_for_approval', total_rounds: 3 });
-    // The model's own words stay, and the owner reads why nothing more happened.
-    expect(result.assistant_content).toBe('Let me click Search again.\n\nThe rest of this request waits for '
+    // The host explains the unfinished stop without retaining planning prose.
+    expect(result.assistant_content).toBe('The rest of this request waits for '
       + 'your answer to the approval. Once you answer it, this conversation carries on by itself.');
   });
 

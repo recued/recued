@@ -35,6 +35,10 @@ const FIELDS = `<!doctype html><html><body>
   <option value="won" selected>Closed won</option></select>
 <select id="tags" multiple><option value="a">Alpha</option><option value="b" selected>Beta</option>
   <option value="c">Gamma</option></select>
+<select id="refusing-select"><option value="old" selected>Old</option><option value="new">New</option></select>
+<select id="restricted"><option value="ok" selected>Allowed</option><option value="locked" disabled>Locked</option>
+  <option value="secret" hidden>Private hidden choice</option><option value="a">Same label</option><option value="b">Same label</option></select>
+<input type="checkbox" id="refusing-check">
 <input type="checkbox" id="vip">
 <input type="radio" name="tier" id="gold" checked><input type="radio" name="tier" id="silver">
 <input type="password" id="pw" value="hunter2">
@@ -70,6 +74,12 @@ const FIELDS = `<!doctype html><html><body>
   refusing.addEventListener('input', () => setTimeout(() => { refusing.textContent = 'keep'; }, 0));
   // The page's own handlers, as a framework's would be.
   window.heard = [];
+  document.querySelector('#refusing-select').addEventListener('change', () => setTimeout(() => {
+    document.querySelector('#refusing-select').value = 'old';
+  }, 0));
+  document.querySelector('#refusing-check').addEventListener('change', () => setTimeout(() => {
+    document.querySelector('#refusing-check').checked = false;
+  }, 0));
   for (const id of ['name', 'stage', 'tags', 'vip']) {
     document.getElementById(id).addEventListener('change', () => window.heard.push(id));
   }
@@ -242,12 +252,51 @@ describe('Bridge field read and write in real Chrome', () => {
     expect(await page.locator('#stage').inputValue()).toBe('won');
     expect(await fill('#vip', 'maybe')).toMatchObject(notApplied('A checkbox or radio button takes true or false.'));
     // A radio button is cleared by choosing another, never by clicking it again.
-    expect(await fill('#gold', 'false')).toMatchObject(notApplied('The page did not change the checkbox or radio button.'));
+    expect(await fill('#gold', 'false')).toMatchObject(notApplied('Select another radio button in this group with true; an already selected radio cannot be cleared by clicking it.'));
     expect(await page.locator('#gold').isChecked()).toBe(true);
     expect(await fill('#amount', 'twelve')).toMatchObject(notApplied('The field emptied the value. Check its format.'));
     expect(await fill('#upload', 'C:\\report.pdf')).toMatchObject(notApplied('A file field cannot be typed into.'));
     expect(await fill('#label', 'new')).toMatchObject(notApplied('The element is not a field or an editor.'));
     expect(await page.locator('#label').innerText()).toBe('Hello world');
+  }, 60_000);
+
+  it.each(PATHS)('%s: checked writes are idempotent, select radio groups, and detect asynchronous refusal', async path => {
+    const { fill, page, heard } = await open(path);
+    expect(await fill('#vip', 'true')).toMatchObject({ status: 'ok' });
+    expect(await fill('#vip', 'true')).toMatchObject({ status: 'ok' });
+    expect((await heard()).filter(id => id === 'vip')).toHaveLength(1);
+    expect(await fill('#silver', 'true')).toMatchObject({ status: 'ok' });
+    expect(await page.locator('#silver').isChecked()).toBe(true);
+    expect(await page.locator('#gold').isChecked()).toBe(false);
+    expect(await fill('#silver', 'false')).toMatchObject({ status: 'error' });
+    expect(await page.locator('#silver').isChecked()).toBe(true);
+    expect(await fill('#refusing-select', 'new')).toMatchObject({ status: 'error', error: { code: 'value_not_applied' } });
+    expect(await page.locator('#refusing-select').inputValue()).toBe('old');
+    expect(await fill('#refusing-check', 'true')).toMatchObject({ status: 'error', error: { code: 'value_not_applied' } });
+    expect(await page.locator('#refusing-check').isChecked()).toBe(false);
+  }, 60_000);
+
+  it.each(PATHS)('%s: hidden, disabled and ambiguous options do not change the selection', async path => {
+    const { fill, page } = await open(path);
+    for (const value of ['locked', 'secret', 'Same label']) {
+      expect(await fill('#restricted', value)).toMatchObject({ status: 'error' });
+      expect(await page.locator('#restricted').inputValue()).toBe('ok');
+    }
+    expect(await fill('#restricted', 'b')).toMatchObject({ status: 'ok' });
+    expect(await page.locator('#restricted').inputValue()).toBe('b');
+  }, 60_000);
+
+  it.each(PATHS)('%s: field writes stay in the active dialog', async path => {
+    const { fill, page } = await open(path);
+    await page.evaluate(() => {
+      const modal = document.createElement('div'); modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true');
+      modal.innerHTML = '<label>Category<select id="inside"><option>Home</option><option>Work</option></select></label>';
+      document.body.append(modal);
+    });
+    expect(await fill('#stage', 'appt')).toMatchObject({ status: 'error', error: { code: 'value_not_applied' } });
+    expect(await page.locator('#stage').inputValue()).toBe('won');
+    expect(await fill('#inside', 'Work')).toMatchObject({ status: 'ok' });
+    expect(await page.locator('#inside').inputValue()).toBe('Work');
   }, 60_000);
 
   it.each(PATHS)('%s: a rich-text editor takes the text through its own input events', async path => {
@@ -307,7 +356,22 @@ describe('Bridge field read and write in real Chrome', () => {
   it.each(PATHS)('%s: something on top of the element, or its being disabled, means nothing is clicked, and why', async path => {
     const { page, click } = await open(path, '/clicks');
     expect(await click('#covered')).toMatchObject({ status: 'error', error: { code: 'value_not_applied',
-      message: 'Something else on the page covers it (“Accept cookies”), so it was not clicked. Close or answer that first.' } });
+      message: 'Something else on the page covers it (“Accept cookies”), so it was not clicked. Close or answer that first.',
+      obstruction: { target: { tag: 'button' }, blocker: { tag: 'div', label: 'Accept cookies', role: 'dialog' }, executed: false } } });
+    await page.evaluate(() => document.querySelector('#cover')!.setAttribute('aria-label', 'Long label '.repeat(12)));
+    const longLabel = await click('#covered');
+    expect(longLabel.error?.obstruction?.blocker).toMatchObject({ label: 'Long label '.repeat(12).trim().slice(0, 80), label_truncated: true });
+    await page.evaluate(() => {
+      const cover = document.querySelector('#cover')!;
+      cover.removeAttribute('aria-label'); cover.removeAttribute('title'); cover.textContent = '';
+      cover.setAttribute('ref', 'e999');
+    });
+    const unlabeled = await click('#covered');
+    expect(unlabeled).toMatchObject({ status: 'error', error: { obstruction: {
+      operation: 'click', executed: false, reason: 'target_occluded', source: 'hit_test',
+      blocker: { tag: 'div', role: 'dialog' }, waited_ms: expect.any(Number) } } });
+    expect(unlabeled.error!.obstruction!.blocker).not.toHaveProperty('label');
+    expect(unlabeled.error!.obstruction!.blocker).not.toHaveProperty('ref');
     expect(await click('#off')).toMatchObject({ status: 'error', error: { code: 'value_not_applied',
       message: 'It is disabled, so it was not clicked.' } });
     expect(await heardBy(page, 'covered')).toEqual([]);

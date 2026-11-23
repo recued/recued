@@ -5,7 +5,23 @@ export const KITCHEN_DRAFT_IMPORT_OP = 'core.kitchen.draft.import';
 export const KITCHEN_DRAFT_LIST_OP = 'core.kitchen.draft.list';
 export const KITCHEN_DRAFT_GET_OP = 'core.kitchen.draft.get';
 export const KITCHEN_DRAFT_UPDATE_OP = 'core.kitchen.draft.update';
+/** D-402 slice A5 — an AI app's draft request: the job it kept for its draft, made into a recipe
+ *  kept in the owner's Kitchen as Recued's. A write, off for every door until the owner grants it. */
+export const KITCHEN_DRAFT_FROM_JOB_OP = 'core.kitchen.draft.from_job';
+export const KITCHEN_DRAFT_FROM_JOB_SLUG = 'kitchen-draft-from-job';
+/** D-402 slice A5 — what an AI app's draft request returns. */
+export interface KitchenDraftFromJobReceipt {
+  draft_id: string;
+  title: string;
+  /** Relative to the Recued server. */
+  kitchen_path: string;
+  /** What the owner reads in Kitchen: the app's labels, as checked, and the compiler's notes. */
+  notes: string[];
+  installed: false;
+}
 export const kitchenDraftPath = (draftId: string): string => `/webclient/#kitchen/import/${encodeURIComponent(draftId)}`;
+/** D-402 slice E4c — a saved recipe in Kitchen, where changes to it continue (D-333). */
+export const kitchenRecipePath = (recipeId: string): string => `/webclient/#kitchen/recipe/${encodeURIComponent(recipeId)}`;
 
 /** UTF-16 range inside a decoded JSON string, before JSON escaping. */
 export interface AuthoringReferenceSpan {
@@ -47,9 +63,29 @@ export interface KitchenImportDraft {
   /** D-333 — the saved recipe this item changes. Only the owner's own items have one, so it is
    *  never on an MCP result. */
   base?: KitchenWorkBase;
+  /** D-402 slice A3 — what the owner should look at before saving a draft Recued compiled: where
+   *  each setting came from, a step to fill in, a secret asked for at each run. Only a compiled
+   *  draft has notes, and its origin is no caller's, so they are never on an MCP result. */
+  notes?: string[];
+  /** D-402 slice A3 — what a compiled draft was made from. */
+  made_from?: KitchenDraftMadeFrom;
 }
 /** D-333 — a saved recipe, at the version that changes in progress began from. */
 export interface KitchenWorkBase { recipe_id: string; version: number }
+/** D-402 slice A3 — a request in the owner's chat, or an AI app's job (`recued_startJob`). */
+export type KitchenDraftMadeFrom =
+  | { kind: 'chat_request'; session_id: string; turn_id: string }
+  | { kind: 'ai_app_job'; job_id: string };
+/** D-402 slice A3 — the origins of a draft Recued compiled (`recued:chat`, `recued:job:<token>`).
+ *  No caller's own, so no AI app can list, read or change one: an app that wants changes makes a
+ *  draft of its own. */
+export const KITCHEN_COMPILED_ORIGIN_PREFIX = 'recued:';
+export const kitchenCompiledOrigin = (made_from: KitchenDraftMadeFrom, mcp_token_id?: string): string =>
+  made_from.kind === 'chat_request' ? `${KITCHEN_COMPILED_ORIGIN_PREFIX}chat`
+    : `${KITCHEN_COMPILED_ORIGIN_PREFIX}job:${mcp_token_id ?? 'unknown'}`;
+/** D-402 slice A3 — the most notes a compiled draft keeps, and the longest one. */
+export const KITCHEN_DRAFT_MAX_NOTES = 50;
+export const KITCHEN_DRAFT_NOTE_MAX_CHARS = 500;
 export interface KitchenDraftImportReceipt extends Omit<KitchenImportDraft, 'source'> {
   replayed: boolean;
   /** Relative to the Recued server used for this MCP connection. */

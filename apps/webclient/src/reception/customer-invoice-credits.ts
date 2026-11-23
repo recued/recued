@@ -27,15 +27,16 @@ export const mountCustomerInvoiceCredits = (opts: { document: Document;host: HTM
   const amount = input('Credit amount','text','credit_amount',24);amount.inputMode = 'decimal';const issued = input('Credit date','date','credit_issued_on',10);
   const label = add('label','Credit reason (shown on customer copy)',editor);const reason = doc.createElement('textarea');reason.name = 'credit_reason';reason.required = true;reason.maxLength = 1000;label.appendChild(reason);
   const prepare = doc.createElement('button');prepare.type = 'submit';prepare.textContent = 'Preview invoice credit';editor.appendChild(prepare);
-  const close = button('Close invoice credit',editor,() => reset());const status = add('p','',root);status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+  const close = button('Close invoice credit',editor,() => reset());const editorActions=add('div','',editor);editorActions.className='financial-actions';editorActions.appendChild(prepare);editorActions.appendChild(close);const status = add('p','',root);status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   const preview = add('div','',editor);preview.setAttribute('data-invoice-credit-preview','');const review = button('Review invoice credit',editor,() => { void submit(); });review.hidden = true;
   const runs = add('a','Review credit in Runs',editor);runs.hidden = true;
   const historyStatus = add('p','');historyStatus.setAttribute('role','status');const historyHost = add('div','');historyHost.setAttribute('data-invoice-credit-history','');
-  const actions = add('div','');const refresh = button('Refresh invoice credits',actions,() => { void loadHistory(cursor,[...previous]); });
+  const actions = add('div','');actions.className = 'financial-actions';const refresh = button('Refresh invoice credits',actions,() => { void loadHistory(cursor,[...previous]); });
   const newer = button('Newer invoice credits',actions,() => { if (previous.length) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
   const older = button('Older invoice credits',actions,() => { if (nextCursor) void loadHistory(nextCursor,[...previous,cursor]); });
   const copyHost = add('section','');copyHost.hidden = true;copyHost.setAttribute('data-invoice-credit-copy','');add('h3','Customer invoice credit',copyHost);const copyLines = add('div','',copyHost);
-  const print = button('Print invoice credit',copyHost,() => printCopy());const download = button('Download invoice credit',copyHost,() => {
+  const copyActions = add('div','',copyHost);copyActions.className = 'financial-actions';
+  const print = button('Print invoice credit',copyActions,() => printCopy());const download = button('Download invoice credit',copyActions,() => {
     if (copy && !disposed) { try { downloadReceiptHtml(doc,root,`invoice-credit-${copy.copy_hash.slice(0,16)}.html`,customerInvoiceCreditHtml(copy)); } catch { status.textContent = 'The credit copy could not be downloaded. Try Print instead.'; } }
   });
   let corrections: ReturnType<typeof mountCustomerCreditCorrections> | null = null;let creditButtons: HTMLButtonElement[] = [];
@@ -93,12 +94,12 @@ export const mountCustomerInvoiceCredits = (opts: { document: Document;host: HTM
     } catch (error) { if (!disposed && current === historyGeneration) historyStatus.textContent = message(error); }
     finally { if (!disposed && current === historyGeneration) { loading = false;controls(); } }
   };
-  const open = () => {
+  const open = (focus = true) => {
     if (disposed || busy || corrections?.isOpen() || !editor.hidden || !history?.snapshot_hash) return;
     if (!opts.canReview()) { status.textContent = 'Finish or close the payment correction or email before issuing a credit.';return; }
     frozen = history;prepared = null;queued = dirty = false;requestKey = crypto.randomUUID();generation++;heading.textContent = `Issue credit — ${history.invoice_ref}`;
     const now = new Date();issued.value = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;amount.value = reason.value = '';
-    preview.replaceChildren();review.hidden = true;runs.hidden = true;editor.hidden = false;copy = null;clearPrint();copyHost.hidden = true;status.textContent = 'Enter a credit up to the unpaid balance. Its reason appears on the customer copy.';controls();editor.focus();opts.onStateChanged();
+    preview.replaceChildren();review.hidden = true;runs.hidden = true;editor.hidden = false;copy = null;clearPrint();copyHost.hidden = true;status.textContent = 'Enter a credit up to the unpaid balance. Its reason appears on the customer copy.';controls();if(focus)editor.focus();opts.onStateChanged();
   };
   const submit = async () => {
     if (disposed || busy || queued || !prepared || !opts.canReview()) return;const target = prepared;const current = ++generation;busy = true;controls();opts.onStateChanged();let applied = false;

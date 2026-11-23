@@ -48,6 +48,8 @@ const ROUTES: ReadonlyArray<{ hash: string; route: string; marker: string }> = [
   { hash: '#reception', route: 'reception', marker: 'data-recued-reception-route' },
   { hash: '#approvals', route: 'approvals', marker: 'data-recued-approvals-route' },
   { hash: '#logs', route: 'logs', marker: 'data-recued-logs-route' },
+  // D-405 slice 4 — the Set up page, on the harness's default answers: a read it cannot make says so.
+  { hash: '#setup', route: 'setup', marker: 'data-recued-setup-route' },
   { hash: '#settings', route: 'settings', marker: 'data-recued-settings-route' },
   { hash: '#kitchen', route: 'kitchen', marker: 'data-recued-kitchen-route' },
   { hash: '#kitchen/pack', route: 'kitchen', marker: 'data-recued-kitchen-route' },

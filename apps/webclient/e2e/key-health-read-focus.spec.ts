@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { RotationResult, ServerSystemStatus } from '@recued/contracts';
+import type { KeyRotateRequest, RotationResult, ServerSystemStatus } from '@recued/contracts';
 import { FIXED_NOW, HARNESS_URL } from './helpers/full-app.js';
 
 type ReadRpc = 'key.health' | 'system.status';
@@ -10,6 +10,7 @@ interface KeyHealthReadFixture {
   reads: Record<ReadRpc, number>;
   writes: unknown[];
   expectedRotations: number;
+  expectedRequests?: KeyRotateRequest[];
   pending(method: ReadRpc): number;
   settleInitial(outcome: Outcome): void;
   release(method: ReadRpc, index: number, outcome: Outcome): void;
@@ -48,11 +49,12 @@ test.afterEach(async ({ page }) => {
   expect(externalRequests).toEqual([]);
   const receipt = await page.evaluate(() => ({
     writes: window.__keyHealthReadFocus.writes,
-    expected: window.__keyHealthReadFocus.expectedRotations,
+    expected: window.__keyHealthReadFocus.expectedRequests
+      ?? Array.from({ length: window.__keyHealthReadFocus.expectedRotations }, () => ({ op: 'master_dek_rotate' })),
     calls: window.__app.rpcCallCount('key.rotate'),
   }));
-  expect(receipt.writes).toEqual(Array.from({ length: receipt.expected }, () => ({ op: 'master_dek_rotate' })));
-  expect(receipt.calls).toBe(receipt.expected);
+  expect(receipt.writes).toEqual(receipt.expected);
+  expect(receipt.calls).toBe(receipt.expected.length);
 });
 
 const open = async (page: Page, width: number, outcome: Outcome = 'error', holdPosture = false) => {
@@ -309,3 +311,150 @@ for (const width of [390, 1280]) {
     });
   }
 }
+
+type RotationOutcome = 'success' | 'refused' | 'transport';
+declare global { interface Window {
+  __keyHealthRotation: { release(outcome: RotationOutcome): void };
+} }
+
+const openRotation = async (page: Page, width: number, request: KeyRotateRequest) => {
+  await open(page, width, 'success');
+  await page.evaluate(({ request, now }) => {
+    const fixture = window.__keyHealthReadFocus;
+    fixture.healthMode = 'ready';
+    fixture.expectedRequests = [request];
+    const previous = window.__connectionsFixture;
+    let resolve: ((reply: Reply) => void) | null = null;
+    window.__connectionsFixture = async (method, args) => {
+      if (method !== 'key.rotate') return previous?.(method, args);
+      fixture.writes.push(args);
+      return new Promise<Reply>(done => { resolve = done; });
+    };
+    window.__keyHealthRotation = {
+      release(outcome) {
+        const done = resolve;
+        if (!done) throw new Error('No pending key rotation.');
+        resolve = null;
+        const result: RotationResult = outcome === 'refused'
+          ? { ok: false, op: request.op, error: 'storage_io_error', message: 'Synthetic key store refused the write.' }
+          : { ok: true, op: request.op, key_class: request.op === 'master_dek_rotate' ? 'master_dek' : 'server_identity_key', rotated_at: now };
+        done(outcome === 'transport'
+          ? { error: { code: 'transport_disposed', message: 'Synthetic connection dropped.' } }
+          : { result });
+      },
+    };
+  }, { request, now: FIXED_NOW });
+  const keyClass = request.op === 'master_dek_rotate' ? 'master_dek' : 'server_identity_key';
+  const attr = request.op === 'mark_compromised' ? 'compromise' : 'rotate';
+  const action = panel(page).locator(`[data-recued-key-health-${attr}="${keyClass}"]`);
+  await action.focus(); await page.keyboard.press('Enter');
+  await expect(cancel(page)).toBeFocused();
+  return action;
+};
+const rotationProgress = (page: Page) => panel(page).getByRole('status').filter({ hasText: 'Rotating…' });
+const unloadBlocked = (page: Page) => page.evaluate(() => {
+  const event = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+});
+const releaseRotation = (page: Page, outcome: RotationOutcome) => page.evaluate(value => window.__keyHealthRotation.release(value), outcome);
+
+for (const width of [390, 1280]) {
+  for (const outcome of ['success', 'refused', 'transport'] as const) {
+    for (const owner of ['progress', 'outside'] as const) {
+      test(`Key Health rotation ${outcome} retains ${owner} ownership at ${width}px`, async ({ page }) => {
+        await openRotation(page, width, { op: 'master_dek_rotate' });
+        const originalConfirm = await confirm(page).elementHandle();
+        await confirm(page).focus(); await page.keyboard.press('Enter');
+        await expect(rotationProgress(page)).toHaveAttribute('aria-atomic', 'true');
+        await expect(rotationProgress(page)).toBeFocused();
+        await expect(panel(page)).toHaveAttribute('data-recued-key-health-panel-state', 'busy');
+        expect(await unloadBlocked(page)).toBe(true);
+        await originalConfirm!.evaluate(node => (node as HTMLButtonElement).click());
+        expect(await page.evaluate(() => window.__keyHealthReadFocus.writes)).toEqual([{ op: 'master_dek_rotate' }]);
+        if (owner === 'outside') await outside(page).focus();
+        else {
+          const progress = await rotationProgress(page).elementHandle();
+          const dialogs: string[] = [];
+          page.once('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.dismiss(); });
+          await page.evaluate(() => window.__app.setHash('#settings/server/storage'));
+          await expect(page).toHaveURL(/#settings\/server\/key-health$/);
+          expect(dialogs).toHaveLength(1); expect(dialogs[0]).toMatch(/key.*rotat|rotat.*key/i);
+          expect(await progress!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+        }
+        await releaseRotation(page, outcome);
+        const success = outcome === 'success';
+        await expect(panel(page)).toHaveAttribute('data-recued-key-health-panel-state', success ? 'done' : 'error');
+        const target = success ? panel(page).getByRole('button', { name: 'Close', exact: true }) : panel(page).getByRole('button', { name: 'Back', exact: true });
+        await expect(owner === 'progress' ? target : outside(page)).toBeFocused();
+        expect(await unloadBlocked(page)).toBe(false);
+        if (!success) {
+          await target.focus(); await page.keyboard.press('Enter');
+          await expect(rotate(page)).toBeFocused();
+        }
+        await originalConfirm!.evaluate(node => (node as HTMLButtonElement).click());
+        const dialogs: string[] = [];
+        page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.dismiss(); });
+        await page.evaluate(() => window.__app.setHash('#settings/account'));
+        await expect(page).toHaveURL(/#settings\/account$/);
+        expect(dialogs).toEqual([]);
+      });
+    }
+  }
+}
+
+for (const journey of [
+  { op: 'server_identity_rotate', outcome: 'success', owner: 'progress' },
+  { op: 'server_identity_rotate', outcome: 'transport', owner: 'progress' },
+  { op: 'mark_compromised', outcome: 'success', owner: 'progress' },
+  { op: 'mark_compromised', outcome: 'transport', owner: 'progress' },
+  { op: 'mark_compromised', outcome: 'refused', owner: 'progress' },
+  { op: 'server_identity_rotate', outcome: 'transport', owner: 'outside' },
+] as const) {
+  test(`Key Health identity ${journey.op} ${journey.outcome} retains ${journey.owner} ownership`, async ({ page }) => {
+    const request: KeyRotateRequest = journey.op === 'mark_compromised'
+      ? { op: journey.op, key_class: 'server_identity_key' } : { op: journey.op };
+    const action = await openRotation(page, journey.owner === 'outside' ? 1280 : 390, request);
+    await expect(panel(page)).toContainText(/every device will have to pair again/i);
+    await confirm(page).focus(); await page.keyboard.press('Enter');
+    await expect(rotationProgress(page)).toBeFocused();
+    if (journey.owner === 'outside') await outside(page).focus();
+    await releaseRotation(page, journey.outcome);
+    const refused = journey.outcome === 'refused';
+    await expect(panel(page)).toHaveAttribute('data-recued-key-health-panel-state', refused ? 'error' : 'done');
+    const target = refused ? panel(page).getByRole('button', { name: 'Back', exact: true })
+      : panel(page).getByRole('heading', { name: 'Your server has a new identity key.', exact: true });
+    await expect(journey.owner === 'outside' ? outside(page) : target).toBeFocused();
+    await expect(panel(page).getByRole('button', { name: 'Close', exact: true })).toHaveCount(0);
+    expect(await unloadBlocked(page)).toBe(false);
+    if (refused) { await target.focus(); await page.keyboard.press('Enter'); await expect(action).toBeFocused(); }
+  });
+}
+
+test('Key Health untouched confirmation remains clean and does not block departure', async ({ page }) => {
+  await openRotation(page, 1280, { op: 'master_dek_rotate' });
+  await page.evaluate(() => { window.__keyHealthReadFocus.expectedRequests = []; });
+  expect(await unloadBlocked(page)).toBe(false);
+  const dialogs: string[] = [];
+  page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.dismiss(); });
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+  await expect(page).toHaveURL(/#settings\/account$/);
+  expect(dialogs).toEqual([]);
+});
+
+test('Key Health accepted pending departure isolates its late result', async ({ page }) => {
+  await openRotation(page, 390, { op: 'master_dek_rotate' });
+  await confirm(page).focus(); await page.keyboard.press('Enter');
+  await expect(rotationProgress(page)).toBeFocused();
+  const progress = await rotationProgress(page).elementHandle();
+  const dialogs: string[] = [];
+  page.once('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.accept(); });
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+  await expect(page).toHaveURL(/#approvals$/);
+  expect(dialogs).toHaveLength(1);
+  await expect(panel(page)).toHaveCount(0);
+  await outside(page).focus();
+  await releaseRotation(page, 'success'); await drain(page);
+  expect(await progress!.evaluate(node => node.isConnected)).toBe(false);
+  await expect(panel(page)).toHaveCount(0); await expect(outside(page)).toBeFocused();
+});

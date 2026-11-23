@@ -171,10 +171,10 @@ export const createRecordsImport = (opts: RecordsImportOptions) => {
       return `<section class="records-import" aria-label="Import records">
         ${loading ? '<p role="status">Looking for import recipes…</p>' : ''}
         ${error ? `<p role="alert">${e(error)}</p>${entries.length === 0 ? `<button type="button" data-action="${RECORDS_IMPORT_RETRY}">Try loading import recipes again</button>` : ''}` : ''}
-        ${entries.length ? `<h4>Import from a spreadsheet</h4><p>Choose a CSV file, match its columns, then check what would be recorded before importing.</p>
+        ${entries.length ? `<header class="records-import-heading"><div><h4>Import from a spreadsheet</h4><p>Choose a CSV file, match its columns, then check what would be recorded before importing.</p></div>
           <div class="records-export-actions">${entries.map(entry => `<button type="button" data-action="${RECORDS_IMPORT_OPEN}"
-            ${RECORDS_IMPORT_RECIPE_ATTR}="${e(entry.recipe_id)}"${flow !== null || refreshing ? ' aria-disabled="true"' : ''}>${entries.length === 1 ? 'Import CSV' : `Import CSV: ${e(entry.recipe.metadata?.name || entry.recipe_id)}`}</button>`).join('')}</div>` : ''}
-        ${receipt ? `<section aria-label="Last import result"><h4>Last import result</h4>
+            ${RECORDS_IMPORT_RECIPE_ATTR}="${e(entry.recipe_id)}"${flow !== null || refreshing ? ' aria-disabled="true"' : ''}>${entries.length === 1 ? 'Import CSV' : `Import CSV: ${e(entry.recipe.metadata?.name || entry.recipe_id)}`}</button>`).join('')}</div></header>` : ''}
+        ${receipt ? `<section class="records-import-result" aria-label="Last import result"><h4>Last import result</h4>
           <p role="status">${receipt.awaiting_approval ? 'Waiting for approval. The result will update when the run finishes.'
             : receipt.success ? 'The import finished. Review the row counts below.' : 'The import did not finish. Review the result below.'}</p>
           ${receipt.awaiting_approval ? '<a href="#approvals">Open approvals</a>' : ''}${renderSheetImportResult(receipt)}</section>` : ''}

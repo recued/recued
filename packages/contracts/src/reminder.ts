@@ -16,6 +16,57 @@
 export const REMINDER_STATES = ['pending', 'delivered', 'cancelled'] as const;
 export type ReminderState = (typeof REMINDER_STATES)[number];
 
+/** A saved record lifetime, not a URL or permission to change the record. */
+export interface ReminderRecordReference {
+  kind: 'task' | 'commitment';
+  id: string;
+  source_id: string;
+  source_record_id: string | null;
+  created_at: number;
+}
+export const readReminderRecordReference = (value: unknown): ReminderRecordReference | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const row = value as Record<string, unknown>;
+  const id = (v: unknown): v is string => typeof v === 'string' && !!v.trim() && v.length <= 2048 && !/[\u0000-\u001f\u007f]/u.test(v);
+  if (row.kind !== 'task' && row.kind !== 'commitment' || !id(row.id) || !id(row.source_id)
+    || row.source_record_id !== null && !id(row.source_record_id) || !Number.isSafeInteger(row.created_at) || (row.created_at as number) < 0) return;
+  return { kind: row.kind, id: row.id, source_id: row.source_id, source_record_id: row.source_record_id as string | null, created_at: row.created_at as number };
+};
+export const sameReminderRecordReference = (first: ReminderRecordReference, second: ReminderRecordReference): boolean =>
+  first.kind === second.kind && first.id === second.id && first.source_id === second.source_id
+    && first.source_record_id === second.source_record_id && first.created_at === second.created_at;
+/** Exact retained email in one enrollment of a mailbox. */
+export interface ReminderMailReference {
+  slug: string;
+  record_id: string;
+  source_id: string;
+  received_at: number;
+  incarnation: string;
+}
+export const readReminderMailReference = (value: unknown): ReminderMailReference | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const row = value as Record<string, unknown>;
+  const id = (v: unknown, limit: number): v is string => typeof v === 'string' && !!v.trim()
+    && v.length <= limit && !/[\u0000-\u001f\u007f]/u.test(v);
+  if (!id(row.slug, 256) || !id(row.record_id, 4096) || !id(row.source_id, 4096) || !id(row.incarnation, 256)
+    || !Number.isSafeInteger(row.received_at) || (row.received_at as number) < 0 || (row.received_at as number) > 8.64e15) return;
+  return { slug: row.slug, record_id: row.record_id, source_id: row.source_id,
+    received_at: row.received_at as number, incarnation: row.incarnation };
+};
+export const sameReminderMailReference = (a: ReminderMailReference, b: ReminderMailReference): boolean =>
+  a.slug === b.slug && a.record_id === b.record_id && a.source_id === b.source_id
+    && a.received_at === b.received_at && a.incarnation === b.incarnation;
+export const reminderMailReference = (slug: string, record: Pick<import('./collections.js').CollectionRecord,
+  'record_id' | 'source_id' | 'received_at'>, incarnation: string | null | undefined): ReminderMailReference | undefined =>
+  readReminderMailReference({ slug, record_id: record.record_id, source_id: record.source_id, received_at: record.received_at, incarnation });
+export interface ReminderCreateRequest {
+  text: string;
+  at: number;
+  creation_id: string;
+  record_ref?: ReminderRecordReference;
+  mail_ref?: ReminderMailReference;
+}
+
 const REMINDER_STATE_SET: ReadonlySet<string> = new Set(REMINDER_STATES);
 export const isReminderState = (value: unknown): value is ReminderState =>
   typeof value === 'string' && REMINDER_STATE_SET.has(value);
@@ -33,6 +84,8 @@ export interface ReminderOrigin {
 
 export interface Reminder {
   reminder_id: string;
+  record_ref?: ReminderRecordReference;
+  mail_ref?: ReminderMailReference;
   /** What to say, in the owner's words. */
   text: string;
   /** The instant it rings, epoch ms. */
@@ -60,6 +113,8 @@ export interface Reminder {
  *  nothing. */
 export interface ReminderView {
   reminder_id: string;
+  record_ref?: ReminderRecordReference;
+  mail_ref?: ReminderMailReference;
   text: string;
   /** Epoch ms. */
   at: number;
@@ -77,7 +132,9 @@ export interface ReminderView {
 /** Why a reminder was not changed or cancelled. */
 export type ReminderChangeReason = 'not_found' | 'not_pending';
 
-/** Stable ascending position among waiting reminders. */
+export type ReminderSearchStatus = ReminderState | 'all';
+
+/** Stable ascending position by scheduled instant, then reminder ID. */
 export interface ReminderListCursor {
   at: number;
   reminder_id: string;
@@ -86,6 +143,13 @@ export interface ReminderListCursor {
 /** Search and date bounds apply before paging. Date bounds name instants. */
 export interface ReminderListPageInput {
   query?: string;
+  /** Match the exact saved record lifetime before counting and paging. */
+  record_ref?: ReminderRecordReference;
+  mail_ref?: ReminderMailReference;
+  /** Retained delivered/cancelled rows only. Requires state 'all'. */
+  history_only?: true;
+  /** Explicit shared search scope. Omitted preserves the waiting-list contract. */
+  state?: ReminderSearchStatus;
   from?: number;
   before?: number;
   cursor?: ReminderListCursor;
@@ -94,13 +158,16 @@ export interface ReminderListPageInput {
 export interface ReminderListRequest {
   include_delivered?: boolean;
   limit?: number;
-  /** Opt in to paging waiting reminders. Older list callers keep their shape. */
+  /** Opt in to paging. Without an explicit state, only waiting reminders. */
   page?: ReminderListPageInput;
 }
 
 /** `core.reminder.list` and `reminder.list` answer with this. */
 export interface ReminderListResult {
-  /** Still to ring, soonest first. */
+  /** The paired owner can create reminders with verified saved-record links. */
+  record_links_supported?: true;
+  mail_links_supported?: true;
+  /** Scheduled time ascending. Still to ring unless page.state opts into history. */
   reminders: ReminderView[];
   /** How many wait in all. */
   count: number;
@@ -109,6 +176,13 @@ export interface ReminderListResult {
   page?: {
     matched_count: number;
     next_cursor: ReminderListCursor | null;
+    /** Confirms that the server searched this scope, including retained history.
+     * Older servers omit it; clients must not call those results history search. */
+    state?: ReminderSearchStatus;
+    /** Acknowledges exact record filtering; older servers omit it. */
+    record_ref?: ReminderRecordReference;
+    mail_ref?: ReminderMailReference;
+    history_only?: true;
   };
 }
 

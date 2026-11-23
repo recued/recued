@@ -15,6 +15,12 @@
  *  guidance to NOT retry. Non-agent callers (manual / scheduled) keep the raw
  *  `ExecuteResponse`. */
 
+import {
+  RUN_LET_THROUGH_ORDER,
+  RUN_LET_THROUGH_STOPPABLE,
+  type RunLetThrough,
+  type RunLetThroughBy,
+} from '@recued/contracts';
 import type {
   ContainerPickDetail,
   CreatePlanDetail,
@@ -25,6 +31,7 @@ import type {
 import { isRemoteFailureKind } from '@recued/contracts';
 import type { ExecuteResponse } from './types.js';
 import { conversationCarriesOn, HELD_CARRIES_ON_MESSAGE } from './chat-carries-on.js';
+import { projectBrowserAgentEvidence } from './browser-agent-evidence.js';
 
 /** The agent-facing guidance for a held-for-approval run. Channel-agnostic —
  *  works for chat (a user to tell) and MCP (an agent acting for a user).
@@ -63,6 +70,44 @@ export const TRIGGER_SKIPPED_MESSAGE =
 export const RAN_WITHOUT_ASKING_MESSAGE =
   'What this did in the browser ran without asking the user, since “Don’t ask about browser actions” '
   + 'is on in this chat.';
+
+/** D-402 slice F5 (§7.10) — why a run's writes ran without asking, one reason per kind, in the order
+ *  `RUN_LET_THROUGH_ORDER` gives. An AI app's "Always" is the app's.
+ *
+ *  ⚠ Model-facing strings — see `chat-prompt-optimization-log.md`. */
+const LET_THROUGH_REASON: Readonly<Record<RunLetThroughBy, string>> = {
+  always: 'the user chose “Always” for this recipe',
+  this_run: 'the user approved this run before it started',
+  site_pass: 'the user gave this recipe a site pass for that site',
+  grant: 'the user allowed it ahead of time, in this conversation or for this recipe',
+  rule: 'a rule the user accepted covers it',
+  trigger: 'the user approved ahead what this runs',
+  switch: '“Don’t ask about browser actions” is on in this chat',
+};
+const APP_ALWAYS_REASON = 'the user chose “Always” for this app and this recipe';
+/** Where the user's permission stands beyond this run, how they take it back: in their own chat, or by
+ *  the app giving up its own. */
+const STOP_ALLOWING_HINT_CHAT = ' If the user wants to be asked again, recipe.stop_allowing ends that.';
+const STOP_ALLOWING_HINT_APP = ' If the user asks you to check with them first again, recued_stopAllowing gives that up.';
+
+/** What a run that ran writes without asking says of it, once a run, whatever its counts (a browser
+ *  batch is one write): the reasons, and how to take back what stands beyond the run. A run only the
+ *  chat's switch let through keeps the slice A sentence. */
+export const ranWithoutAskingSentence = (
+  letThrough: RunLetThrough | undefined,
+  switchWrites = 0,
+): string | undefined => {
+  const kinds = new Set((letThrough?.writes ?? []).filter((entry) => entry.count > 0).map((entry) => entry.by));
+  if (switchWrites > 0) kinds.add('switch');
+  if (kinds.size === 0) return undefined;
+  if (kinds.size === 1 && kinds.has('switch')) return RAN_WITHOUT_ASKING_MESSAGE;
+  const app = letThrough?.caller?.kind === 'ai_app';
+  const reasons = RUN_LET_THROUGH_ORDER.filter((by) => kinds.has(by))
+    .map((by) => (by === 'always' && app ? APP_ALWAYS_REASON : LET_THROUGH_REASON[by]));
+  const standing = [...kinds].some((by) => RUN_LET_THROUGH_STOPPABLE.has(by));
+  return `What it changed ran without asking the user, since ${reasons.join(', and ')}.`
+    + (standing ? (app ? STOP_ALLOWING_HINT_APP : STOP_ALLOWING_HINT_CHAT) : '');
+};
 
 /** ⚠ WHERE, NOT ONLY THAT. Until 2026-10-04 this said the action needs approval
  *  and never where it is given, so the model supplied a place: "your Contracts
@@ -645,6 +690,7 @@ const collectItemRefusals = (result: object): AgentItemsRefusedAnnotation | null
  *  read: a page's outline, a mail list, a table. Only what a model is sent drops it, and only when
  *  it is the same as `render`; the result itself, its row and every client keep both. */
 export const withoutRenderAlias = (result: unknown): unknown => {
+  result = projectBrowserAgentEvidence(result);
   if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
   const output = (result as { output?: unknown }).output;
   if (output === null || typeof output !== 'object' || Array.isArray(output)) return result;
@@ -660,15 +706,22 @@ export const projectRunResultForAgent = (
    *  it: a held run's approval is then said to be answered there when it goes there. */
   options: { readonly conversation?: unknown } = {},
 ): unknown => {
+  result = projectBrowserAgentEvidence(result);
   if (typeof result !== 'object' || result === null) return result;
   // D-341 slice A — the count is the server's; the model reads it as a sentence, on whatever
   // this run's result says (a run held at a later step still did the steps before it). First, so
   // a long result (a page's outline) that is cut for the model still carries it.
-  if (Object.hasOwn(result, 'request_pass_writes')) {
-    const { request_pass_writes: writes, ...rest } = result as Record<string, unknown>;
+  // D-402 slice F5 — and every other kind of permission that let a write through (`let_through`),
+  // which names the caller: dropped, so the model reads the sentence and never a contract id.
+  if (Object.hasOwn(result, 'request_pass_writes') || Object.hasOwn(result, 'let_through')) {
+    const { request_pass_writes: writes, let_through: letThrough, ...rest } = result as Record<string, unknown>;
     const projected = projectRunResultForAgent(rest, options);
-    return typeof writes === 'number' && writes > 0 && projected !== null && typeof projected === 'object'
-      ? { ran_without_asking: RAN_WITHOUT_ASKING_MESSAGE, ...(projected as Record<string, unknown>) }
+    const said = ranWithoutAskingSentence(
+      letThrough !== null && typeof letThrough === 'object' ? letThrough as RunLetThrough : undefined,
+      typeof writes === 'number' ? writes : 0,
+    );
+    return said !== undefined && projected !== null && typeof projected === 'object'
+      ? { ran_without_asking: said, ...(projected as Record<string, unknown>) }
       : projected;
   }
   // D-321 P2 / C2 — `run_needs` is for the owner's run surfaces (contracts

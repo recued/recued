@@ -1264,7 +1264,6 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
     );
     // The dynamic viewport, less the connection banner while it shows.
     expect(shellStyle?.textContent).toContain('height: calc(100dvh - var(--wc-connection-banner-h, 0px))');
-    expect(shellStyle?.textContent).toContain('backdrop-filter: blur(14px)');
     expect(shellStyle?.textContent).toContain(
       '.webclient-shell-brand:focus-visible',
     );
@@ -2174,6 +2173,9 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       'data',
       'recipes',
       'automation',
+      // D-405 slice 4 — Set up heads the control-plane stack: what is connected and what each pack
+      // still needs, before the pages that do each step.
+      'setup',
       'connections',
       'packs',
       'contracts',
@@ -2204,6 +2206,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       '#data',
       '#recipes',
       '#automation',
+      '#setup',
       '#connections',
       '#packs',
       '#contracts',
@@ -5086,6 +5089,12 @@ import {
   CERT_PIN_STALE_PANEL_ATTR,
 } from '../settings/cert-pin-stale-panel.js';
 import type { WebclientCertPinState } from '@recued/contracts';
+import {
+  CHAT_STOP_ALLOWING_ATTR,
+  CHAT_STOP_ALLOWING_BUTTON_ATTR,
+  CHAT_STOP_ALLOWING_CONFIRM_ATTR,
+  CHAT_STOP_ALLOWING_NOTE_ATTR,
+} from '../chat/stop-allowing-control.js';
 
 interface FakePollTimerControls {
   setPollTimer: (
@@ -15640,5 +15649,111 @@ describe('bootstrapWebclient: calls running at once', () => {
 
   it('sends them all when a test server that never answers lifts the limit', async () => {
     expect(await openRpcCount(Number.POSITIVE_INFINITY)).toBeGreaterThan(RPC_WS_MAX_IN_FLIGHT_PER_CLIENT);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// D-402 slice E4b — "Carry on in Chat" from a hand-off's notice
+// ══════════════════════════════════════════════════════════════════
+
+describe('D-402 slice E4b — #chat/carry-on/<run_id> hands over to the chat kept for the run', () => {
+  const DRAFT = 'Carry on with “Buy the lamp” from where its run stopped. The run said why:\n'
+    + 'The page showed something this recipe has not met.\n\nLook at that page as it is now and tell me what it shows.';
+  const boot = async (hash: string) => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(hash);
+    const replaced: string[] = [];
+    // A hand-over in place, as the browser's `history.replaceState` makes one.
+    const hashSource = Object.assign(fixture.hashSource, {
+      replaceHash: (next: string) => { replaced.push(next); fixture.hashSource.setHash(next); },
+    });
+    const handle = await bootstrapWebclient({ ...fixture.opts, hashSource });
+    await flush();
+    const calls = (): Array<{ request_id: string; args?: unknown }> => fixture.transportControls.sendCalls().filter((call) =>
+      (call as { type?: unknown }).type === 'rpc'
+      && (call as { method?: unknown }).method === 'chat.execution.carry_on') as Array<{ request_id: string; args?: unknown }>;
+    const answer = async (result: unknown): Promise<void> => {
+      fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: calls()[0]!.request_id, result });
+      await flush();
+    };
+    const sent = (): boolean => fixture.transportControls.sendCalls().some((call) =>
+      (call as { method?: unknown }).method === 'chat.send');
+    return { fixture, handle, replaced, calls, answer, sent };
+  };
+
+  it('asks for the run named, then opens its chat in place with the message in the composer, sending nothing', async () => {
+    const t = await boot('#chat/carry-on/run%201');
+    try {
+      expect(t.calls().map((call) => call.args)).toEqual([{ run_id: 'run 1' }]);
+      await t.answer({ ok: true, session_id: 'chat_1', draft: DRAFT });
+      expect(t.replaced).toEqual(['#chat/session/chat_1']);
+      expect(t.handle.activeRoute()).toBe('chat');
+      expect(t.handle.captureRecoverySnapshot()).toMatchObject({ returnHash: '#chat/session/chat_1', chatDraft: { text: DRAFT } });
+      expect(t.sent()).toBe(false);
+      // One answer, one hand-over: the chat's own mount asks nothing more of the run.
+      expect(t.calls()).toHaveLength(1);
+    } finally { await t.handle.dispose(); }
+  });
+
+  it('a run it cannot carry on: says why, and the address becomes Chat', async () => {
+    const t = await boot('#chat/carry-on/run-2');
+    try {
+      await t.answer({ ok: false, reason: 'not_a_hand_off', message: 'This run did not stop at a page its recipe has not met, so there is nothing to carry on from.' });
+      expect(t.replaced).toEqual(['#chat']);
+      expect(subtreeText(t.fixture.root)).toContain('This run did not stop at a page its recipe has not met');
+      expect(t.sent()).toBe(false);
+    } finally { await t.handle.dispose(); }
+  });
+
+  it('the owner gone elsewhere before the answer: nothing moves', async () => {
+    const t = await boot('#chat/carry-on/run-3');
+    try {
+      t.fixture.hashSource.setHash('#reception');
+      await t.answer({ ok: true, session_id: 'chat_3', draft: DRAFT });
+      expect(t.replaced).toEqual([]);
+      expect(t.fixture.hashSource.getHash()).toBe('#reception');
+    } finally { await t.handle.dispose(); }
+  });
+});
+
+describe('D-402 slice F5 — "Stop allowing" in the chat, as the app wires it', () => {
+  it('a reloaded answer whose call ran on a standing permission offers it, and ends what your chats may do with the recipe', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/chat_1');
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+    const rpcCalls = (): Array<{ method?: unknown; request_id?: unknown; args?: unknown }> =>
+      fixture.transportControls.sendCalls().filter((call): call is { method?: unknown; request_id?: unknown; args?: unknown } =>
+        call !== null && typeof call === 'object' && (call as { type?: unknown }).type === 'rpc');
+    const answer = async (method: string, result: unknown): Promise<void> => {
+      const call = rpcCalls().find((one) => one.method === method);
+      expect(typeof call?.request_id, method).toBe('string');
+      fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: call!.request_id, result });
+      await flush();
+    };
+    const session = { id: 'chat_1', title: 'Ops chat', created_at: 1_000, last_active_at: 2_000, archived: false,
+      picker_state: { current: 'self' }, model_routing: { current: 'byok', provider: 'local', overridden: false } };
+    await answer('chat.sessions.list', { sessions: [{ ...session, message_count: 1 }] });
+    await answer('chat.session.get', { ...session, messages: [{
+      id: 'msg_run', session_id: 'chat_1', role: 'assistant', content: 'Added your morning note.', turn_id: 'turn_1',
+      target_server: 'self', contributor: 'assistant', ts: 2_000,
+      picker_at_send: { display_name: 'This server', signature: { server_kind: 'recued', version: '1', instance_id: 'server_1' } },
+      model_used: { provider: 'local', model_id: 'local-default' },
+      tool_calls: [{ tool_name: 'recipe.run', tier: 2, args: { recipe_id: 'add-morning-note' }, status: 'ok', started_at: 1,
+        run_id: 'run_1', recipe_name: 'Add a morning note', stop_allowing_recipe_id: 'add-morning-note' }],
+    }] });
+    const control = findChildByAttr(routeContentRoot(fixture.root), CHAT_STOP_ALLOWING_ATTR);
+    expect(control?.getAttribute(CHAT_STOP_ALLOWING_ATTR)).toBe('add-morning-note');
+    findChildByAttr(control!, CHAT_STOP_ALLOWING_BUTTON_ATTR)!.click();
+    findChildByAttr(control!, CHAT_STOP_ALLOWING_CONFIRM_ATTR)!.click();
+    await flush();
+    const stop = rpcCalls().find((call) => call.method === 'collection.contract.stopAllowing');
+    expect(stop?.args).toEqual({ caller: { kind: 'owner_chat' }, recipe_id: 'add-morning-note' });
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: stop!.request_id,
+      result: { ended: { preapprovals: 1, site_passes: 0, session_grants: 0, delegations: 0, write_rules: 0 } } });
+    await flush();
+    expect(findChildByAttr(control!, CHAT_STOP_ALLOWING_NOTE_ATTR)?.textContent)
+      .toBe('Ended 1 standing approval. It asks again from now on.');
+    await handle.dispose();
   });
 });

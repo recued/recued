@@ -64,6 +64,8 @@ export const CONNECT_DEVICE_STEP_ACTION_ATTR =
   'data-recued-connect-device-step-action';
 export const CONNECT_DEVICE_STEP_ACTION_ERROR_ATTR =
   'data-recued-connect-device-step-action-error';
+export const CONNECT_DEVICE_STEP_ACTION_STATUS_ATTR =
+  'data-recued-connect-device-step-action-status';
 
 /** D-272 — how long a from-this-device reachability verdict stays true.
  *
@@ -228,6 +230,7 @@ export interface MountConnectDevicePanelOptions {
 }
 
 export interface ConnectDevicePanelMount {
+  hasInFlightWork: () => boolean;
   /** Re-render from current facts. Safe to call after dispose (no-ops). */
   refresh: () => void;
   dispose: () => void;
@@ -246,6 +249,7 @@ export const mountConnectDevicePanel = (
   let disposed = false;
   let checking = false;
   let checkFinished = false;
+  let portMappingSaved = false;
   type FocusKey = 'check' | 'router' | `address:${ConnectDevicePlaceCard['place']}`;
   const focusTargets = new Map<FocusKey, HTMLElement>();
   /** Set only when the CHECK failed — never when it answered. A failed check
@@ -433,14 +437,16 @@ export const mountConnectDevicePanel = (
    *  criterion — there is no answer that means "done", since a router can refuse
    *  on the fourth renewal as easily as the first. */
   const flipPortMapping = (enable: boolean): void => {
-    if (opts.setPortMappingEnabled === undefined || flippingPortMapping) return;
+    if (disposed || opts.setPortMappingEnabled === undefined || flippingPortMapping) return;
     flippingPortMapping = true;
+    portMappingSaved = false;
     portMappingError = null;
     render();
     void (async () => {
       try {
         await opts.setPortMappingEnabled!(enable);
         if (disposed) return;
+        portMappingSaved = true;
         await refreshPortMapping();
       } catch (err) {
         if (disposed) return;
@@ -606,36 +612,55 @@ export const mountConnectDevicePanel = (
         // ⚠ GATED ON THE CALLER TOO: the copy decides whether flipping it is
         // worth OFFERING, this decides whether the panel can flip it at all. A
         // control rendered without a writer is a button that does nothing.
-        if (step.action !== undefined && opts.setPortMappingEnabled !== undefined) {
+        if (step.key === 'router' && opts.setPortMappingEnabled !== undefined
+          && (step.action !== undefined || flippingPortMapping || portMappingSaved || portMappingError !== null)) {
           const action = step.action;
           const actionWrap = el('span');
           actionWrap.className = 'connect-device-step-action';
-          const actionBtn = doc.createElement('button');
-          actionBtn.className = 'rx-btn rx-btn-secondary';
-          actionBtn.setAttribute('type', 'button');
-          actionBtn.setAttribute(CONNECT_DEVICE_STEP_ACTION_ATTR, action.kind);
-          // ⚠ The DIRECTION is on the element, not inferred from the label —
-          // the label is copy, and a test that read it would break on a reword.
-          actionBtn.setAttribute(
-            'data-recued-connect-device-step-action-enable',
-            String(action.enable),
-          );
-          actionBtn.textContent = flippingPortMapping ? 'Working…' : action.label;
-          if (flippingPortMapping) {
-            actionBtn.setAttribute('disabled', 'true');
-            actionBtn.setAttribute('aria-busy', 'true');
+          if (action !== undefined) {
+            const actionBtn = doc.createElement('button');
+            actionBtn.className = 'rx-btn rx-btn-secondary';
+            actionBtn.setAttribute('type', 'button');
+            actionBtn.setAttribute(CONNECT_DEVICE_STEP_ACTION_ATTR, action.kind);
+            // ⚠ The DIRECTION is on the element, not inferred from the label —
+            // the label is copy, and a test that read it would break on a reword.
+            actionBtn.setAttribute(
+              'data-recued-connect-device-step-action-enable',
+              String(action.enable),
+            );
+            actionBtn.textContent = flippingPortMapping ? 'Working…' : action.label;
+            if (flippingPortMapping) {
+              actionBtn.setAttribute('disabled', 'true');
+              actionBtn.setAttribute('aria-busy', 'true');
+            }
+            actionBtn.addEventListener('click', () => { flipPortMapping(action.enable); });
+            if (!flippingPortMapping) focusTargets.set('router', actionBtn);
+            actionWrap.appendChild(actionBtn);
+            const actionNote = el('span', ` ${action.note}`);
+            actionNote.className = 'connect-device-step-action-note';
+            actionWrap.appendChild(actionNote);
           }
-          actionBtn.addEventListener('click', () => { flipPortMapping(action.enable); });
-          focusTargets.set('router', actionBtn);
-          actionWrap.appendChild(actionBtn);
-          const actionNote = el('span', ` ${action.note}`);
-          actionNote.className = 'connect-device-step-action-note';
-          actionWrap.appendChild(actionNote);
+          if (flippingPortMapping || portMappingSaved) {
+            const status = el('span', flippingPortMapping
+              ? 'Updating the router setting…'
+              : 'Setting saved. Check the connection to see what your router did.');
+            status.className = 'connect-device-step-action-status';
+            status.setAttribute(CONNECT_DEVICE_STEP_ACTION_STATUS_ATTR, 'true');
+            status.setAttribute('role', 'status');
+            status.setAttribute('aria-atomic', 'true');
+            status.setAttribute('tabindex', '-1');
+            actionWrap.appendChild(status);
+            if (!focusTargets.has('router')) focusTargets.set('router', status);
+          }
           if (portMappingError !== null) {
             const err = el('span', portMappingError);
             err.className = 'connect-device-step-action-error';
             err.setAttribute(CONNECT_DEVICE_STEP_ACTION_ERROR_ATTR, 'true');
+            err.setAttribute('role', 'alert');
+            err.setAttribute('aria-atomic', 'true');
+            err.setAttribute('tabindex', '-1');
             actionWrap.appendChild(err);
+            if (!focusTargets.has('router')) focusTargets.set('router', err);
           }
           li.appendChild(actionWrap);
         }
@@ -916,6 +941,7 @@ export const mountConnectDevicePanel = (
   }
 
   return {
+    hasInFlightWork: () => !disposed && flippingPortMapping,
     refresh: render,
     dispose: () => {
       disposed = true;

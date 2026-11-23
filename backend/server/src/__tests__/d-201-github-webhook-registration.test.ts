@@ -8,7 +8,9 @@ import {
 import type { ManagedWebhookRegistrationContext } from '../webhook-registration-runtime.js';
 import { createWebhookRegistrationRuntimeRegistry } from '../webhook-registration-runtime.js';
 import { createWebhookIngressStore } from '../storage/webhook-ingress-store.js';
+import { createWebhookDeliveryStore } from '../storage/webhook-delivery-store.js';
 import { createWebhookManagedRegistrationService } from '../webhook-registration-reconciler.js';
+import { setRefusedSecretsAgain } from '../webhook-refusal-run.js';
 import {
   createWebhookFixedLengthAsciiTokenParser,
 } from '../webhook-fixed-length-ascii-token-parser.js';
@@ -282,19 +284,16 @@ describe('D-201 Slices 8E + 8F + 9Q + 9AE-9AF + 9AL + 9AN + 9AV + 9AY + 9BC GitH
     })]));
     const adapter = makeAdapter({ eventTypeParser, fetchImpl });
 
-    await expect(adapter.find(repositoryContext)).rejects.toMatchObject({
-      code: 'registration_input_invalid',
-    });
+    // D-201 Slice 10G — the desired names are checked where they are sent:
+    // create and update refuse them before any request...
+    await expect(adapter.create(repositoryContext, 'recued-d201-create-key'))
+      .rejects.toMatchObject({ code: 'registration_input_invalid' });
+    await expect(adapter.update(repositoryContext, '123', 'recued-d201-update-key'))
+      .rejects.toMatchObject({ code: 'registration_input_invalid' });
     expect(fetchImpl).not.toHaveBeenCalled();
-
-    const narrowContext: ManagedWebhookRegistrationContext = {
-      ...repositoryContext,
-      desired: {
-        ...repositoryContext.desired,
-        event_types: ['issues'],
-      },
-    };
-    await expect(adapter.find(narrowContext)).rejects.toMatchObject({
+    // ...while a search, which cleanup runs, does not depend on them. GitHub's
+    // own names still go through the same parser.
+    await expect(adapter.find(repositoryContext)).rejects.toMatchObject({
       code: 'upstream_response_invalid',
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -1027,5 +1026,224 @@ describe('D-201 Slices 8E + 8F + 9Q + 9AE-9AF + 9AL + 9AN + 9AV + 9AY + 9BC GitH
         credentials: { webhook_secret: SECRET },
       })]);
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+});
+
+/** D-201 Slice 10AU (10AS finding 6) — the hourly set again went through the
+ *  full update: GitHub's hook sent `active: true` and Recued's events, so a
+ *  hook switched off at GitHub, or given other events there, was changed
+ *  back. It sends the hook's secret alone now, through its configuration. */
+describe('D-201 Slice 10AU — a set again changes nothing at GitHub but the secret', () => {
+  /** One repository hook as GitHub keeps it: its configuration's keys change
+   *  one by one, the hook's own `active` and events only through the hook. */
+  const statefulGitHub = () => {
+    const at = {
+      exists: false,
+      active: true,
+      events: [] as string[],
+      config: { url: '', content_type: 'json', insecure_ssl: '0', secret: '' } as Record<string, string>,
+    };
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    const base = '/repos/openai/example/hooks';
+    const view = () => ({
+      id: 123,
+      name: 'web',
+      type: 'Repository',
+      active: at.active,
+      events: at.events.slice(),
+      config: { url: at.config.url, content_type: at.config.content_type, insecure_ssl: at.config.insecure_ssl },
+    });
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? 'GET';
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined;
+      calls.push({ method, path: url.pathname, body });
+      if (url.pathname === base && method === 'GET') return json(at.exists ? [view()] : []);
+      if (url.pathname === base && method === 'POST') {
+        at.exists = true;
+        at.active = body!.active as boolean;
+        at.events = (body!.events as string[]).slice();
+        at.config = { ...(body!.config as Record<string, string>) };
+        return json(view(), 201);
+      }
+      if (!at.exists) return json({ message: 'Not Found' }, 404);
+      if (url.pathname === `${base}/123` && method === 'GET') return json(view());
+      if (url.pathname === `${base}/123` && method === 'PATCH') {
+        if (typeof body!.active === 'boolean') at.active = body!.active;
+        if (Array.isArray(body!.events)) at.events = (body!.events as string[]).slice();
+        if (body!.config !== undefined) at.config = { ...(body!.config as Record<string, string>) };
+        return json(view());
+      }
+      if (url.pathname === `${base}/123/config` && method === 'PATCH') {
+        for (const [key, value] of Object.entries(body!)) at.config[key] = String(value);
+        return json({ ...at.config, secret: '********' });
+      }
+      throw new Error(`unexpected ${method} ${url.pathname}`);
+    });
+    return { at, calls, fetchImpl };
+  };
+
+  it('sets the secret alone, through the configuration, and checks the address before and after', async () => {
+    const github = statefulGitHub();
+    github.at.exists = true;
+    github.at.active = false;
+    github.at.events = ['push'];
+    github.at.config = { url: ENDPOINT, content_type: 'json', insecure_ssl: '0', secret: 'secret_of_a_late_set' };
+    const adapter = makeAdapter({ fetchImpl: github.fetchImpl });
+    await expect(adapter.setSecret!(repositoryContext, '123')).resolves.toMatchObject({
+      remote_endpoint_id: '123',
+      endpoint_url: ENDPOINT,
+      enabled: false,
+      event_types: ['push'],
+    });
+    expect(github.calls.filter((call) => call.method !== 'GET')).toEqual([
+      { method: 'PATCH', path: '/repos/openai/example/hooks/123/config', body: { secret: SECRET } },
+    ]);
+    expect(github.at).toMatchObject({ active: false, events: ['push'], config: { url: ENDPOINT, secret: SECRET } });
+    // Gone: nothing sent, and said.
+    const gone = statefulGitHub();
+    await expect(makeAdapter({ fetchImpl: gone.fetchImpl }).setSecret!(repositoryContext, '123')).resolves.toBeNull();
+    expect(gone.calls.filter((call) => call.method !== 'GET')).toEqual([]);
+    // At another address: not this webhook's, never set.
+    const foreign = statefulGitHub();
+    foreign.at.exists = true;
+    foreign.at.events = ['issues'];
+    foreign.at.config = { url: 'https://elsewhere.example/hook', content_type: 'json', insecure_ssl: '0', secret: 'theirs' };
+    await expect(makeAdapter({
+      fetchImpl: foreign.fetchImpl,
+      resolveConfirmedEndpoint: async () => ENDPOINT,
+    }).setSecret!(repositoryContext, '123')).rejects.toMatchObject({ code: 'upstream_rejected' });
+    expect(foreign.at.config.secret).toBe('theirs');
+    // An answer naming another address is not taken.
+    const moved = statefulGitHub();
+    moved.at.exists = true;
+    moved.at.events = ['issues'];
+    moved.at.config = { url: ENDPOINT, content_type: 'json', insecure_ssl: '0', secret: '' };
+    moved.fetchImpl.mockImplementationOnce(async () => json(hook(repositoryContext)))
+      .mockImplementationOnce(async () => json({ url: 'https://elsewhere.example/hook', content_type: 'json', secret: '********' }));
+    await expect(makeAdapter({ fetchImpl: moved.fetchImpl }).setSecret!(repositoryContext, '123'))
+      .rejects.toMatchObject({ code: 'upstream_response_invalid' });
+  });
+
+  it('an adapter that cannot set the secret alone is refused before anything is sent; a hook gone after it reads missing', async () => {
+    const managed = async (adapter: ReturnType<typeof makeAdapter>) => {
+      const db = new Database(':memory:');
+      databases.push(db);
+      const store = createWebhookIngressStore(db, {
+        getEncryptionKey: () => new Uint8Array(32).fill(9),
+        newIngressId: () => repositoryContext.desired.ingress_id,
+        newPublicId: () => 'opaquePublicId_0123456789abcdef',
+        newCredentialSetRef: () => 'whc_0123456789abcdef0123456789abcdef',
+      });
+      const ingress = store.create({
+        display_name: 'Managed GitHub repository events',
+        profile_id: 'github.webhook.v1',
+        environment: 'live',
+        paired_connection_id: 'github-api',
+        registration_target: { kind: 'repository', key: 'openai/example' },
+        registration_mode: 'managed_endpoint',
+        selected_event_types: ['issues', 'pull_request'],
+      });
+      const service = createWebhookManagedRegistrationService({
+        store,
+        adapters: createWebhookRegistrationRuntimeRegistry([adapter]),
+        resolveCanonicalEndpoint: () => ENDPOINT,
+      });
+      await expect(service.reconcile(ingress.ingress_id)).resolves.toMatchObject({ registration_state: 'registered' });
+      db.prepare(`UPDATE webhook_ingresses SET intake_state = 'enabled', enabled_at = 1 WHERE ingress_id = ?`)
+        .run(ingress.ingress_id);
+      return { store, service, ingressId: ingress.ingress_id };
+    };
+    // No `setSecret`: refused, and the full update is not sent in its place.
+    const noAlone = statefulGitHub();
+    const without = { ...makeAdapter({ fetchImpl: noAlone.fetchImpl }), setSecret: undefined };
+    const a = await managed(without);
+    const from = noAlone.calls.length;
+    await expect(a.service.setSecretAgain(a.ingressId)).rejects.toMatchObject({ code: 'unsupported' });
+    expect(noAlone.calls.slice(from)).toEqual([]);
+    // Gone by its read-back: missing, and said so.
+    const gone = statefulGitHub();
+    const vanishing = { ...makeAdapter({ fetchImpl: gone.fetchImpl }), setSecret: async () => null };
+    const b = await managed(vanishing);
+    await expect(b.service.setSecretAgain(b.ingressId)).rejects.toMatchObject({ code: 'remote_missing' });
+    expect(b.store.get(b.ingressId)).toMatchObject({ registration_state: 'drifted', last_error_code: 'managed_remote_missing' });
+    // Another hook in its answer: drifted, never confirmed.
+    const swapped = statefulGitHub();
+    const other = makeAdapter({ fetchImpl: swapped.fetchImpl });
+    const c = await managed({
+      ...other,
+      setSecret: async (context, id) => ({ ...(await other.read(context, id))!, remote_endpoint_id: '999' }),
+    });
+    await expect(c.service.setSecretAgain(c.ingressId)).rejects.toMatchObject({ code: 'upstream_unavailable' });
+    expect(c.store.get(c.ingressId)).toMatchObject({ registration_state: 'drifted', last_error_code: 'managed_registration_drift' });
+  });
+
+  it('a hook switched off at GitHub, with other events, stays so: the pass sets its secret, and the webhook says it differs', async () => {
+    const db = new Database(':memory:');
+    databases.push(db);
+    let clock = 2_000_000_000_000;
+    const store = createWebhookIngressStore(db, {
+      now: () => clock,
+      getEncryptionKey: () => new Uint8Array(32).fill(9),
+      newIngressId: () => repositoryContext.desired.ingress_id,
+      newPublicId: () => 'opaquePublicId_0123456789abcdef',
+      newCredentialSetRef: () => 'whc_0123456789abcdef0123456789abcdef',
+    });
+    const ingress = store.create({
+      display_name: 'Managed GitHub repository events',
+      profile_id: 'github.webhook.v1',
+      environment: 'live',
+      paired_connection_id: 'github-api',
+      registration_target: { kind: 'repository', key: 'openai/example' },
+      registration_mode: 'managed_endpoint',
+      selected_event_types: ['issues', 'pull_request'],
+    });
+    const github = statefulGitHub();
+    const service = createWebhookManagedRegistrationService({
+      store,
+      adapters: createWebhookRegistrationRuntimeRegistry([makeAdapter({ fetchImpl: github.fetchImpl })]),
+      resolveCanonicalEndpoint: () => ENDPOINT,
+      now: () => clock,
+    });
+    await expect(service.reconcile(ingress.ingress_id)).resolves.toMatchObject({ registration_state: 'registered' });
+    db.prepare(`UPDATE webhook_ingresses SET intake_state = 'enabled', enabled_at = ? WHERE ingress_id = ?`)
+      .run(clock, ingress.ingress_id);
+    // Switched off at GitHub and given other events there, then a late change
+    // of its secret: messages signed with it are refused.
+    github.at.active = false;
+    github.at.events = ['push'];
+    github.at.config.secret = 'secret_of_a_late_set';
+    const deliveries = createWebhookDeliveryStore(db, {
+      now: () => clock,
+      getEncryptionKey: () => new Uint8Array(32).fill(7),
+    });
+    for (let n = 0; n < 3; n += 1) {
+      clock += 60_000;
+      deliveries.recordRejectedDelivery({
+        ingress_id: ingress.ingress_id,
+        profile_id: 'github.webhook.v1',
+        environment: 'live',
+        received_at: clock,
+        reason_code: 'authentication_failed',
+        http_status: 401,
+      });
+    }
+    const from = github.calls.length;
+    await expect(setRefusedSecretsAgain({ ingresses: store, deliveries, service, now: () => clock })).resolves.toBe(1);
+    // Before 10AU: PATCH …/hooks/123 with `active: true` and Recued's events.
+    expect(github.calls.slice(from).filter((call) => call.method !== 'GET')).toEqual([
+      { method: 'PATCH', path: '/repos/openai/example/hooks/123/config', body: { secret: SECRET } },
+    ]);
+    expect(github.at).toMatchObject({ active: false, events: ['push'] });
+    expect(github.at.config.secret).toBe(SECRET);
+    expect(store.secretSetAgainAt(ingress.ingress_id)).toBe(clock);
+    expect(store.get(ingress.ingress_id)).toMatchObject({
+      registration_state: 'drifted',
+      last_error_code: 'managed_registration_drift',
+      intake_state: 'enabled',
+    });
+    // The owner's own reconcile is what switches it back on there.
+    await expect(service.reconcile(ingress.ingress_id)).resolves.toMatchObject({ registration_state: 'registered' });
+    expect(github.at).toMatchObject({ active: true, events: ['issues', 'pull_request'] });
   });
 });

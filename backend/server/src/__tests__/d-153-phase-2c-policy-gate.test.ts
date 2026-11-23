@@ -807,7 +807,7 @@ describe('D-153 P2.C handleExecute — chat policy gate wiring', () => {
     expect(errorsContainCode(result.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
 
-  it('admits chat write risk_tier ingredients', async () => {
+  it('never denies a chat write: it holds for approval by its own approval (D-177 §N.15.6)', async () => {
     const manifest = {
       ...buildHttpManifest('chat-write-http'),
       risk_tier: 'write',
@@ -826,8 +826,11 @@ describe('D-153 P2.C handleExecute — chat policy gate wiring', () => {
       }),
     );
 
-    expect(result.success).toBe(true);
-    expect(result.steps.map((step) => step.id)).toEqual(['write_http']);
+    // The owner's chat takes the `read` ceiling, so the write's `ask` fires the preflight gate at
+    // dispatch (this harness wires no audit log, so the hold cannot be stored and reports that);
+    // the write does not run, and the static gate never refuses it.
+    expect(result.steps).toEqual([]);
+    expect(result.errors.some((error) => (error as { error_id?: string }).error_id?.startsWith('preflight-') === true)).toBe(true);
     expect(errorsContainCode(result.errors, 'RECIPE_POLICY_DENIED')).toBe(false);
   });
 

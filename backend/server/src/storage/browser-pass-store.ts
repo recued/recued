@@ -1,28 +1,35 @@
 /** D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach, kept in
- *  the server's database. Three tables, as D-329's write rules keep theirs:
+ *  the server's database. The answers and keys, as D-329's write rules keep theirs:
  *  `browser_pass_answers`: one row per answered hold (its run), approved or refused, with its
  *  occasion and the element it was for (as the page names it, for the suggestion to list).
  *  `browser_pass_keys`: one row per key, its state — `watching`, `suggested` (an open
  *  suggestion to always allow it), `accepted` (an always pass) or `dismissed` (the owner said
  *  no, or ended the always pass: no more suggestions). `browser_passes`: the passes, "for this
  *  session" (one conversation, until it expires) or "always" (no end, no use limit).
+ *  `browser_request_passes`: the conversation's request pass, with a new generation on each start.
+ *  `browser_pass_decisions`: the pass or request generation a saved approval selected. The
+ *  binding survives revocation and expiry, so an old answer cannot create a replacement.
  *  What it keeps: who (the owner's chats, or an AI app's contract id), the recipe, the site's
  *  origin, and the element's role and name as the page showed it. Never the text typed.
  *  ⛔ Unlike a D-329 rule, an always pass is minted from the ask itself too, and after a
  *  dismissal: "Always allow" stays on the asks (§3.4). Only the SUGGESTION is ended for good. */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
 import {
   BROWSER_PASS_SESSION_TTL_MS,
   BROWSER_REQUEST_PASS_TTL_MS,
   browserPassKeyHash,
+  browserPassOffersRequest,
   evaluateWriteRuleEvidence,
   isBrowserPassLive,
+  readBrowserPassOffer,
   WRITE_RULE_LOOKBACK_MS,
   type BrowserPassKey,
+  type BrowserPassAnswerKind,
   type BrowserPassKind,
+  type BrowserPassOffer,
   type BrowserPassRow,
   type BrowserPassSuggestionRow,
   type BrowserRequestPass,
@@ -40,6 +47,13 @@ export class BrowserPassError extends Error {
 /** The elements a suggestion lists, at most. */
 const SUGGESTION_ELEMENTS_MAX = 10;
 
+export interface BrowserPassApprovalInput {
+  readonly approval_ref: string;
+  readonly offer: BrowserPassOffer;
+  readonly kind: BrowserPassAnswerKind;
+  readonly now: number;
+}
+
 export interface BrowserPassStore {
   /** The live pass covering this key in this conversation, with one more use counted, or
    *  undefined (⇒ the write asks). An always pass first, then this conversation's. */
@@ -54,6 +68,9 @@ export interface BrowserPassStore {
     readonly channel_session_id?: string;
     readonly now: number;
   }): BrowserPassRow;
+  /** Select a pass and bind a saved approval in one transaction. Replays leave the
+   *  original selection alone, including when it ended, expired, or was removed. */
+  grantForDecision(input: BrowserPassApprovalInput): void;
   /** Keep the owner's answer to a held browser write. `suggested` when this answer opened the
    *  key's suggestion, so the caller tells the owner once. An answer told twice (its run
    *  already kept) changes nothing. */
@@ -111,7 +128,8 @@ interface PassRowDb {
 }
 
 export const ensureBrowserPassSchema = (db: Database.Database): void => {
-  db.exec(`
+  db.transaction(() => {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS browser_pass_answers (
       run_id    TEXT PRIMARY KEY,
       key_hash  TEXT NOT NULL,
@@ -145,12 +163,26 @@ export const ensureBrowserPassSchema = (db: Database.Database): void => {
     CREATE INDEX IF NOT EXISTS idx_browser_passes_key ON browser_passes (key_hash, created_at);
     CREATE TABLE IF NOT EXISTS browser_request_passes (
       channel_session_id  TEXT PRIMARY KEY,
+      generation_id       TEXT NOT NULL,
       started_at          INTEGER NOT NULL,
       expires_at          INTEGER NOT NULL,
       ended_at            INTEGER,
       uses                INTEGER NOT NULL DEFAULT 0
     );
-  `);
+    CREATE TABLE IF NOT EXISTS browser_pass_decisions (
+      approval_ref  TEXT PRIMARY KEY,
+      offer_sha256  TEXT NOT NULL,
+      kind          TEXT NOT NULL CHECK (kind IN ('session', 'always', 'request')),
+      selection_ref TEXT NOT NULL
+    );
+    `);
+    const columns = db.prepare('PRAGMA table_info(browser_request_passes)').all() as Array<{ name: string }>;
+    if (!columns.some(column => column.name === 'generation_id')) {
+      db.exec('ALTER TABLE browser_request_passes ADD COLUMN generation_id TEXT');
+    }
+    // Give existing passes an identity without restarting them or changing their use counts.
+    db.exec('UPDATE browser_request_passes SET generation_id = lower(hex(randomblob(16))) WHERE generation_id IS NULL');
+  }).immediate();
 };
 
 /** A stored key, read defensively: a row this version cannot read names no key. */
@@ -160,7 +192,9 @@ const parseKey = (json: string): BrowserPassKey | undefined => {
     const principal = value?.principal as { kind?: unknown; contract_id?: unknown } | undefined;
     const principalOk = principal?.kind === 'owner_chat'
       || (principal?.kind === 'ai_app' && typeof principal.contract_id === 'string' && principal.contract_id.length > 0);
-    return principalOk && typeof value.recipe === 'string' && value.recipe.length > 0
+    // D-402 slice H4c — a browser, when the key names one, is a lasting id.
+    const browserOk = value.browser === undefined || (typeof value.browser === 'string' && value.browser.length > 0);
+    return principalOk && browserOk && typeof value.recipe === 'string' && value.recipe.length > 0
       && typeof value.site === 'string' && value.site.length > 0 ? value : undefined;
   } catch {
     return undefined;
@@ -354,10 +388,10 @@ export const createBrowserPassStore = (
   // D-341 slice A — the requests approved ahead, one a conversation.
   const requestRow = db.prepare(`SELECT channel_session_id, started_at, expires_at, uses FROM browser_request_passes
     WHERE channel_session_id = @channel_session_id AND ended_at IS NULL AND expires_at > @now`);
-  const startRequest = db.prepare(`INSERT INTO browser_request_passes (channel_session_id, started_at, expires_at, ended_at, uses)
-    VALUES (@channel_session_id, @now, @expires_at, NULL, 0)
+  const startRequest = db.prepare(`INSERT INTO browser_request_passes (channel_session_id, generation_id, started_at, expires_at, ended_at, uses)
+    VALUES (@channel_session_id, @generation_id, @now, @expires_at, NULL, 0)
     ON CONFLICT(channel_session_id) DO UPDATE SET started_at = excluded.started_at, expires_at = excluded.expires_at,
-      ended_at = NULL, uses = 0`);
+      generation_id = excluded.generation_id, ended_at = NULL, uses = 0`);
   const endRequest = db.prepare(`UPDATE browser_request_passes SET ended_at = @now
     WHERE channel_session_id = @channel_session_id AND ended_at IS NULL AND expires_at > @now`);
   const countRequest = db.prepare(`UPDATE browser_request_passes SET uses = uses + 1
@@ -367,7 +401,7 @@ export const createBrowserPassStore = (
   const startRequestPass = db.transaction((channel_session_id: string, now: number): BrowserRequestPass => {
     const live = requestPass(channel_session_id, now);
     if (live !== undefined) return live;
-    startRequest.run({ channel_session_id, now, expires_at: now + BROWSER_REQUEST_PASS_TTL_MS });
+    startRequest.run({ channel_session_id, generation_id: randomUUID(), now, expires_at: now + BROWSER_REQUEST_PASS_TTL_MS });
     return requestPass(channel_session_id, now)!;
   }) as BrowserPassStore['startRequestPass'];
   const endRequestPass = (channel_session_id: string, now: number): boolean =>
@@ -376,6 +410,39 @@ export const createBrowserPassStore = (
     countRequest.run({ channel_session_id, now }).changes > 0 ? requestPass(channel_session_id, now) : undefined,
   ) as BrowserPassStore['useRequestPass'];
 
-  return { use, mint, recordAnswer, listSuggestions, accept, dismiss, listPasses, revoke,
+  const grantForDecision = db.transaction((input: BrowserPassApprovalInput): void => {
+    const offer = readBrowserPassOffer(input.offer);
+    if (typeof input.approval_ref !== 'string' || !input.approval_ref || offer === undefined
+      || !['session', 'always', 'request'].includes(input.kind)
+      || (input.kind === 'request' && !browserPassOffersRequest(offer))) {
+      throw new BrowserPassError('bad_request', 'invalid browser pass approval');
+    }
+    const offer_sha256 = createHash('sha256').update(JSON.stringify([
+      browserPassKeyHash(offer.key), offer.host, offer.channel_session_id, input.kind,
+    ])).digest('hex');
+    const prior = db.prepare('SELECT offer_sha256 FROM browser_pass_decisions WHERE approval_ref = ?')
+      .get(input.approval_ref) as { offer_sha256: string } | undefined;
+    if (prior !== undefined) {
+      if (prior.offer_sha256 !== offer_sha256) {
+        throw new BrowserPassError('bad_request', 'browser pass approval identity was reused with a different offer or choice');
+      }
+      // The original selection can be revoked, expired, or missing. A newer request
+      // generation can have replaced it too. None of these is a fresh approval.
+      return;
+    }
+    let selection_ref: string;
+    if (input.kind === 'request') {
+      startRequestPass(offer.channel_session_id, input.now);
+      selection_ref = (db.prepare('SELECT generation_id FROM browser_request_passes WHERE channel_session_id = ?')
+        .get(offer.channel_session_id) as { generation_id: string }).generation_id;
+    } else {
+      selection_ref = mint({ ...offer, kind: input.kind, now: input.now }).pass_id;
+    }
+    db.prepare('INSERT INTO browser_pass_decisions (approval_ref, offer_sha256, kind, selection_ref) VALUES (?, ?, ?, ?)')
+      .run(input.approval_ref, offer_sha256, input.kind, selection_ref);
+  });
+
+  return { use, mint, grantForDecision: input => grantForDecision.immediate(input),
+    recordAnswer, listSuggestions, accept, dismiss, listPasses, revoke,
     requestPass, startRequestPass, endRequestPass, useRequestPass };
 };

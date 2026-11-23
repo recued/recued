@@ -369,6 +369,9 @@ describe('D-163 Slice B — composeExecuteDeps threads Slice B fields', () => {
       () => ({
         block: { notify: vi.fn() } as never,
         resumer: { resumeRun: vi.fn(), denyRun: vi.fn() } as never,
+        continueHeldRun: vi.fn() as never,
+        settleDiedTryAgain: vi.fn() as never,
+        isResumingRun: vi.fn() as never,
         batchApprovals: {
           registerHold: vi.fn(),
           hooks: { handleAnswer: vi.fn() },
@@ -433,6 +436,9 @@ describe('D-163 Slice B — composeExecuteDeps threads Slice B fields', () => {
       () => ({
         block: { notify: vi.fn() } as never,
         resumer: { resumeRun: vi.fn(), denyRun: vi.fn() } as never,
+        continueHeldRun: vi.fn() as never,
+        settleDiedTryAgain: vi.fn() as never,
+        isResumingRun: vi.fn() as never,
         batchApprovals: {
           registerHold: vi.fn(),
           hooks: { handleAnswer: vi.fn() },

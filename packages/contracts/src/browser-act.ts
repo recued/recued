@@ -9,10 +9,10 @@
  *  `core.dom.act { target, page, steps }` runs the steps in order through the Bridge's own
  *  actions, and stops at the first one that cannot be done or whose check fails, saying how far
  *  it got. Recued's checks always run: a typed value must be in its field, a step whose page
- *  then shows a CAPTCHA nobody has solved stops the sequence, and sending a form expects the
- *  page to move on within {@link BROWSER_ACT_CHECK_SECONDS} seconds. A step's `success_when` adds
- *  its own check, or replaces sending's: a form that answers where it is (a search that filters
- *  the page, a sign-in that asks for a code) names what then shows.
+ *  then shows a CAPTCHA nobody has solved stops the sequence. A submission may navigate or
+ *  update the same document through AJAX. A step's `success_when` checks its observed result;
+ *  delivery acknowledgement alone does not establish application acceptance. The host returns
+ *  a bounded fresh post-action view, including after a later check stops the batch.
  *
  *  Slice K (2026-11-04) — failure, caught as it happens. The owner: "is it a good idea to have
  *  some FAILED_AT,SUCCESS_WHEN conditions so any step results maybe be caught sooner if applied?"
@@ -35,6 +35,8 @@
  *  the suggestions, so the model picks one by name. */
 
 import { BRIDGE_SCROLL_TO, parseBridgeKey, type BridgeScrollTo } from './bridge.js';
+import { BROWSER_COLLECT_KEYS, parseBrowserCollectSpec, type BrowserCollectSpec, type BrowserCollectViolation } from './browser-collect.js';
+import { BROWSER_DATA_TRANSFORMS, parseBrowserDataStep, type BrowserDataSchemaStep, type BrowserDataStep, type BrowserDataTransform } from './browser-data.js';
 
 /** What a step may check once it is done, to know it worked. At least one of the checks, and
  *  `seconds` to wait for it (default `BROWSER_ACT_CHECK_SECONDS`). */
@@ -75,7 +77,41 @@ interface BrowserActElement {
    *  them; `role` ("button", "link", "field", …) narrows it. */
   readonly text?: string;
   readonly role?: string;
+  /** D-402 slice G (§4.1) — for an element named by `text`, the item it sits in: the nearest row-like
+   *  container (a list item, a table row, a row by its role) that shows every one of these texts. Found
+   *  on the server from the page's read and sent as a ref, and checked again by the Bridge just before
+   *  the click or the typing, so a list drawn again with another item there acts on nothing. A click
+   *  or typing only; a Bridge that checks rows (`row_checks`, 0.0.13). 2026-11-21 — or the card it sits
+   *  in (`card`), on a Bridge that checks cards (`card_rows`, 0.0.14). */
+  readonly within?: BrowserActWithin;
 }
+
+/** D-402 slice G — the texts the item around an element shows, one to five. 2026-11-21 (task P) — and, for
+ *  an item that is no list item, table row, article or row by its role, the kind of card it is
+ *  (`card`): a tag with the test id or the classes every card of the page carries,
+ *  `div[data-testid="note-card"]`. The Bridge finds the item as the nearest that matches (`card_rows`). */
+export interface BrowserActWithin { readonly text: readonly string[]; readonly card?: string }
+/** The most texts one `within` names. */
+export const BROWSER_ACT_MAX_WITHIN_TEXTS = 5;
+/** 2026-11-21 — a card's kind as `within.card` names it: a tag, then its test id or one to three of its
+ *  classes. Nothing else: the Bridge matches it with `closest()`. */
+export const BROWSER_ACT_WITHIN_CARD = /^[a-z][a-z0-9-]{0,20}(?:\[data-testid="[\w:.-]{1,100}"\]|(?:\.[A-Za-z][\w-]{1,40}){1,3})$/u;
+/** D-402 slice G — a `within` as a step gives it, or why it is none: one text or a list of them. */
+export const parseBrowserActWithin = (value: unknown): BrowserActWithin | string => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some((key) => key !== 'text' && key !== 'card')) return 'within names the item the element sits in by what it shows: {"text": ["Bob", "Invoice 1043"]}';
+  const raw = (value as { text?: unknown }).text;
+  const texts = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
+  if (texts.length === 0 || texts.length > BROWSER_ACT_MAX_WITHIN_TEXTS
+    || !texts.every((one) => typeof one === 'string' && one.trim() !== '' && one.length <= 200)) {
+    return `within.text is one text, or up to ${String(BROWSER_ACT_MAX_WITHIN_TEXTS)}, that the item shows, each at most 200 characters`;
+  }
+  const card = (value as { card?: unknown }).card;
+  if (card !== undefined && (typeof card !== 'string' || !BROWSER_ACT_WITHIN_CARD.test(card))) {
+    return 'within.card names the kind of card the item is: a tag with its test id or classes, such as div[data-testid="note-card"] or li.result';
+  }
+  return { text: (texts as string[]).map((one) => one.trim()), ...(typeof card === 'string' ? { card } : {}) };
+};
 
 interface BrowserActChecks {
   readonly success_when?: BrowserActSuccess;
@@ -90,6 +126,7 @@ interface BrowserActChecks {
  *  is one step and not a model round. */
 interface BrowserActThenRead {
   readonly then_read?: string;
+  readonly then_read_form?: 'outline' | 'text';
 }
 
 /** Slice X (2026-11-06) — the tab a step runs on. The owner: *"ideally in recued the model can batch
@@ -136,14 +173,21 @@ export type BrowserActStep = BrowserActTab & (
   | (BrowserActElement & BrowserActChecks & BrowserActThenRead & { readonly do: 'submit' })
   /** A pause of `seconds`, or with `selector`, until it shows (or with `until: 'gone'`, goes),
    *  holding `text` when given, for at most `seconds`; with a selector, `fail_when` too. Slice X:
-   *  or with `url_includes`, until the tab's address contains it. */
-  | { readonly do: 'wait'; readonly seconds?: number; readonly selector?: string; readonly until?: 'shown' | 'gone';
+   *  or with `url_includes`, until the tab's address contains it. until ready
+   *  checks only observed document readiness, independently of visible content. */
+  | { readonly do: 'wait'; readonly seconds?: number; readonly selector?: string; readonly until?: 'shown' | 'gone' | 'ready';
       readonly text?: string; readonly url_includes?: string; readonly fail_when?: BrowserActFailure }
   /** Slice X — the tab's page as Inspect a web page answers it (an outline), or with `form: 'text'`
    *  as Read a web page's text does: one part (`from` a line, `chars` its size), or with `find` the
-   *  sections that match. Changes nothing. */
-  | { readonly do: 'read'; readonly form?: 'outline' | 'text'; readonly find?: string; readonly from?: number;
-      readonly chars?: number }
+   *  sections that match. A ref or selector reads only that observed element; from then counts
+   *  lines within the element. Changes nothing. */
+  | { readonly do: 'read'; readonly form?: 'outline' | 'text'; readonly data_format?: 'lines' | 'entries'; readonly find?: string; readonly from?: number;
+      readonly chars?: number; readonly ref?: string; readonly selector?: string }
+  /** A bounded collection is the last browser step; read-only data steps may follow. */
+  | (BrowserCollectSpec & { readonly do: 'collect' })
+  | BrowserDataStep
+  /** Capture a table through read_table; neither target selects the first table. */
+  | { readonly do: 'table'; readonly ref?: string; readonly selector?: string }
   /** Slice AD (2026-11-06) — a question about the tab's page, answered by a separate model from up to
    *  40,000 characters of its text, as Ask a web page answers one, `from` a line on a long page; the
    *  asks of several tabs side by side, where three Ask a web page calls ran one after another (E). */
@@ -171,8 +215,13 @@ export type BrowserActStep = BrowserActTab & (
 
 /** The owner: "20 steps is fine". */
 export const BROWSER_ACT_MAX_STEPS = 20;
-/** The longest one wait or one check may take. */
-export const BROWSER_ACT_MAX_WAIT_SECONDS = 10;
+/** The longest one wait or one check may take. 2026-11-21 (D-402, benchmark task H, live) — was 10: a page that draws
+ *  its content 10 s after it loads (quotes.toscrape.com/js-delayed: `delayInMilliseconds = 10000`) could not be waited
+ *  for in one step, and a recipe that opens a page waits for it in one. A wait or check ends as soon as what it waits
+ *  for shows or the page moves on, so a longer bound costs nothing on a quicker page; a sequence's waiting, all
+ *  together, stays within {@link BROWSER_ACT_MAX_TOTAL_WAIT_SECONDS}. A click or a sent form watched longer than a
+ *  Bridge before 0.0.14 watches needs one that can (`long_watches`, `BRIDGE_SHORT_WATCH_MAX_MS`). */
+export const BROWSER_ACT_MAX_WAIT_SECONDS = 30;
 /** All the waiting and checking one sequence asks for, together. */
 export const BROWSER_ACT_MAX_TOTAL_WAIT_SECONDS = 30;
 /** How long a check waits when its step names no `seconds`. */
@@ -209,19 +258,22 @@ const TAB_KEYS = ['page', 'url'];
 /** Slice Y — the ways a step names its element. */
 const ELEMENT_KEYS = ['ref', 'selector', 'text', 'role'];
 const STEP_KEYS: Readonly<Record<BrowserActStep['do'], readonly string[]>> = {
-  type: ['do', ...ELEMENT_KEYS, 'value', 'secret', 'submit', 'pick', 'success_when', 'fail_when', 'then_read', ...TAB_KEYS],
-  click: ['do', ...ELEMENT_KEYS, 'success_when', 'fail_when', 'then_read', ...TAB_KEYS],
-  press: ['do', ...ELEMENT_KEYS, 'key', 'success_when', 'fail_when', 'then_read', ...TAB_KEYS],
-  submit: ['do', ...ELEMENT_KEYS, 'success_when', 'fail_when', 'then_read', ...TAB_KEYS],
+  type: ['do', ...ELEMENT_KEYS, 'within', 'value', 'secret', 'submit', 'pick', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
+  click: ['do', ...ELEMENT_KEYS, 'within', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
+  press: ['do', ...ELEMENT_KEYS, 'key', 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
+  submit: ['do', ...ELEMENT_KEYS, 'success_when', 'fail_when', 'then_read', 'then_read_form', ...TAB_KEYS],
   wait: ['do', 'seconds', 'selector', 'until', 'text', 'url_includes', 'fail_when', ...TAB_KEYS],
-  read: ['do', 'form', 'find', 'from', 'chars', ...TAB_KEYS],
+  read: ['do', 'form', 'data_format', 'find', 'from', 'chars', 'ref', 'selector', ...TAB_KEYS],
+  collect: ['do', ...BROWSER_COLLECT_KEYS, ...TAB_KEYS],
+  data: ['do', 'source', 'pipeline', 'describe', 'return', 'select'],
+  table: ['do', 'ref', 'selector', ...TAB_KEYS],
   ask: ['do', 'question', 'from', ...TAB_KEYS],
   scroll: ['do', ...ELEMENT_KEYS, 'to', 'screen', ...TAB_KEYS],
-  go: ['do', 'address', 'then_read', ...TAB_KEYS],
-  back: ['do', 'then_read', ...TAB_KEYS],
-  reload: ['do', 'then_read', ...TAB_KEYS],
+  go: ['do', 'address', 'then_read', 'then_read_form', ...TAB_KEYS],
+  back: ['do', 'then_read', 'then_read_form', ...TAB_KEYS],
+  reload: ['do', 'then_read', 'then_read_form', ...TAB_KEYS],
   close: ['do', ...TAB_KEYS],
-  hover: ['do', ...ELEMENT_KEYS, 'then_read', ...TAB_KEYS],
+  hover: ['do', ...ELEMENT_KEYS, 'then_read', 'then_read_form', ...TAB_KEYS],
   download: ['do', ...ELEMENT_KEYS, 'address', ...TAB_KEYS],
   upload: ['do', ...ELEMENT_KEYS, 'file', ...TAB_KEYS],
 };
@@ -229,7 +281,7 @@ const STEP_KEYS: Readonly<Record<BrowserActStep['do'], readonly string[]>> = {
 const MAX_ELEMENT_TEXT = 200;
 const MAX_ROLE = 40;
 /** The kinds, as an error names them. */
-const KINDS_SAID = 'type, click, press, submit, wait, read, ask, scroll, go, back, reload, close, hover, download or upload';
+const KINDS_SAID = 'type, click, press, submit, wait, read, collect, data, table, ask, scroll, go, back, reload, close, hover, download or upload';
 /** The keys other browser tools name a step's kind by, read as "do" when a step has no "do" and
  *  exactly one of them holds a kind. ⛔ Measured (2026-11-04, `d-335-toolkit-measure.mjs` task C,
  *  qwen3.7-plus): in 3 of 3 runs every sequence was refused, its kind under `"type"` (3 calls),
@@ -250,6 +302,45 @@ const text = (value: unknown, max: number): value is string =>
 const seconds = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= BROWSER_ACT_MAX_WAIT_SECONDS;
 
+/** Static argument facts, never captured field values or a repaired action. */
+interface ActArgumentIssue {
+  readonly field?: string;
+  readonly code: BrowserCollectViolation['code'];
+  readonly message: string;
+}
+
+const elementArgumentIssues = (value: { readonly ref?: unknown; readonly selector?: unknown; readonly text?: unknown; readonly role?: unknown }, kind: BrowserActStep['do'], role: unknown = value.role): ActArgumentIssue[] => {
+  const issues: ActArgumentIssue[] = [];
+  const hasRef = value.ref !== undefined, hasSelector = value.selector !== undefined, hasText = value.text !== undefined;
+  const naming = [hasRef, hasSelector, hasText].filter(Boolean).length;
+  if (kind === 'download' && naming !== 1) issues.push({ code: 'required',
+    message: 'name the link by ref, by selector or by text, or give the file\'s address, one of them' });
+  else if (naming > 1 || (naming === 0 && kind !== 'scroll')) issues.push({ code: naming ? 'invalid_value' : 'required',
+    message: 'name the element by ref, by selector or by text, one of them'
+      + (kind === 'press' ? ' (a key with none is pressed in the field the step before typed into)' : '') });
+  if (hasRef && !text(value.ref, 64)) issues.push({ field: 'ref', code: 'invalid_value', message: 'ref is a ref from the latest inspection, such as e12' });
+  if (hasSelector && !text(value.selector, MAX_SELECTOR)) issues.push({ field: 'selector', code: 'invalid_value', message: 'selector is a CSS selector' });
+  if (hasText && !text(value.text, MAX_ELEMENT_TEXT)) issues.push({ field: 'text', code: 'invalid_value',
+    message: 'text is what the element shows or is called on the page, such as "Sign in"' });
+  if (role !== undefined && (!hasText || !text(role, MAX_ROLE))) issues.push({ field: 'role', code: 'invalid_value',
+    message: 'role narrows an element named by text, such as "button", "link" or "field"' });
+  return issues;
+};
+
+const typeInputIssues = (value: Record<string, unknown>): ActArgumentIssue[] => {
+  const issues: ActArgumentIssue[] = [];
+  if (value.secret !== undefined) {
+    if (value.value !== undefined) issues.push({ field: 'value', code: 'invalid_value',
+      message: 'give value, the text to type, or secret, what kind of secret it is, not both' });
+    if (secretOf(value.secret) === undefined) issues.push({ field: 'secret', code: 'invalid_value',
+      message: `secret is the kind of secret the field takes: ${BROWSER_ACT_SECRETS.map((kind) => `"${kind}"`).join(', ')}; never the secret itself` });
+    if (value.pick !== undefined) issues.push({ field: 'pick', code: 'invalid_value', message: 'a secret is typed, never picked from suggestions' });
+  } else if (typeof value.value !== 'string' || value.value.length > MAX_VALUE) issues.push({ field: 'value',
+    code: value.value === undefined ? 'required' : 'invalid_value', message: 'value is the text to type' });
+  if (value.submit !== undefined && typeof value.submit !== 'boolean') issues.push({ field: 'submit', code: 'invalid_type', message: 'submit is true or false' });
+  return issues;
+};
+
 /** Whether a step sends a form: the Bridge's `submit` action, which an older Bridge lacks. */
 export const browserActStepSubmits = (step: BrowserActStep): boolean =>
   step.do === 'submit' || (step.do === 'type' && step.submit === true);
@@ -262,8 +353,9 @@ export const browserActStepSubmits = (step: BrowserActStep): boolean =>
 export const browserActStepMayMove = (step: BrowserActStep): boolean => {
   switch (step.do) {
     // Slice AQ — choosing a file leaves the page where it is, as typing does.
-    case 'wait': case 'read': case 'ask': case 'scroll': case 'hover': case 'download': case 'upload': return false;
+    case 'wait': case 'read': case 'data': case 'table': case 'ask': case 'scroll': case 'hover': case 'download': case 'upload': return false;
     case 'type': return step.submit === true || step.pick !== undefined;
+    case 'collect': return step.max_pages > 1;
     default: return true;
   }
 };
@@ -275,7 +367,7 @@ export const browserActStepMayMove = (step: BrowserActStep): boolean => {
 export const browserActStepWrites = (step: BrowserActStep): boolean =>
   step.do !== 'read' && step.do !== 'ask' && step.do !== 'scroll' && step.do !== 'wait' && step.do !== 'hover'
   // Slice AP — saving a file a page links to changes nothing there.
-  && step.do !== 'download';
+  && step.do !== 'download' && step.do !== 'data' && step.do !== 'table' && !(step.do === 'collect' && step.max_pages === 1);
 
 /** D-335 slice AQ — whether a batch puts one of the owner's files into a page, which is always asked
  *  about: no pass or switch stands in for a file leaving the owner's files. */
@@ -402,14 +494,15 @@ const foldPageChangesWait = (wait: Record<string, unknown>, previous: BrowserAct
  *  ({@link foldPageChangesWait}), so the steps returned can be one fewer than the model wrote.
  *  Slice X: any step may name its tab (`page` or `url`), and the steps that read, scroll, point
  *  and move the tab join the ones that act. */
-export const parseBrowserActSteps = (
+const parseBrowserActStepsInner = (
   raw: unknown,
   /** Slice AE — the call's own `page`, given by every caller that knows it, so they all read the
    *  first step's tab the same way: with no handle there, a first `go` that names no tab is on the
    *  tab showing its address, and a `page` that is an address names the first step's tab as `url`
    *  would. Left out, neither applies. */
   call?: { readonly page?: unknown },
-): { readonly ok: true; readonly steps: readonly BrowserActStep[] } | { readonly ok: false; readonly error: string } => {
+): { readonly ok: true; readonly steps: readonly BrowserActStep[] } | { readonly ok: false; readonly error: string;
+  readonly violations?: readonly BrowserCollectViolation[]; readonly violations_truncated?: true; readonly data_schema_step?: BrowserDataSchemaStep } => {
   const fail = (error: string) => ({ ok: false as const, error });
   if (!Array.isArray(raw) || raw.length === 0) return fail('steps must be a list of at least one step');
   if (raw.length > BROWSER_ACT_MAX_STEPS) return fail(`at most ${BROWSER_ACT_MAX_STEPS} steps, and this has ${raw.length}`);
@@ -431,8 +524,34 @@ export const parseBrowserActSteps = (
     if (!isKind(kind)) {
       return fail(`${at}: "do" is ${KINDS_SAID}${typeof kind === 'string' ? `, not "${kind.slice(0, 40)}"` : ''}`);
     }
-    const value: Record<string, unknown> = aliased.length === 0 ? item
+    let value: Record<string, unknown> = aliased.length === 0 ? item
       : { ...Object.fromEntries(Object.entries(item).filter(([key]) => key !== aliased[0])), do: kind };
+    // A wait written using action check vocabulary is accepted only when every
+    // condition maps exactly. Conflicting or compound checks stay explicit errors.
+    if (kind === 'wait' && value.success_when !== undefined) {
+      const success = value.success_when;
+      if (!isRecord(success) || !Object.keys(success).length
+        || Object.keys(success).some(key => !['shows', 'gone', 'text', 'url_includes', 'seconds', 'page_changes'].includes(key)))
+        return fail(`${at}: wait.success_when needs a supported shows/gone/url_includes check`);
+      const { success_when: _success, ...base } = value;
+      const merged: Record<string, unknown> = { ...base };
+      const set = (key: string, entry: unknown): boolean => entry === undefined
+        || (merged[key] === undefined || merged[key] === entry) && (merged[key] = entry, true);
+      if (!set('seconds', success.seconds)) return fail(`${at}: wait seconds conflicts with success_when.seconds`);
+      if (success.page_changes !== undefined) {
+        if (Object.keys(success).some(key => !['page_changes', 'seconds'].includes(key))) return fail(`${at}: page_changes cannot be combined with other wait.success_when conditions; put the complete success_when on the preceding action`);
+        if (!set('page_changes', success.page_changes)) return fail(`${at}: conflicting page_changes checks`);
+      } else {
+        const targets = ['shows', 'gone', 'url_includes'].filter(key => success[key] !== undefined);
+        if (targets.length > 1) return fail(`${at}: wait.success_when chooses one shows/gone/url_includes target; compound checks belong on the action`);
+        if (success.gone !== undefined && success.text !== undefined) return fail(`${at}: a gone wait cannot also require text; put compound checks on the action`);
+        if (success.shows !== undefined && (!set('selector', success.shows) || !set('until', 'shown'))
+          || success.gone !== undefined && (!set('selector', success.gone) || !set('until', 'gone'))
+          || !set('text', success.text) || !set('url_includes', success.url_includes)) return fail(`${at}: wait fields conflict with success_when`);
+        if (!targets.length && success.text === undefined) return fail(`${at}: wait.success_when needs an actual condition`);
+      }
+      value = merged;
+    }
     // D-347 follow-up (2026-11-08) — a wait for the page to move on, written after the step that moves
     //   it: `{"do":"wait","page_changes":true}`. `page_changes` is that step's check (`success_when`),
     //   and the model wrote it as a wait in 2 of 24 runs of the head to head with browser-use (tasks C
@@ -451,7 +570,20 @@ export const parseBrowserActSteps = (
       continue;
     }
     const stray = Object.keys(value).filter((key) => !STEP_KEYS[kind].includes(key));
-    if (stray.length > 0) return fail(`${at}: a ${kind} step takes ${STEP_KEYS[kind].join(', ')}, not ${stray.join(', ')}`);
+    if (kind === 'wait' && stray.includes('gone')) return fail(`${at}: wait.gone is not supported. Use {"do":"wait","selector":"<observed selector>","until":"gone","seconds":10}; then add {"do":"read"} to inspect the result. No earlier step in this batch ran`);
+    const dataHelp = (): { data_schema_step: BrowserDataSchemaStep } => ({ data_schema_step: { do: 'data', describe:
+      [...new Set(Array.isArray(value.pipeline) ? value.pipeline.slice(0, 20).flatMap(item => isRecord(item)
+        && typeof item.transform === 'string' && (BROWSER_DATA_TRANSFORMS as readonly string[]).includes(item.transform)
+        ? [item.transform as BrowserDataTransform] : []) : [])].slice(0, 6) } });
+    if (stray.length > 0) return { ...fail(`${at}: a ${kind} step takes ${STEP_KEYS[kind].join(', ')}, not ${stray.join(', ')}`),
+      ...(kind === 'data' ? dataHelp() : {}) };
+
+    if (kind === 'data') {
+      const parsed = parseBrowserDataStep(value);
+      if (!parsed.ok) return { ...fail(`${at}: ${parsed.error}`), ...dataHelp() };
+      steps.push(parsed.step);
+      continue;
+    }
 
     // Slice X — the tab the step runs on: a handle, or the address of the page it shows. Slice AE: a
     // `page` that is an http or https address names it as `url` does, since a handle never is one;
@@ -462,10 +594,10 @@ export const parseBrowserActSteps = (
     // (a `go` with no call `page`) the tab showing the address it goes to.
     const firstAddress = index > 0 || call === undefined || value.page !== undefined || value.url !== undefined ? undefined
       : isWebAddress(call.page) ? (call.page as string).trim()
-        : kind === 'go' && !text(call.page, 128) && typeof value.address === 'string'
+        : kind === 'go' && !text(call.page, 512) && typeof value.address === 'string'
           && browserAddressKey(value.address.trim()) !== undefined ? value.address.trim() : undefined;
     const url = pageAddress ?? firstAddress ?? value.url;
-    if (value.page !== undefined && pageAddress === undefined && !text(value.page, 128)) {
+    if (value.page !== undefined && pageAddress === undefined && !text(value.page, 512)) {
       return fail(`${at}: page is a page handle, such as one List browser tabs answered`);
     }
     if (url !== undefined && (!text(url, MAX_ADDRESS) || browserAddressKey(url) === undefined)) {
@@ -496,13 +628,51 @@ export const parseBrowserActSteps = (
     }
     // Slice AC — the part of the page to read once the step is done (`STEP_KEYS` says which steps).
     if (value.then_read !== undefined && !text(value.then_read, MAX_SELECTOR)) {
-      return fail(`${at}: then_read is a CSS selector for the part of the page to read once the step is done, such as #results`);
+      return fail(`${at}: then_read is a CSS selector observed on the page for the part to read after the action. `
+        + 'For an unfamiliar returned page, add a separate {"do":"read","form":"text"} step after the action instead of guessing a selector');
     }
-    const thenRead = value.then_read !== undefined ? { then_read: (value.then_read as string).trim() } : {};
+    if (value.then_read_form !== undefined && (value.then_read === undefined
+      || (value.then_read_form !== 'outline' && value.then_read_form !== 'text'))) {
+      return fail(`${at}: then_read_form is outline or text, and needs then_read naming an observed CSS selector. `
+        + 'To read the whole returned page, remove then_read_form and add a separate {"do":"read","form":"text"} step after the action');
+    }
+    const thenRead: BrowserActThenRead = value.then_read !== undefined ? { then_read: (value.then_read as string).trim(),
+      ...(value.then_read_form !== undefined ? { then_read_form: value.then_read_form as 'outline' | 'text' } : {}) } : {};
+
+    if (kind === 'collect') {
+      if (raw.slice(index + 1).some(item => !isRecord(item) || item.do !== 'data'))
+        return fail(`${at}: collect must be the last browser step; only read-only data steps may follow it. `
+          + 'For an observed table with same-URL Next, interleave table, click and wait steps instead. No earlier step ran');
+      const collection = parseBrowserCollectSpec(value);
+      if (!collection.ok) return { ...fail(`${at}: ${collection.error}`),
+        violations: collection.violations.map(violation => ({ ...violation, path: `steps[${index}].${violation.path}` })),
+        ...(collection.violations_truncated ? { violations_truncated: true } : {}) };
+      steps.push({ ...tab, do: 'collect', ...collection.spec });
+      continue;
+    }
+
+    if (kind === 'table') {
+      if (value.ref !== undefined && value.selector !== undefined
+        || value.ref !== undefined && !text(value.ref, MAX_SELECTOR)
+        || value.selector !== undefined && !text(value.selector, MAX_SELECTOR)) return fail(`${at}: table takes one observed ref or selector, or neither for the first table`);
+      steps.push({ ...tab, do: 'table', ...(typeof value.ref === 'string' ? { ref: value.ref } : {}),
+        ...(typeof value.selector === 'string' ? { selector: value.selector } : {}) });
+      continue;
+    }
 
     if (kind === 'wait') {
       if (value.seconds !== undefined && !seconds(value.seconds)) {
         return fail(`${at}: seconds is a number above 0, at most ${BROWSER_ACT_MAX_WAIT_SECONDS}`);
+      }
+      if (value.until === 'ready') {
+        if (value.selector !== undefined || value.text !== undefined || value.url_includes !== undefined || failWhen !== undefined) {
+          return fail(`${at}: until ready checks document readiness only; do not combine it with selector, text, url_includes or fail_when`);
+        }
+        const step: BrowserActStep = { ...tab, do: 'wait', until: 'ready',
+          ...(value.seconds !== undefined ? { seconds: value.seconds as number } : {}) };
+        waiting += browserActStepWaitSeconds(step);
+        steps.push(step);
+        continue;
       }
       if (value.url_includes !== undefined) {
         // Slice X — until the tab's address contains it.
@@ -542,9 +712,21 @@ export const parseBrowserActSteps = (
     }
 
     if (kind === 'read') {
+      if (value.ref !== undefined && (typeof value.ref !== 'string' || !/^e[1-9]\d{0,8}$/.test(value.ref))) {
+        return fail(`${at}: ref is an observed element reference such as e12`);
+      }
+      if (value.selector !== undefined && !text(value.selector, MAX_SELECTOR)) return fail(`${at}: selector is an observed CSS selector`);
+      if (value.ref !== undefined && value.selector !== undefined) return fail(`${at}: give one of ref and selector`);
+      if ((value.ref !== undefined || value.selector !== undefined) && value.find !== undefined) {
+        return fail(`${at}: ref or selector reads one element; omit find. from continues within that element`);
+      }
+      if (value.data_format !== undefined && value.data_format !== 'lines' && value.data_format !== 'entries') {
+        return fail(`${at}: data_format is lines (the default) or entries (observed list/definition rows)`);
+      }
       // Slice X — the page, as Inspect a web page or Read a web page's text answers it.
       if (value.form !== undefined && value.form !== 'outline' && value.form !== 'text') {
-        return fail(`${at}: form is outline (the default) or text`);
+        return fail(`${at}: form is outline (the default) or text. For list records use `
+          + '{"do":"read","data_format":"entries"}; entries is not a form. No earlier step in this batch ran');
       }
       if (value.find !== undefined && !text(value.find, MAX_FIND)) return fail(`${at}: find is the text of the section to find`);
       if (value.from !== undefined && !(typeof value.from === 'number' && Number.isSafeInteger(value.from) && value.from > 0)) {
@@ -561,6 +743,9 @@ export const parseBrowserActSteps = (
       steps.push({
         ...tab,
         do: 'read',
+        ...(value.ref !== undefined ? { ref: value.ref as string } : {}),
+        ...(value.selector !== undefined ? { selector: (value.selector as string).trim() } : {}),
+        ...(value.data_format !== undefined ? { data_format: value.data_format as 'lines' | 'entries' } : {}),
         ...(value.form !== undefined ? { form: value.form as 'outline' | 'text' } : {}),
         ...(value.find !== undefined ? { find: value.find as string } : {}),
         ...(value.from !== undefined ? { from: value.from as number } : {}),
@@ -633,28 +818,22 @@ export const parseBrowserActSteps = (
     const typedBefore = kind === 'press' && value.ref === undefined && value.selector === undefined && value.text === undefined
       && before?.do === 'type' && before.submit !== true && before.pick === undefined
       && tab.page === undefined && tab.url === undefined ? before : undefined;
-    const hasRef = value.ref !== undefined || typedBefore?.ref !== undefined;
-    const hasSelector = value.selector !== undefined || typedBefore?.selector !== undefined;
-    const hasText = value.text !== undefined || typedBefore?.text !== undefined;
-    const naming = [hasRef, hasSelector, hasText].filter(Boolean).length;
-    if (kind === 'download' && naming !== 1) {
-      return fail(`${at}: name the link by ref, by selector or by text, or give the file's address, one of them`);
-    }
-    if (naming > 1 || (naming === 0 && kind !== 'scroll')) {
-      return fail(`${at}: name the element by ref, by selector or by text, one of them`
-        + (kind === 'press' ? ' (a key with none is pressed in the field the step before typed into)' : ''));
-    }
     const elementOf = typedBefore ?? value;
-    if (hasRef && !text(elementOf.ref, 64)) return fail(`${at}: ref is a ref from the latest inspection, such as e12`);
-    if (hasSelector && !text(elementOf.selector, MAX_SELECTOR)) return fail(`${at}: selector is a CSS selector`);
-    if (hasText && !text(elementOf.text, MAX_ELEMENT_TEXT)) {
-      return fail(`${at}: text is what the element shows or is called on the page, such as "Sign in"`);
-    }
-    if (elementOf.role !== undefined && (!hasText || !text(elementOf.role, MAX_ROLE))) {
-      return fail(`${at}: role narrows an element named by text, such as "button", "link" or "field"`);
+    const hasRef = elementOf.ref !== undefined, hasSelector = elementOf.selector !== undefined, hasText = elementOf.text !== undefined;
+    const targetIssue = elementArgumentIssues(elementOf, kind, value.role)[0];
+    if (targetIssue) return fail(`${at}: ${targetIssue.message}`);
+    // D-402 slice G — the item an element named by its text sits in.
+    let within: BrowserActWithin | undefined;
+    if (value.within !== undefined) {
+      if (kind !== 'click' && kind !== 'type') return fail(`${at}: within names the item a click or typing acts in`);
+      if (!hasText || elementOf !== value) return fail(`${at}: within finds the element inside the item by its text: name it by text (and role), not by ref or selector`);
+      const parsed = parseBrowserActWithin(value.within);
+      if (typeof parsed === 'string') return fail(`${at}: ${parsed}`);
+      within = parsed;
     }
     const element = hasRef ? { ref: elementOf.ref as string } : hasSelector ? { selector: elementOf.selector as string }
-      : hasText ? { text: (elementOf.text as string).trim(), ...(elementOf.role !== undefined ? { role: (elementOf.role as string).trim() } : {}) }
+      : hasText ? { text: (elementOf.text as string).trim(), ...(elementOf.role !== undefined ? { role: (elementOf.role as string).trim() } : {}),
+        ...(within !== undefined ? { within } : {}) }
         : {};
 
     if (kind === 'scroll') {
@@ -689,7 +868,7 @@ export const parseBrowserActSteps = (
     if (kind === 'upload') {
       // Slice AQ — one of the owner's files, by the ref a download, file.search or an attachment answered.
       if (typeof value.file !== 'string' || !/^file:[0-9a-f]{32}$/.test(value.file.trim())) {
-        return fail(`${at}: file is the file: ref of one of the user's files, such as a download or file.search answered`);
+        return fail(`${at}: malformed upload file reference: expected file: followed by exactly 32 lowercase hex digits; copy the entire canonical attachment/download/file.search reference. No file lookup or upload ran`);
       }
       steps.push({ ...tab, do: 'upload', ...element, file: value.file.trim() });
       continue;
@@ -723,23 +902,14 @@ export const parseBrowserActSteps = (
     }
     const checks = { ...(successWhen !== undefined ? { success_when: successWhen } : {}),
       ...(failWhen !== undefined ? { fail_when: failWhen } : {}) };
-    const named = element as { ref: string } | { selector: string } | { text: string; role?: string };
+    const named = element as { ref: string } | { selector: string } | { text: string; role?: string; within?: BrowserActWithin };
 
     let step: BrowserActStep;
     if (kind === 'type') {
-      // Slice Z — or what the secret is, which Recued types when the step runs.
-      const secret = value.secret === undefined ? undefined : secretOf(value.secret);
-      if (value.secret !== undefined) {
-        if (value.value !== undefined) return fail(`${at}: give value, the text to type, or secret, what kind of secret it is, not both`);
-        if (secret === undefined) {
-          return fail(`${at}: secret is the kind of secret the field takes: ${BROWSER_ACT_SECRETS.map((kind) => `"${kind}"`).join(', ')}; `
-            + 'never the secret itself');
-        }
-        if (value.pick !== undefined) return fail(`${at}: a secret is typed, never picked from suggestions`);
-      } else if (typeof value.value !== 'string' || value.value.length > MAX_VALUE) {
-        return fail(`${at}: value is the text to type`);
-      }
-      if (value.submit !== undefined && typeof value.submit !== 'boolean') return fail(`${at}: submit is true or false`);
+      // Shared with the bounded multi-error authoring receipt below.
+      const inputIssue = typeInputIssues(value)[0];
+      if (inputIssue) return fail(`${at}: ${inputIssue.message}`);
+      const secret = secretOf(value.secret);
       // Typing alone leaves the page where it is, so nothing would watch it move.
       if (value.submit !== true && (successWhen?.page_changes !== undefined || successWhen?.url_includes !== undefined)) {
         return fail(`${at}: typing leaves the page where it is: check page_changes or url_includes on the step that `
@@ -778,4 +948,29 @@ export const parseBrowserActSteps = (
   }
   if (!steps.some((step) => step.do !== 'wait')) return fail('a sequence needs a step that does more than wait');
   return { ok: true, steps };
+};
+
+/** Keep parsing authoritative; aggregate independent form authoring facts only
+ * after refusal. No partial plan or secret value leaves this boundary. */
+export const parseBrowserActSteps = (raw: unknown, call?: { readonly page?: unknown }): ReturnType<typeof parseBrowserActStepsInner> => {
+  const parsed = parseBrowserActStepsInner(raw, call);
+  if (parsed.ok || !Array.isArray(raw) || raw.length > BROWSER_ACT_MAX_STEPS) return parsed;
+  const extra: { violation: BrowserCollectViolation; original: string }[] = [];
+  for (const [index, item] of raw.entries()) {
+    if (!isRecord(item)) continue;
+    const aliases = item.do === undefined ? KIND_ALIASES.filter(key => isKind(item[key])) : [];
+    const kind = aliases.length === 1 ? item[aliases[0]!] : item.do;
+    if (kind !== 'type') continue;
+    for (const issue of [...elementArgumentIssues(item, 'type'), ...typeInputIssues(item)]) {
+      extra.push({ violation: { path: `steps[${index}]${issue.field ? '.' + issue.field : ''}`, code: issue.code, message: issue.message },
+        original: `step ${index + 1}: ${issue.message}` });
+    }
+  }
+  if (!extra.length) return parsed;
+  const primary = parsed.violations?.length ? [...parsed.violations] : extra.some(issue => issue.original === parsed.error) ? []
+    : [{ path: 'steps', code: 'invalid_value' as const, message: parsed.error }];
+  const all = [...primary, ...extra.map(issue => issue.violation)];
+  const violations = all.filter((issue, index) => all.findIndex(other => other.path === issue.path && other.message === issue.message) === index);
+  return { ...parsed, violations: violations.slice(0, 16),
+    ...(parsed.violations_truncated || violations.length > 16 ? { violations_truncated: true as const } : {}) };
 };

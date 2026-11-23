@@ -6,16 +6,34 @@
  *  Every decision is audited reserve-class (`browser_pass_minted` / `_dismissed` /
  *  `_revoked`), best-effort: the decision is the store's, the audit row its record. */
 
-import { RpcError, type BrowserPassRow, type BrowserPassSuggestionRow, type BrowserRequestPass } from '@recued/contracts';
+import {
+  RpcError, type BrowserPassBrowser, type BrowserPassKey, type BrowserPassRow, type BrowserPassSuggestionRow, type BrowserRequestPass,
+} from '@recued/contracts';
 import type { ActivityAction, AuditLogStore } from '@recued/storage';
 
+import type { BridgeDispatcher } from './bridges/dispatcher.js';
 import { BrowserPassError, type BrowserPassStore } from './storage/browser-pass-store.js';
 
 export interface BrowserPassRpcDeps {
   readonly store?: BrowserPassStore;
   readonly auditLog?: AuditLogStore;
   readonly now?: () => number;
+  /** D-402 slice H4d — the browser a key names, as the owner knows it (`browserPassBrowserFrom`). */
+  readonly browserOf?: (browser_id: string) => BrowserPassBrowser;
 }
+
+/** D-402 slice H4d — a browser as the passes list names it, from routing: the owner's name while it is
+ *  paired, else the name it last went by and that it is no longer paired. With no roster to read, whether
+ *  it is paired is not said. Read at each call: the composition root holds the dispatcher by reference. */
+export const browserPassBrowserFrom = (dispatcher: () => Pick<BridgeDispatcher, 'listBrowsers' | 'browserName'> | undefined) =>
+  (browser_id: string): BrowserPassBrowser => {
+    const routing = dispatcher();
+    const browsers = routing?.listBrowsers?.();
+    const paired = browsers?.find((browser) => browser.browser_id === browser_id);
+    if (paired !== undefined) return { name: paired.name, paired: true };
+    const name = routing?.browserName?.(browser_id);
+    return { ...(name !== undefined ? { name } : {}), ...(browsers !== undefined ? { paired: false } : {}) };
+  };
 
 const text = (method: string, field: string, args: unknown): string => {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) {
@@ -33,6 +51,13 @@ export const createBrowserPassRpcHandlers = (deps: BrowserPassRpcDeps) => {
   const store = (method: string): BrowserPassStore => {
     if (deps.store === undefined) throw new RpcError('not_configured', `${method}: browser passes are not wired`, 501);
     return deps.store;
+  };
+  /** D-402 slice H4d — a row whose key names its browser, with that browser as the owner knows it. */
+  const named = <T extends { readonly key: BrowserPassKey }>(row: T): T => {
+    if (row.key.browser === undefined || deps.browserOf === undefined) return row;
+    const browser = deps.browserOf(row.key.browser);
+    return { ...row, ...(browser.name !== undefined ? { browser_name: browser.name } : {}),
+      ...(browser.paired !== undefined ? { browser_paired: browser.paired } : {}) };
   };
   const decided = <T>(method: string, run: () => T): T => {
     try {
@@ -77,7 +102,7 @@ export const createBrowserPassRpcHandlers = (deps: BrowserPassRpcDeps) => {
     },
 
     'collection.contract.listBrowserPasses': async (): Promise<{ passes: BrowserPassRow[] }> =>
-      ({ passes: store('collection.contract.listBrowserPasses').listPasses(now()) }),
+      ({ passes: store('collection.contract.listBrowserPasses').listPasses(now()).map(named) }),
 
     'collection.contract.revokeBrowserPass': async (args: unknown): Promise<{ pass: BrowserPassRow }> => {
       const method = 'collection.contract.revokeBrowserPass';
@@ -87,11 +112,11 @@ export const createBrowserPassRpcHandlers = (deps: BrowserPassRpcDeps) => {
       audit('browser_pass_revoked', pass_id, {
         key_hash: pass.key_hash, recipe: pass.key.recipe, site: pass.key.site, kind: pass.kind, uses: pass.uses,
       }, at);
-      return { pass };
+      return { pass: named(pass) };
     },
 
     'collection.contract.listBrowserPassSuggestions': async (): Promise<{ suggestions: BrowserPassSuggestionRow[] }> =>
-      ({ suggestions: store('collection.contract.listBrowserPassSuggestions').listSuggestions(now()) }),
+      ({ suggestions: store('collection.contract.listBrowserPassSuggestions').listSuggestions(now()).map(named) }),
 
     'collection.contract.acceptBrowserPassSuggestion': async (
       args: unknown,
@@ -104,7 +129,7 @@ export const createBrowserPassRpcHandlers = (deps: BrowserPassRpcDeps) => {
         key_hash, recipe: result.pass.key.recipe, site: result.pass.key.site,
         principal: result.pass.key.principal.kind, kind: result.pass.kind, from: 'suggestion',
       }, at);
-      return result;
+      return { pass: named(result.pass), suggestion: named(result.suggestion) };
     },
 
     'collection.contract.dismissBrowserPassSuggestion': async (args: unknown): Promise<{ key_hash: string }> => {

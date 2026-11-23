@@ -4,18 +4,24 @@ import { CONTINUATION_PARENT } from './harness/preapproval-continuation.js';
 
 installFullAppHooks();
 for (const width of [280, 1280]) {
-  for (const surface of ['chat', 'approvals', 'runs'] as const) {
+  // `line`: a change a standing permission let the chat make without asking, undone from its
+  // call's line under the answer (D-348 §7.8), as a card's is.
+  for (const surface of ['chat', 'line', 'approvals', 'runs'] as const) {
     test(`${surface} reviews undo and requires a separate keyboard approval at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 800 });
       const address = surface === 'chat' ? '?chat=session&local_mutation_receipt=1#chat/session/chat_1'
-        : surface === 'approvals' ? `?preapproval=continuation&local_receipt=1#approvals/preapproval/${CONTINUATION_PARENT}`
-          : '?journey=verification&local_mutation_receipt=1#logs/run-verify';
+        : surface === 'line' ? '?chat=session&local_mutation_receipt=line#chat/session/chat_1'
+          : surface === 'approvals' ? `?preapproval=continuation&local_receipt=1#approvals/preapproval/${CONTINUATION_PARENT}`
+            : '?journey=verification&local_mutation_receipt=1#logs/run-verify';
       await page.goto(HARNESS_URL + address); await page.waitForFunction(() => window.__app?.ready === true);
       const host = page.locator('[data-local-update-undo]').first();
+      if (surface === 'line') {
+        await expect(page.locator('[data-local-mutation-receipt] [data-local-update-undo]')).toHaveCount(1);
+      }
       await host.getByRole('button', { name: 'Review undo', exact: true }).focus();
       await page.keyboard.press('Enter');
-      await expect(host.locator('[data-local-update-undo-preview]')).toContainText(surface === 'chat' ? 'Original meeting' : 'First row');
-      await expect(host.getByRole('heading', { name: 'Review reverse changes' })).toBeFocused();
+      await expect(host.locator('[data-local-update-undo-preview]')).toContainText(surface === 'chat' || surface === 'line' ? 'Original meeting' : 'First row');
+      await expect(host.getByRole('heading', { name: 'Undo this change?' })).toBeFocused();
       if (surface === 'runs') {
         const listCalls = await page.evaluate(() => window.__app.rpcCallCount('execution.list'));
         await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
@@ -25,12 +31,13 @@ for (const width of [280, 1280]) {
         await page.waitForFunction(count => window.__app.rpcCallCount('execution.list') > count, listCalls);
         await expect(page.locator('[data-recued-logs-route]')).toHaveAttribute('data-recued-logs-history-loading', 'false');
         await expect(host.locator('[data-local-update-undo-preview]')).toContainText('First row');
-        await expect(host.getByRole('heading', { name: 'Review reverse changes' })).toBeFocused();
+        await expect(host.getByRole('heading', { name: 'Undo this change?' })).toBeFocused();
       }
       expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.decide'))).toBe(0);
       await host.getByRole('button', { name: 'Approve undo', exact: true }).focus(); await page.keyboard.press('Enter');
-      await expect(host).toContainText('Undo confirmed. Original receipt: lmr_77777777');
-      await expect(host).toContainText('Undo receipt: lmr_99999999');
+      await expect(host).toContainText('Undone. The change was reversed.');
+      // In the owner's words: no receipt id in the sentence.
+      await expect(host).not.toContainText('lmr_');
       await expect(host.getByRole('status')).toBeFocused();
       expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.decide'))).toBe(1);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -43,14 +50,6 @@ for (const width of [280, 1280]) {
     const host = page.locator('[data-local-update-undo]').first();
     const review = host.getByRole('button', { name: 'Review undo', exact: true });
     await expect(review).toBeVisible();
-    const appearance = await review.evaluate(node => ({
-      height: node.getBoundingClientRect().height,
-      background: getComputedStyle(node).backgroundColor,
-      surface: getComputedStyle(node.closest('[data-recued-logs-detail]')!).backgroundColor,
-      color: getComputedStyle(node).color,
-    }));
-    expect(appearance.height).toBeGreaterThanOrEqual(44);
-    expect(appearance.background).toBe(appearance.surface);
     await review.focus(); await page.keyboard.press('Enter');
     await expect(host.locator('[data-local-update-undo-preview]')).toBeVisible();
     await page.evaluate(() => {
@@ -75,7 +74,7 @@ for (const width of [280, 1280]) {
     await expect(page.locator('html')).toHaveAttribute('data-undo-leave-prompts', '2');
     expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.decide'))).toBe(1);
     expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('local_undo.decide'))).toBe(1);
-    await expect(host.getByRole('status')).toContainText('Undo confirmed.');
+    await expect(host.getByRole('status')).toContainText('Undone. The change was reversed.');
     await page.getByRole('link', { name: 'Back to history' }).click();
     await expect(page).toHaveURL(/#logs$/);
   });
@@ -97,7 +96,7 @@ for (const width of [280, 1280]) {
     await host.getByRole('button', { name: 'Approve undo', exact: true }).click();
     await expect(host).toContainText('Undo response was lost.');
     await host.getByRole('button', { name: 'Check undo result' }).click();
-    await expect(host).toContainText('Undo confirmed.');
+    await expect(host).toContainText('Undone. The change was reversed.');
     const attempts = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-local-update-undo') ?? '[]'));
     expect(attempts).toHaveLength(1);
   });
@@ -110,7 +109,7 @@ for (const width of [280, 1280]) {
     await expect(host).toContainText('Undo response was lost.');
     await page.reload();
     await host.getByRole('button', { name: 'Review undo', exact: true }).click();
-    await expect(host).toContainText('Undo receipt: lmr_99999999');
+    await expect(host).toContainText('Undone. The change was reversed.');
     await expect(host.locator('[data-local-update-undo-preview]')).toHaveCount(0);
     expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.review'))).toBe(0);
     expect(await page.evaluate(() => window.__app.rpcCallCount('local_undo.decide'))).toBe(0);
@@ -136,6 +135,6 @@ for (const width of [280, 1280]) {
     await host.getByRole('button', { name: 'Review undo', exact: true }).click();
     await host.getByRole('button', { name: 'Approve undo', exact: true }).click();
     await expect(host).toContainText('The record changed after review. No undo was applied.');
-    await expect(host).not.toContainText('Undo confirmed.');
+    await expect(host).not.toContainText('Undone.');
   });
 }

@@ -13,11 +13,12 @@
  *  Spec: D-186 (session grants) + D-181 § 8
  *  (messenger live-control). */
 
-import type { SessionGrantView } from '@recued/contracts';
+import type { IngredientManifest, SessionGrantView } from '@recued/contracts';
 
 import {
   emitContractChanged,
   listActiveSessionGrantViews,
+  passActionNamer,
   revokeSessionGrantView,
   type ContractBroadcastEvent,
 } from '../../contract-handler.js';
@@ -45,6 +46,9 @@ export interface ComposeSessionGrantPassesDeps {
   broadcast?: (event: ContractBroadcastEvent) => void;
   /** Clock seam (tests). */
   now?: () => number;
+  /** The manifests the list names a pass's actions from ("Send mail", not "send-email"), as the
+   *  rpc does (`passActionNamer`). Absent: the list keeps the ids. */
+  getManifest?: (slug: string) => IngredientManifest | null;
 }
 
 export const composeSessionGrantPasses = (
@@ -55,10 +59,11 @@ export const composeSessionGrantPasses = (
   // clock the view is projected against (no-op in production — the store
   // defaults to `Date.now`).
   const definitionStore = createContractDefinitionStore(deps.contractStore, { now });
+  const nameAction = deps.getManifest !== undefined ? passActionNamer(deps.getManifest) : undefined;
   return {
-    list: () => listActiveSessionGrantViews(definitionStore, now()),
+    list: () => listActiveSessionGrantViews(definitionStore, now(), undefined, nameAction),
     revoke: (contract_id) => {
-      const view = revokeSessionGrantView(definitionStore, contract_id, now());
+      const view = revokeSessionGrantView(definitionStore, contract_id, now(), nameAction);
       // Parity with `session_grant.revoke` (contract-handler emits the same
       // signal AFTER a successful revoke): drop the pass from every paired
       // webclient's "Active passes" list live, not just on next reload.

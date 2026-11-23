@@ -12,7 +12,16 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type {
+  StorageKindsResponse,
+  StoragePurgePreview,
+  StoragePurgePreviewRequest,
+  StoragePurgeRunRequest,
+  StoragePurgeRunResult,
+} from '../owner-storage.js';
 import type { WriteRuleRow, WriteRuleSuggestionRow } from '../write-approval-rule.js';
+import type { BodyNumbersMode } from '../body-numbers.js';
+import type { ChainRuleRow, ChainSuggestionRow } from '../chain-rule.js';
 import type { BrowserPassRow, BrowserPassSuggestionRow, BrowserRequestPass } from '../browser-pass.js';
 import type { BrowserLoginRow, BrowserSecretPrompt } from '../browser-secret.js';
 import type {
@@ -31,6 +40,7 @@ import type { ListPageFields, ListPageRequest } from './list-page.js';
 import type { MissedSchedulePolicy } from '../missed-schedule-policy.js';
 import type { SpreadsheetImportDeclaration } from '../spreadsheet-import.js';
 import type { MailboxSetting } from '../mailbox-settings.js';
+import type { BrowserSetting } from '../browser-settings.js';
 import type { RecipeSimulationRequest, RecipeSimulationResult } from '../recipe-simulation.js';
 import type { MailDraft, MailDraftSummary, MailDraftCreateRequest, MailDraftUpdateRequest, MailDraftDeleteRequest } from '../mail-drafts.js';
 import type {
@@ -101,8 +111,11 @@ import type {
   EngagementsResolverResult,
 } from '../engagement.js';
 import type {
+  WorkEntityLinkedFromRpcRequest,
+  WorkEntityLinkedFromRpcResponse,
   WorkEntitySearchRpcRequest,
   WorkEntitySearchRpcResponse,
+  WorkEntityProjectAttentionRpcRequest, WorkEntityProjectAttentionRpcResponse,
   WorkEntityProjectItemsRpcRequest,
   WorkEntityProjectItemsRpcResponse,
   WorkEntityListRpcRequest,
@@ -225,6 +238,7 @@ import type { NotificationDeliveryChannel } from '../notifications.js';
 import type { MessageMatchPattern } from '../message-match.js';
 import type {
   LocalRecipeWebhookStatus,
+  LocalRecipeWebhookDoorPreview,
   WebhookDeliveryDetailView,
   WebhookDeliveryEventGetRequest,
   WebhookDeliveryEventPayloadView,
@@ -233,6 +247,10 @@ import type {
   WebhookDeliveryListResponse,
   WebhookDeliveryRetentionPruneRequest,
   WebhookDeliveryRetentionPruneResponse,
+  WebhookDeadLetterActionRequest,
+  WebhookDeadLetterActionResponse,
+  WebhookDeadLetterListRequest,
+  WebhookDeadLetterListResponse,
   WebhookRejectedDeliveryListRequest,
   WebhookRejectedDeliveryListResponse,
   WebhookIngressCreateRequest,
@@ -242,9 +260,12 @@ import type {
   WebhookIngressCredentialWriteResponse,
   WebhookIngressDisableRequest,
   WebhookIngressEnableRequest,
+  WebhookIngressDoorSetRequest,
+  WebhookIngressStraysDismissRequest,
   WebhookIngressManualConfirmRequest,
   WebhookIngressRegistrationReconcileRequest,
   WebhookIngressRetireRequest,
+  WebhookIngressRetireResponse,
   WebhookIngressTestDeliveryRequest,
   WebhookIngressTestDeliveryResponse,
   WebhookIngressUpdateRequest,
@@ -589,6 +610,35 @@ export interface ServerLlmUsageSource {
    *  said no, the owner's budget did not. They resolve differently — one waits
    *  minutes, the other waits for midnight — so they are never merged. */
   in_cooldown: boolean;
+  /** How this source's last call to its provider ended, when one was made with
+   *  the model it has now. Absent before its first call, and after its model
+   *  changed. Chat sources only (slots and pool entries).
+   *
+   *  ⛔ WHY IT EXISTS (2026-11-16): a background call that failed (a recipe's AI
+   *  step, an enrichment) left a line in a run log and nothing else, so a
+   *  retired model could fail every unattended call for days unseen. Survives a
+   *  restart, and is not reset at midnight. */
+  last_call?: ServerLlmSourceLastCall;
+}
+
+/** A source's last call: when, how it ended, and the model that answered when
+ *  the provider said it was another than the one asked for (a provider routing a
+ *  retired model's calls to its successor). `result` is Test connection's
+ *  verdict for a failure, `answered`, or `output_limit` (the model spent its
+ *  whole output allowance before writing anything, usually on thinking). */
+export interface ServerLlmSourceLastCall {
+  /** Epoch milliseconds. */
+  at: number;
+  result:
+    | 'answered'
+    | 'output_limit'
+    | 'auth'
+    | 'unreachable'
+    | 'model_missing'
+    | 'rate_limited'
+    | 'provider_error'
+    | 'rejected';
+  answered_by?: string;
 }
 
 /** D-262 follow-on — what every configured source has spent today.
@@ -1456,6 +1506,9 @@ export interface ServerRecipeListEntry {
    *  ⛔ Projected for the same reason as `provably_read_only`: what makes a
    *  setting a mailbox is the step it feeds, and this row carries no steps. */
   mailbox_settings?: ReadonlyArray<MailboxSetting>;
+  /** D-402 slice H2 — the settings that name one of the owner's browsers (`recipeBrowserSettings`): the
+   *  dish's settings offer the owner's paired browsers for each. Absent when the recipe has none. */
+  browser_settings?: ReadonlyArray<BrowserSetting>;
   /** Provenance — bundled with the server binary, pushed by the paired
    *  extension, or sent inline through `execute`. */
   source: 'bundled' | 'pair-sync' | 'inline';
@@ -1599,7 +1652,7 @@ export type ServerRpcRegistry = {
   'mail.work.search': RpcMethodSpec<{ query: string }, MailWorkSearchResult>;
   'mail.work.delete': RpcMethodSpec<MailWorkDeleteRequest, MailWorkDeleteResult>;
   'mail.drafts.get': RpcMethodSpec<{ draft_id: string }, MailDraft>;
-  'mail.drafts.list': RpcMethodSpec<{ cursor?: string; limit?: number }, { drafts: MailDraftSummary[]; next_cursor: string | null }>;
+  'mail.drafts.list': RpcMethodSpec<{ cursor?: string; limit?: number; query?: string; sender_mail_instance?: string }, { drafts: MailDraftSummary[]; next_cursor: string | null }>;
   'mail.drafts.update': RpcMethodSpec<MailDraftUpdateRequest, MailDraft>;
   'mail.drafts.delete': RpcMethodSpec<MailDraftDeleteRequest, { deleted: true }>;
   'preapproval.prepare': RpcMethodSpec<PreparePreapproval, PreapprovalResult>;
@@ -1876,6 +1929,14 @@ export type ServerRpcRegistry = {
     /** `webhook_doors` — present when the change reached the recipe's MAIN
      *  dish settings (or made this dish main) and moved a webhook door. */
     { dish: Dish; webhook_doors?: DishWebhookDoorChange[] }
+  >;
+  /** D-402 slice H3c (ruling 14) — "Use this browser instead": every browser setting of the dish that
+   *  holds `from` (its own value, else its group's, else the recipe's) is set to `to`, one of the browsers
+   *  paired now; nothing else in its settings changes. `moved` names the settings, in key order. Refused
+   *  when none holds `from`. */
+  'dishes.use_browser': RpcMethodSpec<
+    { dish_id: string; from: string; to: string },
+    { dish: Dish; moved: string[] }
   >;
   /** D-319 — remove a dish: its triggers, schedules and run-to-run memory
    *  go with it. Removing the main dish makes the oldest remaining one
@@ -2499,6 +2560,11 @@ export type ServerRpcRegistry = {
    *  status from the in-RAM ws roster — durable + live joined here so
    *  the caller doesn't have to correlate two RPCs. */
   'pair.list': RpcMethodSpec<void, { devices: ServerPairedDevice[] }>;
+  /** D-402 slice H2b — the owner's paired browsers, for a recipe's browser setting: each by its lasting
+   *  id (the paired instance, which a credential rotation keeps), the name routing uses (the owner's,
+   *  told apart from another of the same name), and whether it is connected. Empty for a caller the
+   *  server cannot name as its owner. */
+  'pair.browsers': RpcMethodSpec<void, { browsers: Array<{ browser_id: string; name: string; online: boolean }> }>;
   /** Revoke a device from the account. Closes any active ws with the
    *  `instance_revoked` code so the device can self-cleanup, and
    *  marks the durable row revoked so re-pair requires user action. */
@@ -2657,6 +2723,17 @@ export type ServerRpcRegistry = {
       /** Kitchen-only owner choices. Required exactly when the standalone
        * recipe declares webhook requirements; never read from recipe JSON. */
       webhook_bindings?: ReadonlyArray<WebhookIngressBindingSelection>;
+      /** D-201 Slice 10I — the owner's answer to the save's question: `true`
+       * keeps (or turns) its webhook on for the saved version, after the
+       * same checks switching it on makes; absent or `false` leaves it off. A
+       * save that keeps it on with the same webhook setup keeps its waiting
+       * deliveries and dead letters. */
+      webhook_on?: boolean;
+      /** D-201 Slice 10M — with `webhook_on`: the `consent` of the question the
+       * owner answered (`recipe.webhook.preview`). The save refuses
+       * (`webhook_consent_stale`) when what it would allow differs from what
+       * was shown, or the webhook was switched off since. */
+      webhook_consent?: string;
     },
     {
       saved: true;
@@ -2676,8 +2753,8 @@ export type ServerRpcRegistry = {
         warnings?: string[];
         infos?: string[];
       };
-      /** Present for a webhook-declaring recipe. A successful save always
-       * replaces its authority in the disarmed state. */
+      /** Present for a webhook-declaring recipe: off after the save unless
+       * `webhook_on` kept it on. */
       webhook?: LocalRecipeWebhookStatus;
     }
   >;
@@ -2730,6 +2807,10 @@ export type ServerRpcRegistry = {
   'recipe.simulate': RpcMethodSpec<RecipeSimulationRequest, RecipeSimulationResult>;
   /** Cancels only a test started on this same paired connection. */
   'recipe.simulate.cancel': RpcMethodSpec<{ simulation_id: string }, { cancelled: boolean }>;
+  /** D-402 slice C — "Try it": the recipe as Kitchen holds it, unsaved, run once for real in the owner's
+   *  browser, every change asked about first. Owner-only, from the paired webclient. */
+  'recipe.try': RpcMethodSpec<import('../browser-trial.js').RecipeTryRequest,
+    ServerExecuteResponse & { capture?: import('../recipe-run-capture.js').RecipeRunCaptureSummary }>;
   'recipe.capture.prepare': RpcMethodSpec<import('../recipe-run-capture.js').RecipeRunCaptureRequest, import('../recipe-run-capture.js').RecipeRunCaptureSummary>;
   'recipe.capture.run': RpcMethodSpec<{ capture_id: string }, import('../recipe-run-capture.js').RecipeRunCaptureResult>;
   'recipe.capture.list': RpcMethodSpec<{ recipe_id: string }, { captures: import('../recipe-run-capture.js').RecipeRunCaptureSummary[] }>;
@@ -2764,6 +2845,22 @@ export type ServerRpcRegistry = {
   'recipe.webhook.disarm': RpcMethodSpec<
     { recipe_id: string },
     { webhook: LocalRecipeWebhookStatus }
+  >;
+
+  /** D-201 Slice 10I — what saving this draft would let its webhook do, and
+   * what more than the saved version can, before the owner answers the save's
+   * "keep its webhook on?". `door` is null where no door is wired. */
+  'recipe.webhook.preview': RpcMethodSpec<
+    {
+      recipe: RecipeDefinition;
+      /** D-201 Slice 10M — the ways in the save would send, for what it does
+       *  with the webhook's history. */
+      webhook_bindings?: ReadonlyArray<WebhookIngressBindingSelection>;
+      /** D-201 Slice 10Y (10V finding 22) — the publisher the save would name,
+       *  when it names one: the history is asked of the triggers under it. */
+      publisher_id?: string;
+    },
+    { door: LocalRecipeWebhookDoorPreview | null }
   >;
 
   /** Install seam 5c — install a standalone marketplace recipe BY SLUG (the
@@ -4029,11 +4126,30 @@ export type ServerRpcRegistry = {
 
   'webhook.ingress.enable': RpcMethodSpec<
     WebhookIngressEnableRequest,
-    { ingress: WebhookIngressView }
+    /** D-201 Slice 10AC (10AA finding 19) — `webhook_doors`: the doors
+     *  switching it on opened, and what each may now do (`DISH_WEBHOOK_DOOR_RPCS`
+     *  announces them). Absent when none moved, and from a server before 10AC. */
+    { ingress: WebhookIngressView; webhook_doors?: DishWebhookDoorChange[] }
   >;
 
   'webhook.ingress.disable': RpcMethodSpec<
     WebhookIngressDisableRequest,
+    { ingress: WebhookIngressView }
+  >;
+
+  /** D-201 Slice 10AF (the owner's rulings of 2026-11-20) — open or close one
+   *  recipe's door on its webhook's card. `webhook_doors`: what an opened door
+   *  may now do (`DISH_WEBHOOK_DOOR_RPCS` announces it); a close moves none
+   *  the owner needs told. */
+  'webhook.ingress.door.set': RpcMethodSpec<
+    WebhookIngressDoorSetRequest,
+    { ingress: WebhookIngressView; webhook_doors?: DishWebhookDoorChange[] }
+  >;
+
+  /** D-201 Slice 10AL (10AI finding 21) — the owner removed the endpoints
+   *  Recued stopped trying to remove (`stray_endpoints_given_up`). */
+  'webhook.ingress.strays.dismiss': RpcMethodSpec<
+    WebhookIngressStraysDismissRequest,
     { ingress: WebhookIngressView }
   >;
 
@@ -4044,7 +4160,7 @@ export type ServerRpcRegistry = {
 
   'webhook.ingress.retire': RpcMethodSpec<
     WebhookIngressRetireRequest,
-    { ingress: WebhookIngressView }
+    WebhookIngressRetireResponse
   >;
 
   'webhook.delivery.list': RpcMethodSpec<
@@ -4070,6 +4186,27 @@ export type ServerRpcRegistry = {
   'webhook.delivery.retention.prune': RpcMethodSpec<
     WebhookDeliveryRetentionPruneRequest,
     WebhookDeliveryRetentionPruneResponse
+  >;
+
+  /** D-201 Slice 10B — one ingress's unresolved dead letters, newest first,
+   *  with the server's count against its review limit. Owner only. */
+  'webhook.delivery.dead_letter.list': RpcMethodSpec<
+    WebhookDeadLetterListRequest,
+    WebhookDeadLetterListResponse
+  >;
+
+  /** D-201 Slice 10B — try a dead letter again under its original event,
+   *  target and run ids; its authority is re-derived when it runs. Owner only. */
+  'webhook.delivery.dead_letter.requeue': RpcMethodSpec<
+    WebhookDeadLetterActionRequest,
+    WebhookDeadLetterActionResponse
+  >;
+
+  /** D-201 Slice 10B — close a dead letter with the owner's reason: a reviewed
+   *  end, never a deletion or a claim that a recipe ran. Owner only. */
+  'webhook.delivery.dead_letter.resolve': RpcMethodSpec<
+    WebhookDeadLetterActionRequest,
+    WebhookDeadLetterActionResponse
   >;
 
   /** D-166 override-write path — author an actor-scoped tightening row at
@@ -4512,6 +4649,39 @@ export type ServerRpcRegistry = {
     { rule_id: string },
     { rule: WriteRuleRow }
   >;
+  /** D-348 — the chains the owner's approvals teach: the open suggestions (one request, in the
+   *  owner's own words, whose held calls were approved as proposed and ran on three occasions in 30
+   *  days, nothing spoiled since; a delete on five). Owner surface only, reserved out of MCP with
+   *  the rest of `collection.contract.`. Reserved `not_configured` with no store. */
+  'collection.contract.listChainSuggestions': RpcMethodSpec<
+    void,
+    { suggestions: ChainSuggestionRow[] }
+  >;
+  /** D-348 — mint the rule an open suggestion names: for `ttl_ms` (at most 30 days) and `max_uses`
+   *  (at most 100), the ceilings when absent; wider rejects `bad_request`. Its deletes only when
+   *  `deletes` is true (Q7). A live rule for the request is replaced. Audited `chain_rule_minted`. */
+  'collection.contract.acceptChainSuggestion': RpcMethodSpec<
+    { key_hash: string; deletes?: boolean; ttl_ms?: number; max_uses?: number },
+    { rule: ChainRuleRow; suggestion: ChainSuggestionRow }
+  >;
+  /** D-348 — never suggest this request again (`part: 'all'`, the default), or never its deletes
+   *  (`'deletes'`). `bad_request` for `all` while it has a live rule (end the rule instead).
+   *  Audited `chain_rule_dismissed`. */
+  'collection.contract.dismissChainSuggestion': RpcMethodSpec<
+    { key_hash: string; part?: 'all' | 'deletes' },
+    { key_hash: string; part: 'all' | 'deletes' }
+  >;
+  /** D-348 — the live chain rules, newest first. */
+  'collection.contract.listChainRules': RpcMethodSpec<
+    void,
+    { rules: ChainRuleRow[] }
+  >;
+  /** D-348 — end a chain rule now; its request never suggests again. Audited
+   *  `chain_rule_revoked`. */
+  'collection.contract.revokeChainRule': RpcMethodSpec<
+    { rule_id: string },
+    { rule: ChainRuleRow }
+  >;
   /** D-335 slice F — the live passes for Browser Toolkit writes, newest first: every "Always
    *  allow on <site>" pass, and each "for this session" pass until it ends. Owner surface only,
    *  reserved out of MCP with the rest of `collection.contract.`: an AI never sees, mints or ends
@@ -4570,7 +4740,8 @@ export type ServerRpcRegistry = {
   /** D-335 slice Z — forget a remembered login: the next step that needs it asks again. Audited
    *  `browser_login_forgotten`; `not_found` for one not remembered. */
   'collection.contract.forgetBrowserLogin': RpcMethodSpec<
-    { origin: string; field: string },
+    /** D-402 slice H5 — the browser it was saved in, too: one browser's login is forgotten, not another's. */
+    { browser: string; origin: string; field: string },
     { forgotten: true }
   >;
   /** D-341 slice B1 — let a webhook, a schedule or an event trigger run one recipe's named writes
@@ -4596,6 +4767,21 @@ export type ServerRpcRegistry = {
   'collection.contract.revokeTriggerPreapproval': RpcMethodSpec<
     { id: string },
     { preapproval: TriggerPreapprovalView }
+  >;
+  /** D-402 slice F4 (§7.9) — what the owner's chats and AI apps may do without asking: each standing
+   *  pre-approval a caller holds for a recipe version, and a one-run one while its run lasts, newest
+   *  first. Owner surface only, reserved out of MCP with the rest of `collection.contract.`. */
+  'collection.contract.listCallerPreapprovals': RpcMethodSpec<
+    void,
+    { preapprovals: import('../trigger-preapproval.js').CallerPreapprovalView[] }
+  >;
+  /** D-402 slice F4 (ruling 12) — "Stop allowing": end, at once, every standing permission one caller
+   *  (the owner's chats, or an AI app by its contract) holds for one recipe: its pre-approvals of every
+   *  version, its site passes, its session grants and delegations pinned to the recipe, its write rules
+   *  naming it. Never asks: it only removes. Audited `stop_allowing`. */
+  'collection.contract.stopAllowing': RpcMethodSpec<
+    { caller: import('../trigger-preapproval.js').PreapprovalCaller; recipe_id: string },
+    { ended: import('../trigger-preapproval.js').StopAllowingResult }
   >;
   /** D-341 slice B2b — what a trigger's page offers to grant: each recipe the trigger starts (a
    *  schedule's or an event trigger's one, every one a webhook runs), the writes its steps make in
@@ -5567,6 +5753,16 @@ export type ServerRpcRegistry = {
     }
   >;
 
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers (`body-numbers.ts`), shown on
+   *  every Body page: Off · Ask · Allow, as it stands (`read`) and set (`write`, audited). Off and on
+   *  are the owner's own switches for the read's recipe and action (Self (you) on the Contracts page);
+   *  Allow is a standing permission for their chats alone, never for an AI app.
+   *
+   *  Permission gate: `write` needs a paired client (D-121); `contract.grant.*` is MCP-reserved, so no
+   *  app can switch a read on. */
+  'contract.grant.body_numbers.read': RpcMethodSpec<void, { chats: BodyNumbersMode }>;
+  'contract.grant.body_numbers.write': RpcMethodSpec<{ chats: BodyNumbersMode }, { chats: BodyNumbersMode }>;
+
   // ── Settings → Notifications (D-163 Slice C) ────────────────────
   //
   // Settings → Notifications surface. The `@recued/notification` block
@@ -5870,6 +6066,12 @@ export type ServerRpcRegistry = {
        *  Absent when nothing would be refused, when it cannot be told, and from an
        *  older server. */
       install_refusal?: { code: 'version_mismatch' | 'validator_rejected'; message: string };
+      /** D-201 Slice 10AF (10AE finding 17) — the recipes this update brings
+       *  from another publisher whose webhook door was made before, each with
+       *  the state its owner left it in: the dialog raises each one's switch,
+       *  answered in `packs.install` `webhook_door_choices`. Absent when none,
+       *  and from an older server. */
+      webhook_publisher_changes?: import('../webhook-profiles.js').PackWebhookPublisherChange[];
       /** D-296 — automations the owner has ON that this update will switch
        *  off (a changed trigger that cannot be carried over). Absent when none. */
       triggers_switched_off?: Array<{ recipe_id: string; name: string; reason: 'changed' | 'removed' }>;
@@ -5943,6 +6145,10 @@ export type ServerRpcRegistry = {
       /** D-315 §5.2 — the owner's answer to each `packs.install_preview`
        *  `mail_templates[].twin`: which template stays on. Absent ⇒ the recipe's. */
       mail_template_choices?: ReadonlyArray<import('../mail-facts.js').MailTemplateInstallChoice>;
+      /** D-201 Slice 10AF — the owner's answer to each `packs.install_preview`
+       *  `webhook_publisher_changes`: its door open or closed. Absent ⇒ the
+       *  state the owner left it in. */
+      webhook_door_choices?: ReadonlyArray<import('../webhook-profiles.js').PackWebhookDoorChoice>;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -5996,6 +6202,8 @@ export type ServerRpcRegistry = {
       dependency_install_scopes?: ReadonlyArray<import('../bulk-pack.js').PackDependencyInstallScope>;
       /** D-315 §5.2 — forwarded to `packs.install`. See its `mail_template_choices`. */
       mail_template_choices?: ReadonlyArray<import('../mail-facts.js').MailTemplateInstallChoice>;
+      /** D-201 Slice 10AF — forwarded to `packs.install`. See its `webhook_door_choices`. */
+      webhook_door_choices?: ReadonlyArray<import('../webhook-profiles.js').PackWebhookDoorChoice>;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -6356,7 +6564,9 @@ export type ServerRpcRegistry = {
   /** D-174 #22 — list one own-it kind, polymorphic across its Sources
    *  (or scoped via `source_id`). Returns tagged records + a filter-
    *  matched total for pagination. */
+  'work_entity.linked_from': RpcMethodSpec<WorkEntityLinkedFromRpcRequest, WorkEntityLinkedFromRpcResponse>;
   'work_entity.search': RpcMethodSpec<WorkEntitySearchRpcRequest, WorkEntitySearchRpcResponse>;
+  'work_entity.project.attention': RpcMethodSpec<WorkEntityProjectAttentionRpcRequest, WorkEntityProjectAttentionRpcResponse>;
   'work_entity.project.items': RpcMethodSpec<WorkEntityProjectItemsRpcRequest, WorkEntityProjectItemsRpcResponse>;
   'work_entity.list': RpcMethodSpec<
     WorkEntityListRpcRequest,
@@ -6452,6 +6662,12 @@ export type ServerRpcRegistry = {
     { deleted: number; blocked: string[] }
   >;
   'records.export': RpcMethodSpec<RecordsExportRequest, RecordsExportResponse>;
+  /** D-403 — what takes space, by kind: counts, sizes and dates, never content. A paired client only. */
+  'storage.kinds.read': RpcMethodSpec<Record<string, never>, StorageKindsResponse>;
+  /** D-403 — how many of a kind's items are older than a date, and a token that binds a run to it. */
+  'storage.purge.preview': RpcMethodSpec<StoragePurgePreviewRequest, StoragePurgePreview>;
+  /** D-403 — delete them, as previewed: the same kind, cutoff and count, within the token's minute. */
+  'storage.purge.run': RpcMethodSpec<StoragePurgeRunRequest, StoragePurgeRunResult>;
   'records.outbox.list': RpcMethodSpec<RecordsOutboxListRequest, RecordsOutboxOverview>;
   /** P2/F2 change review — a bounded keyset page of a pack's change history.
    *  ⛔ NOT `records.outbox.list`, which is the DELIVERY diagnostic (ordered by
@@ -6745,7 +6961,7 @@ export type ServerRpcRegistry = {
    *  could not check its words. */
   'collection.searchAll': RpcMethodSpec<
     { query: string; per_group?: number; platforms?: CollectionPlatform[] },
-    { groups: CollectionSearchGroup[]; did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[] }
+    { groups: CollectionSearchGroup[]; did_you_mean?: CollectionSearchDidYouMean; absent_words?: string[]; unavailable_sources?: Array<{ platform: CollectionPlatform; slug: string }> }
   >;
   /** Fetch one record by `record_id`. Returns `{ record: null }` when
    *  the record doesn't exist — `COLLECTION_NOT_FOUND` is reserved for
@@ -7492,6 +7708,14 @@ export type ServerRpcRegistry = {
   'chat.schedule.remove': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleTarget, import('../prompt-schedule.js').PromptSchedule | null>;
   'chat.schedule.run_now': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleRunRequest, import('../chat-turn-queue.js').ChatTurnAcceptance>;
   'chat.schedule.preview': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleTiming, import('../prompt-schedule.js').PromptSchedulePreview>;
+  'chat.schedule.skip_preview': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleSkipRequest, import('../prompt-schedule.js').PromptScheduleSkipPreview>;
+  'chat.schedules.bulk.preview': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleBulkPreviewRequest, import('../prompt-schedule.js').PromptScheduleBulkPreview>;
+  'chat.schedules.bulk.apply': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleBulkApplyRequest, import('../prompt-schedule.js').PromptScheduleBulkResult>;
+  'chat.schedule.pause_preview': RpcMethodSpec<import('../prompt-schedule.js').PromptSchedulePauseRequest, import('../prompt-schedule.js').PromptSchedulePausePreview>;
+  'chat.schedule.pause_until': RpcMethodSpec<import('../prompt-schedule.js').PromptSchedulePauseRequest, import('../prompt-schedule.js').PromptSchedulePauseResult>;
+  'chat.schedule.runs.list': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleRunsRequest, import('../prompt-schedule.js').PromptScheduleRunsPage>;
+  'chat.schedule.skip_next': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleSkipRequest, import('../prompt-schedule.js').PromptScheduleSkipResult>;
+  'chat.schedule.undo_skip': RpcMethodSpec<import('../prompt-schedule.js').PromptScheduleUndoSkipRequest, import('../prompt-schedule.js').PromptScheduleSkipResult>;
   'chat.turns.list': RpcMethodSpec<{ session_id: string }, import('../chat-turn-queue.js').ChatTurnQueueSnapshot>;
   'chat.turn.withdraw': RpcMethodSpec<{ session_id: string; turn_id: string }, import('../chat-turn-queue.js').ChatWithdrawnDraft>;
   'chat.turn.cancel': RpcMethodSpec<{ session_id: string; turn_id: string }, { ok: true }>;
@@ -7515,6 +7739,14 @@ export type ServerRpcRegistry = {
        *  model-facing half (the tail marker, `file.search`) was already built
        *  and simply had nothing to see from the webclient. */
       attachments?: Array<{ file_id: string; media_class: string; selection_revision?: string }>;
+      /** D-406 — emails the owner picked for this message, by mailbox and record id, at most 3. Each must be a
+       *  stored email, or the send is refused with words: never dropped, since the owner chose it. The turn
+       *  reads each with `mail.read` before its first round. */
+      mail_refs?: Array<{ slug: string; record_id: string }>;
+      /** D-406 (Q4) — calendar events the owner picked for this message, by calendar (collection slug) and record
+       *  id, at most 3. Each must be a stored event, or the send is refused with words. The turn reads each before
+       *  its first round (`calendar.search` with `slug` and `record_id`). */
+      calendar_refs?: Array<{ slug: string; record_id: string }>;
       picker_state: { current: string };
       model_pref?: { current: string; source_id?: string };
       /** D-193 — the requesting user's IANA timezone (the webclient reads
@@ -7664,6 +7896,35 @@ export type ServerRpcRegistry = {
       reason?: string;
     }
   >;
+  /** D-402 slice A4 — "Make a recipe" on a request in the owner's chat: what the request did (every
+   *  turn of it, D-402 §3.1), compiled into a draft and kept in Kitchen as Recued's (`recued:chat`,
+   *  with its notes; slice A3). ⛔ DRAFTS, NEVER SAVES: the owner saves it in Kitchen. `nothing_kept`
+   *  when the hour Recued holds a request's plan has passed; `no_actions` for a request whose plan
+   *  holds nothing a recipe can repeat (it only listed tabs, say: D-402 slice B compiles reading
+   *  too). Owner-only / local-UI; off MCP through the `chat.execution.` prefix.
+   *
+   *  Slice E4c — in a chat that carries on a run a hand-off stopped (`chat.execution.carry_on`), the
+   *  way the chat took is added to that run's recipe as a branch, and the draft is changes to it:
+   *  `recipe_id` names it, and Kitchen opens it there (`kitchen_path`). `changes_in_progress` when
+   *  Kitchen already holds changes to it. When the way cannot be added, a note says why and the
+   *  draft is a recipe of its own. */
+  'chat.execution.request_recipe': RpcMethodSpec<
+    { session_id: string; turn_id: string },
+    | { ok: true; draft_id: string; kitchen_path: string; recipe_id?: string; issues: string[] }
+    | { ok: false; reason: 'nothing_kept' | 'no_actions' | 'invalid_recipe' | 'changes_in_progress'; issues: string[] }
+  >;
+  /** D-402 slice E4b (§6.6) — "Carry on in Chat" from a run a hand-off stopped (`RECIPE_HAND_OFF`):
+   *  the chat kept for that run, opened the first time, and the message its composer starts with, for
+   *  the owner to send: what stopped the run, in the run's own words, and to go on from that page.
+   *  ⛔ SENDS NOTHING: the owner reads the message, can say what to do, and sends it. A second call
+   *  for the same run answers the same chat while it exists. `not_found` for a run Recued keeps no
+   *  record of; `not_a_hand_off` for a run that did not stop at one. Owner-only / local-UI; off MCP
+   *  through the `chat.execution.` prefix. */
+  'chat.execution.carry_on': RpcMethodSpec<
+    { run_id: string },
+    | { ok: true; session_id: string; draft: string }
+    | { ok: false; reason: 'not_found' | 'not_a_hand_off'; message: string }
+  >;
   /** D-219 item 2 — unlearn one case, permanently.
    *
    *  ⛔ Deleting the materialized row would be a NO-OP THAT LOOKS LIKE A FIX: a
@@ -7766,19 +8027,32 @@ export type ServerRpcRegistry = {
   // Read per turn, so a flip applies from the next turn without a restart.
   // Default OFF. Per-pair storage only — no cross-cloud sync (D-097 / D-168).
   'chat.rolling_brief.get': RpcMethodSpec<void, { enabled: boolean }>;
-  'chat.rolling_brief.set': RpcMethodSpec<
-    { enabled: boolean },
-    { enabled: boolean }
-  >;
+  'chat.rolling_brief.set': RpcMethodSpec<{ enabled: boolean }, { enabled: boolean }>;
 
   // D-323 — whether chat offers a marketplace pack when nothing installed can
   // do what the owner asked. Server-scoped like the rolling brief, read at each
   // search; ON unless turned off (ruling P7). Off, no catalogue is downloaded.
+  /** D-404 slice B1 — which steps under chat answers have landed: a pack or a recipe installed, or a
+   *  thing of a type (any type of its name) in Yours. The row under the answer then offers "Ask
+   *  again" (ruling P2). Read-only; answered from what the server holds. Owner-only / local-UI. */
+  'chat.next_steps.state': RpcMethodSpec<
+    { steps: ReadonlyArray<import('../chat-next-steps.js').ChatNextStepRef> },
+    { landed: Array<import('../chat-next-steps.js').ChatNextStepRef> }
+  >;
   'chat.install_offers.get': RpcMethodSpec<void, { enabled: boolean }>;
   'chat.install_offers.set': RpcMethodSpec<
     { enabled: boolean },
     { enabled: boolean }
   >;
+  /** D-405 slice 3 — "Not now" on a hint under a chat answer (ruling P3): the hints set aside, which
+   *  come back on their own after `CHAT_HINT_NOT_NOW_DAYS`; set one aside, with what the owner saw; and
+   *  bring one back. Owner-only / local-UI: the server stops offering it, in the row and to the model. */
+  'chat.hints.list': RpcMethodSpec<void, { not_now: Array<import('../chat-hints.js').ChatHintNotNow> }>;
+  'chat.hints.not_now': RpcMethodSpec<{ key: string; label: string }, import('../chat-hints.js').ChatHintNotNow>;
+  'chat.hints.restore': RpcMethodSpec<{ key: string }, { restored: boolean }>;
+  /** D-405 slice 4 — the Set up page's mail, calendar and files: connected or not (null: the server
+   *  cannot know), the same fact the chat's "Connect your mail" reads. Owner-only / local-UI, read-only. */
+  'chat.setup.features': RpcMethodSpec<void, { features: Array<import('../chat-fixes.js').ChatSetupFeatureState> }>;
 
   /** What the assistant is CARRYING about one conversation, and a way to drop
    *  it. ⛔ The brief steers every later turn and was invisible: only the fold
@@ -8737,7 +9011,7 @@ export type ServerRpcRegistry = {
   'yours.spheres': RpcMethodSpec<{ refs: import('../situation.js').SituationRef[] }, { placements: Array<import('../yours.js').YoursSpherePlacement & { ref: import('../situation.js').SituationRef }> }>;
   'yours.change': RpcMethodSpec<import('../yours.js').YoursCommand, import('../yours.js').YoursCommandResult>;
   'reminder.create': RpcMethodSpec<
-    { text: string; at: number; creation_id: string },
+    import('../reminder.js').ReminderCreateRequest,
     import('../reminder.js').ReminderCreateResult
   >;
   'reminder.list': RpcMethodSpec<
@@ -8752,6 +9026,8 @@ export type ServerRpcRegistry = {
     { reminder_id: string; text?: string; at?: number },
     import('../reminder.js').ReminderUpdateResult
   >;
+  'reminder.triage.preview': RpcMethodSpec<import('../reminder-triage.js').ReminderTriagePreviewRequest, import('../reminder-triage.js').ReminderTriagePreview>;
+  'reminder.triage.apply': RpcMethodSpec<import('../reminder-triage.js').ReminderTriageApplyRequest, import('../reminder-triage.js').ReminderTriageResult>;
   'reminder.cancel': RpcMethodSpec<
     { reminder_id: string },
     import('../reminder.js').ReminderCancelResult
@@ -8864,6 +9140,7 @@ export const SERVER_RPC_METHODS = [
   'dishes.list',
   'dishes.create',
   'dishes.update',
+  'dishes.use_browser',
   'dishes.delete',
   'dishes.history',
   'dishes.defaults',
@@ -8912,6 +9189,7 @@ export const SERVER_RPC_METHODS = [
   'server.seller.synchronizeStripeEntitlements',
   'server.seller.synchronizeProviderTiers',
   'pair.list',
+  'pair.browsers',
   'pair.revoke',
   'pair.rename',
   'pair.registerRecoveryKey',
@@ -8946,6 +9224,7 @@ export const SERVER_RPC_METHODS = [
   'kitchen.draft.create',
   'recipe.simulate',
   'recipe.simulate.cancel',
+  'recipe.try',
   'recipe.capture.prepare',
   'recipe.capture.run',
   'recipe.capture.list',
@@ -8966,6 +9245,7 @@ export const SERVER_RPC_METHODS = [
   'recipe.webhook.status',
   'recipe.webhook.arm',
   'recipe.webhook.disarm',
+  'recipe.webhook.preview',
   // Install seam 5c — standalone recipe install BY SLUG. The apex
   // `#recipes/install/<id>` flow resolves bundled rows to pack detail first;
   // this method rejects any bypass. Same `recipe.` reserved-prefix posture as
@@ -9130,6 +9410,8 @@ export const SERVER_RPC_METHODS = [
   'webhook.ingress.registration.reconcile',
   'webhook.ingress.enable',
   'webhook.ingress.disable',
+  'webhook.ingress.door.set',
+  'webhook.ingress.strays.dismiss',
   'webhook.ingress.test.deliver',
   'webhook.ingress.retire',
   // D-201 Slice 5B2B1 — owner-only accepted delivery inspection.
@@ -9140,6 +9422,10 @@ export const SERVER_RPC_METHODS = [
   'webhook.delivery.rejected.list',
   // D-201 Slice 5B2B2B1 — owner-triggered, eligibility-respecting retention.
   'webhook.delivery.retention.prune',
+  // D-201 Slice 10B — owner review of dead letters: inspect, try again, close.
+  'webhook.delivery.dead_letter.list',
+  'webhook.delivery.dead_letter.requeue',
+  'webhook.delivery.dead_letter.resolve',
   // D-166 override-write path — `contract.override.*` authoring (Settings-only;
   // reserved out of the MCP catalog via `collection.contract.` prefix).
   'collection.contract.upsertOverride',
@@ -9191,6 +9477,12 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.dismissWriteRuleSuggestion',
   'collection.contract.listWriteRules',
   'collection.contract.revokeWriteRule',
+  // D-348 — the chains the owner's approvals teach (same reserved prefix: owner-only).
+  'collection.contract.listChainSuggestions',
+  'collection.contract.acceptChainSuggestion',
+  'collection.contract.dismissChainSuggestion',
+  'collection.contract.listChainRules',
+  'collection.contract.revokeChainRule',
   // D-335 slice F — passes for Browser Toolkit writes (same reserved prefix: owner-only).
   'collection.contract.listBrowserPasses',
   'collection.contract.revokeBrowserPass',
@@ -9207,6 +9499,9 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.grantTriggerPreapproval',
   'collection.contract.listTriggerPreapprovals',
   'collection.contract.revokeTriggerPreapproval',
+  // D-402 slice F4 — what callers may do without asking, and "Stop allowing" (same reserved prefix).
+  'collection.contract.listCallerPreapprovals',
+  'collection.contract.stopAllowing',
   'collection.contract.triggerPreapprovalChoices',
   // D-177 N.11 rule 5 (5.c, slice C) — scoped-grant proposal surface (same
   // reserved prefix — owner-only, never MCP).
@@ -9288,6 +9583,9 @@ export const SERVER_RPC_METHODS = [
   'contract.grant.read',
   'contract.grant.read_by_entry',
   'contract.grant.write',
+  // D-339 slice 12a — the owner's chats' Body numbers switch.
+  'contract.grant.body_numbers.read',
+  'contract.grant.body_numbers.write',
   // D-163 Slice C — Settings → Notifications surface.
   // Per-pair only; namespace excluded from MCP catalog by ratchet
   // (`notifications.` in MCP_RESERVED_RPC_PREFIXES).
@@ -9411,7 +9709,9 @@ export const SERVER_RPC_METHODS = [
   // D-145 PA11 — Settings → Work Entities Source management.
   'work_entity.source.list',
   // D-174 #22 — work-entity warehouse CRUD + timeline read (Data route).
+  'work_entity.linked_from',
   'work_entity.search',
+  'work_entity.project.attention',
   'work_entity.project.items',
   'work_entity.list',
   'work_entity.get',
@@ -9438,6 +9738,9 @@ export const SERVER_RPC_METHODS = [
   'records.retention.set',
   'records.retention.run',
   'records.export',
+  'storage.kinds.read',
+  'storage.purge.preview',
+  'storage.purge.run',
   'records.outbox.list',
   'records.changes.list',
   'records.outbox.retire',
@@ -9636,6 +9939,14 @@ export const SERVER_RPC_METHODS = [
   'chat.schedule.remove',
   'chat.schedule.run_now',
   'chat.schedule.preview',
+  'chat.schedule.skip_preview',
+  'chat.schedules.bulk.preview',
+  'chat.schedules.bulk.apply',
+  'chat.schedule.pause_preview',
+  'chat.schedule.pause_until',
+  'chat.schedule.runs.list',
+  'chat.schedule.skip_next',
+  'chat.schedule.undo_skip',
   'chat.turns.list',
   'chat.turn.withdraw',
   'chat.turn.cancel',
@@ -9656,6 +9967,10 @@ export const SERVER_RPC_METHODS = [
   // D-335 slice W4 — a kept browser flow's forget, and its recipe.
   'chat.execution.browser_flow.forget',
   'chat.execution.browser_flow.recipe',
+  // D-402 slice A4 — "Make a recipe" on a request in the chat.
+  'chat.execution.request_recipe',
+  // D-402 slice E4b — "Carry on in Chat" from a run a hand-off stopped.
+  'chat.execution.carry_on',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   // D-167 chat provider-threading — override lifecycle + global default.
@@ -9666,6 +9981,14 @@ export const SERVER_RPC_METHODS = [
   'chat.rolling_brief.set',
   'chat.install_offers.get',
   'chat.install_offers.set',
+  // D-404 slice B1 — which steps under chat answers have landed.
+  'chat.next_steps.state',
+  // D-405 slice 3 — "Not now" on a hint under a chat answer.
+  'chat.hints.list',
+  'chat.hints.not_now',
+  'chat.hints.restore',
+  // D-405 slice 4 — the Set up page's mail, calendar and files.
+  'chat.setup.features',
   'chat.session.brief.get',
   'chat.session.brief.clear',
   // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
@@ -9896,6 +10219,8 @@ export const SERVER_RPC_METHODS = [
   'reminder.get',
   'reminder.update',
   'reminder.cancel',
+  'reminder.triage.preview',
+  'reminder.triage.apply',
 ] as const satisfies readonly (keyof ServerRpcRegistry)[];
 
 /** The same list as a Set for O(1) lookup. */

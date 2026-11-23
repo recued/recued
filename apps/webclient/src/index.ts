@@ -527,6 +527,7 @@ export {
   type ReceptionPageShellState,
   type ReceptionPageShellError,
   type LaunchWizardRunResult,
+  type LaunchWizardRunOptions,
 } from './reception/page-shell.js';
 
 // D-149 follow-on § A.9 — Reception page renderer + mount. The

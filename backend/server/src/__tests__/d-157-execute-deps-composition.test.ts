@@ -11,6 +11,7 @@ import {
   type Checkpoint,
   type IngredientManifest,
   type McpInboundTokenRecord,
+  type PreflightOverrideOffer,
 } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
 import {
@@ -43,6 +44,7 @@ import {
   composeExecuteDeps,
   type ComposeExecuteDepsDeps,
 } from '../composition/bin/wire-execute-deps.js';
+import { createApprovalRestartContinuationStore } from '../storage/approval-restart-continuation-store.js';
 import { createSettledRunResults } from '../settled-run-results.js';
 import { createSituationAccess } from '../situations/access.js';
 import { createSituationQuery } from '../situations/query.js';
@@ -119,6 +121,10 @@ const conditionalExecuteDepKeys = [
   // store threads for the gate's dotted-email record resolution.
   'annotationStore',
   'contactStore',
+  // D-201 Slice 10N — where a restart keeps an approved step's returned value,
+  // so the next start finishes the run without sending it again. db-gated,
+  // composer-constructed. Absent, such a stop is reported as before.
+  'approvalRestartContinuations',
   // D-234 § 234.1 — where an answered peer-admission ask is recorded, and where
   // the ceiling CLAIMS it on the peer's next call. db-gated (constructed inside
   // the composer from `deps.db`). ⛔ Its ABSENCE denies rather than admits: an
@@ -313,6 +319,12 @@ const importComposerWithNotificationSpy = async () => {
       resumeRun: vi.fn(),
       denyRun: vi.fn(),
     },
+    // D-201 Slice 10W — the bundle carries the held-run continuation.
+    continueHeldRun: vi.fn(),
+    // D-201 Slice 10AB — and the settle of a try again the process went during.
+    settleDiedTryAgain: vi.fn(),
+    // D-201 Slice 10AP — and the answers' resumes under way, for the reconcile.
+    isResumingRun: vi.fn(),
     // D-177 P5a — the bundle carries the batch-approval coordinator.
     batchApprovals: {
       registerHold: vi.fn(async () => ({ kind: 'fallback' as const })),
@@ -359,6 +371,9 @@ describe('composeExecuteDeps bundle shape', () => {
       // D-321 slice 3 — the executor's tool readiness service, surfaced so
       // `packs.tool_status` reads the same cache a run checks with.
       'cliToolStatus',
+      // D-201 Slice 10W — the owner's try again of an approved webhook run left
+      // in doubt, for the webhook runner. Undefined on the dbless path.
+      'continueHeldRun',
       // D-207 slice 1c — the contract substrate the reception door is minted into,
       // surfaced so the boot site hands the door the SAME stores the Gateway reads.
       'contractDefinitionStore',
@@ -373,6 +388,8 @@ describe('composeExecuteDeps bundle shape', () => {
       // D-181 slice 4 — the bundle also surfaces the in-flight registry (the
       // live active-list + kill authority) for the boot composer to wire.
       'inFlightRegistry',
+      // D-201 Slice 10AP — the answers' resumes under way, for the webhook reconcile.
+      'isResumingRun',
       'notificationBlock',
       // D-210 Phase C — the DECORATED preflight resumer, surfaced so the
       // Reception inbox can release a hold that carries no durable ask
@@ -382,6 +399,9 @@ describe('composeExecuteDeps bundle shape', () => {
       // identical on every surface.
       'preflightResumer',
       'reconcileOpenBatch',
+      // D-201 Slice 10AB — the settle of a try again the process went during,
+      // for the webhook runner. Undefined on the dbless path.
+      'settleDiedTryAgain',
     ]);
     expect('executeDeps' in bundle).toBe(true);
     expect('notificationBlock' in bundle).toBe(true);
@@ -390,11 +410,18 @@ describe('composeExecuteDeps bundle shape', () => {
 
   it('returns exactly executeDeps and a notificationBlock when all block prereqs are present', () => {
     const bundle = composeExecuteDeps(buildDeps(notificationPrereqs()));
+    // D-201 Slice 10W — the held continuation comes with the block's resumer.
+    expect(typeof bundle.continueHeldRun).toBe('function');
+    // D-201 Slice 10AB — and the settle of a try again the process went during.
+    expect(typeof bundle.settleDiedTryAgain).toBe('function');
 
     expect(Object.keys(bundle).sort()).toEqual([
       // D-321 slice 3 — the executor's tool readiness service, surfaced so
       // `packs.tool_status` reads the same cache a run checks with.
       'cliToolStatus',
+      // D-201 Slice 10W — the owner's try again of an approved webhook run left
+      // in doubt, for the webhook runner. Undefined on the dbless path.
+      'continueHeldRun',
       // D-207 slice 1c — the contract substrate the reception door is minted into,
       // surfaced so the boot site hands the door the SAME stores the Gateway reads.
       'contractDefinitionStore',
@@ -409,6 +436,8 @@ describe('composeExecuteDeps bundle shape', () => {
       // D-181 slice 4 — the bundle also surfaces the in-flight registry (the
       // live active-list + kill authority) for the boot composer to wire.
       'inFlightRegistry',
+      // D-201 Slice 10AP — the answers' resumes under way, for the webhook reconcile.
+      'isResumingRun',
       'notificationBlock',
       // D-210 Phase C — the DECORATED preflight resumer, surfaced so the
       // Reception inbox can release a hold that carries no durable ask
@@ -418,6 +447,9 @@ describe('composeExecuteDeps bundle shape', () => {
       // identical on every surface.
       'preflightResumer',
       'reconcileOpenBatch',
+      // D-201 Slice 10AB — the settle of a try again the process went during,
+      // for the webhook runner. Undefined on the dbless path.
+      'settleDiedTryAgain',
     ]);
     expect(bundle.notificationBlock).toEqual(
       expect.objectContaining(notificationBlockShape()),
@@ -633,6 +665,13 @@ describe('composeExecuteDeps ExecuteHandlerDeps field parity', () => {
     expect(executeDeps.dishStore).toBeDefined();
     expect('dishContextStore' in executeDeps).toBe(true);
     expect(executeDeps.dishContextStore).toBeDefined();
+    // D-201 Slice 10N — composer-constructed over the server's own database:
+    // what one handle keeps, the next start's handle reads.
+    executeDeps.approvalRestartContinuations!.put({
+      checkpoint_id: 'cp-1', run_id: 'run-1', gated_step_id: 'refund', value: { closed: true }, later: [],
+    });
+    expect(createApprovalRestartContinuationStore(prereqs.db!).get('cp-1'))
+      .toMatchObject({ value: { closed: true } });
   });
 });
 
@@ -745,7 +784,7 @@ describe('composeExecuteDeps getExecuteDeps thunk plumbing', () => {
 
     const callDeps = composeNotificationBlockMock.mock.calls[0]![0];
     expect(callDeps.upsertOverride).toEqual(expect.any(Function));
-    await callDeps.upsertOverride!({
+    const selected: PreflightOverrideOffer = {
       kind: 'never_ask',
       ingredient_id: 'test/simple',
       operation_id: 'test/simple',
@@ -754,6 +793,11 @@ describe('composeExecuteDeps getExecuteDeps thunk plumbing', () => {
         risk_tier: 'read',
       }),
       approval: 'never',
+    };
+    await callDeps.upsertOverride!(selected, {
+      decision_id: 'composition-standing-answer', answered_at: NOW + 1,
+      holds: [{ run_id: 'run-1', checkpoint_id: 'held-1', raw_op: true }],
+      policy_revision: callDeps.captureOverridePolicy!(selected),
     });
 
     expect(
@@ -801,7 +845,12 @@ describe('composeExecuteDeps getExecuteDeps thunk plumbing', () => {
       contractStore,
       executorConfig: { manifests } as ServerExecutorConfig,
     }));
-    const writer = composeNotificationBlockMock.mock.calls[0]![0].upsertOverride!;
+    const callDeps = composeNotificationBlockMock.mock.calls[0]![0];
+    const selected: PreflightOverrideOffer = { kind: 'never_ask', ingredient_id: catalog.slug,
+      operation_id: operation.operation_id, op_hash: operationSpecHash(operation), approval: 'never' };
+    const decision = { decision_id: 'composition-stale-answer', answered_at: NOW + 1,
+      holds: [{ run_id: 'run-1', checkpoint_id: 'held-1', raw_op: true as const }],
+      policy_revision: callDeps.captureOverridePolicy!(selected) };
 
     manifests.register({
       ...catalog,
@@ -810,13 +859,7 @@ describe('composeExecuteDeps getExecuteDeps thunk plumbing', () => {
       },
     });
 
-    await expect(writer({
-      kind: 'never_ask',
-      ingredient_id: catalog.slug,
-      operation_id: operation.operation_id,
-      op_hash: operationSpecHash(operation),
-      approval: 'never',
-    })).rejects.toThrow(/operation changed or was removed/);
+    await expect(callDeps.upsertOverride!(selected, decision)).rejects.toThrow(/operation changed or was removed/);
     expect(
       contractStore.get(
         OWNER_OPERATION_SCOPE,

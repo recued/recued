@@ -354,6 +354,48 @@ describe('D-169 P0 Slice 3 - createBridgeRpcConn timeout and abort', () => {
   });
 });
 
+describe('Bridge RPC connection loss', () => {
+  it('rejects pending calls with unknown outcomes, releases their resources and accepts fresh calls', async () => {
+    vi.useFakeTimers();
+    const { conn, sent } = buildConn({ default_timeout_ms: 1_000 });
+    const firstAbort = new AbortController(), secondAbort = new AbortController();
+    const removeFirst = vi.spyOn(firstAbort.signal, 'removeEventListener');
+    const removeSecond = vi.spyOn(secondAbort.signal, 'removeEventListener');
+    const first = conn.call('lost.write' as never, {} as never, { signal: firstAbort.signal });
+    const second = conn.call('lost.read' as never, {} as never, { signal: secondAbort.signal });
+    const firstRejected = expectRejected(first), secondRejected = expectRejected(second);
+    try {
+      expect(conn.pendingCount()).toBe(2);
+      conn.transportDisconnected();
+      conn.transportDisconnected();
+      const error = expectRpcError(await firstRejected, 'connection_lost', 'lost.write');
+      expect(error.message).toContain('outcome is unknown');
+      expectRpcError(await secondRejected, 'connection_lost', 'lost.read');
+      expect(conn.pendingCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(removeFirst).toHaveBeenCalledOnce();
+      expect(removeSecond).toHaveBeenCalledOnce();
+
+      const fresh = conn.call('fresh.call' as never, {} as never);
+      // A late success or failure from the old connection must not settle the new call.
+      conn.dispatchInbound({ type: 'rpc_result', request_id: 'req-1', result: 'old success' });
+      conn.dispatchInbound({ type: 'rpc_result', request_id: 'req-2', error: { code: 'old', message: 'old error' } });
+      expect((await readPromiseState(fresh)).status).toBe('pending');
+      expect(conn.pendingCount()).toBe(1);
+      conn.dispatchInbound({ type: 'rpc_result', request_id: 'req-3', result: 'fresh result' });
+      await expect(fresh).resolves.toBe('fresh result');
+      firstAbort.abort();
+      secondAbort.abort();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(conn.pendingCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(sent().map(entry => entry.method)).toEqual(['lost.write', 'lost.read', 'fresh.call']);
+    } finally {
+      conn.dispose();
+    }
+  });
+});
+
 describe('D-169 P0 Slice 3 - createBridgeRpcConn dispose', () => {
   it('rejects all in-flight callers with typed transport_disposed and is idempotent', async () => {
     const { conn } = buildConn();

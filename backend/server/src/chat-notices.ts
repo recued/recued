@@ -14,9 +14,12 @@
  *  - The ONLY way in is a reply that quotes it. Its messenger message id is kept
  *    here, and a quoted reply resolves to it (`chat-messenger-bridge.ts`
  *    `nativeReply`), so the model gets its text with the reply.
- *  - It looks different, so the owner can tell what the model can see: a
- *    "Notice · <title>" first line and a last line saying how to ask about it.
- *    Chat replies never carry either.
+ *  - It looks different, so the owner can tell what the model can see: a last
+ *    line saying it is Recued's and that the chat sees it once they reply to it.
+ *    Chat replies never carry it. (It opened with "Notice · <title>" too, and
+ *    ended "Not part of your chat with Recued. To ask about it, use Reply on this
+ *    message."; the owner, 2026-11-14, reading one on Telegram, chose the title
+ *    alone and this plainer last line.)
  *
  *  Only the owner's own linked chat counts: the notification's bot must be the
  *  bot the chat is bound to. A household group, or a messenger the owner does
@@ -32,17 +35,17 @@ import type { ChatStore } from './storage/chat-store.js';
  *  never be quoted back. */
 export const NOTICE_VENDORS: ReadonlySet<string> = new Set(['telegram', 'slack', 'discord']);
 
-/** The first line every notice carries, and no chat reply does. */
+/** A notice's first line: its own title (D-343, the owner 2026-11-14: no "Notice ·" before it). */
 export const noticeTitleLine = (title: string | undefined): string => {
   const trimmed = title?.trim();
-  return trimmed ? `Notice · ${trimmed}` : 'Notice';
+  return trimmed ? trimmed : 'From Recued';
 };
 
-/** The last line: the rule, in that messenger's own words for replying to a
- *  message. On Slack the reply goes in the message's thread. */
+/** The last line every notice carries, and no chat reply does: whose it is, and that the chat sees
+ *  it once the owner replies to it, in that messenger's words (on Slack, in its thread). */
 export const noticeRuleLine = (vendor: string): string => vendor === 'slack'
-  ? "Not part of your chat with Recued. To ask about it, reply in this message's thread."
-  : 'Not part of your chat with Recued. To ask about it, use Reply on this message.';
+  ? '— Sent by Recued. The chat sees it once you reply in its thread.'
+  : '— Sent by Recued. The chat sees it once you reply to it.';
 
 /** What a quoted notice gives the model: what the owner saw, without the two
  *  lines that only explain the rule. */
@@ -86,6 +89,7 @@ const anyBindingTo = (db: Database.Database, vendor: string, recipient: string):
 /** D-338 — whether a conversation is a chat on a messenger its notices go to, so
  *  its model is told that notices it cannot see are there. */
 export const conversationHoldsNotices = (db: Database.Database, session_id: string): boolean => {
+  if (session_id === APP_DAY_SESSION_ID) return true;
   if (!bindingsExist(db)) return false;
   const row = db.prepare('SELECT vendor FROM chat_messenger_bindings WHERE session_id = ?').get(session_id) as { vendor: string } | undefined;
   return row !== undefined && NOTICE_VENDORS.has(row.vendor);
@@ -110,8 +114,9 @@ export interface ChatNoticeDeps {
 /** A notice row in a conversation: its text, and its title and where it went encrypted beside it,
  *  shown in an open app at once. The messenger's notices and the app's own (D-343) are written so. */
 const appendNotice = async (deps: Pick<ChatNoticeDeps, 'chatStore' | 'signature' | 'broadcast'>, session_id: string,
-  vendor: string, message: { text: string; title?: string; link_url?: string }, ts: number): Promise<ChatMessage> => {
-  const id = `notice:${randomUUID()}`;
+  vendor: string, message: { text: string; title?: string; link_url?: string }, ts: number,
+  identity?: { message_id: string; assert_active: () => void }): Promise<ChatMessage> => {
+  const id = identity?.message_id ?? `notice:${randomUUID()}`;
   const written = await deps.chatStore.appendMessage({
     id,
     session_id,
@@ -126,6 +131,7 @@ const appendNotice = async (deps: Pick<ChatNoticeDeps, 'chatStore' | 'signature'
       ...(message.link_url !== undefined ? { link_url: message.link_url } : {}),
     },
     ts,
+    ...(identity ? { assert_active: identity.assert_active } : {}),
   });
   try {
     deps.broadcast?.emit({ kind: 'chat.message_complete', session_id, turn_id: id, final: written });
@@ -136,18 +142,82 @@ const appendNotice = async (deps: Pick<ChatNoticeDeps, 'chatStore' | 'signature'
 /** Where an app conversation's own notice says it went: the app, not a messenger. */
 export const APP_NOTICE_VENDOR = 'app';
 
-/** D-343 slice 4 (ruling 20) — Today's "Close the day": a new conversation in the app holding the
- *  evening notice, so the app's reply quotes it as a messenger reply quotes one there, with or
- *  without a messenger. Titled as the notice is. Its id is a plain conversation's. */
+/** Trusted ingress reserves these before opening, so an interrupted open can finish in place. */
+export interface NoticeConversationIdentity {
+  session_id: string;
+  message_id: string;
+  assert_active: () => void;
+}
+export type NoticeConversationOpener = ((notice: { title: string; text: string }, identity?: NoticeConversationIdentity)
+  => Promise<{ session_id: string; message_id: string }>) & {
+  /** Keeps a notice that went out (the daily and weekly streams, the Agenda, Close the day) in the
+   *  app's "Your day" conversation, once: one already there with the same title and text is kept. */
+  readonly record?: (notice: { title: string; text: string }) => Promise<void>;
+};
+
+/** D-343 (the owner, 2026-11-15: "a dedicated session ... in the webclient chat ... where the system
+ *  generated result is copied there") — the app's one conversation for the day's notices, as a
+ *  linked Telegram chat is one conversation for its own. The morning's "Your day", the Agenda and the
+ *  evening's "Close the day" are kept in it as notices, out of the model's sight until a reply quotes
+ *  one (D-338); Today's "Close the day" and a reply by email close the day in it, so a morning change
+ *  and the evening's close are one conversation, and two replies about one day queue in it rather
+ *  than race in two. Amends ruling 20 ("a new conversation holding today's evening notice"). */
+export const APP_DAY_SESSION_ID = 'app-your-day';
+export const APP_DAY_SESSION_TITLE = 'Your day';
+/** How far back a notice already kept is looked for: a few days of streams and closings. */
+const APP_DAY_NOTICE_LOOKBACK = 50;
+
+/** D-343 slice 4 (ruling 20, amended 2026-11-15) — Today's "Close the day", and a reply by email:
+ *  the app's "Your day" conversation, at the evening notice, so the app's reply quotes it as a
+ *  messenger reply quotes one there, with or without a messenger. Its notice is the one already kept
+ *  there with the same title and text (the evening notice that went out), else a new one. An email's
+ *  reply reserves its own notice (`identity`), so an interrupted open finishes in place; one reserved
+ *  before the conversation was the app's own keeps the conversation it reserved. */
 export const createNoticeConversationOpener = (deps: Pick<ChatNoticeDeps, 'signature' | 'broadcast' | 'now'> & {
-  readonly chatStore: Pick<ChatStore, 'appendMessage' | 'createSession'>;
-  readonly mintId?: () => string;
-}) => async (notice: { title: string; text: string }): Promise<{ session_id: string; message_id: string }> => {
+  readonly chatStore: Pick<ChatStore, 'appendMessage' | 'createSession' | 'getSession' | 'listMessagePage'>;
+}): NoticeConversationOpener => {
   const now = deps.now ?? Date.now;
-  const session_id = (deps.mintId ?? randomUUID)();
-  deps.chatStore.createSession({ id: session_id, title: notice.title, now: now() });
-  const written = await appendNotice(deps, session_id, APP_NOTICE_VENDOR, notice, now());
-  return { session_id, message_id: written.id };
+  const ensure = (session_id: string, title: string): void => {
+    if (!deps.chatStore.getSession(session_id)) {
+      deps.chatStore.createSession({ id: session_id, title: session_id === APP_DAY_SESSION_ID ? APP_DAY_SESSION_TITLE : title, now: now() });
+    }
+  };
+  /** The latest notice in "Your day" with this title, and this text unless `anyText`. */
+  const kept = async (notice: { title: string; text: string }, anyText = false): Promise<ChatMessage | undefined> => {
+    const page = await deps.chatStore.listMessagePage(APP_DAY_SESSION_ID, APP_DAY_NOTICE_LOOKBACK);
+    return [...page.messages].reverse().find(message => message.role === 'notice'
+      && (message.notice?.title ?? '') === notice.title.trim() && (anyText || message.content === notice.text));
+  };
+  // Two opens of one notice at once (a press and the evening's send) keep one: each waits its turn.
+  let queue: Promise<unknown> = Promise.resolve();
+  const serial = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = queue.then(work, work); queue = next.catch(() => undefined); return next;
+  };
+  // `sameDay` — Today's button: the evening notice already there for today, even where its lines have
+  // changed since (a task ticked off in the close that followed it), rather than a second one. The
+  // close reads the day's items fresh, so the quote's text is the owner's reference only.
+  const keep = (notice: { title: string; text: string }, sameDay = false): Promise<string> => serial(async () => {
+    ensure(APP_DAY_SESSION_ID, notice.title);
+    const existing = await kept(notice, sameDay);
+    if (existing) return existing.id;
+    return (await appendNotice(deps, APP_DAY_SESSION_ID, APP_NOTICE_VENDOR, notice, now())).id;
+  });
+  const open = async (notice: { title: string; text: string }, identity?: NoticeConversationIdentity) => {
+    if (!identity) return { session_id: APP_DAY_SESSION_ID, message_id: await keep(notice, true) };
+    const session_id = identity.session_id;
+    identity.assert_active();
+    ensure(session_id, notice.title);
+    const page = await deps.chatStore.listMessagePage(session_id, 1, undefined, { around_message_id: identity.message_id });
+    identity.assert_active();
+    const existing = page.messages.find(message => message.id === identity.message_id);
+    if (existing) {
+      if (existing.role !== 'notice') throw new Error('The saved notice is no longer available.');
+      return { session_id, message_id: existing.id };
+    }
+    const written = await appendNotice(deps, session_id, APP_NOTICE_VENDOR, notice, now(), identity);
+    return { session_id, message_id: written.id };
+  };
+  return Object.assign(open, { record: async (notice: { title: string; text: string }) => { await keep(notice); } });
 };
 
 /** The hook the messenger channels call before a notify goes out. */

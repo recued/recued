@@ -287,6 +287,8 @@ describe('startPostBaseStorageVaultRuntime', () => {
         vaultQuotas: options.base.vaultQuotas,
         // slice 4 — late-bound vault key.
         getVaultKey: expect.any(Function),
+        // D-348 — and the chat's, for the words a chain is learned under.
+        getChatKey: expect.any(Function),
       });
       return storage;
     });

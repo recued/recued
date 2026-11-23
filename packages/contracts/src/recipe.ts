@@ -1259,8 +1259,13 @@ export interface RecipeDefinition {
   metadata: RecipeMetadata;
   /** User-configurable variables. Persist as config.{recipe_id}.{key}.
    *  Recipes that want to expose a per-install LLM-upgrade toggle declare
-   *  a variable named `allow_llm_upgrade` (boolean). See ALLOW_UPGRADE_VARIABLE. */
-  variables: Record<string, VariableDefault>;
+   *  a variable named `allow_llm_upgrade` (boolean). See ALLOW_UPGRADE_VARIABLE.
+   *  D-201 Slice 10AW (10AS finding 30) — optional, as the validator has always
+   *  taken it (`variables_shape` checks it only when present): typed required,
+   *  three readers trusted it, and a recipe saved without it threw "Cannot
+   *  convert undefined or null to object" on every run. Read it as
+   *  `recipe.variables ?? {}`. */
+  variables?: Record<string, VariableDefault>;
   /** Override ingredient vault_hints for the same path. Lets recipes customize credential prompts. */
   vault_hints?: Record<string, ValueHint>;
   /** Warehouse-event subscriptions. When present, the server's

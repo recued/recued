@@ -20,7 +20,7 @@ import type {
   BridgeResult,
   WebclientTokenRecord,
 } from '@recued/contracts';
-import { RpcError } from '@recued/contracts';
+import { BRIDGE_DOWNLOAD_OUTPUT_KEYS, RpcError } from '@recued/contracts';
 import type { WebclientTokenStore } from '../storage/token-store.js';
 import type {
   ActionExecutorOutcome,
@@ -35,6 +35,10 @@ import type { ChromeStorageLocal } from '../storage/local-store.js';
 import { createInMemoryBridgeGrantStore } from '../permissions/grants.js';
 import { BRIDGE_PAIR_MESSAGE_TYPE } from '../pairing/worker-pairing.js';
 import { BRIDGE_SIGN_IN_REFUSED_SESSION_KEY } from '../pairing/sign-in-refusal-store.js';
+import * as pairCompletion from '../pairing/pair-completion.js';
+import { createInMemoryIdempotencyCache } from '../idempotency/cache.js';
+import { buildActionExecutor } from '../actions/executor.js';
+import { fetchFile, pageFileAddress } from '../actions/page-files.js';
 
 const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
@@ -552,6 +556,38 @@ describe('D-169 P0 Slice 3 - bootBridgeServiceWorker rpc conn bootstrap', () => 
     expectRpcError(await rejected, 'transport_disposed', 'stop.pending');
   });
 
+  it('rejects a call from a dropped socket without replaying it and accepts new calls after reconnect', async () => {
+    const handle = await bootPaired();
+    const conn = handle.rpcConn!;
+    const oldFrames = factory.transport!.sent;
+    const lost = conn.call('lost.write' as never, {} as never);
+    const rejected = expectRejected(lost);
+    const request = JSON.parse(oldFrames[0]!) as { request_id: string };
+    try {
+      // bootPaired replied on this socket, so dropping it reconnects immediately.
+      factory.disconnect();
+      await flushAsyncWork();
+      expect((await readPromiseState(lost)).status).toBe('rejected');
+      const error = expectRpcError(await rejected, 'connection_lost', 'lost.write');
+      expect(error.message).toContain('outcome is unknown');
+      expect(factory.openCalls).toBe(2);
+      expect(handle.rpcConn).toBe(conn);
+      expect(handle.wsClient!.isConnected()).toBe(true);
+
+      const fresh = conn.call('fresh.call' as never, {} as never);
+      const currentFrames = factory.sentFrames().map(frame => JSON.parse(frame) as { method?: string; request_id: string });
+      const currentRequest = currentFrames.find(frame => frame.method === 'fresh.call')!;
+      factory.fireMessage(JSON.stringify({ type: 'rpc_result', request_id: request.request_id, result: 'old result' }));
+      expect((await readPromiseState(fresh)).status).toBe('pending');
+      factory.fireMessage(JSON.stringify({ type: 'rpc_result', request_id: currentRequest.request_id, result: 'fresh result' }));
+      await expect(fresh).resolves.toBe('fresh result');
+      expect(oldFrames.map(frame => (JSON.parse(frame) as { method?: string }).method)).toEqual(['lost.write']);
+      expect(currentFrames.some(frame => frame.method === 'lost.write')).toBe(false);
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('writes outbound rpc envelopes through ws.send', async () => {
     const handle = await bootPaired();
     const result = handle.rpcConn!.call('outbound.method' as never, undefined as never);
@@ -665,6 +701,24 @@ describe('2026-11-03 - a sign-in the server refuses unpairs the bridge, once', (
 });
 
 describe('2026-11-04 - the side panel\'s Disconnect', () => {
+  const handles: Awaited<ReturnType<typeof bootBridgeServiceWorker>>[] = [];
+  afterEach(async () => {
+    vi.useRealTimers();
+    for (const handle of handles.splice(0)) await handle.stop();
+    vi.restoreAllMocks();
+  });
+  const gate = () => {
+    let release!: () => void;
+    const promise = new Promise<void>(resolve => { release = resolve; });
+    return { promise, release };
+  };
+  const replacement = {
+    server_url: 'wss://replacement.example/ws', server_public_key: 'replacement-key',
+    webclient_token: { ...PAIRED_TOKEN_RECORD, token_id: 'replacement-token' },
+    pair_metadata: { instance_id: 'replacement-instance', paired_at: 2,
+      server_passport_fingerprint: 'replacement-fp', server_handle_at_pair: 'replacement' },
+  };
+  const replacementNote = { serverUrl: 'https://replacement.example', at: 2 };
   const ask = (onMessage: CapturedOnMessage, message: unknown): Promise<unknown> =>
     new Promise((resolve) => {
       for (const handler of onMessage.handlers) {
@@ -672,7 +726,7 @@ describe('2026-11-04 - the side panel\'s Disconnect', () => {
       }
       resolve(undefined);
     });
-  const boot = async () => {
+  const boot = async (overrides: Partial<BridgeServiceWorkerDeps> = {}) => {
     const factory = buildCapturedWsTransportFactory();
     const onMessage = buildCapturedOnMessage();
     const local = buildInMemoryChromeStorage({
@@ -691,13 +745,657 @@ describe('2026-11-04 - the side panel\'s Disconnect', () => {
       chromeRuntimeOnMessage: onMessage,
       wsTransportFactory: factory,
       now: () => 4_321,
+      ...overrides,
     }));
+    handles.push(handle);
     await flushAsyncWork();
     return { factory, onMessage, local, session, handle };
   };
   const revokeRequest = (factory: ReturnType<typeof buildCapturedWsTransportFactory>) => factory.sentFrames()
     .map((frame) => JSON.parse(frame) as { type?: string; method?: string; request_id?: string; args?: unknown })
     .find((frame) => frame.type === 'rpc' && frame.method === 'pair.revoke');
+
+  describe('cancellation of download fallback', () => {
+    type Retirement = 'cancel' | 'disconnect' | 'active';
+    type PageResult = 'failed' | 'lost' | 'confirmed';
+    // Real worker routing, executor, fetch helper and completion cache. Page
+    // injection, transport and the HTTP response are controlled adapters.
+    const runDownload = async (retirement: Retirement, pageResult: PageResult) => {
+      const pending = gate(), began = gate(), completed = gate();
+      const address = 'https://cdn.example.net/fixture.bin';
+      const bytes = new TextEncoder().encode('fixture-file');
+      const data = Buffer.from(bytes).toString('base64');
+      const fetched = vi.fn(async () => new Response(bytes, { headers: {
+        'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="fixture.bin"',
+      } }));
+      vi.stubGlobal('fetch', fetched);
+      let signal: ActionExecutorRequest['cancel'] | undefined;
+      let pageFetches = 0;
+      const executor = buildActionExecutor({
+        async findTabByUrlPattern() { return null; },
+        async executeScript() { return null; },
+        async captureVisibleTab() { return null; },
+        async showNotification(id) { return id; },
+        async blockedSites() { return []; },
+        async tabUrl() { return 'https://example.com/form'; },
+        async executeInDocument(_target, func) {
+          if (func === pageFileAddress) return { document_id: 'DOC7', result: {
+            address, cross_origin: true, url: 'https://example.com/form', title: 'Form',
+          } };
+          if (func !== fetchFile) throw new Error(`unexpected script ${func.name}`);
+          pageFetches++;
+          began.release();
+          await pending.promise;
+          return pageResult === 'lost' ? null : { document_id: 'DOC7', result: pageResult === 'failed'
+            ? { failed: 'controlled page-side CORS refusal' }
+            : { address, filename: 'fixture.bin', mime_type: 'application/octet-stream', size: bytes.length, data } };
+        },
+      });
+      const cache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+      const t = await boot({ ...buildExecutorTestDeps(), idempotency: cache,
+        actionExecutor: { execute(req) {
+          signal = req.cancel;
+          return executor.execute(req).finally(completed.release);
+        } },
+      });
+      const command: BridgeCommand = { ...buildCommandFixture(`download-${retirement}-${pageResult}`), action: 'download_file',
+        args: { page: '7:DOC7', address }, expects_output_keys: [...BRIDGE_DOWNLOAD_OUTPUT_KEYS], timeout_ms: 10_000,
+      };
+      try {
+        t.factory.fireMessage(JSON.stringify({ kind: 'command', command }));
+        await began.promise;
+        expect(fetched).not.toHaveBeenCalled();
+        if (retirement === 'cancel') t.factory.fireMessage(JSON.stringify({ kind: 'cancel', cancel: { command_id: command.command_id } }));
+        if (retirement === 'disconnect') {
+          t.factory.disconnect({ code: 1006, reason: 'offline' });
+          await expect(ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' }))
+            .resolves.toEqual({ ok: true, told_server: false });
+        }
+        expect(signal?.signalled).toBe(retirement !== 'active');
+        pending.release();
+        await completed.promise;
+        await flushAsyncWork();
+        const receipt = (await cache.lookup(command.command_id))?.result;
+        const replies = t.factory.sentFrames().map(frame => JSON.parse(frame) as { kind?: string; result?: BridgeResult })
+          .filter((frame): frame is { kind: 'result'; result: BridgeResult } => frame.kind === 'result'
+            && frame.result?.command_id === command.command_id).map(frame => frame.result);
+        return { pageFetches, workerFetches: fetched.mock.calls.length, receipt, replies, address, data };
+      } finally { pending.release(); await flushAsyncWork(); await t.handle.stop(); vi.unstubAllGlobals(); }
+    };
+
+    it.each((['cancel', 'disconnect'] as const).flatMap(retirement =>
+      (['failed', 'lost'] as const).map(pageResult => ({ retirement, pageResult }))))
+      ('does not start fallback after $retirement with a $pageResult page result', async ({ retirement, pageResult }) => {
+        const t = await runDownload(retirement, pageResult);
+        expect(t.pageFetches).toBe(1);
+        expect(t.workerFetches).toBe(0);
+        expect(t.receipt).toMatchObject({ status: 'cancelled' });
+        expect(t.receipt?.outputs).toBeUndefined();
+        expect(t.replies.map(reply => reply.status)).toEqual(retirement === 'cancel' ? ['cancelled'] : []);
+      });
+
+    it.each(['failed', 'lost'] as const)('still permits active fallback for a %s page result', async pageResult => {
+      const t = await runDownload('active', pageResult);
+      expect(t.workerFetches).toBe(1);
+      expect(t.receipt).toMatchObject({ status: 'ok', outputs: { address: t.address, data: t.data } });
+      expect(t.replies).toMatchObject([{ status: 'ok', outputs: { address: t.address, data: t.data } }]);
+    });
+
+    it.each(['cancel', 'disconnect'] as const)('preserves a confirmed page result after %s without fallback', async retirement => {
+      const t = await runDownload(retirement, 'confirmed');
+      expect(t.workerFetches).toBe(0);
+      expect(t.receipt).toMatchObject({ status: 'ok', outputs: { address: t.address, data: t.data } });
+      expect(t.replies.map(reply => reply.status)).toEqual(retirement === 'cancel' ? ['cancelled'] : []);
+      for (const reply of t.replies) expect(reply.outputs).toBeUndefined();
+    });
+  });
+
+  describe('cancellation of reference retries', () => {
+    type Action = 'click' | 'fill' | 'submit' | 'press';
+    type Retirement = 'cancel' | 'disconnect';
+    type Pause = 'stale' | 'rebind' | 'confirmation';
+    const runRetry = async (action: Action, retirement: Retirement, pause: Pause) => {
+      const pending = gate(), began = gate();
+      let signal: ActionExecutorRequest['cancel'] | undefined;
+      let rebinds = 0, writes = 0, applied = 0;
+      const operation = { click: 'clickPageElement', fill: 'fillPageField', submit: 'submitPageForm', press: 'pressPageKey' }[action];
+      const key = { click: 'clicked', fill: 'filled', submit: 'submitted', press: 'pressed' }[action];
+      const outputs = { [key]: action === 'press' ? 'Enter' : true };
+      const executor = buildActionExecutor({
+        async findTabByUrlPattern() { return null; },
+        async executeScript() { return null; },
+        async captureVisibleTab() { return null; },
+        async showNotification(id) { return id; },
+        async executeInDocument(_target, func) {
+          if (func.name === 'rebindPageRef') {
+            if (++rebinds === 2 && pause === 'rebind') { began.release(); await pending.promise; }
+            return { document_id: 'DOC7', result: { kept: true } };
+          }
+          if (func.name === 'describePageElement') return { document_id: 'DOC7', result: { outputs: {
+            url: 'https://example.com/form', title: 'Form', role: action === 'fill' ? 'textbox' : 'button',
+            label: 'Control', protected: false,
+          } } };
+          if (func.name !== operation) throw new Error(`unexpected script ${func.name}`);
+          if (++writes === 1) {
+            if (pause === 'stale') { began.release(); await pending.promise; }
+            return { document_id: 'DOC7', result: { stale: true } };
+          }
+          if (pause === 'confirmation') { began.release(); await pending.promise; }
+          applied++;
+          return { document_id: 'DOC7', result: { outputs } };
+        },
+      });
+      const cache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+      const t = await boot({ ...buildExecutorTestDeps(), idempotency: cache,
+        actionExecutor: { execute(req) { signal = req.cancel; return executor.execute(req); } },
+      });
+      const command: BridgeCommand = { ...buildCommandFixture(`retry-${action}-${retirement}-${pause}`), action,
+        args: { page: '7:DOC7', ref: 'e2', ...(action === 'fill' ? { value: 'draft' } : {}),
+          ...(action === 'press' ? { key: 'Enter' } : {}) }, expects_output_keys: [key],
+      };
+      try {
+        t.factory.fireMessage(JSON.stringify({ kind: 'command', command }));
+        await began.promise;
+        expect(applied).toBe(0);
+        if (retirement === 'cancel') {
+          t.factory.fireMessage(JSON.stringify({ kind: 'cancel', cancel: { command_id: command.command_id } }));
+        } else {
+          t.factory.disconnect({ code: 1006, reason: 'offline' });
+          await expect(ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' }))
+            .resolves.toEqual({ ok: true, told_server: false });
+        }
+        expect(signal?.signalled).toBe(true);
+        pending.release();
+        await flushAsyncWork();
+        const receipt = (await cache.lookup(command.command_id))?.result;
+        const replies = t.factory.sentFrames().map(frame => JSON.parse(frame) as { kind?: string; result?: BridgeResult })
+          .filter((frame): frame is { kind: 'result'; result: BridgeResult } => frame.kind === 'result' && !!frame.result)
+          .map(frame => frame.result);
+        return { writes, rebinds, applied, outputs, receipt, replies };
+      } finally { pending.release(); await flushAsyncWork(); }
+    };
+    const cases: Array<{ action: Action; retirement: Retirement; pause: 'stale' | 'rebind' }> =
+      (['click', 'fill', 'submit', 'press'] as const).flatMap(action =>
+        (['cancel', 'disconnect'] as const).map(retirement => ({ action, retirement, pause: 'rebind' as const })));
+    cases.push({ action: 'click', retirement: 'cancel', pause: 'stale' });
+
+    it.each(cases)('does not retry $action after $retirement at $pause', async ({ action, retirement, pause }) => {
+      const result = await runRetry(action, retirement, pause);
+      expect(result.writes).toBe(1);
+      expect(result.rebinds).toBe(pause === 'stale' ? 1 : 2);
+      expect(result.applied).toBe(0);
+      expect(result.receipt?.status).toBe('cancelled');
+      expect(result.receipt?.outputs).toBeUndefined();
+      expect(result.replies.map(reply => reply.status)).toEqual(retirement === 'cancel' ? ['cancelled'] : []);
+    });
+
+    it('keeps a confirmed retry receipt when cancellation arrives during that retry', async () => {
+      const result = await runRetry('click', 'cancel', 'confirmation');
+      expect(result.writes).toBe(2);
+      expect(result.applied).toBe(1);
+      expect(result.receipt).toMatchObject({ status: 'ok', outputs: result.outputs });
+      expect(result.replies).toHaveLength(1);
+      expect(result.replies[0].status).toBe('cancelled');
+      expect(result.replies[0].outputs).toBeUndefined();
+    });
+  });
+
+  describe('cancellation while reading the site policy', () => {
+    it.each([
+      ['open_tab', 'cancel'], ['reviewed_fill', 'cancel'],
+      ['open_tab', 'disconnect'], ['reviewed_fill', 'disconnect'],
+    ] as const)('does not dispatch %s after %s', async (scenario, retirement) => {
+      const pending = gate(), began = gate();
+      const browserCalls: string[] = [];
+      let signal: ActionExecutorRequest['cancel'] | undefined;
+      const executor = buildActionExecutor({
+        async blockedSites() { began.release(); await pending.promise; return []; },
+        async findTabByUrlPattern() { return null; },
+        async executeScript() { return null; },
+        async captureVisibleTab() { return null; },
+        async showNotification(id) { return id; },
+        async openPage(url) {
+          browserCalls.push('openPage');
+          return { status: 'ok', outputs: { page: '1:DOC1', url, title: 'Opened' } };
+        },
+        async executeReviewedDocument() {
+          browserCalls.push('executeReviewedDocument');
+          return { status: 'ok', outputs: { filled: true } };
+        },
+      });
+      const cache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+      const t = await boot({ ...buildExecutorTestDeps(), idempotency: cache,
+        actionExecutor: { execute(req) { signal = req.cancel; return executor.execute(req); } },
+      });
+      const command: BridgeCommand = { ...buildCommandFixture(`policy-${scenario}-${retirement}`),
+        ...(scenario === 'open_tab'
+          ? { action: 'open_tab', args: { url: 'https://example.com/new' }, expects_output_keys: ['page', 'url', 'title'] }
+          : { action: 'fill', args: { selector: '#name', value: 'draft' }, expects_output_keys: ['filled'],
+            reviewed_document: { tab_id: 7, document_id: 'DOC7', url: 'https://example.com/form' } }),
+      };
+      try {
+        t.factory.fireMessage(JSON.stringify({ kind: 'command', command }));
+        await began.promise;
+        expect(browserCalls).toEqual([]);
+        if (retirement === 'cancel') {
+          t.factory.fireMessage(JSON.stringify({ kind: 'cancel', cancel: { command_id: command.command_id } }));
+        } else {
+          t.factory.disconnect({ code: 1006, reason: 'offline' });
+          await expect(ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' }))
+            .resolves.toEqual({ ok: true, told_server: false });
+        }
+        expect(signal?.signalled).toBe(true);
+        pending.release();
+        await flushAsyncWork();
+        expect(browserCalls).toEqual([]);
+        const receipt = await cache.lookup(command.command_id);
+        expect(receipt?.result.status).toBe('cancelled');
+        expect(receipt?.result.outputs).toBeUndefined();
+        const replies = t.factory.sentFrames().map(frame => JSON.parse(frame) as { kind?: string; result?: BridgeResult })
+          .filter(frame => frame.kind === 'result').map(frame => frame.result);
+        expect(replies.map(reply => reply?.status)).toEqual(retirement === 'cancel' ? ['cancelled'] : []);
+      } finally { pending.release(); await flushAsyncWork(); }
+    });
+  });
+
+  describe('command queue ownership after a pairing changes', () => {
+    const bootCommands = (overrides: Partial<BridgeServiceWorkerDeps>) => boot({
+      ...buildExecutorTestDeps(),
+      fetch: async () => new Response(JSON.stringify({ token: 'replacement-bearer', token_id: replacement.webclient_token.token_id })),
+      ...overrides,
+    });
+    const replacePair = async (t: Awaited<ReturnType<typeof boot>>, pair = replacement) => {
+      t.factory.disconnect({ code: 1006, reason: 'offline before local disconnect' });
+      await expect(ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' }))
+        .resolves.toEqual({ ok: true, told_server: false });
+      vi.spyOn(pairCompletion, 'finalizeBridgePair').mockImplementation(async () => {
+        await t.local.set(pair);
+        return { ok: true, server_url: pair.server_url, token_id: pair.webclient_token.token_id };
+      });
+      await expect(ask(t.onMessage, { type: BRIDGE_PAIR_MESSAGE_TYPE, op: 'start',
+        input: { serverUrl: new URL(pair.server_url).origin.replace(/^wss:/, 'https:'), code: '123456' } }))
+        .resolves.toMatchObject({ ok: true });
+      await flushAsyncWork();
+    };
+    const sendCommand = (t: Awaited<ReturnType<typeof boot>>, id: string) => {
+      t.factory.fireMessage(JSON.stringify({ kind: 'command', command: buildCommandFixture(id) }));
+    };
+    const results = (frames: string[]): BridgeResult[] => frames
+      .map(frame => JSON.parse(frame) as { kind?: string; result?: BridgeResult })
+      .filter((frame): frame is { kind: 'result'; result: BridgeResult } => frame.kind === 'result' && !!frame.result)
+      .map(frame => frame.result);
+
+    it.each(['confirmed', 'lost'] as const)(
+      'hands queued work to the active connection after the old executor is %s', async (settlement) => {
+        const blocked = gate(), began = gate();
+        const caches = new Map<string, ReturnType<typeof createInMemoryIdempotencyCache>>();
+        const cacheFor = (token: string) => {
+          let cache = caches.get(token);
+          if (!cache) { cache = createInMemoryIdempotencyCache({ now: () => 4_321 }); caches.set(token, cache); }
+          return cache;
+        };
+        const seen: string[] = [];
+        let running = 0, maxRunning = 0;
+        const execute = vi.fn(async (req: ActionExecutorRequest): Promise<ActionExecutorOutcome> => {
+          seen.push(req.command.command_id);
+          maxRunning = Math.max(maxRunning, ++running);
+          try {
+            if (req.command.command_id === 'old-running') {
+              began.release(); await blocked.promise;
+              if (settlement === 'lost') throw new Error('executor acknowledgement lost');
+            }
+            return { status: 'ok', outputs: { result: req.command.command_id } };
+          } finally { running -= 1; }
+        });
+        const t = await bootCommands({ actionExecutor: { execute }, idempotencyForPair: scope => cacheFor(scope.token_id) });
+        const oldSend = vi.spyOn(t.handle.wsClient!, 'send');
+        try {
+          sendCommand(t, 'old-running');
+          await began.promise;
+          sendCommand(t, 'old-pending');
+          await replacePair(t);
+          sendCommand(t, 'new-first');
+          sendCommand(t, 'new-second');
+          await flushAsyncWork();
+          expect(seen).toEqual(['old-running']);
+
+          // Admission, rather than the later wake-up, owns the receipt cache.
+          await t.local.set({ webclient_token: { ...replacement.webclient_token, token_id: 'rotated-token' } });
+          await t.handle.wsClient!.stop();
+          await t.handle.wsClient!.start();
+          await flushAsyncWork();
+          blocked.release();
+          await flushAsyncWork();
+
+          expect(seen).toEqual(['old-running', 'new-first', 'new-second']);
+          expect(maxRunning).toBe(1);
+          expect(results(t.factory.sentFrames()).map(result => [result.command_id, result.status]))
+            .toEqual([['new-first', 'ok'], ['new-second', 'ok']]);
+          expect(results(oldSend.mock.calls.map(([payload]) => payload)).map(result => result.command_id))
+            .not.toContain('new-first');
+          for (const id of ['new-first', 'new-second']) {
+            expect((await cacheFor(replacement.webclient_token.token_id).lookup(id))?.result.status).toBe('ok');
+            expect(await cacheFor(PAIRED_TOKEN_RECORD.token_id).lookup(id)).toBeNull();
+            expect(await cacheFor('rotated-token').lookup(id)).toBeNull();
+          }
+        } finally { blocked.release(); await flushAsyncWork(); }
+      },
+    );
+
+    it('keeps cancellation with the active runtime after queued work is handed over', async () => {
+      const oldBlocked = gate(), oldBegan = gate(), newBlocked = gate(), newBegan = gate();
+      let newCancel: ActionExecutorRequest['cancel'] | undefined;
+      const newCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+      const oldCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+      const execute = vi.fn(async (req: ActionExecutorRequest): Promise<ActionExecutorOutcome> => {
+        if (req.command.command_id === 'old-running') { oldBegan.release(); await oldBlocked.promise; }
+        else { newCancel = req.cancel; newBegan.release(); await newBlocked.promise; }
+        return { status: 'ok', outputs: { result: 'confirmed completion' } };
+      });
+      const t = await bootCommands({ actionExecutor: { execute },
+        idempotencyForPair: scope => scope.token_id === PAIRED_TOKEN_RECORD.token_id ? oldCache : newCache });
+      try {
+        sendCommand(t, 'old-running');
+        await oldBegan.promise;
+        await replacePair(t);
+        sendCommand(t, 'new-running');
+        oldBlocked.release();
+        await newBegan.promise;
+        expect(newCancel?.signalled).toBe(false);
+        t.factory.fireMessage(JSON.stringify({ kind: 'cancel', cancel: { command_id: 'new-running' } }));
+        expect(newCancel?.signalled).toBe(true);
+        newBlocked.release();
+        await flushAsyncWork();
+        expect(results(t.factory.sentFrames())).toMatchObject([{ command_id: 'new-running', status: 'cancelled' }]);
+        expect(results(t.factory.sentFrames())[0].outputs).toBeUndefined();
+        expect((await newCache.lookup('new-running'))?.result).toMatchObject({ status: 'ok', outputs: { result: 'confirmed completion' } });
+        expect(await oldCache.lookup('new-running')).toBeNull();
+      } finally { oldBlocked.release(); newBlocked.release(); await flushAsyncWork(); }
+    });
+
+    it('hands work to the latest runtime when an intermediate pairing is also retired', async () => {
+      const blocked = gate(), began = gate();
+      const seen: string[] = [];
+      const execute = vi.fn(async (req: ActionExecutorRequest): Promise<ActionExecutorOutcome> => {
+        seen.push(req.command.command_id);
+        if (req.command.command_id === 'old-running') { began.release(); await blocked.promise; }
+        return { status: 'ok', outputs: { result: req.command.command_id } };
+      });
+      const t = await bootCommands({ actionExecutor: { execute } });
+      try {
+        sendCommand(t, 'old-running');
+        await began.promise;
+        await replacePair(t);
+        sendCommand(t, 'intermediate-pending');
+        await replacePair(t, { ...replacement,
+          server_url: 'wss://third.example/ws', server_public_key: 'third-key',
+          webclient_token: { ...replacement.webclient_token, token_id: 'third-token' },
+          pair_metadata: { ...replacement.pair_metadata, instance_id: 'third-instance' },
+        });
+        sendCommand(t, 'latest-pending');
+        await flushAsyncWork();
+        expect(seen).toEqual(['old-running']);
+        blocked.release();
+        await flushAsyncWork();
+        expect(seen).toEqual(['old-running', 'latest-pending']);
+        expect(results(t.factory.sentFrames())).toMatchObject([{ command_id: 'latest-pending', status: 'ok' }]);
+      } finally { blocked.release(); await flushAsyncWork(); }
+    });
+  });
+
+  it('keeps replacement command receipts in their namespace after a retired bearer read completes', async () => {
+    const pending = gate(), began = gate();
+    const tokens = buildStubTokenStore();
+    const oldCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+    const newCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+    const tokenStore: WebclientTokenStore = { ...tokens, async unwrap(record, aad) {
+      if (record.token_id === PAIRED_TOKEN_RECORD.token_id) { began.release(); await pending.promise; }
+      return tokens.unwrap(record, aad);
+    } };
+    const t = await boot({ ...buildExecutorTestDeps(), tokenStore,
+      idempotencyForPair: scope => scope.server_public_key === replacement.server_public_key ? newCache : oldCache,
+      fetch: async () => new Response(JSON.stringify({ token: 'replacement-bearer', token_id: replacement.webclient_token.token_id })),
+    });
+    try {
+      await began.promise;
+      await expect(ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' }))
+        .resolves.toEqual({ ok: true, told_server: false });
+      vi.spyOn(pairCompletion, 'finalizeBridgePair').mockImplementation(async () => {
+        await t.local.set(replacement);
+        return { ok: true, server_url: replacement.server_url, token_id: replacement.webclient_token.token_id };
+      });
+      await expect(ask(t.onMessage, { type: BRIDGE_PAIR_MESSAGE_TYPE, op: 'start',
+        input: { serverUrl: 'https://replacement.example', code: '123456' } })).resolves.toMatchObject({ ok: true });
+      await flushAsyncWork();
+      const before = buildCommandFixture('replacement-before-old-bearer');
+      t.factory.fireMessage(JSON.stringify({ kind: 'command', command: before }));
+      await flushAsyncWork();
+      expect((await newCache.lookup(before.command_id))?.result.status).toBe('ok');
+      expect(await oldCache.lookup(before.command_id)).toBeNull();
+      pending.release();
+      await flushAsyncWork();
+      const after = buildCommandFixture('replacement-after-old-bearer');
+      t.factory.fireMessage(JSON.stringify({ kind: 'command', command: after }));
+      await flushAsyncWork();
+      expect(t.factory.openCalls).toBe(1); // the retired transport still cannot reopen
+      expect((await newCache.lookup(after.command_id))?.result.status).toBe('ok');
+      expect(await oldCache.lookup(after.command_id)).toBeNull();
+    } finally { pending.release(); await flushAsyncWork(); }
+  });
+
+  it('keeps the newest same-runtime credential and receipt namespace when reads overlap', async () => {
+    const pending = gate(), began = gate();
+    const tokens = buildStubTokenStore();
+    const initialCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+    const olderCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+    const newestCache = createInMemoryIdempotencyCache({ now: () => 4_321 });
+    const t = await boot({ ...buildExecutorTestDeps(), tokenStore: { ...tokens, async unwrap(record, aad) {
+      if (record.token_id === 'older-token') { began.release(); await pending.promise; }
+      return tokens.unwrap(record, aad);
+    } }, idempotencyForPair: scope => scope.token_id === 'newest-token' ? newestCache
+      : scope.token_id === 'older-token' ? olderCache : initialCache });
+    try {
+      const ws = t.handle.wsClient!;
+      await ws.stop();
+      await t.local.set({ webclient_token: { ...PAIRED_TOKEN_RECORD, token_id: 'older-token' } });
+      await ws.start();
+      await began.promise;
+      await ws.stop();
+      await t.local.set({ webclient_token: { ...PAIRED_TOKEN_RECORD, token_id: 'newest-token' } });
+      await ws.start();
+      await flushAsyncWork();
+      const before = buildCommandFixture('newest-before-old-bearer');
+      t.factory.fireMessage(JSON.stringify({ kind: 'command', command: before }));
+      await flushAsyncWork();
+      expect((await newestCache.lookup(before.command_id))?.result.status).toBe('ok');
+      pending.release();
+      await flushAsyncWork();
+      const after = buildCommandFixture('newest-after-old-bearer');
+      t.factory.fireMessage(JSON.stringify({ kind: 'command', command: after }));
+      await flushAsyncWork();
+      expect((await newestCache.lookup(after.command_id))?.result.status).toBe('ok');
+      expect(await olderCache.lookup(after.command_id)).toBeNull();
+      // The old read must not change the identity used to clear the current
+      // credential, either. Exercise that through the real Disconnect path.
+      t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+      const answer = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+      await flushAsyncWork();
+      t.factory.disconnect({ code: 4003, reason: 'instance revoked' });
+      await expect(answer).resolves.toEqual({ ok: true, told_server: true });
+      expect(await t.local.get(['webclient_token'])).toEqual({});
+    } finally { pending.release(); await flushAsyncWork(); }
+  });
+
+  it('does not initialize a receipt namespace after the runtime stops', async () => {
+    const pending = gate(), began = gate();
+    const tokens = buildStubTokenStore();
+    const initialized: string[] = [];
+    const t = await boot({ tokenStore: { ...tokens, async unwrap(record, aad) {
+      if (record.token_id === 'retired-token') { began.release(); await pending.promise; }
+      return tokens.unwrap(record, aad);
+    } }, idempotencyForPair: scope => {
+      initialized.push(scope.token_id);
+      return createInMemoryIdempotencyCache({ now: () => 4_321 });
+    } });
+    try {
+      const ws = t.handle.wsClient!;
+      await ws.stop();
+      await t.local.set({ webclient_token: { ...PAIRED_TOKEN_RECORD, token_id: 'retired-token' } });
+      await ws.start();
+      await began.promise;
+      await t.handle.stop();
+      pending.release();
+      await flushAsyncWork();
+      expect(t.handle.paired).toBe(false);
+      expect(initialized).not.toContain('retired-token');
+      expect(t.factory.openCalls).toBe(1);
+    } finally { pending.release(); await flushAsyncWork(); }
+  });
+
+  it('shares one revoke and its confirmed receipt across concurrent panel requests', async () => {
+    const t = await boot();
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    const first = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    const second = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    await flushAsyncWork();
+    try {
+      expect(t.factory.sentFrames().map(frame => JSON.parse(frame)).filter(frame => frame.method === 'pair.revoke')).toHaveLength(1);
+    } finally { t.factory.disconnect({ code: 4003, reason: 'instance revoked' }); }
+    await expect(second).resolves.toEqual({ ok: true, told_server: true });
+    await t.local.set(replacement);
+    await expect(first).resolves.toEqual({ ok: true, told_server: true });
+    expect(await t.local.get(Object.keys(replacement))).toEqual(replacement);
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY])).toEqual({});
+  });
+
+  it('does not clear replacement credentials after an older revoke is confirmed', async () => {
+    const t = await boot();
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    const answer = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    await flushAsyncWork();
+    await t.local.set(replacement);
+    await t.session.set({ [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: replacementNote });
+    const request = revokeRequest(t.factory)!;
+    t.factory.fireMessage(JSON.stringify({ type: 'rpc_result', request_id: request.request_id, result: { ok: true } }));
+    await expect(answer).resolves.toEqual({ ok: true, told_server: true });
+    expect(await t.local.get(Object.keys(replacement))).toEqual(replacement);
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]))
+      .toEqual({ [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: replacementNote });
+  });
+
+  it('does not write an old disconnected note over a replacement pairing after a failed revoke', async () => {
+    const t = await boot();
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    vi.useFakeTimers();
+    const answer = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    await t.local.set(replacement);
+    await t.session.set({ [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: replacementNote });
+    const request = revokeRequest(t.factory)!;
+    t.factory.fireMessage(JSON.stringify({ type: 'rpc_result', request_id: request.request_id,
+      error: { code: 'offline', message: 'not delivered' } }));
+    await vi.advanceTimersByTimeAsync(1_001);
+    await expect(answer).resolves.toEqual({ ok: true, told_server: false });
+    expect(await t.local.get(Object.keys(replacement))).toEqual(replacement);
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]))
+      .toEqual({ [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: replacementNote });
+  });
+
+  it('does not treat a 4401 authentication refusal as confirmation of pair.revoke', async () => {
+    const t = await boot();
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    const answer = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    await flushAsyncWork();
+    t.factory.disconnect({ code: 4401, reason: 'bearer rejected' });
+    await expect(answer).resolves.toEqual({ ok: true, told_server: false });
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY])).toMatchObject({
+      [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: { kind: 'disconnected', serverUrl: 'https://alice.recued.cloud:8443' },
+    });
+  });
+
+  it('keeps confirmed revocation evidence when a local clear fails and is retried', async () => {
+    const t = await boot();
+    const remove = t.local.remove.bind(t.local);
+    let failed = false;
+    vi.spyOn(t.local, 'remove').mockImplementation(async keys => {
+      if (!failed && keys.includes('webclient_token')) { failed = true; throw new Error('local remove failed'); }
+      await remove(keys);
+    });
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    const answer = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    await flushAsyncWork();
+    t.factory.disconnect({ code: 4003, reason: 'instance revoked' });
+    await expect(answer).resolves.toMatchObject({ ok: false, error: 'local remove failed' });
+    await expect(ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' }))
+      .resolves.toEqual({ ok: true, told_server: true });
+    expect(t.factory.sentFrames().map(frame => JSON.parse(frame)).filter(frame => frame.method === 'pair.revoke')).toHaveLength(1);
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY])).toEqual({});
+    expect(await t.local.get(['webclient_token', 'blocked_sites'])).toEqual({ blocked_sites: ['bank.example'] });
+  });
+
+  it('does not let an old sign-in refusal clear or annotate replacement credentials', async () => {
+    const t = await boot();
+    await t.local.set(replacement);
+    await t.session.set({ [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: replacementNote });
+    t.factory.disconnect({ code: 4003, reason: 'old instance revoked' });
+    await vi.waitFor(() => { expect(t.handle.paired).toBe(false); });
+    await flushAsyncWork();
+    expect(await t.local.get(Object.keys(replacement))).toEqual(replacement);
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]))
+      .toEqual({ [BRIDGE_SIGN_IN_REFUSED_SESSION_KEY]: replacementNote });
+  });
+
+  it('still disconnects the current pair after its runtime reloads a rotated credential', async () => {
+    const t = await boot();
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    await t.local.set({ webclient_token: { ...PAIRED_TOKEN_RECORD, token_id: 'rotated-token' } });
+    t.factory.disconnect({ code: 1006, reason: 'reconnect with current credential' });
+    await flushAsyncWork();
+    expect(t.factory.openCalls).toBe(2);
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    const answer = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    await flushAsyncWork();
+    t.factory.disconnect({ code: 4003, reason: 'instance revoked' });
+    await expect(answer).resolves.toEqual({ ok: true, told_server: true });
+    expect(await t.local.get(['webclient_token', 'blocked_sites'])).toEqual({ blocked_sites: ['bank.example'] });
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY])).toEqual({});
+  });
+
+  it('finishes teardown persistence before a replacement pairing can finalize and start', async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({ token: 'replacement-bearer', token_id: 'replacement-token' })));
+    const t = await boot({ fetch: request });
+    const removed = gate(), release = gate();
+    const remove = t.local.remove.bind(t.local);
+    vi.spyOn(t.local, 'remove').mockImplementation(async keys => {
+      await remove(keys);
+      if (keys.includes('webclient_token')) { removed.release(); await release.promise; }
+    });
+    const finalize = vi.spyOn(pairCompletion, 'finalizeBridgePair').mockImplementation(async () => {
+      await t.local.set(replacement);
+      return { ok: true, server_url: replacement.server_url, token_id: replacement.webclient_token.token_id };
+    });
+    t.factory.fireMessage(JSON.stringify({ type: 'pong' }));
+    const disconnect = ask(t.onMessage, { type: 'recued.bridge.side-panel.disconnect' });
+    await flushAsyncWork();
+    t.factory.disconnect({ code: 4003, reason: 'instance revoked' });
+    await removed.promise;
+    const pairing = ask(t.onMessage, { type: BRIDGE_PAIR_MESSAGE_TYPE, op: 'start',
+      input: { serverUrl: 'https://replacement.example', code: '123456' } });
+    try {
+      await flushAsyncWork();
+      expect(request).toHaveBeenCalledOnce();
+      expect(finalize).not.toHaveBeenCalled();
+    } finally {
+      release.release();
+      await Promise.all([disconnect, pairing]);
+    }
+    expect(finalize).toHaveBeenCalledOnce();
+    await expect(pairing).resolves.toMatchObject({ ok: true });
+    expect(t.handle.paired).toBe(true);
+    expect(t.factory.openCalls).toBe(2);
+    expect(await t.local.get(Object.keys(replacement))).toEqual(replacement);
+    expect(await t.session.get([BRIDGE_SIGN_IN_REFUSED_SESSION_KEY])).toEqual({});
+  });
 
   it('asks the server to remove this bridge; the 4003 that answers is no refusal, and the pairing goes', async () => {
     const t = await boot();

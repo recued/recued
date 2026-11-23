@@ -29,7 +29,17 @@ export const pressPageKey = (selector: string, expectedUrl?: string | null, ref?
     || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
   if (press == null) return { not_applied: 'No key was named, so none was pressed.' };
   const marked = (globalThis as typeof globalThis & { recuedPageRefs?: { byRef: Map<string, Element> } }).recuedPageRefs;
-  const found = ref == null ? document.querySelector(selector) : marked?.byRef.get(ref) ?? null;
+  // D-402 slice G (§4 rule 4) — a selector that names several elements presses no key in any of them. Counted as a
+  // read shows them, which leaves out what is aria-hidden or not drawn (`page-inspect.ts`): a selector
+  // worked out from a read names one of those; of several in the page, the one it shows is the one meant.
+  let bySelector: Element | null = null;
+  if (ref == null) {
+    const all = [...document.querySelectorAll(selector)];
+    const shown = all.filter((one) => one.closest('[aria-hidden="true"]') === null && one.checkVisibility({ checkVisibilityCSS: true }));
+    if (shown.length > 1 || (shown.length === 0 && all.length > 1)) return { several: shown.length > 1 ? shown.length : all.length };
+    bySelector = shown[0] ?? all[0] ?? null;
+  }
+  const found = ref == null ? bySelector : marked?.byRef.get(ref) ?? null;
   if (ref != null && !found?.isConnected) return { stale: true };
   if (!found) return { missing: true };
   const element = found as HTMLElement;

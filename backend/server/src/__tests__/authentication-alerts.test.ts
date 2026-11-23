@@ -57,8 +57,8 @@ describe('proactive authentication alerts through the passive inventory and dura
     const f = fixture(); const network = vi.spyOn(globalThis, 'fetch');
     await Promise.all([f.runtime.tick(), f.runtime.tick()]); await f.runtime.tick();
     expect(f.notify).toHaveBeenCalledTimes(1);
-    expect(f.notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Connection access was rejected',
-      text: expect.stringContaining('Mail: owner@example.test'), link_url: 'https://owner.example.test/#connections/mail/inbox' }),
+    expect(f.notify).toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringMatching(/^Recued can't sign in to /),
+      text: expect.stringContaining('the mailbox “owner@example.test”'), link_url: 'https://owner.example.test/#connections/mail/inbox' }),
     undefined, expect.objectContaining({ ui_link_url: '#connections/mail/inbox' }));
     expect(await f.activities.list()).toHaveLength(1);
     expect(JSON.stringify(f.notify.mock.calls)).not.toMatch(/private-|provider secret/); expect(network).not.toHaveBeenCalled();
@@ -81,7 +81,7 @@ describe('proactive authentication alerts through the passive inventory and dura
     f.setNow(clock + AUTHENTICATION_ALERT_GRACE_MS); await f.runtime.tick();
     expect(f.notify).toHaveBeenCalledTimes(1); expect(f.notify.mock.calls[0]![0]).toMatchObject({ title: 'Connection needs attention', text: expect.stringContaining('authentication cause is unconfirmed') });
     f.instances[0]!.auth_state = 'expired'; f.setNow(clock + AUTHENTICATION_ALERT_GRACE_MS + 1); await f.runtime.tick();
-    expect(f.notify).toHaveBeenCalledTimes(2); expect(f.notify.mock.calls[1]![0].title).toBe('Connection access was rejected');
+    expect(f.notify).toHaveBeenCalledTimes(2); expect(f.notify.mock.calls[1]![0].title).toMatch(/^Recued can't sign in to /);
     await f.runtime.tick(); expect(f.notify).toHaveBeenCalledTimes(2);
   });
 
@@ -155,7 +155,7 @@ describe('proactive authentication alerts through the passive inventory and dura
     const f = fixture(); await f.runtime.tick(); f.instances.splice(0); f.setNow(clock + 100); await f.runtime.tick();
     expect(f.notify).toHaveBeenCalledTimes(1); expect(f.store.pending()).toEqual([]);
     f.instances.push(mailbox('replacement')); await f.runtime.tick(); expect(f.notify).toHaveBeenCalledTimes(2);
-    expect(f.notify.mock.calls.every(c => c[0].title === 'Connection access was rejected')).toBe(true);
+    expect(f.notify.mock.calls.every(c => c[0].title?.startsWith("Recued can't sign in to "))).toBe(true);
   });
 
   it('needs an authenticated API observation, rather than a generic public-root reply, to report recovery', async () => {
@@ -164,7 +164,7 @@ describe('proactive authentication alerts through the passive inventory and dura
     await f.runtime.tick(); expect(f.notify).toHaveBeenCalledTimes(1);
     f.rows[0]!.health_json = JSON.stringify({ status: 'ok', last_probed_at: clock + 100, access_verified_at: clock + 100 });
     await f.runtime.tick(); expect(f.notify).toHaveBeenCalledTimes(2);
-    expect(f.notify.mock.calls[0]![0].text).toContain('Schedule: Daily sheet');
+    expect(f.notify.mock.calls[0]![0].text).toContain('the schedule “Daily sheet”');
     expect(f.notify.mock.calls[0]![2]?.ui_link_url).toBe('#connections/others/review-access/api/sheets');
   });
 
@@ -262,7 +262,7 @@ describe('proactive authentication alerts through the passive inventory and dura
     f.store.evaluate(await f.read()); f.rows.splice(0, 1); await f.runtime.tick();
     expect(f.notify).toHaveBeenCalledTimes(1);
     expect(f.notify.mock.calls[0]![2]?.ui_link_url).toBe('#connections/others/review-access/api/second');
-    expect(f.notify.mock.calls[0]![0].text).toMatch(/^second:/);
+    expect(f.notify.mock.calls[0]![0].text).toMatch(/^second refused/);
   });
 
   it('does not push stale account details when the target changes during history persistence', async () => {
@@ -312,7 +312,7 @@ describe('proactive authentication alerts through the passive inventory and dura
     const runtime = createAuthenticationAlertRuntime({ store: f.store, read: f.read, auditLog: f.auditLog, notifier: block });
     cleanups.push(() => runtime.stop()); await runtime.tick();
     expect(remote).not.toHaveBeenCalled(); expect(events[0]).toMatchObject({ kind: 'notification.notify', persisted_activity_id: expect.any(String),
-      message: expect.objectContaining({ title: 'Connection access was rejected', link_url: '#connections/mail/inbox' }) });
+      message: expect.objectContaining({ title: expect.stringMatching(/^Recued can't sign in to /), link_url: '#connections/mail/inbox' }) });
     await settings.setChannelMode('email', { notification: true });
     f.instances[0]!.auth_state = 'healthy'; f.instances[0]!.last_synced_at = clock + 1; f.setNow(clock + 1); await runtime.tick();
     expect(remote).toHaveBeenCalledTimes(1); expect(await asks.list()).toEqual([]);

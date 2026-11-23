@@ -10,6 +10,13 @@
 
 import {
   REMINDER_PAST_GRACE_MS,
+  readReminderRecordReference,
+  readReminderMailReference,
+  sameReminderMailReference,
+  type ReminderMailReference,
+  type ReminderRecordReference,
+  type WorkEntity,
+  REMINDER_HISTORY_MS,
   REMINDER_TEXT_MAX,
   formatReminderWhen,
   resolveQuietHoursOccurrence,
@@ -25,6 +32,7 @@ import {
 } from '@recued/contracts';
 
 import type { ReminderStore } from '../storage/reminder-store.js';
+import { createReminderTriageDispatchers, type ReminderTriageDispatchers } from './reminder-triage.js';
 
 /** A refusal the caller can act on: an empty text, a time that has passed. */
 export class ReminderInputError extends Error {
@@ -36,6 +44,9 @@ export class ReminderInputError extends Error {
 
 export interface ReminderServiceDeps {
   store: ReminderStore;
+  /** Synchronous saved-only owner lookup. Never reads a provider. */
+  readRecord?: (kind: ReminderRecordReference['kind'], id: string) => WorkEntity | null;
+  readMail?: (ref: ReminderMailReference) => ReminderMailReference | null;
   /** The owner's zone, read per call: it can change while the server runs. */
   timeZone: () => string;
   /** The quiet-hours window, read per call. */
@@ -43,8 +54,8 @@ export interface ReminderServiceDeps {
   now?: () => number;
 }
 
-export interface ReminderDispatchers {
-  reminderCreate: (input: { text: string; at: number; origin?: ReminderOrigin; creation_id?: string }) => Promise<import('@recued/contracts').ReminderCreateResult>;
+export interface ReminderDispatchers extends ReminderTriageDispatchers {
+  reminderCreate: (input: { text: string; at: number; origin?: ReminderOrigin; creation_id?: string; record_ref?: ReminderRecordReference; mail_ref?: ReminderMailReference }) => Promise<import('@recued/contracts').ReminderCreateResult>;
   reminderGet: (input: { reminder_id: string }) => Promise<ReminderGetResult>;
   reminderList: (input: ReminderListRequest) => Promise<ReminderListResult>;
   reminderUpdate: (input: { reminder_id: string; text?: string; at?: number }) => Promise<ReminderUpdateResult>;
@@ -67,6 +78,8 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
     const zone = reminder.time_zone ?? deps.timeZone();
     return {
       reminder_id: reminder.reminder_id,
+      ...(reminder.record_ref ? { record_ref: reminder.record_ref } : {}),
+      ...(reminder.mail_ref ? { mail_ref: reminder.mail_ref } : {}),
       text: reminder.text,
       at: reminder.at,
       when: formatReminderWhen(reminder.at, zone, at),
@@ -108,14 +121,35 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
   };
 
   return {
+    ...createReminderTriageDispatchers(deps, view),
     reminderCreate: async (input) => {
       const current = now();
       const zone = deps.timeZone();
       const text = cleanText(input.text);
-      const previous = input.creation_id ? deps.store.findCreated(input.creation_id, { text, at: input.at }) : undefined;
-      if (!previous) checkTime(input.at, current, zone);
+      const record_ref = input.record_ref === undefined ? undefined : readReminderRecordReference(input.record_ref);
+      if (input.record_ref !== undefined && !record_ref) throw new ReminderInputError('The linked record reference is invalid. Reopen the record.');
+      const mail_ref = input.mail_ref === undefined ? undefined : readReminderMailReference(input.mail_ref);
+      if (input.mail_ref !== undefined && !mail_ref || mail_ref && record_ref) throw new ReminderInputError('Choose one valid saved email or work record for this reminder.');
+      const previous = input.creation_id ? deps.store.findCreated(input.creation_id, { text, at: input.at,
+        ...(record_ref ? { record_ref } : {}), ...(mail_ref ? { mail_ref } : {}) }) : undefined;
+      if (!previous) {
+        checkTime(input.at, current, zone);
+        if (record_ref) {
+          if (!deps.readRecord) throw new ReminderInputError('This server cannot link reminders to saved records. Update the server.');
+          const record = deps.readRecord(record_ref.kind, record_ref.id);
+          if (!record || record._kind !== record_ref.kind || record.id !== record_ref.id || record.source_id !== record_ref.source_id
+            || (record.source_record_id ?? null) !== record_ref.source_record_id || record.created_at !== record_ref.created_at
+            || record.deleted_at != null || record.sync_state !== 'live' || record.pending_write)
+            throw new ReminderInputError('This linked record was removed, replaced, or could not be confirmed. Reopen it before setting a reminder.');
+        }
+        if (mail_ref) {
+          const saved = deps.readMail?.(mail_ref);
+          if (!saved || !sameReminderMailReference(mail_ref, saved))
+            throw new ReminderInputError('This email or mailbox was removed or replaced. Reopen it before setting a reminder.');
+        }
+      }
       const reminder = previous ?? deps.store.create(
-        { text, at: input.at, time_zone: zone, origin: input.origin ?? {},
+        { text, at: input.at, time_zone: zone, origin: input.origin ?? {}, ...(record_ref ? { record_ref } : {}), ...(mail_ref ? { mail_ref } : {}),
           ...(input.creation_id ? { creation_id: input.creation_id } : {}) },
         current,
       );
@@ -138,14 +172,28 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
     reminderList: async (input) => {
       const current = now();
       const limit = Math.min(Math.max(Math.trunc(input.limit ?? LIST_DEFAULT), 1), LIST_MAX);
-      const page = input.page === undefined ? undefined : deps.store.pagePending({ ...input.page, limit });
+      const page = input.page === undefined ? undefined : input.page.state === undefined
+        ? deps.store.pagePending({ ...input.page, limit })
+        : deps.store.pageSearch({ ...input.page, state: input.page.state, history_since: current - REMINDER_HISTORY_MS, limit });
       const reminders = (page?.reminders ?? deps.store.listPending(limit)).map((r) => view(r, current));
+      const ref = input.page?.record_ref;
+      const mail = input.page?.mail_ref;
+      const history = input.include_delivered === true ? ref || mail
+        ? deps.store.pageSearch({ ...(ref ? { record_ref: ref } : {}), ...(mail ? { mail_ref: mail } : {}),
+          history_only: true, state: 'all', history_since: current - REMINDER_HISTORY_MS, limit }).reminders
+        : deps.store.listHistory(limit) : undefined;
       return {
         reminders,
+        ...(deps.readRecord ? { record_links_supported: true as const } : {}),
+        ...(deps.readMail ? { mail_links_supported: true as const } : {}),
         count: deps.store.countPending(),
-        ...(page ? { page: { matched_count: page.matched_count, next_cursor: page.next_cursor } } : {}),
-        ...(input.include_delivered === true
-          ? { delivered: deps.store.listHistory(limit).map((r) => view(r, current)) }
+        ...(page ? { page: { matched_count: page.matched_count, next_cursor: page.next_cursor,
+          ...(ref ? { record_ref: ref } : {}),
+          ...(mail ? { mail_ref: mail } : {}),
+          ...(input.page?.history_only ? { history_only: true as const } : {}),
+          ...(input.page?.state !== undefined ? { state: input.page.state } : {}) } } : {}),
+        ...(history
+          ? { delivered: history.map((r) => view(r, current)) }
           : {}),
       };
     },

@@ -9,7 +9,8 @@
  *  themselves ride to the next turn, as prior calls after the brief (so after the system prompt and
  *  the catalog, whose cached prefix they leave alone), until the next turn's packet would reach
  *  {@link CLOSING_FOLD_SHARE} of the turn's input budget. Then the closing fold runs, as before, and
- *  the mid-turn fold still runs whenever a turn's own results near the budget.
+ *  the mid-turn fold still runs whenever a turn's own results near a KNOWN budget (inside a turn no window is
+ *  assumed: 2026-11-20, browser task P).
  *
  *  ⛔ What never rides raw, and so still folds as before:
  *  - a recall's results (`memory.search`, `recall.search`): their content is bound to its own turn's
@@ -37,7 +38,8 @@ export const CLOSING_FOLD_SHARE = 0.8;
  *  and until then every trim in chat is inert, so most servers have none. Slice C found the first cut
  *  (the carry alone capped at 24,000) folding every turn that read three pages, as before D-347. 80% of
  *  this is 102,400 estimated, about 51,000 real tokens at the 4 characters a token these packets measure;
- *  an endpoint smaller than that overflows inside a turn first, which teaches its window. */
+ *  an endpoint smaller than that overflows inside a turn first, which teaches its window. ⚠ The carry's
+ *  threshold only: inside a turn no window is assumed (`chat-turn-executor.ts`, 2026-11-20). */
 export const UNLEARNED_BUDGET_TOKENS = 128_000;
 
 /** Estimated tokens for a length of text: the same characters ÷ 2 the fold's arithmetic uses. */

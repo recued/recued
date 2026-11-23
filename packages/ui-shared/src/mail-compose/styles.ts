@@ -187,7 +187,8 @@ export const MAIL_COMPOSE_STYLES = `
 .mail-compose-ai-assist > .mail-compose-ai-action { width: 100%; margin: 8px 0; }
 .mail-compose-discard { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .mail-compose-discard p { margin: 0 0 8px; }
-.mail-compose-discard button { margin-right: 8px; }
+.mail-compose-discard-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.mail-compose-discard button { min-height:44px; padding:8px 12px; font:inherit; color:var(--fg); background:var(--surface); border:1px solid var(--border); border-radius:8px; }
 .mail-compose-reply-context { margin: 0; overflow-wrap: anywhere; color: var(--fg-muted); }
 
 

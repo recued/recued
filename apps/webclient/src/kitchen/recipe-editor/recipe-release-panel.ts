@@ -1,6 +1,7 @@
 import type { RecipeDefinition, RecipeReleaseView, RecipeReleaseReview, RecipeReleaseSave,
   RecipeReleaseActivate, RecipeReleaseRestore, RecipeReleaseMutation, RecipeReleaseTestResult } from '@recued/contracts';
 import type { RecipeReleaseCaller } from './recipe-release-caller.js';
+import { sameAdoptedRecipe } from './recipe-adopt.js';
 
 export const createRecipeReleasePanel = (options: { document: Document; recipeId: string; caller: RecipeReleaseCaller;
   initial?: RecipeReleaseView; getRecipe(): RecipeDefinition; hasUnsavedChanges(): boolean;
@@ -23,7 +24,9 @@ export const createRecipeReleasePanel = (options: { document: Document; recipeId
   const status = (): void => { body.querySelector<HTMLElement>('[data-release-status]')?.focus(); };
   const sameWorking = (): boolean => !edited && !!current?.draft;
   const assertWorking = (): void => {
-    if (!sameWorking() || JSON.stringify(options.getRecipe()) !== JSON.stringify(current!.draft!.recipe)) throw new Error('Save and test the current working draft before activation.');
+    // D-201 Slice 10BD (10AY finding 12) — as the editor holds them: a draft
+    // saved without `variables` is the one the editor holds with them empty.
+    if (!sameWorking() || !sameAdoptedRecipe(options.getRecipe(), current!.draft!.recipe)) throw new Error('Save and test the current working draft before activation.');
   };
   const armExpiry = (): void => {
     if (expiry) clearTimeout(expiry);
@@ -154,7 +157,21 @@ export const createRecipeReleasePanel = (options: { document: Document; recipeId
   };
   const restore = async (): Promise<void> => {
     if (!current?.active || needsReload) return;
-    if (options.hasUnsavedChanges() && !confirm('Discard unsaved edits and restore the selected release as a new draft?')) return;
+    // D-201 Slice 10BW (10BS finding 19) — a saved draft that was never
+    // activated is replaced: asked first, as unsaved edits are. It was replaced
+    // unasked, kept only in a draft history no screen offers, and an undo after
+    // brought it back only unsaved.
+    const unsaved = options.hasUnsavedChanges();
+    // D-201 Slice 10CB (10BX finding 14) — never activated: a draft that is no
+    // release. One restored from a release was asked about as never activated,
+    // though replacing it loses nothing.
+    const unactivated = current.draft !== null && current.draft.digest !== current.active.digest
+      && !current.releases.some((release) => release.digest === current!.draft!.digest);
+    if ((unsaved || unactivated) && !confirm(unsaved && unactivated
+      ? 'Discard unsaved edits, and replace the saved draft, which was never activated, with the selected release?'
+      : unsaved
+        ? 'Discard unsaved edits and restore the selected release as a new draft?'
+        : 'Replace the saved draft, which was never activated, with the selected release as a new draft?')) return;
     const before = workingEpoch;
     await perform(async () => {
       pendingRestore ??= { recipe_id: options.recipeId,expected_revision: expected,expected_active_digest: current!.active!.digest,request_id: crypto.randomUUID(),sequence: targetRelease };

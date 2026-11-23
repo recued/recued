@@ -468,6 +468,7 @@ describe('makeRecipeSaveHandlers', () => {
       'recipe.webhook.status',
       'recipe.webhook.arm',
       'recipe.webhook.disarm',
+      'recipe.webhook.preview',
     ]);
 
     const saved = await slice!.handlers['recipe.save'](

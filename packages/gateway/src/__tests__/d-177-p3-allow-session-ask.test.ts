@@ -58,6 +58,7 @@ const payload = (
   tool_slug: 'mail.send',
   risk_tier: 'write',
   reason: 'write tier needs approval',
+  session_grant_decision_version: 1,
   ...overrides,
 });
 
@@ -121,6 +122,7 @@ describe('D-177 P3 buildPreflightAsk allow_session option', () => {
     expect(ask.options[1]).toBe(ALLOW_SESSION_ASK_OPTION);
     expect(ask.options[2]).toBe(PREFLIGHT_ASK_OPTIONS[1]);
     expect(ask.handler.payload.session_grant).toBe(sessionGrant);
+    expect(ask.handler.payload.session_grant_decision_version).toBe(1);
   });
 });
 
@@ -137,7 +139,28 @@ describe('D-177 P3 createPreflightAnswerHandler allow_session threading', () => 
     const [calledCheckpoint, context] = r.resumeRun.mock.calls[0]!;
     expect(calledCheckpoint).toBe(cp);
     expect(context.session_grant).toEqual(sessionGrant);
+    expect(context.session_grant_decision_version).toBe(1);
     expect(store.delete).toHaveBeenCalledWith('checkpoint-1');
+  });
+
+  it('a legacy recipe choice approves the action without creating a grant', async () => {
+    const r = resumer();
+    const handler = createPreflightAnswerHandler({ checkpointStore: checkpointStore(), resumer: r });
+    await handler(payload({ session_grant: sessionGrant, session_grant_decision_version: undefined }), answer('allow_session'));
+    expect(r.resumeRun).toHaveBeenCalledTimes(1);
+    expectNoSessionGrant(r.resumeRun.mock.calls[0]![1]);
+  });
+
+  it('keeps the existing raw-op session approval path without a recipe decision marker', async () => {
+    const cp: Checkpoint = { checkpoint_id: 'checkpoint-1', run_id: 'run-1', step_state: {}, created_at: NOW,
+      raw_op: { op_id: 'catalog.write', catalog_slug: 'catalog', operation: 'write', op_args: { value: 1 },
+        connection_name: 'main', risk_tier: 'write', execution_source: { channel: 'mcp', actor: 'contracted_user',
+          agent_id: 'app', tool_call_id: 'call', mcp_token_id: 'token', contract_id: 'ct-app' } } };
+    const r = resumer(); const handler = createPreflightAnswerHandler({ checkpointStore: checkpointStore(cp), resumer: r });
+    await handler({ checkpoint_id: cp.checkpoint_id, run_id: cp.run_id, raw_op_id: 'catalog.write', session_grant: sessionGrant }, answer('allow_session'));
+    expect(r.resumeRun).toHaveBeenCalledTimes(1);
+    expect(r.resumeRun.mock.calls[0]![1].session_grant).toEqual(sessionGrant);
+    expect(r.resumeRun.mock.calls[0]![1].session_grant_decision_version).toBeUndefined();
   });
 
   it('does not thread session_grant for a plain approve even when the payload carries an offer', async () => {

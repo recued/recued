@@ -73,6 +73,9 @@ import type { AuditLogStore } from '@recued/storage';
 import { assertPreapprovalOrdinaryRun } from '../preapproval-io-context.js';
 import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
 import type { BridgeConnectionRecord, BridgeRegistry } from './registry.js';
+import { withBridgeReadiness, type BridgeDispatchTiming } from './bridge-performance.js';
+import type { BridgeReadinessCheck } from '@recued/contracts';
+import { withBrowserRouting, type BrowserBridge, type BrowserStepNeed, type BrowserStepProblem } from './browser-routing.js';
 
 export interface BridgeSendResult {
   ok: boolean;
@@ -118,6 +121,14 @@ export interface BridgeResultListener {
 }
 
 export interface DispatchRequest {
+  /** Host-only routing fields; never sent as Bridge permission claims. */
+  browser_routing?: boolean;
+  browser_all_bridges?: boolean;
+  browser_discovery?: boolean;
+  browser_address?: string;
+  bridge_id?: string;
+  /** Internal hint, acted on only with the explicit ready-click opt-in. */
+  ready_check?: BridgeReadinessCheck;
   recipe_run_id: string;
   step_id: string;
   ingredient: BridgeIngredientRef;
@@ -187,6 +198,14 @@ export type DispatchOutcome =
     };
 
 export interface DispatcherOptions {
+  pairedBridges?: () => ReadonlyArray<{ bridge_id: string; bridge_label: string; browser_id?: string }>;
+  /** D-402 slice H3 — the name a browser no longer paired went by, for a refusal that names it. */
+  browserName?: (browser_id: string) => string | undefined;
+  domReadiness?: boolean;
+  /** Off by default, including benchmark runs. */
+  readyClicks?: boolean;
+  monotonicNow?: () => number;
+  onTiming?: (timing: BridgeDispatchTiming) => void | Promise<void>;
   registry: BridgeRegistry;
   transport: BridgeTransport;
   listener: BridgeResultListener;
@@ -265,7 +284,7 @@ const resolveTargetDomainPattern = (request: DispatchRequest): string | null => 
   // Explicit caller-supplied pattern wins.
   const explicit = (request as { target_domain_pattern?: string }).target_domain_pattern;
   if (typeof explicit === 'string' && explicit.length > 0) {
-    return allowlist.includes(explicit) ? explicit : null;
+    return allowlist.includes(explicit) || request.browser_routing === true && isPatternWithinGrantedOrigins(explicit, allowlist) ? explicit : null;
   }
 
   // target_url fallback — match against allowlist entries by host
@@ -305,8 +324,23 @@ const urlMatchesPattern = (url: string, pattern: string): boolean => {
 };
 
 export interface BridgeDispatcher {
+  listBrowserBridges?(): BrowserBridge[];
+  /** D-402 slice H2 — each paired browser with its lasting id (`browser-identity.ts`), for the server's
+   *  own use: a draft's browser settings and the owner's picker. Never a model's: D-349's list
+   *  (`listBrowserBridges`) is what a tool returns. */
+  listBrowsers?(): Array<{ bridge_id: string; browser_id: string; name: string; online: boolean }>;
+  /** D-402 slice H4d — the name a browser went by, paired or not (`browser-identity.ts`'s `formerName`):
+   *  what names a pass kept for a browser no longer paired. */
+  browserName?(browser_id: string): string | undefined;
+  /** D-402 slice H3 (§4.2 item 3) — before step 1, what stops each browser step's browser: no longer
+   *  paired, not connected, or not allowed on the step's site. Empty when nothing does. */
+  checkBrowsers?(needs: readonly BrowserStepNeed[]): BrowserStepProblem[];
   dispatch(request: DispatchRequest, reviewed?: ReviewedBridgeDispatch): Promise<DispatchOutcome>;
   describeDocument?(request: DispatchRequest): ReviewedBridgeBinding | null;
+  /** D-402 slice G — whether a Bridge this request could go to (the one it names, or one allowed on its
+   *  site) runs it, before anything is sent: false when such Bridges are connected and none does,
+   *  undefined when none is (the dispatch then says so itself). */
+  runs?(request: Pick<DispatchRequest, 'ingredient' | 'action' | 'args' | 'bridge_id' | 'preferred_bridge_label'>): boolean | undefined;
   cancel(command_id: string, reason: string): Promise<BridgeSendResult>;
   /** D-169 P0 follow-on — ownership query for inbound `{kind: 'result'}`
    *  frame routing. The wire layer routes result frames by `command_id`
@@ -472,6 +506,13 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
   const generateCommandId = options.generateCommandId ?? defaultGenerateCommandId;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
+  const monotonic = options.monotonicNow ?? (() => performance.now());
+  const observed = (timing: BridgeDispatchTiming) => {
+    try {
+      const pending = options.onTiming?.(timing);
+      if (pending) void pending.catch(() => {});
+    } catch { /* Diagnostics cannot fail dispatch. */ }
+  };
   const initial_backoff_ms = options.initial_backoff_ms ?? 200;
   const max_backoff_ms = options.max_backoff_ms ?? 5_000;
   const max_attempts = options.max_attempts ?? 6;
@@ -504,6 +545,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     let backoff = initial_backoff_ms;
     while (attempt < max_attempts) {
       attempt++;
+      const begun = monotonic();
 
       try {
         assertHandoff();
@@ -523,18 +565,25 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       try { assertHandoff(); }
       catch (error) { options.listener.cancelAwait?.(command_id); inflight.delete(command_id); throw error; }
       let send_result: BridgeSendResult;
+      const sentAt = monotonic();
       try {
         send_result = await options.transport.send(bridge_client_token_id, {
           kind: 'command',
           command,
         });
       } catch {
+        observed({ command_id, action: command.action, attempt, status: 'transport_error', admission_ms: sentAt - begun,
+          send_ms: monotonic() - sentAt, round_trip_ms: monotonic() - sentAt });
         options.listener.cancelAwait?.(command_id);
         inflight.delete(command_id);
         return { kind: 'send_failed', reason: 'transport_error', attempts: attempt };
       }
 
+      const sentAfter = monotonic();
+
       if (!send_result.ok) {
+        observed({ command_id, action: command.action, attempt, status: send_result.reason ?? 'transport_error',
+          admission_ms: sentAt - begun, send_ms: sentAfter - sentAt, round_trip_ms: sentAfter - sentAt });
         options.listener.cancelAwait?.(command_id);
         if (send_result.reason === 'queue_full' && attempt < max_attempts) {
           await sleep(backoff);
@@ -552,6 +601,11 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       }
 
       const result = await result_p;
+      const roundTrip = monotonic() - sentAt;
+      const bridgeDuration = result && Number.isFinite(result.duration_ms) && result.duration_ms >= 0 ? result.duration_ms : undefined;
+      observed({ command_id, action: command.action, attempt, status: result?.status ?? 'timeout', admission_ms: sentAt - begun,
+        send_ms: sentAfter - sentAt, round_trip_ms: roundTrip,
+        ...(bridgeDuration !== undefined ? { bridge_duration_ms: bridgeDuration, outside_bridge_ms: Math.max(0, roundTrip - bridgeDuration) } : {}) });
       if (!result) {
         inflight.delete(command_id);
         return { kind: 'timeout', command_id, attempts: attempt };
@@ -599,22 +653,33 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     }
   };
 
-  return {
+  const dispatcher: BridgeDispatcher = {
     connectedBridges: () => options.registry.list().length,
     describeDocument(request) {
       const pattern = resolveTargetDomainPattern(request);
       if (!pattern || !options.registry.documents) return null;
       const candidates: ReviewedBridgeBinding[] = [];
       for (const bridge of options.registry.list()) {
+        if (request.bridge_id && bridge.client_token_id !== request.bridge_id) continue;
         if (request.preferred_bridge_label && bridge.client_label !== request.preferred_bridge_label) continue;
         if (!isPatternWithinGrantedOrigins(pattern, bridge.capabilities.granted_origins)) continue;
         if (!bridgeRunsCommand(bridge.capabilities, request.action, request.args)) continue;
         for (const document of options.registry.documents(bridge.client_token_id)) {
+          if (typeof request.args.page === 'string' && request.args.page !== `${document.tab_id}:${document.document_id}`) continue;
           if (isPatternWithinGrantedOrigins(document.url, [pattern])) candidates.push({ client_token_id: bridge.client_token_id, document });
         }
       }
       // Preparation never selects an arbitrary tab among matching documents.
       return candidates.length === 1 ? candidates[0]! : null;
+    },
+    runs(request) {
+      const pattern = resolveTargetDomainPattern(request as DispatchRequest);
+      if (!pattern) return undefined;
+      const eligible = options.registry.list().filter((bridge) => (!request.bridge_id || bridge.client_token_id === request.bridge_id)
+        && (!request.preferred_bridge_label || bridge.client_label === request.preferred_bridge_label)
+        && isPatternWithinGrantedOrigins(pattern, bridge.capabilities.granted_origins));
+      if (eligible.length === 0) return undefined;
+      return eligible.some((bridge) => bridgeRunsCommand(bridge.capabilities, request.action, request.args));
     },
     async dispatch(request, reviewed) {
       // Capture per dispatch: one pooled dispatcher serves independent runs.
@@ -653,6 +718,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         reason: 'bridge_update_required', attempts: 0 };
       const runsAction = (bridge: BridgeConnectionRecord) =>
         bridgeRunsCommand(bridge.capabilities, request.action, request.args);
+      const commandFor = (bridge: BridgeConnectionRecord) => withBridgeReadiness(command_template, bridge.capabilities, options, request.ready_check);
 
       if (reviewed) {
         const binding = structuredClone(reviewed.binding);
@@ -673,7 +739,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         if (out.kind === 'send_failed') return { kind: 'capacity_gap', capacity_gap: { kind: 'bridge_online' },
           reason: 'bridge_online', attempts: out.attempts };
         if (out.kind === 'timeout') return { kind: 'timeout', command_id: out.command_id, attempts: out.attempts };
-        if (out.result.status === 'ok') await recordSuccess(binding.client_token_id, target_domain_pattern);
+        if (out.result.status === 'ok' && !request.browser_discovery) await recordSuccess(binding.client_token_id, target_domain_pattern);
         return { kind: 'completed', result: out.result, bridge_client_token_id: binding.client_token_id, attempts: out.attempts };
       }
 
@@ -684,8 +750,8 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       // any `capacity_gap_*` error code) returns directly so callers
       // who opt into a specific bridge see its exact response.
       // ──────────────────────────────────────────────────────────
-      if (request.preferred_bridge_label) {
-        const labeled = options.registry.byLabel(request.preferred_bridge_label);
+      if (request.preferred_bridge_label || request.bridge_id) {
+        const labeled = request.bridge_id ? options.registry.get(request.bridge_id) : options.registry.byLabel(request.preferred_bridge_label!);
         if (!labeled) {
           return {
             kind: 'capacity_gap',
@@ -697,7 +763,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         if (!runsAction(labeled)) return updateRequired;
         const out = await dispatchToBridge(
           labeled.client_token_id,
-          command_template,
+          commandFor(labeled),
           timeout_ms,
           assertHandoff,
         );
@@ -712,7 +778,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
         if (out.kind === 'timeout') {
           return { kind: 'timeout', command_id: out.command_id, attempts: out.attempts };
         }
-        if (out.result.status === 'ok') {
+        if (out.result.status === 'ok' && !request.browser_discovery) {
           await recordSuccess(labeled.client_token_id, target_domain_pattern);
         }
         return {
@@ -757,7 +823,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       for (const bridge of ordered) {
         const out = await dispatchToBridge(
           bridge.client_token_id,
-          command_template,
+          commandFor(bridge),
           timeout_ms,
           assertHandoff,
         );
@@ -823,6 +889,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       return inflight.get(command_id) === client_token_id;
     },
   };
+  return withBrowserRouting(dispatcher, options.registry, options.pairedBridges, options.browserName);
 };
 
 /** Helper for the rpc layer — build a result-listener with the

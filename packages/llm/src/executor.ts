@@ -8,6 +8,7 @@ import type {
   PiiFieldTag,
   WebChatTab,
 } from '@recued/contracts';
+import { openAiReasoningBudget } from './reasoning-budget.js';
 import {
   aliasFields,
   aliasFieldsBatch,
@@ -32,9 +33,12 @@ import type {
   Modalities,
   TokenUsage,
   TokenUsageAttribution,
+  UnavailableModel,
 } from './types.js';
-import { hasModalityDemand, LLMError, requiredModalities } from './types.js';
+import { hasModalityDemand, LLMError, requiredModalities, stoppedAtOutputLimit } from './types.js';
+import { answeredByAnotherModel, failedCallResult, type SourceCallResult } from './call-outcome.js';
 import { computeMaxTokens, resolveThinking } from './router.js';
+import { inspectLLMOutput, type LLMOutputDiagnostics } from './output-diagnostics.js';
 import { buildContractedPrompt, buildUncontractedPrompt, isContractedSlug } from './prompts.js';
 import {
   parseContractedBatch,
@@ -52,11 +56,16 @@ import {
   jsonSchemaUnsupported,
   noteContextAccepted,
   noteContextRefused,
+  noteTokenRatio,
   noteJsonModeUnsupported,
   noteJsonSchemaUnsupported,
   noteSystemRoleUnsupported,
   noteThinkingSwitchUnsupported,
   isSystemRoleRejection,
+  isModelMissingRejection,
+  isUnsupportedParameterRejection,
+  noteThinkingStepRefused,
+  thinkingStep,
   systemRoleUnsupported,
   thinkingSwitchUnsupported,
 } from './endpoint-capabilities.js';
@@ -144,10 +153,19 @@ export interface LLMExecutorDeps {
   matchContext?: MatchContextHook;
   /** Per-call timeout in milliseconds. */
   timeout_ms?: number;
+  /** D-343 — the caller's cancel: the provider request ends at once, and no other provider is tried. */
+  signal?: AbortSignal;
   /** Callback to report token usage after each LLM call. */
   onTokenUsage?: (usage: TokenUsage) => void;
   /** Provider-normalized stop reason for each successful completion. */
   onFinishReason?: (reason: LLMFinishReason | undefined) => void;
+  /** Optional count-only observer, before parsing, including truncated output.
+   * A diagnostic failure never changes or repeats a paid completion. */
+  onOutputDiagnostics?: (diagnostics: LLMOutputDiagnostics & {
+    thinking_requested: 'on' | 'off' | 'default';
+    prompt_variant: 'base' | 'thinking_off';
+    output_tokens: number;
+  }) => void | Promise<void>;
   /** Host-only check immediately before EACH actual provider attempt, including
    * protocol fallbacks. A refusal propagates without provider-error wrapping. */
   beforeComplete?: (request: LLMProviderInvocation) => Promise<void>;
@@ -200,7 +218,13 @@ const completeWithJsonFallback = async (
     return await adapter.complete(slot, messages, effective);
   } catch (e) {
     // D-344 — an endpoint that refuses the thinking switch: once without it, and remembered.
-    if (effective.thinking !== undefined && isThinkingSwitchRejection(e)) {
+    // Keep a verified reasoning budget: never retry by dropping thinking and its bound.
+    if (effective.thinking !== undefined && isThinkingSwitchRejection(e) && !openAiReasoningBudget(slot, effective)) {
+      // Preserve the provider's alternative ways to express the owner's setting.
+      // A bounded request cannot fall back to unbounded thinking.
+      if (!isUnsupportedParameterRejection(e) && noteThinkingStepRefused(slot, effective.thinking)) {
+        return completeWithJsonFallback(adapter, slot, messages, options);
+      }
       noteThinkingSwitchUnsupported(slot);
       return completeWithJsonFallback(adapter, slot, messages, withoutThinking(effective));
     }
@@ -264,6 +288,8 @@ export const completeWithFallbacks = async (
   try {
     const result = await completeWithFallbacksInner(adapter, slot, messages, options);
     noteContextAccepted(slot, attempted);
+    // 2026-11-20 — and how our estimate of this prompt compares with the provider's count of it (`noteTokenRatio`).
+    noteTokenRatio(slot, attempted, result.usage?.input_tokens);
     return result;
   } catch (e) {
     if (isContextOverflowRejection(e)) noteContextRefused(slot, attempted, e);
@@ -299,7 +325,8 @@ const completeWithFallbacksInner = async (
 /** The first provider attempt after applying already learned protocol support.
  * Shared with review; new fallback behavior still needs a new exact match. */
 export const describeInitialLLMProviderRequest = (slot: LLMSlot, messages: LLMMessage[], options: LLMCompletionOptions) => {
-  const known = options.thinking !== undefined && thinkingSwitchUnsupported(slot) ? withoutThinking(options) : options;
+  const known = options.thinking !== undefined && thinkingSwitchUnsupported(slot) ? withoutThinking(options)
+    : withThinkingStep(slot, options);
   return {
     messages: hasSystemMessage(messages) && systemRoleUnsupported(slot) ? demoteSystemMessages(messages) : messages,
     options: known.json && jsonModeUnsupported(slot) ? { ...known, json: false, json_schema: undefined }
@@ -310,8 +337,17 @@ export const describeInitialLLMProviderRequest = (slot: LLMSlot, messages: LLMMe
 
 /** D-344 — a call's options without the thinking switch: the provider's default. */
 const withoutThinking = (options: LLMCompletionOptions): LLMCompletionOptions => {
-  const { thinking: _switch, ...rest } = options;
+  const { thinking: _switch, thinking_step: _step, ...rest } = options;
   return rest;
+};
+
+/** D-344 — the setting sent the first way this endpoint has not refused (`thinkingStepCount`).
+ *  Named only once past the first, the adapters' default, so a reviewed request (whose description
+ *  includes these options) reads as it always did until an endpoint has refused one. */
+const withThinkingStep = (slot: LLMSlot, options: LLMCompletionOptions): LLMCompletionOptions => {
+  if (options.thinking === undefined) return options;
+  const step = thinkingStep(slot, options.thinking);
+  return step === 0 ? options : { ...options, thinking_step: step };
 };
 
 /** The actual input normalization and privacy pass. Preparation calls this
@@ -476,6 +512,20 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
   prepared: ReturnType<typeof prepareLLMInput>, match: Match, timeout_ms?: number,
 ): { contracted: boolean; messages: LLMMessage[]; options: LLMCompletionOptions } => {
   const { input, contentParts, batchMode, batchElementMedia } = prepared;
+  const thinking = resolveThinking(match.resolved_hint, match.slot);
+  const reasoningBudget = input['llm.reasoning_token_budget'];
+  if (reasoningBudget !== undefined && (!Number.isSafeInteger(reasoningBudget) || Number(reasoningBudget) <= 0)) {
+    throw new LLMError('AI_OUTPUT_INVALID', 'llm.reasoning_token_budget must be a positive safe integer');
+  }
+  const offPrompt = input['llm.system_prompt_when_thinking_off'];
+  if (offPrompt !== undefined && typeof offPrompt !== 'string') {
+    throw new LLMError('AI_OUTPUT_INVALID', 'llm.system_prompt_when_thinking_off must be a string');
+  }
+  // Select after routing, including pool/slot fallback. Protocol retries reuse
+  // this prompt even if a provider does not support its native thinking switch.
+  const promptInput = thinking === false && offPrompt !== undefined
+    ? { ...input, 'llm.system_prompt': offPrompt } : input;
+
   const contracted = isContractedSlug(manifest.slug);
   const schema = input['llm.output_schema'];
   if (schema !== undefined && (contracted || batchMode || input['llm.output_format'] !== 'json'
@@ -485,7 +535,7 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
   }
   const messages: LLMMessage[] = contracted
     ? buildContractedPrompt(manifest.slug, input)
-    : buildUncontractedPrompt(input);
+    : buildUncontractedPrompt(promptInput);
   if (schema !== undefined && !messages.some(message => /json/iu.test(message.content))) {
     // JSON-object fallback has the same provider requirement as native object
     // mode. Add the protocol instruction before multimodal content is attached.
@@ -517,12 +567,12 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
   // despite the declaration degrades via completeWithJsonFallback below.
   const wantsJson =
     contracted || input['llm.output_format'] === 'json';
-  const thinking = resolveThinking(match.resolved_hint, match.slot);
   const options: LLMCompletionOptions = {
     model: match.slot.model,
     max_tokens: computeMaxTokens(match.resolved_hint, match.slot),
     // D-344 — the owner's setting for the model, else reasoning for the `thinking` tier, else none.
     ...(thinking !== undefined ? { thinking } : {}),
+    ...(reasoningBudget !== undefined ? { reasoning_token_budget: reasoningBudget as number } : {}),
     search: wantsWebSearch(manifest, input) && match.slot.supports_search === true,
     timeout_ms: resolveLLMTimeoutMs(timeout_ms),
     json: wantsJson && match.slot.supports_json === true,
@@ -673,29 +723,73 @@ export const executeLLM = async (
 
     try {
       const adapter = deps.adapters(match.adapterKey);
+      if (deps.signal?.aborted === true) throw new LLMError('AI_TIMEOUT', 'LLM call was cancelled');
       const { contracted, messages, options } = buildLLMCompletionRequest(manifest, prepared, match, deps.timeout_ms);
+      if (deps.signal !== undefined) options.signal = deps.signal;
 
       deps.quota.registerRequest(matchSourceId(match));
 
-      const guarded: LLMAdapter = deps.beforeComplete ? { ...adapter,
+      // Whether a request reached the provider: a host refusal before it (`beforeComplete`) is not
+      // the source's answer, and is not kept as its last call.
+      let reachedProvider = false;
+      const guarded: LLMAdapter = { ...adapter,
         complete: async (slot, requestMessages, requestOptions) => {
-          await deps.beforeComplete!({ match: { ...match, slot }, messages: requestMessages, options: requestOptions });
+          if (deps.beforeComplete) {
+            await deps.beforeComplete({ match: { ...match, slot }, messages: requestMessages, options: requestOptions });
+          }
+          reachedProvider = true;
           return adapter.complete(slot, requestMessages, requestOptions);
         },
-      } : adapter;
-      const result = await completeWithFallbacks(guarded, match.slot, messages, options);
-      const raw = result.text;
-      deps.onFinishReason?.(result.finish_reason);
-
-      const attribution = attributionFor(match);
-      if (deps.onTokenUsage) {
-        deps.onTokenUsage({
-          ...result.usage,
+      };
+      /** Count a call's tokens against the owner's day and its source's daily budget. */
+      const meter = (usage: TokenUsage): void => {
+        const attribution = attributionFor(match);
+        deps.onTokenUsage?.({
+          ...usage,
           attribution,
           // Back-compat: populate slot_key when the match was a slot.
           slot_key: attribution.kind === 'slot' ? attribution.slot_key : undefined,
         });
+        // Recorded under the slot key or the pool entry's id, so per-source daily budgets
+        // (D-079/D-094) read it through `quota.tokensToday` in `buildAvailability`.
+        deps.quota.recordUsage(matchSourceId(match), usage.total_tokens);
+      };
+      /** Keep how this source's call ended, for Settings to show beside it (`SourceCallOutcome`).
+       *  Not for a call that never reached the provider, nor one its caller cancelled. */
+      const noteCall = (result: SourceCallResult, answered?: string): void => {
+        if (!reachedProvider || deps.signal?.aborted === true) return;
+        deps.quota.recordCallOutcome?.(matchSourceId(match), {
+          at: Date.now(),
+          model: options.model,
+          result,
+          ...(answered !== undefined && answeredByAnotherModel(options.model, answered) ? { answered_by: answered } : {}),
+        });
+      };
+      let result: LLMCompletionResult;
+      try {
+        result = await completeWithFallbacks(guarded, match.slot, messages, options);
+      } catch (e) {
+        // ⚠ A reply that stopped at its limit before any answer was still generated, and billed, as
+        // an answer is: counted like one. Before (2026-11-16), it counted nowhere.
+        if (stoppedAtOutputLimit(e) && e.details?.usage !== undefined) meter(e.details.usage as TokenUsage);
+        noteCall(failedCallResult(e));
+        throw e;
       }
+      noteCall('answered', result.usage.answered_model);
+      const raw = result.text;
+      deps.onFinishReason?.(result.finish_reason);
+      if (deps.onOutputDiagnostics) {
+        try {
+          const diagnostic = { ...inspectLLMOutput(raw, result.finish_reason),
+            thinking_requested: options.thinking === false ? 'off' as const : options.thinking === true ? 'on' as const : 'default' as const,
+            prompt_variant: options.thinking === false && typeof input['llm.system_prompt_when_thinking_off'] === 'string'
+              ? 'thinking_off' as const : 'base' as const,
+            output_tokens: result.usage.output_tokens };
+          void Promise.resolve(deps.onOutputDiagnostics(diagnostic)).catch(() => undefined);
+        } catch { /* Diagnostics cannot fail an otherwise usable completion. */ }
+      }
+
+      meter(result.usage);
       // Advance the round-robin cursor after a successful call. Cursor
       // keying mirrors the match-time group key so subsequent calls rotate
       // through tied candidates. `free:<tier>` covers pool API wins; `byok:<tier>` covers slot wins.
@@ -703,15 +797,6 @@ export const executeLLM = async (
         ? `byok:${match.resolved_hint}`
         : `free:${match.resolved_hint}`;
       deps.quota.advanceCursor(cursorKey);
-      if (match.source.kind === 'pool') {
-        deps.quota.recordUsage(match.source.entry.id, result.usage.total_tokens);
-      } else if (match.source.kind === 'slot') {
-        // Record BYOK slot consumption under the slot key so per-slot
-        // daily budgets (D-079/D-094, reinstated) can be enforced via
-        // `quota.tokensToday(slotKey)` in `buildAvailability`. The slot
-        // key is the same id `markRateLimited`/`isInCooldown` already use.
-        deps.quota.recordUsage(match.source.slot_key, result.usage.total_tokens);
-      }
 
       // Provider adapters normalize explicit safety/refusal stops to
       // `content_filter`. Account for the completed call above, then surface a
@@ -773,6 +858,8 @@ export const executeLLM = async (
       }
       return raw;
     } catch (e) {
+      // D-343 — cancelled by its caller: no other provider, and no source marked as limited.
+      if (deps.signal?.aborted === true) throw e;
       if (e instanceof LLMError && e.retryable) {
         const sourceId = matchSourceId(match);
         rejectSet.add(sourceId);
@@ -788,7 +875,7 @@ export const executeLLM = async (
         lastError = e;
         continue;
       }
-      throw e;
+      throw withUnavailableModel(e, match);
     }
   }
 
@@ -963,6 +1050,26 @@ const attributionFor = (match: Match): TokenUsageAttribution => {
     case 'slot': return { kind: 'slot', slot_key: match.source.slot_key };
     case 'pool': return { kind: 'pool', entry_id: match.source.entry.id };
   }
+};
+
+/** A model its provider does not have: the failure says which, and where the owner set it
+ *  (`UnavailableModel`), since nothing above this call knows which source was tried. Not retried
+ *  elsewhere: the owner chose this model, and another one answering in its place would hide that
+ *  their choice no longer works. */
+const withUnavailableModel = (e: unknown, match: Match): unknown => {
+  if (!(e instanceof LLMError) || !isModelMissingRejection(e)) return e;
+  let host: string | undefined;
+  try {
+    if (match.slot.base_url) host = new URL(match.slot.base_url).hostname;
+  } catch { /* an address that does not parse has no host to show */ }
+  const model_unavailable: UnavailableModel = {
+    model: match.slot.model,
+    provider: match.slot.provider,
+    ...(match.slot.provider_name ? { provider_name: match.slot.provider_name } : {}),
+    ...(host ? { host } : {}),
+    source: attributionFor(match),
+  };
+  return new LLMError(e.code, e.message, { ...e.details, model_unavailable }, e.retryable);
 };
 
 /** Pull ingredient requirements from the manifest or derive from legacy keys.

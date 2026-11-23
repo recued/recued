@@ -33,6 +33,8 @@ import {
   type ReceptionInboxTopTierKind,
 } from '@recued/contracts';
 import type { ReceptionInboxSubviewStore } from '../reception-inbox-handler.js';
+import { createInboxRejectionJournal, type PendingInboxRejection } from './reception-inbox-rejection-journal.js';
+import { createSQLiteCollection } from '../sqlite-collection.js';
 
 const TABLE = 'reception_inbox_subview';
 
@@ -146,6 +148,7 @@ export const createReceptionInboxSubviewStore = (
   );
 
   return {
+    rejectionJournal: createInboxRejectionJournal(createSQLiteCollection<PendingInboxRejection>(db, 'reception_inbox_rejection_journal')),
     record(row) {
       recordStmt.run({
         hold_id: row.hold_id,

@@ -179,16 +179,35 @@ export const createMailDraftStore = (db: Database.Database, codec: PreapprovalCo
       }).immediate();
     },
     async list(raw: unknown, principal: MailDraftPrincipal): Promise<{ drafts: MailDraftSummary[]; next_cursor: string | null }> {
-      const { cursor, limit } = parseMailDraftList(raw); authorize(principal);
+      const { cursor, limit, query, sender_mail_instance } = parseMailDraftList(raw); authorize(principal);
+      const fold = (text: string): string => text.normalize('NFKC').toLowerCase();
+      const term = fold(query);
+      // Subjects and recipients stay encrypted. Bound each scan and advance
+      // past examined nonmatches too; an empty page can still have a cursor.
+      const scanLimit = term || sender_mail_instance ? 100 : limit;
       const rows = db.prepare(`SELECT draft_id FROM mail_drafts WHERE deleted_at IS NULL AND owner_id=?
         AND (? IS NULL OR contract_id=?) AND draft_id > ? ORDER BY draft_id LIMIT ?`)
-        .all(principal.owner_id, principal.contract_id, principal.contract_id, cursor, limit + 1) as Array<{ draft_id: string }>;
+        .all(principal.owner_id, principal.contract_id, principal.contract_id, cursor, scanLimit + 1) as Array<{ draft_id: string }>;
       const drafts: MailDraftSummary[] = [];
-      for (const row of rows.slice(0, limit)) {
+      let examined = 0;
+      for (const row of rows.slice(0, scanLimit)) {
         const { content, ...draft } = await get({ draft_id: row.draft_id }, principal);
-        drafts.push({ ...draft, subject: content.subject, sender_mail_instance: content.sender_mail_instance });
+        examined++;
+        const to = content.to, cc = content.cc as string[] | undefined, bcc = content.bcc as string[] | undefined;
+        if (sender_mail_instance && content.sender_mail_instance !== sender_mail_instance) continue;
+        if (term && ![content.subject, ...to, ...(cc ?? []), ...(bcc ?? [])].some(text => fold(text).includes(term))) continue;
+        drafts.push({ ...draft, subject: content.subject, sender_mail_instance: content.sender_mail_instance,
+          to, ...(cc ? { cc } : {}), ...(bcc ? { bcc } : {}) });
+        if (drafts.length === limit) break;
       }
-      return { drafts, next_cursor: rows.length > limit ? rows[limit - 1]!.draft_id : null };
+      // A later decrypt may yield to a revoke, delete or edit of an earlier
+      // match. Confirm returned identities again before exposing their labels.
+      authorize(principal);
+      for (const draft of drafts) {
+        const current = read(draft.draft_id, principal);
+        if (current.revision !== draft.revision || current.incarnation !== draft.incarnation) stale();
+      }
+      return { drafts, next_cursor: rows.length > examined ? rows[examined - 1]!.draft_id : null };
     },
   };
 };

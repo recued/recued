@@ -123,7 +123,7 @@ export interface MountServerAddressPanelOptions {
 
 export interface ServerAddressPanelMount {
   dispose(): void;
-  /** Test seam — re-read the roster and rebuild. */
+  /** Re-read saved profiles without dropping current editor state. */
   refresh(): Promise<void>;
   rowState(profile_id: string): ServerAddressRowState;
   statusText(profile_id: string): string;
@@ -159,6 +159,15 @@ export const mountServerAddressPanel = (
 
   let rows: RowModel[] = [];
   let disposed = false;
+  let reading = false, readError = false, readSettled = false;
+  let pendingRead: Promise<void> | undefined;
+  const roster = doc.createElement('div'); roster.setAttribute('data-server-address-roster', '');
+  const rosterStatus = doc.createElement('p'); rosterStatus.setAttribute('data-server-address-roster-status', '');
+  const retry = doc.createElement('button'); retry.type = 'button'; retry.className = 'rx-btn rx-btn-secondary';
+  retry.setAttribute('data-server-address-roster-retry', '');
+  retry.addEventListener('click', () => { void refresh(); });
+  roster.appendChild(rosterStatus); roster.appendChild(retry); wrapper.appendChild(roster);
+  const rowHost = doc.createElement('div'); rowHost.className = 'server-address-rows'; wrapper.appendChild(rowHost);
   type FocusKind = 'edit' | 'input' | 'check' | 'save' | 'cancel' | 'status';
   let controls: Array<{ id: string; kind: FocusKind; node: HTMLElement }> = [];
 
@@ -170,7 +179,7 @@ export const mountServerAddressPanel = (
     const input = owner?.kind === 'input' ? owner.node as HTMLInputElement : null;
     const selection = input ? { start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection } : null;
     controls = [];
-    while (wrapper.firstChild) wrapper.removeChild(wrapper.firstChild);
+    while (rowHost.firstChild) rowHost.removeChild(rowHost.firstChild);
     for (const row of rows) {
       const remember = (kind: FocusKind, node: HTMLElement): void => { controls.push({ id: row.profile.id, kind, node }); };
       const el = doc.createElement('div');
@@ -278,7 +287,7 @@ export const mountServerAddressPanel = (
       remember('status', status);
       el.appendChild(status);
 
-      wrapper.appendChild(el);
+      rowHost.appendChild(el);
     }
     if (!owner) return;
     const row = rowFor(owner.id);
@@ -388,7 +397,7 @@ export const mountServerAddressPanel = (
   const convergeIfActive = async (id: string, server_url: string): Promise<void> => {
     const converge = opts.onActiveAddressChanged;
     const readActive = opts.activeProfileId;
-    if (!converge || !readActive) return;
+    if (!readActive) return;
     let active: string | null;
     try {
       active = await readActive();
@@ -397,7 +406,16 @@ export const mountServerAddressPanel = (
       // The saved message already tells the user to reload.
       return;
     }
-    if (active !== id) return;
+    if (disposed) return;
+    if (active !== id) {
+      const saved = rowFor(id);
+      if (saved?.state === 'saved' && saved.profile.server_url === server_url) {
+        saved.status = 'Saved. The new address will be used next time you connect to this server.';
+        render();
+      }
+      return;
+    }
+    if (!converge) return;
     const live = rowFor(id);
     if (disposed || !live) return;
     if (converge() === 'deferred') {
@@ -433,18 +451,47 @@ export const mountServerAddressPanel = (
     render();
   };
 
-  const refresh = async (): Promise<void> => {
-    const profiles = await opts.listProfiles();
-    if (disposed) return;
-    // ⚠ Carry live edit state across a refresh. A roster reload that reset an
-    // open editor would throw away a proof the user just waited for.
-    rows = profiles.map((profile) => {
-      const existing = rowFor(profile.id);
-      return existing
-        ? { ...existing, profile }
-        : { profile, state: 'idle' as const, draft: '', status: '' };
+  const renderRoster = (): void => {
+    const owned = doc.activeElement === retry;
+    const state = reading ? 'loading' : readError ? 'error' : rows.length === 0 ? 'empty' : 'ready';
+    wrapper.setAttribute('data-server-address-roster-state', state);
+    roster.hidden = state === 'ready';
+    rosterStatus.setAttribute('role', readError && !reading ? 'alert' : 'status');
+    rosterStatus.textContent = reading ? 'Reading saved servers…' : readError
+      ? 'This browser could not read its saved servers. Try again.' : 'No saved servers in this browser.';
+    retry.hidden = reading && !readSettled;
+    retry.setAttribute('aria-disabled', String(reading)); retry.setAttribute('aria-busy', String(reading));
+    retry.innerHTML = renderActionLabel('refresh', reading ? 'Retrying…' : readError ? 'Try again' : 'Check again');
+    // Only the current recovery owner follows a successful read into a row.
+    // Moving elsewhere while it waits retires that request for focus.
+    if (owned && state === 'ready') controls.find(control => control.kind === 'edit')?.node.focus?.();
+  };
+
+  const refresh = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    if (pendingRead) return pendingRead;
+    reading = true; renderRoster();
+    // Schedule the read after assigning its shared promise, including callers
+    // that throw synchronously. Mount and a concurrent retry join one read.
+    pendingRead = Promise.resolve().then(async () => {
+      try {
+        const profiles = await opts.listProfiles();
+        if (disposed) return;
+        // Carry live edit state across a refresh. A failed read keeps the
+        // previous rows; a successful one must not erase an address proof.
+        rows = profiles.map(profile => {
+          const existing = rowFor(profile.id);
+          return existing ? { ...existing, profile } : { profile, state: 'idle' as const, draft: '', status: '' };
+        });
+        readError = false;
+      } catch {
+        if (!disposed) readError = true;
+      } finally {
+        reading = false; readSettled = true; pendingRead = undefined;
+        if (!disposed) { render(); renderRoster(); }
+      }
     });
-    render();
+    return pendingRead;
   };
 
   void refresh();

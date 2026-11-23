@@ -143,6 +143,21 @@ describe('D-335 slice F — the passes on the Contracts panel', () => {
     expect(text(second!)).toContain('used 1 time');
   });
 
+  it('D-402 slice H4d — a pass for one browser names it, one no longer paired says so, and so does a suggestion', async () => {
+    const home: BrowserPassRow = { ...always, pass_id: 'pass-home', key: { ...always.key, browser: 'inst-home' },
+      browser_name: 'Home', browser_paired: true };
+    const gone: BrowserPassRow = { ...session, pass_id: 'pass-old', key: { ...session.key, browser: 'inst-old' },
+      browser_name: 'Old laptop', browser_paired: false };
+    const work: BrowserPassSuggestionRow = { ...suggestion, key: { ...suggestion.key, browser: 'inst-work' },
+      browser_name: 'Work', browser_paired: true };
+    const h = mount({ suggestions: [work], passes: [home, gone] });
+    await h.panel.whenLoaded();
+    const [first, second] = all(h.host, BROWSER_PASS_ATTR);
+    expect(text(first!)).toContain('Type into pages on mail.google.com in “Home”');
+    expect(text(second!)).toContain('Open pages on news.ycombinator.com in “Old laptop” (no longer paired)');
+    expect(text(all(h.host, BROWSER_PASS_SUGGESTION_ATTR)[0]!)).toContain('Click on github.com in “Work”');
+  });
+
   it('always allows only after saying it does not end by itself', async () => {
     const h = mount();
     await h.panel.whenLoaded();
@@ -233,13 +248,14 @@ describe('D-335 slice F — the passes on the Contracts panel', () => {
 });
 
 describe('D-335 slice Z — the logins remembered for browser steps, on the Contracts panel', () => {
-  const login: BrowserLoginRow = { origin: 'https://login.live.com', site: 'login.live.com', field: 'name:passwd', label: 'Password',
-    kind: 'password', saved_at: NOW, used_at: NOW + 86_400_000 };
+  // D-402 slice H5 — saved in one browser, named as its owner named it.
+  const login: BrowserLoginRow = { browser: 'inst-work', browser_name: 'Work', origin: 'https://login.live.com', site: 'login.live.com',
+    field: 'name:passwd', label: 'Password', kind: 'password', saved_at: NOW, used_at: NOW + 86_400_000 };
   const mountLogins = (rows: BrowserLoginRow[] = [login]) => {
     const host = element('div');
     const state = { logins: rows };
-    const forget = vi.fn(async (args: { origin: string; field: string }) => {
-      state.logins = state.logins.filter((row) => row.origin !== args.origin || row.field !== args.field);
+    const forget = vi.fn(async (args: { browser: string; origin: string; field: string }) => {
+      state.logins = state.logins.filter((row) => row.browser !== args.browser || row.origin !== args.origin || row.field !== args.field);
       return { forgotten: true as const };
     });
     const panel = mountWriteRulesPanel({
@@ -258,18 +274,32 @@ describe('D-335 slice Z — the logins remembered for browser steps, on the Cont
     await h.panel.whenLoaded();
     expect(text(h.host)).toContain('Remembered for your browser');
     const [card] = all(h.host, BROWSER_LOGIN_ATTR);
-    expect(card!.getAttribute(BROWSER_LOGIN_ATTR)).toBe('https://login.live.com|name:passwd');
-    expect(text(card!)).toContain('Your password for login.live.com');
+    expect(card!.getAttribute(BROWSER_LOGIN_ATTR)).toBe('inst-work|https://login.live.com|name:passwd');
+    expect(text(card!)).toContain('Your password for login.live.com, in “Work”');
     expect(text(card!)).toContain('For the field “Password”; saved');
     all(h.host, BROWSER_LOGIN_FORGET_ATTR)[0]!.click();
     expect(h.forget).not.toHaveBeenCalled();
     expect(text(h.host)).toContain('The next step that needs it asks you for it again.');
     all(h.host, WRITE_RULES_CONFIRM_ATTR)[0]!.click();
     await tick();
-    expect(h.forget).toHaveBeenCalledWith({ origin: 'https://login.live.com', field: 'name:passwd' });
+    expect(h.forget).toHaveBeenCalledWith({ browser: 'inst-work', origin: 'https://login.live.com', field: 'name:passwd' });
     await h.panel.whenLoaded();
     expect(all(h.host, BROWSER_LOGIN_ATTR)).toHaveLength(0);
     expect(text(h.host)).not.toContain('Remembered for your browser');
+  });
+
+  it('D-402 slice H5 — one site\'s logins in two browsers are two rows, each forgotten alone', async () => {
+    const home: BrowserLoginRow = { ...login, browser: 'inst-home', browser_name: 'Home' };
+    const h = mountLogins([login, home]);
+    await h.panel.whenLoaded();
+    const cards = all(h.host, BROWSER_LOGIN_ATTR);
+    expect(cards.map((card) => text(card).includes('in “Home”'))).toEqual([false, true]);
+    all(h.host, BROWSER_LOGIN_FORGET_ATTR)[1]!.click();
+    all(h.host, WRITE_RULES_CONFIRM_ATTR)[0]!.click();
+    await tick();
+    expect(h.forget).toHaveBeenCalledWith({ browser: 'inst-home', origin: 'https://login.live.com', field: 'name:passwd' });
+    await h.panel.whenLoaded();
+    expect(all(h.host, BROWSER_LOGIN_ATTR).map((card) => card.getAttribute(BROWSER_LOGIN_ATTR))).toEqual(['inst-work|https://login.live.com|name:passwd']);
   });
 
   it('none remembered, nothing shown; Cancel keeps one', async () => {

@@ -7,10 +7,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MailboxSetting, ServerRecipeListEntry } from '@recued/contracts';
-import type { MailboxVariableCallers } from '@recued/ui-shared';
+import type { BrowserVariableCallers, MailboxVariableCallers } from '@recued/ui-shared';
 
 type OverlayOptions = {
   mailboxes?: { settings: ReadonlyArray<MailboxSetting>; callers: MailboxVariableCallers };
+  browsers?: { settings: ReadonlyArray<{ key: string }>; callers: BrowserVariableCallers };
 };
 
 const captured: OverlayOptions[] = [];
@@ -102,5 +103,27 @@ describe('the owner’s lists', () => {
       listCalendars: async () => ({ instances: [] }),
     });
     await expect(failing.list('mail')).rejects.toThrow('offline');
+  });
+});
+
+describe('D-402 slice H2b — the dish form offers the owner\'s paired browsers', () => {
+  const browserCallers: BrowserVariableCallers = { list: async () => [] };
+  const withBrowsers = (browser_settings?: Array<{ key: string }>): ServerRecipeListEntry => ({
+    ...entry(), ...(browser_settings !== undefined ? { browser_settings } : {}),
+  } as unknown as ServerRecipeListEntry);
+  const openWith = (row: ServerRecipeListEntry, browsers?: BrowserVariableCallers): OverlayOptions => {
+    captured.length = 0;
+    openDishForm({ document: {} as Document, mode: 'switch-on', entry: row, dishes: [], start: {},
+      callers: { create: async () => ({ dish: {} as never }) }, ...(browsers !== undefined ? { browsers } : {}), onClose: () => undefined });
+    return captured[0]!;
+  };
+  it('hands the settings form the recipe\'s browser settings with the owner\'s list', () => {
+    const options = openWith(withBrowsers([{ key: 'browser' }]), browserCallers);
+    expect(options.browsers).toEqual({ settings: [{ key: 'browser' }], callers: browserCallers });
+  });
+  it('nothing for a recipe with none, a server that says none, or no list', () => {
+    expect(openWith(withBrowsers([]), browserCallers).browsers).toBeUndefined();
+    expect(openWith(withBrowsers(), browserCallers).browsers).toBeUndefined();
+    expect(openWith(withBrowsers([{ key: 'browser' }])).browsers).toBeUndefined();
   });
 });

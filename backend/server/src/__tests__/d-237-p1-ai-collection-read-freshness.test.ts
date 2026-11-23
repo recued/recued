@@ -75,7 +75,8 @@ const calendarStub = (spec: StubSpec) => ({
   // `isCalendarCollection` narrows on the presence of `table`.
   table: {
     search: () => (spec.rows ?? [ROW]).map((r) => ({ ...r, hot: {}, rank: 1, snippet: 's' })),
-    listSnapshots: () => (spec.rows ?? [ROW]).map((r) => ({ ...r, hot: {} })),
+    // A snapshot always carries its event; D-407 Q8 reads its private marking from it.
+    listSnapshots: () => (spec.rows ?? [ROW]).map((r) => ({ ...r, hot: {}, event: {} })),
     get: () => null,
   },
 });

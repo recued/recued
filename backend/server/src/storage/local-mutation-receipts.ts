@@ -31,6 +31,7 @@ export const createLocalMutationReceipts = (db: Database.Database, now: () => nu
   db.exec(`CREATE TABLE IF NOT EXISTS local_mutation_receipts (
     attempt_id TEXT PRIMARY KEY, owner TEXT NOT NULL, owner_ref TEXT NOT NULL, data TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS local_mutation_receipts_owner ON local_mutation_receipts(owner,owner_ref);`);
+  let findStatement: Database.Statement | undefined;
   return {
     hasAttempt(attemptId: string): boolean {
       return Boolean(db.prepare('SELECT 1 FROM local_mutation_receipts WHERE attempt_id=?').get(attemptId));
@@ -58,7 +59,7 @@ export const createLocalMutationReceipts = (db: Database.Database, now: () => nu
       return receipt;
     },
     find(binding: LocalMutationReceiptBinding): LocalMutationReceipt | null {
-      const row = db.prepare('SELECT owner,owner_ref,data FROM local_mutation_receipts WHERE attempt_id=?')
+      const row = (findStatement ??= db.prepare('SELECT owner,owner_ref,data FROM local_mutation_receipts WHERE attempt_id=?'))
         .get(binding.attempt_id) as { owner: string; owner_ref: string; data: string } | undefined;
       if (!row || row.owner !== binding.owner || row.owner_ref !== binding.owner_ref) return null;
       try {

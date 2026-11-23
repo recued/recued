@@ -1095,7 +1095,7 @@ const makeDeferred = <T,>(): {
 };
 
 describe('D-149 follow-on — stale-completion guard', () => {
-  it('a slow rotate that settles after cancel+open does not register a share or close the new modal', async () => {
+  it('a slow rotate saves its one-shot share after cancel+open without closing the new modal', async () => {
     const h = makeFakeHost();
     const { shell, fns } = makeFakeShell();
     // Replace rotateToken with a deferred path so we can land its
@@ -1121,15 +1121,14 @@ describe('D-149 follow-on — stale-completion guard', () => {
     prompts.open('reception-revoke', { endpointId: 'ep-drop' });
     expect(h.getHtml()).toContain('Take this link back');
 
-    // 3. Now resolve the stale rotate. The success path should NOT
-    //    register a share (the user moved on) and NOT close the revoke
-    //    modal (its token is fresh).
+    // 3. Save the never-re-readable result for its original endpoint,
+    // without closing the newer revoke modal or moving its focus.
     deferred.resolve({
       bearer_secret_once: 'bs-stale',
       share_url_once: 'https://reception.example/stale?t=once',
     });
     await flush();
-    expect(fns.setEndpointShare).not.toHaveBeenCalled();
+    expect(fns.setEndpointShare).toHaveBeenCalledWith('ep-sched', expect.objectContaining({ share_url: 'https://reception.example/stale?t=once' }));
     // The revoke modal is still up.
     expect(h.getHtml()).toContain('Take this link back');
     prompts.dispose();

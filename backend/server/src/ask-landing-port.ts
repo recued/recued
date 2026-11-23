@@ -47,6 +47,7 @@ import {
   ASK_LANDING_RESPONSE_HEADERS,
   parseAskLandingSubmission,
   renderAskLandingHtml,
+  renderAskLandingRecoveryHtml,
   resolveAskLandingVia,
   type ChannelName,
   type AskLandingDetail,
@@ -105,7 +106,8 @@ export interface AskLandingPortHandlerDeps {
   ) => Promise<{ heading?: string; details: readonly AskLandingDetail[] } | null>;
   /** D-210 A.8 3d-2c — the submit-IS-the-approve leg
    *  (`createAskLandingEditApproval`). Called INSTEAD of `submitAnswer`
-   *  when the body carried `edit.*` fields.
+   *  when the body carried `edit.*` fields and the answer is not Deny.
+   *  Deny records a plain answer without applying the posted controls.
    *
    *  Composed together with `resolveDetails`' `editable` flag off the same
    *  bundle: a page that renders controls can always honour them, and a
@@ -115,13 +117,15 @@ export interface AskLandingPortHandlerDeps {
     ask: PendingAsk;
     option: string;
     rawEdits: Record<string, string>;
+    via: ChannelName;
   }) => Promise<{ ok: boolean; message?: string }>;
   /** Single-use form-nonce store (CSRF). Keyed on `ask_id`. */
   nonceStore: AskLandingNonceStore;
   /** Injected clock — tests pass a fixed value. Default `Date.now`. */
   now?: () => number;
-  /** POST body cap in bytes. A landing submission is tiny (nonce + ask_id +
-   *  option); default 16 KiB matches the reception form cap. */
+  /** Encoded POST body cap in bytes, including any held-operation edits.
+   *  Prefills exceeding it render read-only; default 16 KiB matches the
+   *  reception form cap. */
   maxBodyBytes?: number;
   /** Trust `X-Forwarded-Proto` for the same-origin scheme check — set only
    *  when the listener sits behind a trusted TLS-terminating reverse proxy.
@@ -178,10 +182,13 @@ export const parseAskLandingViaFromUrl = (url: string | undefined): string | nul
   return params.get('via');
 };
 
+const ASK_BASE = PATH_FOR_ROLE.ask;
+const askPageUrl = (ask_id: string, via: ChannelName): string =>
+  `${ASK_BASE}/${encodeURIComponent(ask_id)}?via=${encodeURIComponent(via)}`;
+
 /** Pull the `ask_id` out of a `/ask/<ask_id>` request path (query stripped).
  *  Returns null for any shape that is not exactly one path segment under the
  *  role base — the handler then renders the generic unavailable page. */
-const ASK_BASE = PATH_FOR_ROLE.ask;
 const parseAskIdFromPath = (rawUrl: string | undefined): string | null => {
   const path = (rawUrl ?? '').split('?')[0]!.split('#')[0]!;
   if (!path.startsWith(`${ASK_BASE}/`)) return null;
@@ -254,13 +261,13 @@ export const ASK_LANDING_LINK_TTL_MS = 48 * 60 * 60 * 1000;
 export const ASK_LANDING_EDIT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** True once the bearer URL may still ANSWER but may no longer CHANGE. */
-const isAskEditWindowClosed = (ask: PendingAsk, now: number): boolean =>
+export const isAskEditWindowClosed = (ask: PendingAsk, now: number): boolean =>
   now - ask.created_at > ASK_LANDING_EDIT_TTL_MS;
 
 /** True once the bearer URL has outlived {@link ASK_LANDING_LINK_TTL_MS}.
  *  Keyed on `created_at` — the ask's own mint time, the same instant the link
  *  was built and sent. */
-const isAskLinkExpired = (ask: PendingAsk, now: number): boolean =>
+export const isAskLinkExpired = (ask: PendingAsk, now: number): boolean =>
   ask.delivery_group_id === undefined && now - ask.created_at > ASK_LANDING_LINK_TTL_MS;
 
 /** The generic "no longer available" page for an unknown / pruned `ask_id`.
@@ -315,13 +322,14 @@ const respondWithAskPage = async (
   ask_id: string,
   ask: PendingAsk | null,
   verification_phrase: string | undefined,
-  now: number,
+  now: () => number,
   details_error?: string,
   /** D-238 — the channel whose message carried this link, read off the request
    *  query. Ridden into the form so the POST can attribute the answer to it
    *  instead of the `email` default that made every Teams approval audit as an
    *  email reply. */
   via?: ChannelName,
+  maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
 ): Promise<ReceptionAccessOutcome> => {
   if (ask === null) {
     writeHtml(res, UNAVAILABLE_HTML, 404);
@@ -336,24 +344,47 @@ const respondWithAskPage = async (
   //
   // ⛔ The ask is NOT cancelled here. The decision keeps its own 30-day policy
   // and stays answerable in the Inbox / by reply — only this door closes.
-  if (ask.status === 'open' && isAskLinkExpired(ask, now)) {
+  if (ask.status === 'open' && isAskLinkExpired(ask, now())) {
+    writeHtml(res, UNAVAILABLE_HTML, 404);
+    return 'expired';
+  }
+  // Enrichment may wait on a held operation while another channel answers the
+  // decision, retention prunes it, or the public link expires. Read the ask
+  // again after enrichment and sample time after that final awaited read.
+  const resolved = ask.status === 'open' ? await resolveDetailsSafely(deps, ask) : null;
+  ask = await deps.getAsk(ask_id);
+  const renderNow = now();
+  if (ask === null) {
+    writeHtml(res, UNAVAILABLE_HTML, 404);
+    return 'invalid_token';
+  }
+  if (ask.status === 'open' && isAskLinkExpired(ask, renderNow)) {
     writeHtml(res, UNAVAILABLE_HTML, 404);
     return 'expired';
   }
   if (ask.status === 'open') {
-    const form_nonce = deps.nonceStore.issue(ask_id, now);
-    // Only the `open` page carries details: once the ask is answered the
-    // hold is consumed, so there is nothing left to resolve and nothing the
-    // reader can still act on.
-    const resolved = await resolveDetailsSafely(deps, ask);
+    // Native forms submit edit controls even when their values are unchanged.
+    // Once editing closes, render the original display values so a still-live
+    // link can submit a plain answer. Use the final clock after awaited reads,
+    // and leave the resolver's rows intact for other callers.
+    const details = resolved === null ? undefined
+      : isAskEditWindowClosed(ask, renderNow)
+        ? resolved.details.map(({ label, value }) => ({ label, value }))
+        : resolved.details;
+    // Mint only for a decision that remains actionable. Its full nonce lifetime
+    // starts at rendering, rather than being spent waiting on private details.
+    const form_nonce = deps.nonceStore.issue(ask_id, renderNow);
     const html = renderAskLandingHtml({
       ask,
       ...(verification_phrase !== undefined ? { verification_phrase } : {}),
-      ...(resolved !== null ? { details: resolved.details } : {}),
+      ...(details !== undefined ? { details } : {}),
       ...(resolved?.heading !== undefined ? { details_heading: resolved.heading } : {}),
       ...(details_error !== undefined ? { details_error } : {}),
       form_nonce,
-      action: `${ASK_BASE}/${encodeURIComponent(ask_id)}`,
+      // Keep validated channel metadata available even when the POST body
+      // exceeds its cap and cannot be parsed for the hidden `via` field.
+      action: askPageUrl(ask_id, resolveAskLandingVia(via)),
+      max_body_bytes: maxBodyBytes,
       ...(via !== undefined ? { via } : {}),
     });
     writeHtml(res, html, 200);
@@ -520,13 +551,14 @@ export const createAskLandingPortHandler = (
           ask_id,
           ask,
           verification_phrase,
-          requestNow,
+          now,
           undefined,
           // D-238 — the originating channel, stamped into the link at fan-out.
           // Untrusted (the owner could edit the URL), so it is validated against
           // the closed channel set and falls back to `email` rather than being
           // written through into a durable audit row.
           resolveAskLandingVia(parseAskLandingViaFromUrl(req.url)),
+          cap,
         );
         if (outcome === 'expired') action = 'expired';
         if (outcome === 'invalid_token') action = 'invalid_token';
@@ -543,10 +575,9 @@ export const createAskLandingPortHandler = (
 
       const read = await readBodyCapped(req, cap);
       if (!read.ok) {
-        res.statusCode = 413;
-        res.setHeader('cache-control', 'no-store');
         res.setHeader('connection', 'close');
-        res.end('payload_too_large');
+        const reopen_url = askPageUrl(ask_id, resolveAskLandingVia(parseAskLandingViaFromUrl(req.url)));
+        writeHtml(res, renderAskLandingRecoveryHtml({ reopen_url, reason: 'too_large' }), 413);
         return;
       }
 
@@ -570,24 +601,30 @@ export const createAskLandingPortHandler = (
       // Consume the single-use form-nonce (CSRF). A replay, a cross-origin
       // POST, or a nonce never issued for this ask all fail here.
       if (!deps.nonceStore.consume(ask_id, submission.form_nonce, now())) {
-        res.statusCode = 403;
-        res.setHeader('cache-control', 'no-store');
-        res.end('forbidden');
+        // Keep this submission rejected. A fresh GET can reload an open
+        // decision or show its terminal state; no private reads or nonce
+        // issuance happen here. Derive the URL from the path-bound id and
+        // validated channel, rather than echoing a caller-supplied return URL.
+        const reopen_url = askPageUrl(ask_id, submission.reply.via);
+        writeHtml(res, renderAskLandingRecoveryHtml({ reopen_url }), 403);
         return;
       }
 
-      // D-210 A.8 3d-2c — a body carrying `edit.*` fields is an EDIT-then-
-      // APPROVE, not a plain answer: it must reach the approve funnel (which
-      // validates against the allowlist, writes through the narrow
-      // `setArgOverrides`, audits old→new, and only then releases).
+      // D-210 A.8 3d-2c — an approval carrying `edit.*` fields must reach
+      // the approve funnel, which validates against the allowlist, writes
+      // through the narrow `setArgOverrides`, audits old→new, and only then
+      // releases.
       //
-      // ⛔ Never fall through to `submitAnswer` with edits in hand. That path
-      // takes an option and nothing else, so it would release the hold with
+      // ⛔ Never let an approval fall through to `submitAnswer` with edits in
+      // hand. That path takes an option and nothing else, so it would release the hold with
       // the ORIGINAL args while the page reported success — the owner retimes
       // a booking, reads "Response recorded: Approve", and 3d-1 mails the
       // visitor the time they did not choose.
       let details_error: string | undefined;
-      if (submission.edits !== undefined) {
+      // A native form also posts its controls when the holder chooses Deny.
+      // No arguments are committed by denial, so it follows the plain answer
+      // path and its link-expiry check. Other choices keep the narrow funnel.
+      if (submission.edits !== undefined && submission.reply.option !== 'deny') {
         action = 'approve';
         if (deps.submitEditedApproval === undefined) {
           // A page that rendered controls always has this bound (they are
@@ -626,6 +663,7 @@ export const createAskLandingPortHandler = (
                 ask: current,
                 option: submission.reply.option,
                 rawEdits: submission.edits,
+                via: submission.reply.via,
               });
             } catch {
               // A thrown approve is NOT a silent success. The nonce is already
@@ -670,8 +708,10 @@ export const createAskLandingPortHandler = (
         ask_id,
         ask,
         verification_phrase,
-        now(),
+        now,
         details_error,
+        submission.reply.via,
+        cap,
       );
       // A first-answer-wins no-op leaves the ask open; logging that as `ok`
       // would claim a mutation that did not occur.

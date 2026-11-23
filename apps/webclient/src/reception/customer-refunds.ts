@@ -20,10 +20,10 @@ export const mountCustomerRefunds=(opts: { document: Document;host: HTMLElement;
   const button=(text: string,host: HTMLElement,click: ()=>void)=>{ const node=doc.createElement('button');node.type='button';node.textContent=text;host.appendChild(node);node.addEventListener('click',click);return node; };
   add('style','[data-customer-refunds] [hidden]{display:none!important}[data-customer-refunds] form,[data-customer-refunds] label{display:grid;gap:8px}[data-customer-refunds] input,[data-customer-refunds] select,[data-customer-refunds] textarea{box-sizing:border-box;min-width:0;max-width:100%}[data-customer-refunds] p,[data-customer-refunds] pre{white-space:pre-wrap;overflow-wrap:anywhere}');
   add('h3','Customer refunds');const manage=button('Manage refunds and receipts',root,()=>open());
-  const region=add('div','');region.hidden=true;const totals=add('div','',region);
+  const region=add('div','');region.className='financial-stack';region.hidden=true;const totals=add('div','',region);
   add('p','First issue a credit against a recorded payment. Then record money already returned outside Recued. Each entry needs owner approval.',region);
   const editor=doc.createElement('form');editor.hidden=true;editor.tabIndex=-1;editor.setAttribute('aria-label','Customer refund entry');editor.setAttribute('data-refund-editor','');region.appendChild(editor);
-  const select=(label: string,host: HTMLElement)=>{ const node=doc.createElement('select');node.id='recued-refund-'+crypto.randomUUID();const text=add('label',label,host);text.setAttribute('for',node.id);host.appendChild(node);return node; };
+  const select=(label: string,host: HTMLElement)=>{const field=add('div','',host);field.className='financial-field'; const node=doc.createElement('select');node.id='recued-refund-'+crypto.randomUUID();const text=add('label',label,field);text.setAttribute('for',node.id);field.appendChild(node);return node; };
   const option=(select: HTMLSelectElement,value: string,label: string)=>{ const node=doc.createElement('option');node.value=value;node.textContent=label;select.appendChild(node); };
   const kind=select('Refund entry type',editor);option(kind,'credit','Issue a paid invoice credit');option(kind,'refund','Record a completed refund');
   const paymentHost=add('div','',editor);const payment=select('Original payment (this history page)',paymentHost);payment.required=true;
@@ -31,17 +31,19 @@ export const mountCustomerRefunds=(opts: { document: Document;host: HTMLElement;
   const input=(label: string,type: string,name: string,host: HTMLElement=editor,required=true,max=512)=>{ const text=add('label',label,host);const node=doc.createElement('input');node.type=type;node.name=name;node.required=required;node.maxLength=max;text.appendChild(node);return node; };
   const amount=input('Refund or paid credit amount','text','refund_amount',editor,true,24);amount.inputMode='decimal';const date=input('Entry date','date','refund_date');
   const reasonLabel=add('label','Reason (shown on customer copies)',editor);const reason=doc.createElement('textarea');reason.required=true;reason.maxLength=1000;reason.name='refund_reason';reasonLabel.appendChild(reason);
-  const refundFields=add('div','',editor);const method=input('Refund method','text','refund_method',refundFields,false);const reference=input('Refund reference','text','refund_reference',refundFields,false);
+  const refundFields=add('div','',editor);refundFields.className='financial-fields';const method=input('Refund method','text','refund_method',refundFields,false);const reference=input('Refund reference','text','refund_reference',refundFields,false);
   const prepare=doc.createElement('button');prepare.type='submit';prepare.textContent='Preview refund entry';editor.appendChild(prepare);
-  const closeEditor=button('Close refund entry',editor,()=>reset());const previewHost=add('div','',editor);previewHost.setAttribute('data-refund-preview','');
+  const closeEditor=button('Close refund entry',editor,()=>reset());const editorActions=add('div','',editor);editorActions.className='financial-actions';editorActions.appendChild(prepare);editorActions.appendChild(closeEditor);const previewHost=add('div','',editor);previewHost.setAttribute('data-refund-preview','');
   const review=button('Review refund entry',editor,()=>{ void submit(); });review.hidden=true;const runs=add('a','Review refund entry in Runs',editor);runs.hidden=true;
   const status=add('p','',region);status.setAttribute('role','status');status.setAttribute('aria-live','polite');
   add('h4','Paid credit and refund history',region);const rows=add('div','',region);rows.setAttribute('data-refund-history','');const historyStatus=add('p','',region);historyStatus.setAttribute('role','status');
-  const refresh=button('Refresh refund history',region,()=>{ void loadHistory(cursor,[...previous]); });
-  const newer=button('Newer refund entries',region,()=>{ if (previous.length) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
-  const older=button('Older refund entries',region,()=>{ if (nextCursor) void loadHistory(nextCursor,[...previous,cursor]); });
+  const historyActions=add('div','',region);historyActions.className='financial-actions';
+  const refresh=button('Refresh refund history',historyActions,()=>{ void loadHistory(cursor,[...previous]); });
+  const newer=button('Newer refund entries',historyActions,()=>{ if (previous.length) void loadHistory(previous.at(-1),previous.slice(0,-1)); });
+  const older=button('Older refund entries',historyActions,()=>{ if (nextCursor) void loadHistory(nextCursor,[...previous,cursor]); });
   const copyHost=add('section','',region);copyHost.hidden=true;copyHost.setAttribute('data-refund-copy','');const copyHeading=add('h4','Customer refund receipt',copyHost);const copyLines=add('div','',copyHost);
-  const print=button('Print refund document / save PDF',copyHost,()=>printCopy());const download=button('Download refund document',copyHost,()=>{
+  const copyActions=add('div','',copyHost);copyActions.className='financial-actions';
+  const print=button('Print refund document / save PDF',copyActions,()=>printCopy());const download=button('Download refund document',copyActions,()=>{
     if (copy && !disposed) try { downloadReceiptHtml(doc,root,`${copy.kind==='refund' ? 'refund-receipt' : 'paid-invoice-credit'}-${copy.document_hash.slice(0,16)}.html`,customerRefundDocumentHtml(copy)); } catch { status.textContent='The copy could not be downloaded. Try Print instead.'; }
   });
   const emailForm=doc.createElement('form');emailForm.hidden=true;emailForm.setAttribute('aria-label','Prepare refund receipt email');copyHost.appendChild(emailForm);

@@ -92,8 +92,8 @@ describe('D-341 slice A — the request approved ahead, kept per conversation', 
     expect(browserPassOffersRequest({ ...offer, channel_session_id: 'messenger:telegram:42' })).toBe(false);
 
     const store = createBrowserPassStore(new Database(':memory:'));
-    const checkpoint = { run_id: 'run-1', preflight_context: { browser_pass: offer } } as unknown as Checkpoint;
-    recordBrowserPassAnswer({ browserPasses: store }, checkpoint, 'approved', { pass: 'request', now: 5_000 });
+    const checkpoint = { run_id: 'run-1', checkpoint_id: 'held-1', preflight_context: { browser_pass: offer } } as unknown as Checkpoint;
+    recordBrowserPassAnswer({ browserPasses: store }, checkpoint, 'approved', { pass: 'request', decision_version: 1, now: 5_000 });
     expect(store.requestPass(CHAT, 5_000)).toMatchObject({ started_at: 5_000 });
     // No pass on the site was minted by it.
     expect(store.listPasses(5_000)).toEqual([]);

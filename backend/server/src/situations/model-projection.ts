@@ -76,6 +76,19 @@ export const situationItemForModel = (item: SituationItem, personName?: (id: str
   };
 };
 
+/** D-407 slice 3 (I4) — a situation result as a recipe or an MCP app reads it (the kernel
+ * `situation-query`): an item the Agenda keeps private says so beside its title, as the chat's
+ * copy does (`situationItemForModel`), so every AI is told the same thing. Nothing else in the
+ * result changes. Before, an app over MCP read a private occasion with no sign it was one. */
+export const markPrivateSituationItems = (result: SituationResult, isPrivate: (item: SituationItem) => boolean): SituationResult => ({
+  ...result,
+  clusters: result.clusters.map(cluster => ({ ...cluster, items: cluster.items.map(item => {
+    if (!isPrivate(item)) return item;
+    const { ref, kind, ...rest } = item;
+    return { ref, kind, private: true as const, ...rest };
+  }) })),
+});
+
 /** Mark each structured value at its source, for a tool result: the egress
  * resolver reads the markers before any text is rendered. The chat's lookup
  * sends its items unmarked (`prefetch.ts`). */

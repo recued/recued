@@ -135,6 +135,87 @@ export interface ExecuteRequest {
   dispatch_depth?: number;
 }
 
+/** D-201 Slice 10N — `InternalExecuteOverrides.onStoppedByRestart`.
+ *
+ *  D-201 Slice 10R (10Q finding 1) — `returned` also carries every step after
+ *  the approved one that had finished before the stop, as it came out, and the
+ *  run's alias ledgers then: the next start replays them all and goes on from
+ *  the first step that had not started, so none is sent twice. A later step
+ *  that could have sent something and was under way at the stop makes the run
+ *  `in_doubt`, naming it (`step_id`); the approved step had then returned. */
+export type ApprovedRunRestartStop =
+  | { readonly kind: 'unsent' }
+  | {
+    readonly kind: 'returned';
+    readonly value: unknown;
+    readonly later: readonly import('@recued/engine').ReplayedStep[];
+    readonly pii_ledgers?: PiiLedgerStoreSnapshot;
+    /** D-201 Slice 10BO (10BM finding 7) — the approved step was skipped: the
+     *  run kept for the next start replays it as one, so every row past it
+     *  says so. It was replayed as one that ran, and a cancelled receipt then
+     *  read as not gone through. */
+    readonly approved_skipped?: true;
+  }
+  | {
+    readonly kind: 'in_doubt';
+    /** The later step in doubt; absent when it is the approved one. */
+    readonly step_id?: string;
+    /** D-201 Slice 10W (10V finding 1) — what went through before the step in
+     *  doubt, for the owner's try again to go on from it: the approved step's
+     *  value and each later step that finished first, with the run's alias
+     *  ledgers. Present only with `step_id` (the approved step came back). */
+    readonly value?: unknown;
+    readonly later?: readonly import('@recued/engine').ReplayedStep[];
+    readonly pii_ledgers?: PiiLedgerStoreSnapshot;
+    /** D-201 Slice 10BC (10AY findings 2 and 11) — held at the approved step
+     *  after the run went past it, for Recued cannot keep what that step did
+     *  (a loop resumed past its first item, a chunked upload, a resume bound
+     *  to an egress budget or a resource review, or a hand-off its receipt
+     *  cannot prove; a loop that finished is kept since 10BH): the try again
+     *  asks for it again and runs again each later step that went through.
+     *  Never with `step_id`. */
+    readonly later_run_again?: true;
+    /** D-201 Slice 10BH — the approved step is a loop that was kept (with
+     *  `step_id`): the start settles its receipt item by item. */
+    readonly approved_foreach?: true;
+    /** D-201 Slice 10BJ (10BF finding 9) — the approved step was skipped (with
+     *  `step_id`): the start settles its receipt as skipped, as the live stop
+     *  does, and reads it so. */
+    readonly approved_skipped?: true;
+    /** D-201 Slice 10BI (10BF finding 5) — held at the approved step, which
+     *  returned having handed its work on with no hand-off its receipt can
+     *  check: what the run did is kept, only the hand-off is unproven. Never
+     *  with `step_id`. */
+    readonly handoff_unproven?: true;
+    /** D-201 Slice 10BP (the 10BM audit's note) — the approved step came back
+     *  before the stop, though Recued cannot keep what it did, and nothing
+     *  after it started: worded as returned. Never with `step_id`. */
+    readonly returned_not_kept?: true;
+  };
+
+/** D-201 Slice 10AB (10AA finding 2) — where a held try again failed: the
+ *  step it failed at (absent when no step can be named, as when the run failed
+ *  after every step finished), the approved step's value, and each step that
+ *  finished before it, as a stop keeps them, with the run's alias ledgers. */
+export interface ApprovedRunFailure {
+  readonly step_id?: string;
+  readonly value: unknown;
+  readonly later: readonly import('@recued/engine').ReplayedStep[];
+  readonly pii_ledgers?: PiiLedgerStoreSnapshot;
+  /** D-201 Slice 10AG (10AE finding 10) — the try again failed before its
+   *  approved step ran: its ask for that step again could not be written. What
+   *  the run kept stands as it was; `value` and `later` carry nothing. D-201
+   *  Slice 10AK (10AI finding 12) — also when the approved step itself failed,
+   *  or ended in doubt: nothing past it to hold the run from. */
+  readonly unasked?: true;
+  /** D-201 Slice 10BJ (10BF finding 9) — the approved step was skipped. */
+  readonly approved_skipped?: true;
+  /** D-201 Slice 10BH — the approved step is a loop that was kept: a hold
+   *  past it says so, for the receipt its items settled (`partial`, `failed`)
+   *  reads as known. */
+  readonly approved_foreach?: true;
+}
+
 /** D-157 server-wiring — `handleExecute` internal-only overrides.
  *  Only `PreflightResumer.resumeRun` constructs these; wire-facing
  *  dispatchers (rpc / chat / scheduler / mcp) MUST NOT pass them. The
@@ -143,10 +224,23 @@ export interface ExecuteRequest {
  *  builder — a misbehaving dispatcher cannot accidentally overwrite an
  *  unrelated run's audit row by setting these fields. */
 export interface InternalExecuteOverrides {
+  /** D-402 slice F3 (§7.4) — the owner's answer to the question before this run: "Yes, this time",
+   *  "Always, for this recipe" or "Ask me at each step". Set only by the resumer as it starts a run
+   *  held before step 1 afresh, never by an ExecuteRequest: the run is not asked again. */
+  run_question?: import('@recued/contracts').RunQuestionAnswer;
+  /** D-402 slice C — a trial run of a draft (`recipe.try`): each change in a web page is asked about
+   *  at its step, on the live page (`bridges/browser-trials.ts`), and every other write is held as an
+   *  owner's "always ask" action, whatever would stand in for it. Set only by `recipe.try`, never by an
+   *  ExecuteRequest; kept on a held run's checkpoint, so a resume is a trial too. */
+  trial?: true;
   /** Set only by paired-owner capture RPCs, never by an ExecuteRequest. */
   regression_capture?: {
     input: NonNullable<import('@recued/engine').ExecutionContext['onTestCaptureInput']>;
     result(result: import('@recued/engine').ExecutionResult): void;
+    /** D-402 slice C (§8.3) — a held trial's run ended at its hold and nothing of it runs again: the
+     *  owner declined it, its approval could no longer act, or it expired. No part reports a result
+     *  after the hold, so this is how the trial's saved test learns it ended (`browser-trials.ts`). */
+    ended?(): void;
   };
   /** D-261 opaque host-issued run handle. The private runtime WeakMap must
    * recognize it; a serialized future/grant id carries no execution authority. */
@@ -160,6 +254,15 @@ export interface InternalExecuteOverrides {
   auto_run_qualification?: import('@recued/contracts').Checkpoint['auto_run_qualification'];
   /** Authenticated external tool entry, never accepted from ExecuteRequest. */
   entry_tool_name?: string;
+  /** D-177 §N.15.9 — set ONLY by the owner's chat, for a call its round repeats: keep a hold's ask
+   *  for the round's end, asked once with the round's other held calls of its op (Q7). Called once
+   *  the hold's checkpoint and anchor are durable; `true` kept it (no ask now), `false` raises its
+   *  own ask as before. Never from an ExecuteRequest. */
+  defer_ask?: (hold: import('./chat-gather.js').DeferredHold) => boolean;
+  /** D-348 slice 5 — set ONLY by the owner's chat: the key of the request the turn that starts this
+   *  run is part of, so a held call on the rule the owner accepted for it goes ahead without asking.
+   *  A resumed run carries none. Never from an ExecuteRequest. */
+  chain_request_key?: string;
   /** D-336 (spec §53) — set only by a chat door: its look at each record change the run makes
    *  (`ExecutionContext.recordChangeCheck`), so a CRM contact the user named only in part is
    *  asked about when the run found it itself. Never from an ExecuteRequest. */
@@ -200,6 +303,50 @@ export interface InternalExecuteOverrides {
    * the run id (a run can gate more than once) and not an ask id (one ask can
    * cover many steps and be re-rendered). Populated only by the host resumer. */
   gated_action_ref?: string;
+  /** D-201 Slice 10N — where the server's own stop left a resumed run whose
+   *  receipt this run claimed (`gated_action_ref`): before its approved step
+   *  started (`unsent`; the receipt is left for the resumer to hand back),
+   *  after the step returned (`returned`, with the value it left; the receipt
+   *  is settled), or neither (`in_doubt`; the receipt and the run record say
+   *  so). Called once, before the run's record is written. Only the host
+   *  resumer sets it; without it a stop is reported as before.
+   *
+   *  D-201 Slice 10R — also set on the run that finishes a kept one (no
+   *  receipt of its own: the first stop settled it), so a second stop keeps
+   *  what that run did too. While it is set, the run's alias ledgers live in a
+   *  store the handler owns, which it serializes into `returned`.
+   *
+   *  D-201 Slice 10AB (10AA finding 12) — returns true when the caller holds
+   *  the run for the owner's try again (a webhook run left in doubt): its temp
+   *  files and "Yes, this time" pre-approvals are kept then, as for a run the
+   *  next start finishes. They were released at the stop, and the try again
+   *  went on without them. */
+  onStoppedByRestart?: (outcome: ApprovedRunRestartStop) => boolean | void;
+  /** D-201 Slice 10AB (10AA finding 2) — set only by the owner's try again of
+   *  a held run whose approved step came back: the run failed at a later step,
+   *  rather than being stopped, and this says where (classified as a stop is).
+   *  Called once, before the run's record is written. Returns true when the
+   *  caller holds the run again, from the step that failed: its temp files
+   *  and pre-approvals are then kept. Without it, the held row was dropped and
+   *  the delivery's retry ran the recipe from its first step, its approved
+   *  step again. */
+  onFailedAfterApproval?: (outcome: ApprovedRunFailure) => boolean | void;
+  /** D-201 Slice 10AV (10AS findings 7 and 9) — the row first, before each
+   *  step from the approved one on starts: what the run would leave were the
+   *  server to die there, a stop with that step in doubt
+   *  (`ApprovedRunRestartStop` `in_doubt`, naming it when it is a later one).
+   *  A death runs nothing the drain sees, so the stop's own report
+   *  (`onStoppedByRestart`) never came: the next start found the approved
+   *  step's receipt dispatching and its try again asked for the approved
+   *  write again, and ran it twice. Not called for a step the run replays,
+   *  which sends nothing. Set by the host resumer with `onStoppedByRestart`;
+   *  synchronous, so the row is written before the step's work begins. */
+  onStepUnderWay?: (outcome: Extract<ApprovedRunRestartStop, { kind: 'in_doubt' }>) => void;
+  /** D-201 Slice 10AB (10AA finding 13) — set only by the owner's try again of
+   *  a held run whose approved step was in doubt: the ask it makes for that
+   *  step again carries `Checkpoint.asked_again_in_doubt`, so a refusal says
+   *  the earlier run was in doubt rather than reading as an ordinary one. */
+  asked_again_in_doubt?: true;
   /** R2 step 6 (write-saga) — set ONLY by the saga compensation
    *  dispatcher (`saga-server-wiring.ts`): this run COMPENSATES the
    *  named commit, and every commit it dispatches carries the link as
@@ -227,6 +374,20 @@ export interface InternalExecuteOverrides {
     resource_review?: import("@recued/contracts").ResourceReview;
     gated_step_id: string;
     step_state: Record<string, unknown>;
+    /** D-201 Slice 10N — the gated step's value from the run a restart
+     *  stopped after the step returned. It stands in for the step's call
+     *  (the engine's `resumeFrom.replayed_result`). Only the host resumer
+     *  sets it, from its own record of that stop. D-201 Slice 10BO (10BM
+     *  finding 7) — `skipped` when the step was skipped: the stop's
+     *  classification reads it so. D-201 Slice 10BU (10BS finding 2) — and the
+     *  engine keeps the step skipped: "the value is null either way" held for
+     *  a plain step whose filter still read true, not for a loop, which was
+     *  replayed as one that ran. */
+    replayed_result?: { readonly value: unknown; readonly skipped?: true };
+    /** D-201 Slice 10R — the steps after it that had finished before that
+     *  stop, as they came out (the engine's `resumeFrom.replayed_steps`). Same
+     *  boundary: only the host resumer sets it, from its own record. */
+    replayed_steps?: readonly import('@recued/engine').ReplayedStep[];
     execution_phase?: 'trigger' | 'prefetch' | 'sequential';
     trigger_state?: Record<string, unknown>;
     prefetch_completed?: string[];
@@ -268,6 +429,9 @@ export interface InternalExecuteOverrides {
       risk_tier: string;
       grant_mode?: string;
     };
+    /** Host-only identity of the saved recipe grant choice. Kept out of the
+     * engine and authored step metadata; the host adds it at the mint seam. */
+    session_grant_decision?: { version: 1; approval_ref: string };
     /** D-177 P5a (N.10) — the batched approve's member-claim instruction
      *  for this held run. Threaded onto
      *  `ExecutionContext.resumeFrom.batch_claim` so the engine marks the
@@ -302,6 +466,12 @@ export interface InternalExecuteOverrides {
    *  because the caller said there was no ancestry. Only `handleExecute`'s own
    *  `localRecipeInvoker` populates it. */
   held_recipes?: ReadonlySet<string>;
+  /** D-402 ruling 17 — for a run another recipe's run started (D-232): the outermost run, whose caller's
+   *  answer covers this recipe's writes at the versions its question saw. Passed down unchanged, so a
+   *  recipe two levels in is covered by the same answer. ⛔ Internal-only, as `held_recipes` is: a caller
+   *  able to supply it could claim another run's answer. Only `handleExecute`'s own `localRecipeInvoker`
+   *  sets it, from the run that started this one. */
+  outer_caller_run?: import('./trigger-preapproval-admission.js').CallerPreapprovalOuterRun;
   /** D-232 § 20.9 — the exchange this run belongs to, for a run the host
    *  dispatched ON BEHALF of one: the fire's own `run-ingredient` dispatch,
    *  which carries the answer and is therefore the run whose outcome "did it
@@ -522,6 +692,10 @@ export interface ExecuteResponse {
    *  chat has "Don't ask about browser actions" on (its request pass). Only the owner's own chat
    *  has one. The agent projection says it in words (`ran_without_asking`). */
   request_pass_writes?: number;
+  /** D-402 slice F5 (§7.10) — every write of this run that ran without asking, by what let it
+   *  through, and the run's caller (whose "Stop allowing" ends the standing kinds). The owner's run
+   *  page reads it; the agent projection says it in words (`ran_without_asking`) and drops it. */
+  let_through?: import('@recued/contracts').RunLetThrough;
 }
 
 /** Attach a trustworthy Logs address without widening the wire response or the

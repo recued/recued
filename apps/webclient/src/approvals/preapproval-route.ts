@@ -4,7 +4,7 @@ import type { Conn, PreapprovalDecision, PreapprovalDecisionRequest, Preapproval
   PreapprovalContinuationRequest, PreapprovalReview, ServerPendingAsk, ServerRpcRegistry } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
 import { renderResourceReview, parsePreapprovalContinuation, PREAPPROVAL_LIMITS } from '@recued/contracts';
-import { localUpdateUndoControl } from './local-update-undo.js';
+import { localUpdateUndoControl, hasLocalUpdateUndoWork } from './local-update-undo.js';
 import { localChangesHref } from './local-change-sets-route.js';
 import { createApprovalReviewLayout } from './review-layout.js';
 import { hasLocalUpdateResources, type LocalChangeSetPrepare } from '@recued/contracts';
@@ -63,7 +63,8 @@ export const bootstrapPreapprovalRoute = (opts: {
   const doc = opts.document ?? document; const now = opts.now ?? Date.now;
   const host = doc.createElement('section'); host.setAttribute('data-recued-preapproval-route', '');
   opts.root.append(host);
-  let disposed = false, busy = false, generation = 0;
+  let disposed = false, busy = false, writing = false, generation = 0;
+  let acknowledged = '';
   type ReviewMaterial = Omit<PreapprovalReview, 'challenge' | 'challenge_expires_at'>
     & Partial<Pick<PreapprovalReview, 'challenge' | 'challenge_expires_at'>>;
   let error = '', review: ReviewMaterial | null = null, inspection: PreapprovalInspection | null = null;
@@ -72,8 +73,14 @@ export const bootstrapPreapprovalRoute = (opts: {
   let pendingDecision: PreapprovalDecisionRequest | null = null;
   let pendingRevoke: { grant_id: string; expected_revision: number; request_id: string } | null = null;
   let continuationTime = '';
+  let continuationBaseline = '';
+  let continuationForm: HTMLFormElement | null = null;
+  let continuationInput: HTMLInputElement | null = null;
+  let continuationSubmit: HTMLButtonElement | null = null;
   let pendingContinuation: { time: string; request: PreapprovalContinuationRequest } | null = null;
   let pendingAtomic: LocalChangeSetPrepare | null = null;
+  const undoControls = new Map<string, HTMLElement>();
+  const hasUndoWork = (): boolean => [...undoControls.values()].some(hasLocalUpdateUndoWork);
   const verificationMessages = new Map<string, string>();
   let pendingVerification: string | null = null;
   let loaded: Promise<void> = Promise.resolve();
@@ -95,279 +102,406 @@ export const bootstrapPreapprovalRoute = (opts: {
   const date = (value: number, zone?: string): string => new Date(value).toLocaleString(undefined,
     zone ? { timeZone: zone, timeZoneName: 'short' } : { timeZoneName: 'short' });
   const button = (label: string, action: () => void, disabled = false, tone: 'default' | 'primary' = 'default'): HTMLButtonElement => {
-    const value = node('button', label); value.type = 'button'; value.disabled = busy || disabled;
+    const value = node('button', label); value.type = 'button'; value.disabled = busy || !!acknowledged || disabled;
+    value.dataset.reviewFocus = label;
     value.className = 'approval-review-button' + (tone === 'primary' ? ' approval-review-button-primary' : '');
-    value.onclick = action; return value;
+    value.onclick = () => {
+      if (disposed || busy || acknowledged || value.disabled || !host.contains(value)) return;
+      value.focus({ preventScroll: true }); action();
+    }; return value;
   };
   const changedSelection = (): boolean => review !== null && review.members.some(member => member.parent_member_id === null
     && selection.has(member.member_id) !== review!.selected_member_ids.includes(member.member_id));
+  const refreshControl = node('button', 'Refresh'); refreshControl.type = 'button';
+  refreshControl.className = 'approval-review-button'; refreshControl.dataset.reviewFocus = 'Refresh';
+  refreshControl.onclick = () => { if (!disposed && !busy) void refresh(); };
+  const loadMoreControl = button('Load more', () => { if (nextCursor) void refresh(nextCursor); });
+  const frame = createApprovalReviewLayout(doc, host, {
+    title: opts.proposalId ? 'Run you have looked at' : 'Runs you have looked at', view: 'runs', refresh: refreshControl,
+  });
+  const progress = node('p', 'Checking your request…'); progress.tabIndex = -1;
+  progress.setAttribute('role', 'status'); progress.dataset.preapprovalProgress = '';
+  const syncChildren = (target: HTMLElement, children: Node[]): void => {
+    // Each container has at most one retained form/status node. Insert new
+    // siblings around it without moving it: even moving a connected form can
+    // blur a native date field and discard its partially edited segment.
+    for (let index = 0; index < children.length; index++) {
+      const child = children[index]!;
+      if (child.parentNode === target) continue;
+      const anchor = children.slice(index + 1).find(item => item.parentNode === target) ?? null;
+      target.insertBefore(child, anchor);
+    }
+    for (const child of [...target.childNodes]) if (!children.includes(child)) child.remove();
+  };
   const render = (): void => {
     if (disposed) return;
-    const focused = host.contains(doc.activeElement) ? (doc.activeElement as HTMLElement).dataset.preapprovalVerifyFocus : undefined;
-    host.replaceChildren();
-    const layout = createApprovalReviewLayout(doc, host, {
-      title: opts.proposalId ? review?.recipe.display_name ?? inspection?.retired_review?.recipe_name ?? 'Run you have looked at' : 'Runs you have looked at',
-      view: 'runs',
-      refresh: button(busy ? 'Loading…' : 'Refresh', () => { void refresh(); }),
-    });
-    if (error) { const message = node('p', error); message.setAttribute('role', 'alert'); layout.summary.append(message); }
-    if (!opts.proposalId) {
-      if (!busy && entries.length === 0 && !error) layout.content.append(node('p', 'You have not looked at any runs yet.'));
-      const list = node('ul'); list.className = 'approval-review-list';
-      for (const entry of entries) {
-        const item = node('li'); item.append(link(`${entry.members[0]?.label ?? 'Execution'} · ${entry.members.length} operations`,
-          preapprovalHref(entry.proposal_id)), node('p', `${status(entry.execution_status)} · Requested ${date(entry.created_at)}`));
-        list.append(item);
-      }
-      layout.content.append(list);
-      if (nextCursor) layout.content.append(button('Load more', () => { void refresh(nextCursor!); }));
-      return;
+    const active = doc.activeElement as HTMLElement | null;
+    const focusedUndo = active && [...undoControls.values()].some(control => control.contains(active)) ? active : null;
+    const undoScroll = [...undoControls.values()].flatMap(control => [...control.querySelectorAll<HTMLElement>('pre')].map(element => ({ element, top: element.scrollTop, left: element.scrollLeft })));
+    const focused = active && host.contains(active) ? active.dataset.reviewFocus : undefined;
+    const verificationFocus = active && host.contains(active) ? active.dataset.preapprovalVerifyFocus : undefined;
+    const resourceScroll = [...host.querySelectorAll<HTMLElement>('[data-preapproval-resource-review]')].map(element => ({
+      id: element.dataset.preapprovalResourceReview, text: element.textContent,
+      top: element.scrollTop, left: element.scrollLeft, focused: active === element,
+    }));
+    const scroll = new Map<Element, [number, number]>();
+    for (let parent: Element | null = host; parent; parent = parent.parentElement) {
+      if (parent.scrollTop || parent.scrollLeft) scroll.set(parent, [parent.scrollTop, parent.scrollLeft]);
     }
-    layout.content.append(link('Every run you have looked at', preapprovalHref()));
-    if (inspection) {
-      const state = node('p', `Execution: ${status(inspection.execution_status)}`); state.setAttribute('role', 'status'); state.setAttribute('data-review-status', inspection.execution_status); layout.summary.append(state);
-      if (inspection.status_reason) layout.summary.append(node('p', status(inspection.status_reason)));
-      if (inspection.decision) layout.summary.append(node('p', `Owner decision: ${status(inspection.decision.decision)} · ${date(inspection.decision.decided_at)}`));
-      if (inspection.retired_review) layout.summary.append(node('p', `This stopped being valid on ${date(inspection.retired_review.at)}. The decision and operation outcomes remain available.`));
-    }
-    if (review) {
-      if (review.continuation) {
-        layout.content.append(node('p', 'This continues an earlier run. The unfinished changes below need a new decision.'),
-          link('Original review', preapprovalHref(review.continuation.proposal_id)));
-        if (review.continuation.completed.length) {
-          layout.content.append(node('h2', 'Completed earlier'));
-          const completed = node('ul'); completed.setAttribute('data-preapproval-completed', '');
-          for (const item of review.continuation.completed) {
-            const row = node('li', item.label + ' · Receipt ' + (item.commit_id ?? item.action_ref) + ' · ');
-            row.append(link('Original review', preapprovalHref(item.proposal_id)));
-            const run = item.run_id ? runLink(item.run_id) : null;
-            if (run) row.append(doc.createTextNode(' · '), run);
-            completed.append(row);
+    const queued = { summary: [] as Node[], content: [] as Node[], actions: [] as Node[] };
+    const layout = {
+      summary: { append: (...items: Node[]) => queued.summary.push(...items) },
+      content: { append: (...items: Node[]) => queued.content.push(...items) },
+      actions: { append: (...items: Node[]) => queued.actions.push(...items) },
+    };
+    frame.heading.textContent = opts.proposalId
+      ? review?.recipe.display_name ?? inspection?.retired_review?.recipe_name ?? 'Run you have looked at' : 'Runs you have looked at';
+    refreshControl.textContent = busy ? 'Loading…' : 'Refresh';
+    refreshControl.setAttribute('aria-disabled', String(busy));
+    refreshControl.setAttribute('aria-busy', String(busy));
+    host.setAttribute('aria-busy', String(busy));
+    if (writing) layout.summary.append(progress);
+    else if (busy) { const loading = node('p', 'Loading this review…'); loading.setAttribute('role', 'status'); layout.summary.append(loading); }
+    if (acknowledged) { const saved = node('p', acknowledged); saved.setAttribute('role', 'status'); layout.summary.append(saved); }
+    try {
+      if (error) { const message = node('p', error); message.setAttribute('role', 'alert'); layout.summary.append(message); }
+      if (!opts.proposalId) {
+        if (!busy && entries.length === 0 && !error) layout.content.append(node('p', 'You have not looked at any runs yet.'));
+        const list = node('ul'); list.className = 'approval-review-list';
+        for (const entry of entries) {
+          const item = node('li');
+          const open = link(`${entry.members[0]?.label ?? 'Execution'} · ${entry.members.length} operations`, preapprovalHref(entry.proposal_id));
+          open.setAttribute('data-preapproval-entry', '');
+          item.append(open, node('p', `${status(entry.execution_status)} · Requested ${date(entry.created_at)}`));
+          list.append(item);
+        }
+        layout.content.append(list);
+        loadMoreControl.setAttribute('aria-disabled', String(busy));
+        loadMoreControl.setAttribute('aria-busy', String(busy));
+        if (nextCursor) layout.content.append(loadMoreControl);
+        return;
+      }
+      layout.content.append(link('Every run you have looked at', preapprovalHref()));
+      if (inspection) {
+        const state = node('p', `Execution: ${status(inspection.execution_status)}`); state.setAttribute('role', 'status'); state.setAttribute('data-review-status', inspection.execution_status); layout.summary.append(state);
+        if (inspection.status_reason) layout.summary.append(node('p', status(inspection.status_reason)));
+        if (inspection.decision) layout.summary.append(node('p', `Owner decision: ${status(inspection.decision.decision)} · ${date(inspection.decision.decided_at)}`));
+        if (inspection.retired_review) layout.summary.append(node('p', `This stopped being valid on ${date(inspection.retired_review.at)}. The decision and operation outcomes remain available.`));
+      }
+      if (review) {
+        if (review.continuation) {
+          layout.content.append(node('p', 'This continues an earlier run. The unfinished changes below need a new decision.'),
+            link('Original review', preapprovalHref(review.continuation.proposal_id)));
+          if (review.continuation.completed.length) {
+            layout.content.append(node('h2', 'Completed earlier'));
+            const completed = node('ul'); completed.setAttribute('data-preapproval-completed', '');
+            for (const item of review.continuation.completed) {
+              const row = node('li', item.label + ' · Receipt ' + (item.commit_id ?? item.action_ref) + ' · ');
+              row.append(link('Original review', preapprovalHref(item.proposal_id)));
+              const run = item.run_id ? runLink(item.run_id) : null;
+              if (run) row.append(doc.createTextNode(' · '), run);
+              completed.append(row);
+            }
+            layout.content.append(completed);
           }
-          layout.content.append(completed);
         }
-      }
-      const selectable = (id: string, ancestors = new Set<string>()): boolean => {
-        const member = review!.members.find(item => item.member_id === id);
-        if (!member?.eligible || ancestors.has(id)) return false;
-        const next = new Set(ancestors); next.add(id);
-        return member.required_child_ids.every(child => selectable(child, next));
-      };
-      const who = review.requested_through;
-      layout.summary.append(node('p', `Asked for through ${who.display_name}${who.credential_label ? ` · ${who.credential_label}` : ''}`));
-      if (who.contract_id) layout.summary.append(node('p', `Contract: ${who.contract_id}`));
-      layout.summary.append(node('p', review.scheduled_for !== null ? `Scheduled for ${date(review.scheduled_for, review.time_zone)}`
-        : `Applies to the ${status(review.activation.kind)} occurrence.`));
-      if (review.activation.kind !== 'one_shot') layout.summary.append(node('p',
-        'This says yes to the next run only. Later runs still ask you as usual.'));
-      if (inspection?.status === 'awaiting_owner' && review.activation.kind === 'one_shot' && !review.continuation
-        && review.coverage === 'complete' && review.selected_member_ids.length === review.members.length
-        && review.members.length > 0 && review.members.every(member => !member.parent_member_id && !member.conditional
-          && member.required_child_ids.length === 0 && member.resource_review && hasLocalUpdateResources(member.resource_review))) {
-        layout.summary.append(button('Review as one atomic change set',() => {
-          void mutate(async () => {
-            pendingAtomic ??= { proposal_id: opts.proposalId!,request_id: crypto.randomUUID() };
-            const next = await opts.call('local_changes.prepare',pendingAtomic);
-            if (!disposed) doc.defaultView?.location.assign(localChangesHref(next.change_set_id));
-          });
-        },changedSelection()));
-      }
-      layout.summary.append(node('p', `Decide by ${date(review.decision_deadline, review.time_zone)}. Operations must start by ${date(review.dispatch_deadline, review.time_zone)}.`));
-      layout.summary.append(node('p', review.coverage === 'complete'
-        ? 'One yes covers everything listed here, and the files it needs to read.'
-        : 'This does not cover everything. Anything marked as not covered will still ask you.'));
-      for (const note of review.interaction_notes) layout.summary.append(node('p', note));
-      const selectedByServer = new Set(review.selected_member_ids);
-      for (const member of review.members) {
-        const section = node('article'); section.className = 'approval-review-member';
-        section.setAttribute('aria-label', member.label);
-        if (member.parent_member_id) section.className += ' approval-review-member-child';
-        const label = node('label');
-        if (member.parent_member_id === null && inspection?.status === 'awaiting_owner' && !review.continuation) {
-          const check = node('input'); check.type = 'checkbox'; check.checked = selection.has(member.member_id);
-          check.disabled = busy || !selectable(member.member_id);
-          check.setAttribute('data-preapproval-member', member.member_id);
-          check.onchange = () => {
-            if (check.checked) selection.add(member.member_id); else selection.delete(member.member_id);
-            render();
-            host.querySelector<HTMLInputElement>(`[data-preapproval-member="${CSS.escape(member.member_id)}"]`)?.focus();
-          };
-          label.append(check);
-        }
-        label.append(doc.createTextNode(`${member.parent_member_id ? 'Also needs to read or do: ' : ''}${member.label}`)); section.append(label);
-        // ⛔ THE TIER LEADS. `always` / `destructive` became reviewable on
-        // 2026-09-06, so a member can now be the deletion of a real record —
-        // and until this line the review showed content hashes the owner cannot
-        // verify by eye while withholding the one fact that decides the answer.
-        const tier = node('p', member.risk === 'destructive' ? 'This changes or deletes things for good.'
-          : member.risk === 'admin' ? 'This changes your account or workspace settings.'
-            : member.risk === 'write' ? 'This writes things.' : 'This only looks at things.');
-        tier.setAttribute('data-preapproval-risk', member.risk);
-        if (member.risk === 'destructive' || member.risk === 'admin') tier.style.cssText = 'font-weight:650;color:var(--danger)';
-        section.append(tier);
-        section.append(node('p', member.detail), node('p', member.op_id));
-        if (member.conditional) section.append(node('p', 'Runs only when the condition you saw is true.'));
-        if (!selectedByServer.has(member.member_id)) section.append(node('p', member.reason ?? 'Not covered: you did not pick it.'));
-        const content = node('pre', JSON.stringify(member.arguments, null, 2));
-        content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere'; section.append(content);
-        if (member.resource_review) {
-          const changes = node('pre', renderResourceReview(member.resource_review));
-          changes.setAttribute('data-preapproval-resource-review', member.member_id);
-          changes.setAttribute('role', 'region');
-          changes.setAttribute('aria-label', 'Reviewed changes for ' + member.label);
-          changes.tabIndex = 0;
-          changes.style.cssText = 'max-width:100%;max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere';
-          section.append(changes);
-        }
-        if (Object.keys(member.output).length) section.append(node('pre', JSON.stringify(member.output, null, 2)));
-        if (member.connection_id) section.append(node('p', `Connection: ${member.connection_id}`));
-        if (member.account_id) section.append(node('p', `Account: ${member.account_id}`));
-        for (const resource of member.resources) section.append(node('p', `${resource.kind}: ${resource.key} · version ${resource.revision} · ${resource.content_hash}`));
-        layout.content.append(section);
-      }
-      for (const call of review.uncovered) layout.content.append(node('p', `Uncovered ${call.op_id ?? 'call'}: ${call.reason}`));
-      if (inspection?.status === 'awaiting_owner') {
-        const dirty = changedSelection();
-        if (dirty) layout.actions.append(button('Bring this up to date', () => { void mutate(async () => {
-          await opts.call('preapproval.select', { proposal_id: review!.proposal_id, expected_revision: review!.revision, member_ids: [...selection] });
-          pendingDecision = null;
-        }); }, selection.size === 0));
-        const expired = now() >= Math.min(review.challenge_expires_at ?? 0, review.decision_deadline);
-        renderedExpired = expired;
-        if (expired) layout.actions.append(node('p', 'Bring this up to date before you decide.'));
-        const decide = (decision: PreapprovalDecision): void => {
-          if (!review || !review.challenge || busy || dirty || expired) return;
-          if (!pendingDecision || pendingDecision.decision !== decision || pendingDecision.expected_revision !== review.revision) {
-            pendingDecision = { proposal_id: review.proposal_id, expected_revision: review.revision,
-              review_digest: review.review_digest, challenge: review.challenge, decision, request_id: crypto.randomUUID() };
-          }
-          void mutate(async () => { await opts.call('preapproval.decide', pendingDecision!); });
+        const selectable = (id: string, ancestors = new Set<string>()): boolean => {
+          const member = review!.members.find(item => item.member_id === id);
+          if (!member?.eligible || ancestors.has(id)) return false;
+          const next = new Set(ancestors); next.add(id);
+          return member.required_child_ids.every(child => selectable(child, next));
         };
-        layout.actions.append(button(review.activation.kind === 'one_shot' || review.activation.kind === 'next_schedule'
-          ? 'Say yes and schedule it' : 'Say yes and set it up', () => decide('approve'), dirty || expired, 'primary'),
-        button('Decline', () => decide('deny'), dirty || expired), button('Cancel action', () => decide('cancel'), dirty || expired));
-      }
-    }
-    if (inspection?.grant?.status === 'active') layout.actions.append(button('Take back this yes', () => { void mutate(async () => {
-      const grant = inspection!.grant!;
-      if (!pendingRevoke || pendingRevoke.grant_id !== grant.grant_id || pendingRevoke.expected_revision !== grant.revision) {
-        pendingRevoke = { grant_id: grant.grant_id, expected_revision: grant.revision, request_id: crypto.randomUUID() };
-      }
-      await opts.call('preapproval.revoke', pendingRevoke);
-    }); }));
-    if (inspection?.decision) {
-      layout.content.append(node('h2', 'What happened'));
-      for (const member of inspection.members) {
-        const row = node('p', `${member.label}: ${status(member.status)}${member.status_message ? ` · ${member.status_message}` : ''}`);
-        if (member.reconciled_outcome) row.append(doc.createTextNode(' · Verified outcome: ' + status(member.reconciled_outcome)));
-        if (member.status === 'in_doubt' && !member.reconciled_outcome && member.provider_verification === 'mail' && !inspection.retired_review) {
-          const verify = button('Verify mail outcome', () => {
-            // Safari does not focus a clicked button. Own this explicit action
-            // before repainting so the verification-status handoff can follow it.
-            verify.focus({ preventScroll: true });
-            pendingVerification = member.member_id;void mutate(async () => {
-            const result = await opts.call('preapproval.reconcile', { proposal_id: inspection!.proposal_id, member_id: member.member_id });
-            if (!disposed) verificationMessages.set(member.member_id, result.message);
-          }).finally(() => { pendingVerification = null;render(); }); });
-          verify.dataset.preapprovalVerifyFocus = member.member_id;
-          row.append(verify);
+        const who = review.requested_through;
+        layout.summary.append(node('p', `Asked for through ${who.display_name}${who.credential_label ? ` · ${who.credential_label}` : ''}`));
+        if (who.contract_id) layout.summary.append(node('p', `Contract: ${who.contract_id}`));
+        layout.summary.append(node('p', review.scheduled_for !== null ? `Scheduled for ${date(review.scheduled_for, review.time_zone)}`
+          : `Applies to the ${status(review.activation.kind)} occurrence.`));
+        if (review.activation.kind !== 'one_shot') layout.summary.append(node('p',
+          'This says yes to the next run only. Later runs still ask you as usual.'));
+        if (inspection?.status === 'awaiting_owner' && review.activation.kind === 'one_shot' && !review.continuation
+          && review.coverage === 'complete' && review.selected_member_ids.length === review.members.length
+          && review.members.length > 0 && review.members.every(member => !member.parent_member_id && !member.conditional
+            && member.required_child_ids.length === 0 && member.resource_review && hasLocalUpdateResources(member.resource_review))) {
+          layout.summary.append(button('Review as one atomic change set',() => {
+            void mutate(async () => {
+              pendingAtomic ??= { proposal_id: opts.proposalId!,request_id: crypto.randomUUID() };
+              const next = await opts.call('local_changes.prepare',pendingAtomic);
+              return () => doc.defaultView?.location.assign(localChangesHref(next.change_set_id));
+            });
+          },changedSelection()));
         }
-        if (member.status === 'in_doubt' && member.op_id === 'core.mail.send') {
-          const notice = node('span', pendingVerification === member.member_id ? 'Checking the original attempt…' : verificationMessages.get(member.member_id) ?? 'Verification does not send mail or resume this run.');
-          notice.setAttribute('role', 'status');notice.tabIndex = -1;notice.dataset.preapprovalVerifyStatus = member.member_id;
-          notice.dataset.preapprovalVerifyFocus = member.member_id;row.append(notice);
-        }
-        if (member.local_receipt) {
-          const receipt = member.local_receipt;
-          const proof = node('span', ` · ${receipt.kind === 'records' ? 'Records' : 'Calendar'} change confirmed · ${date(receipt.committed_at)}`);
-          proof.setAttribute('data-local-mutation-receipt', receipt.receipt_id);
-          row.append(proof);
-          row.append(localUpdateUndoControl(doc, {
-            get: args => opts.call('local_undo.get', args),
-            review: args => opts.call('local_undo.review', args), decide: args => opts.call('local_undo.decide', args),
-          }, receipt.receipt_id));
-        }
-        if (member.commit_id) row.append(doc.createTextNode(` · Receipt ${member.commit_id}`));
-        const run = member.run_id ? runLink(member.run_id) : null;
-        if (run) row.append(doc.createTextNode(' · '), run);
-        layout.content.append(row);
-      }
-    }
-    if (inspection?.recovery) {
-      const recovery = inspection.recovery;
-      if (recovery.successor_proposal_id) layout.actions.append(link('Open continuation review', preapprovalHref(recovery.successor_proposal_id)));
-      else if (recovery.eligible) {
-        layout.content.append(node('h2', 'Review unfinished changes'), node('p',
-          'Completed operations keep their receipts. The next review uses current data and the original requester’s permissions. It applies no changes until you decide.'));
-        const form = node('form'); form.className = 'approval-review-member';
-        const label = node('label', 'Run at (your time) ');
-        const runAt = node('input'); runAt.type = 'datetime-local'; runAt.required = true; runAt.disabled = busy;
-        runAt.style.cssText = 'display:block;width:100%;max-width:100%;min-width:0;box-sizing:border-box;padding:8px;font:inherit';
-        runAt.setAttribute('data-preapproval-continuation-time', '');
-        if (!continuationTime) {
-          const value = new Date(now() + 10 * 60_000);
-          continuationTime = new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-        }
-        runAt.value = continuationTime;
-        runAt.addEventListener('input', () => { continuationTime = runAt.value; pendingContinuation = null; });
-        label.append(runAt); form.append(label);
-        const submit = button('Prepare continuation review', () => form.requestSubmit());
-        form.append(submit);
-        form.addEventListener('submit', event => {
-          event.preventDefault();
-          void mutate(async () => {
-            const time = new Date(continuationTime).getTime();
-            if (!Number.isFinite(time) || time <= now()) throw new Error('Pick a run time in the future.');
-            if (!pendingContinuation || pendingContinuation.time !== continuationTime) pendingContinuation = {
-              time: continuationTime, request: parsePreapprovalContinuation({
-                proposal_id: inspection!.proposal_id, idempotency_key: crypto.randomUUID(),
-                // D-269 — the SERVER's zone: the continuation runs server-side,
-                // so a run arranged from a laptop abroad must not carry the travel zone.
-                activation: { kind: 'one_shot', run_at: time, time_zone: stampZone(opts.serverTimeZone) },
-                decision_deadline: Math.min(time, now() + PREAPPROVAL_LIMITS.default_decision_ms),
-                dispatch_deadline: time + PREAPPROVAL_LIMITS.default_dispatch_grace_ms,
-              }),
+        layout.summary.append(node('p', `Decide by ${date(review.decision_deadline, review.time_zone)}. Operations must start by ${date(review.dispatch_deadline, review.time_zone)}.`));
+        layout.summary.append(node('p', review.coverage === 'complete'
+          ? 'One yes covers everything listed here, and the files it needs to read.'
+          : 'This does not cover everything. Anything marked as not covered will still ask you.'));
+        for (const note of review.interaction_notes) layout.summary.append(node('p', note));
+        const selectedByServer = new Set(review.selected_member_ids);
+        for (const member of review.members) {
+          const section = node('article'); section.className = 'approval-review-member';
+          section.setAttribute('aria-label', member.label);
+          if (member.parent_member_id) section.className += ' approval-review-member-child';
+          const label = node('label');
+          if (member.parent_member_id === null && inspection?.status === 'awaiting_owner' && !review.continuation) {
+            const check = node('input'); check.type = 'checkbox'; check.checked = selection.has(member.member_id);
+            check.dataset.reviewFocus = 'member:' + member.member_id;
+            check.disabled = busy || !!acknowledged || !selectable(member.member_id);
+            check.setAttribute('data-preapproval-member', member.member_id);
+            check.onchange = () => {
+              if (disposed || busy || acknowledged || !host.contains(check)) return;
+              if (check.checked) selection.add(member.member_id); else selection.delete(member.member_id);
+              render();
+              host.querySelector<HTMLInputElement>(`[data-preapproval-member="${CSS.escape(member.member_id)}"]`)?.focus();
             };
-            const next = await opts.call('preapproval.continue', pendingContinuation.request);
-            if (!disposed) doc.defaultView?.location.assign(preapprovalHref(next.proposal_id));
-          });
-        });
-        layout.content.append(form);
-      } else if (recovery.reason) layout.summary.append(node('p', recovery.reason));
+            label.append(check);
+          }
+          label.append(doc.createTextNode(`${member.parent_member_id ? 'Also needs to read or do: ' : ''}${member.label}`)); section.append(label);
+          // ⛔ THE TIER LEADS. `always` / `destructive` became reviewable on
+          // 2026-09-06, so a member can now be the deletion of a real record —
+          // and until this line the review showed content hashes the owner cannot
+          // verify by eye while withholding the one fact that decides the answer.
+          const tier = node('p', member.risk === 'destructive' ? 'This changes or deletes things for good.'
+            : member.risk === 'admin' ? 'This changes your account or workspace settings.'
+              : member.risk === 'write' ? 'This writes things.' : 'This only looks at things.');
+          tier.setAttribute('data-preapproval-risk', member.risk);
+          if (member.risk === 'destructive' || member.risk === 'admin') tier.style.cssText = 'font-weight:650;color:var(--danger)';
+          section.append(tier);
+          section.append(node('p', member.detail), node('p', member.op_id));
+          if (member.conditional) section.append(node('p', 'Runs only when the condition you saw is true.'));
+          if (!selectedByServer.has(member.member_id)) section.append(node('p', member.reason ?? 'Not covered: you did not pick it.'));
+          const content = node('pre', JSON.stringify(member.arguments, null, 2));
+          content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere'; section.append(content);
+          if (member.resource_review) {
+            const changes = node('pre', renderResourceReview(member.resource_review));
+            changes.setAttribute('data-preapproval-resource-review', member.member_id);
+            changes.setAttribute('role', 'region');
+            changes.setAttribute('aria-label', 'Reviewed changes for ' + member.label);
+            changes.tabIndex = 0;
+            changes.style.cssText = 'max-width:100%;max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere';
+            section.append(changes);
+          }
+          if (Object.keys(member.output).length) section.append(node('pre', JSON.stringify(member.output, null, 2)));
+          if (member.connection_id) section.append(node('p', `Connection: ${member.connection_id}`));
+          if (member.account_id) section.append(node('p', `Account: ${member.account_id}`));
+          for (const resource of member.resources) section.append(node('p', `${resource.kind}: ${resource.key} · version ${resource.revision} · ${resource.content_hash}`));
+          layout.content.append(section);
+        }
+        for (const call of review.uncovered) layout.content.append(node('p', `Uncovered ${call.op_id ?? 'call'}: ${call.reason}`));
+        if (inspection?.status === 'awaiting_owner') {
+          const dirty = changedSelection();
+          if (dirty) layout.actions.append(button('Bring this up to date', () => { void mutate(async () => {
+            await opts.call('preapproval.select', { proposal_id: review!.proposal_id, expected_revision: review!.revision, member_ids: [...selection] });
+            pendingDecision = null;
+          }); }, selection.size === 0));
+          const expired = now() >= Math.min(review.challenge_expires_at ?? 0, review.decision_deadline);
+          renderedExpired = expired;
+          if (expired) layout.actions.append(node('p', 'Bring this up to date before you decide.'));
+          const decide = (decision: PreapprovalDecision): void => {
+            if (!review || !review.challenge || busy || changedSelection()
+              || now() >= Math.min(review.challenge_expires_at ?? 0, review.decision_deadline)) return;
+            if (!pendingDecision || pendingDecision.decision !== decision || pendingDecision.expected_revision !== review.revision) {
+              pendingDecision = { proposal_id: review.proposal_id, expected_revision: review.revision,
+                review_digest: review.review_digest, challenge: review.challenge, decision, request_id: crypto.randomUUID() };
+            }
+            void mutate(async () => { await opts.call('preapproval.decide', pendingDecision!); }, 'Your decision was saved. Refresh to load its current status.');
+          };
+          layout.actions.append(button(review.activation.kind === 'one_shot' || review.activation.kind === 'next_schedule'
+            ? 'Say yes and schedule it' : 'Say yes and set it up', () => decide('approve'), dirty || expired, 'primary'),
+          button('Decline', () => decide('deny'), dirty || expired), button('Cancel action', () => decide('cancel'), dirty || expired));
+        }
+      }
+      if (inspection?.grant?.status === 'active') layout.actions.append(button('Take back this yes', () => { void mutate(async () => {
+        const grant = inspection!.grant!;
+        if (!pendingRevoke || pendingRevoke.grant_id !== grant.grant_id || pendingRevoke.expected_revision !== grant.revision) {
+          pendingRevoke = { grant_id: grant.grant_id, expected_revision: grant.revision, request_id: crypto.randomUUID() };
+        }
+        await opts.call('preapproval.revoke', pendingRevoke);
+      }); }));
+      if (inspection?.decision) {
+        layout.content.append(node('h2', 'What happened'));
+        for (const member of inspection.members) {
+          const row = node('article', `${member.label}: ${status(member.status)}${member.status_message ? ` · ${member.status_message}` : ''}`);
+          row.className = 'approval-review-member';
+          if (member.reconciled_outcome) row.append(doc.createTextNode(' · Verified outcome: ' + status(member.reconciled_outcome)));
+          if (member.status === 'in_doubt' && !member.reconciled_outcome && member.provider_verification === 'mail' && !inspection.retired_review) {
+            const verify = button('Verify mail outcome', () => {
+              // Safari does not focus a clicked button. Own this explicit action
+              // before repainting so the verification-status handoff can follow it.
+              verify.focus({ preventScroll: true });
+              pendingVerification = member.member_id;void mutate(async () => {
+              const result = await opts.call('preapproval.reconcile', { proposal_id: inspection!.proposal_id, member_id: member.member_id });
+              if (!disposed) verificationMessages.set(member.member_id, result.message);
+            }).finally(() => { pendingVerification = null;render(); }); });
+            verify.dataset.preapprovalVerifyFocus = member.member_id;
+            row.append(verify);
+          }
+          if (member.status === 'in_doubt' && member.op_id === 'core.mail.send') {
+            const notice = node('span', pendingVerification === member.member_id ? 'Checking the original attempt…' : verificationMessages.get(member.member_id) ?? 'Verification does not send mail or resume this run.');
+            notice.setAttribute('role', 'status');notice.tabIndex = -1;notice.dataset.preapprovalVerifyStatus = member.member_id;
+            notice.dataset.preapprovalVerifyFocus = member.member_id;row.append(notice);
+          }
+          if (member.local_receipt) {
+            const receipt = member.local_receipt;
+            const proof = node('span', ` · ${receipt.kind === 'records' ? 'Records' : 'Calendar'} change confirmed · ${date(receipt.committed_at)}`);
+            proof.setAttribute('data-local-mutation-receipt', receipt.receipt_id);
+            row.append(proof);
+            let control = undoControls.get(receipt.receipt_id);
+            if (!control) {
+              control = localUpdateUndoControl(doc, {
+                get: args => opts.call('local_undo.get', args),
+                review: args => opts.call('local_undo.review', args), decide: args => opts.call('local_undo.decide', args),
+              }, receipt.receipt_id);
+              undoControls.set(receipt.receipt_id, control);
+            }
+            row.append(control);
+          }
+          if (member.commit_id) row.append(doc.createTextNode(` · Receipt ${member.commit_id}`));
+          const run = member.run_id ? runLink(member.run_id) : null;
+          if (run) row.append(doc.createTextNode(' · '), run);
+          layout.content.append(row);
+        }
+      }
+      if (inspection?.recovery) {
+        const recovery = inspection.recovery;
+        if (recovery.successor_proposal_id) layout.actions.append(link('Open continuation review', preapprovalHref(recovery.successor_proposal_id)));
+        else if (recovery.eligible) {
+          layout.content.append(node('h2', 'Review unfinished changes'), node('p',
+            'Completed operations keep their receipts. The next review uses current data and the original requester’s permissions. It applies no changes until you decide.'));
+          if (!continuationForm) {
+            const form = node('form'); continuationForm = form; form.className = 'approval-review-member';
+            const label = node('label', 'Run at (your time) ');
+            const runAt = node('input'); continuationInput = runAt; runAt.type = 'datetime-local'; runAt.required = true; runAt.disabled = busy;
+            runAt.setAttribute('data-preapproval-continuation-time', '');
+            if (!continuationTime) {
+              const value = new Date(now() + 10 * 60_000);
+              continuationTime = new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+            }
+            continuationBaseline = continuationTime; runAt.value = continuationTime;
+            runAt.dataset.reviewFocus = 'continuation-time';
+            runAt.addEventListener('input', () => { continuationTime = runAt.value; pendingContinuation = null; });
+            label.append(runAt); form.append(label);
+            const submit = button('Prepare continuation review', () => form.requestSubmit());
+            continuationSubmit = submit; form.append(submit);
+            form.addEventListener('submit', event => {
+              event.preventDefault();
+              if (disposed || busy || acknowledged || !host.contains(form)) return;
+              void mutate(async () => {
+                const time = new Date(continuationTime).getTime();
+                if (!Number.isFinite(time) || time <= now()) throw new Error('Pick a run time in the future.');
+                if (!pendingContinuation || pendingContinuation.time !== continuationTime) pendingContinuation = {
+                  time: continuationTime, request: parsePreapprovalContinuation({
+                    proposal_id: inspection!.proposal_id, idempotency_key: crypto.randomUUID(),
+                    // D-269 — the SERVER's zone: the continuation runs server-side,
+                    // so a run arranged from a laptop abroad must not carry the travel zone.
+                    activation: { kind: 'one_shot', run_at: time, time_zone: stampZone(opts.serverTimeZone) },
+                    decision_deadline: Math.min(time, now() + PREAPPROVAL_LIMITS.default_decision_ms),
+                    dispatch_deadline: time + PREAPPROVAL_LIMITS.default_dispatch_grace_ms,
+                  }),
+                };
+                const next = await opts.call('preapproval.continue', pendingContinuation.request);
+                return () => {
+                  continuationBaseline = continuationTime;
+                  doc.defaultView?.location.assign(preapprovalHref(next.proposal_id));
+                };
+              });
+            });
+          }
+          continuationInput!.disabled = writing || !!acknowledged;
+          continuationSubmit!.disabled = busy || !!acknowledged;
+          layout.content.append(continuationForm);
+        } else if (recovery.reason) layout.summary.append(node('p', recovery.reason));
+      }
+    } finally {
+      syncChildren(frame.summary, queued.summary); syncChildren(frame.content, queued.content); syncChildren(frame.actions, queued.actions);
+      if (active && !active.isConnected && (!doc.activeElement || doc.activeElement === doc.body || host.contains(doc.activeElement))) {
+        const target = verificationFocus
+          ? [...host.querySelectorAll<HTMLElement>('[data-preapproval-verify-status]')].find(item => item.dataset.preapprovalVerifyStatus === verificationFocus)
+          : [...host.querySelectorAll<HTMLElement>('[data-review-focus]')].find(item => item.dataset.reviewFocus === focused && !(item as HTMLButtonElement).disabled);
+        target?.focus({ preventScroll: true });
+      }
+      if (focusedUndo?.isConnected && (!doc.activeElement || doc.activeElement === doc.body || host.contains(doc.activeElement))) focusedUndo.focus({ preventScroll: true });
+      for (const saved of undoScroll) if (saved.element.isConnected) { saved.element.scrollTop = saved.top; saved.element.scrollLeft = saved.left; }
+      for (const saved of resourceScroll) {
+        const target = [...host.querySelectorAll<HTMLElement>('[data-preapproval-resource-review]')]
+          .find(element => element.dataset.preapprovalResourceReview === saved.id && element.textContent === saved.text);
+        if (!target) continue;
+        target.scrollTop = saved.top; target.scrollLeft = saved.left;
+        if (saved.focused && (!doc.activeElement || doc.activeElement === doc.body)) target.focus({ preventScroll: true });
+      }
+      for (const [element, [top, left]] of scroll) { element.scrollTop = top; element.scrollLeft = left; }
     }
-    if (focused && (!doc.activeElement || doc.activeElement === doc.body || host.contains(doc.activeElement))) {
-      const target = [...host.querySelectorAll<HTMLElement>('[data-preapproval-verify-status]')].find(item => item.dataset.preapprovalVerifyStatus === focused);
-      target?.focus({ preventScroll: true });
-    }
+  };
+  const reviewContext = (value: ReviewMaterial | null): string => {
+    if (!value) return '';
+    const { challenge: _challenge, challenge_expires_at: _expires, ...material } = value;
+    return JSON.stringify(material);
   };
   const load = async (cursor?: string): Promise<void> => {
     const current = ++generation;
     if (opts.proposalId) {
       const state = await opts.call('preapproval.get', { proposal_id: opts.proposalId });
+      if (disposed || current !== generation) return;
       const material = state.status === 'awaiting_owner' ? await opts.call('preapproval.review', { proposal_id: opts.proposalId }) : state.reviewed ?? null;
       if (disposed || current !== generation) return;
+      const sameContext = reviewContext(review) === reviewContext(material);
       inspection = state; review = material;
-      pendingDecision = null;
-      selection = new Set(material?.members.filter(member => member.parent_member_id === null
-        && material.selected_member_ids.includes(member.member_id)).map(member => member.member_id) ?? []);
+      if (!sameContext) {
+        pendingDecision = null;
+        selection = new Set(material?.members.filter(member => member.parent_member_id === null
+          && material.selected_member_ids.includes(member.member_id)).map(member => member.member_id) ?? []);
+      }
+      if (!state.recovery?.eligible || state.recovery.successor_proposal_id) {
+        continuationForm = null; continuationInput = null; continuationSubmit = null;
+        continuationTime = ''; continuationBaseline = ''; pendingContinuation = null;
+      }
     } else {
       const page = await opts.call('preapproval.list', cursor ? { cursor } : {});
       if (disposed || current !== generation) return;
       entries = cursor ? [...entries, ...page.proposals] : page.proposals; nextCursor = page.next_cursor;
     }
+    acknowledged = '';
   };
   const refresh = async (cursor?: string): Promise<void> => {
     if (disposed || busy) return;
+    const previousCount = entries.length;
     busy = true; error = ''; render();
     try { await load(cursor); } catch (cause) { error = cause instanceof Error ? cause.message : 'Recued could not load this.'; }
-    finally { busy = false; render(); }
+    finally {
+      const ownsPaginationFocus = doc.activeElement === loadMoreControl;
+      busy = false; render();
+      if (!disposed && ownsPaginationFocus && !loadMoreControl.isConnected) {
+        (host.querySelectorAll<HTMLElement>('[data-preapproval-entry]')[previousCount] ?? refreshControl).focus({ preventScroll: true });
+      }
+    }
   };
-  const mutate = async (action: () => Promise<void>): Promise<void> => {
-    if (disposed || busy) return;
-    busy = true; error = ''; render();
-    try { await action(); await load(); }
-    catch (cause) { error = cause instanceof Error ? cause.message : 'Recued could not check your decision. Load the page again to see where it got to.'; }
-    finally { busy = false; render(); }
+  const mutate = async (
+    action: () => Promise<void | (() => void)>,
+    savedMessage = 'Your request was saved. Refresh to load its current status.',
+  ): Promise<void> => {
+    if (disposed || busy || acknowledged) return;
+    const focusKey = (doc.activeElement as HTMLElement | null)?.dataset.reviewFocus;
+    busy = true; writing = true; error = ''; render();
+    if (pendingVerification === null) progress.focus({ preventScroll: true });
+    let navigate: void | (() => void) = undefined;
+    try {
+      navigate = await action();
+      if (disposed) return;
+      acknowledged = savedMessage;
+      if (!navigate) await load();
+    } catch (cause) {
+      if (!disposed) error = cause instanceof Error ? cause.message : 'Recued could not check your decision. Refresh to see where it got to.';
+    } finally {
+      const ownsFocus = doc.activeElement === progress;
+      busy = false; writing = false;
+      if (!disposed) {
+        render();
+        if (ownsFocus) {
+          const retry = error && !acknowledged ? [...host.querySelectorAll<HTMLElement>('[data-review-focus]')]
+            .find(element => element.dataset.reviewFocus === focusKey && !(element as HTMLButtonElement).disabled) : null;
+          (acknowledged ? refreshControl : retry ?? frame.heading).focus({ preventScroll: true });
+        }
+      }
+    }
+    if (!disposed && navigate) navigate();
   };
   loaded = refresh();
   const timer = setInterval(() => {
@@ -375,7 +509,11 @@ export const bootstrapPreapprovalRoute = (opts: {
       && now() >= Math.min(review.challenge_expires_at, review.decision_deadline)) render();
   }, 1_000);
   return { refresh: () => { loaded = refresh(); return loaded; }, whenLoaded: () => loaded,
-    hasInFlightWork: () => busy,
-    dispose() { disposed = true; generation++; clearInterval(timer); host.remove(); },
+    hasInFlightWork: () => writing || hasUndoWork(),
+    inFlightWorkPrompt: () => hasUndoWork() ? 'An undo action is still in progress. Leave this page anyway?'
+      : writing ? 'Your review request is still in progress. Leave this page anyway?' : null,
+    hasUnsavedChanges: () => changedSelection() || continuationTime !== continuationBaseline,
+    unsavedChangesPrompt: () => 'Discard the changes to this run review?',
+    dispose() { disposed = true; generation++; clearInterval(timer); undoControls.clear(); host.remove(); },
   };
 };

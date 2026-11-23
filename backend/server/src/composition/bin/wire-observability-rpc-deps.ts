@@ -108,6 +108,8 @@ export interface ComposeObservabilityRpcDepsInput {
   settledRunResults?: SettledRunResults;
   /** D-341 slice B1 — triggers' pre-approvals: `execution.get` lists what a run made without asking. */
   triggerPreapprovals?: ExecutionFeedRpcDeps['triggerPreapprovals'];
+  /** D-402 slice F5 — see `ExecutionFeedRpcDeps.aiAppNameOf`. */
+  aiAppNameOf?: ExecutionFeedRpcDeps['aiAppNameOf'];
   /** Pair-instance id. Surfaces in the audit-export envelope's
    *  `instance_id` field + optionally the status page header. Always
    *  defined in bin.ts (initialised to `'server'` then overwritten on
@@ -175,6 +177,7 @@ export const composeObservabilityRpcDeps = (
     gatedActionStore,
     settledRunResults,
     triggerPreapprovals,
+    aiAppNameOf,
     serverInstanceId,
     pairing,
     circuitStore,
@@ -228,6 +231,7 @@ export const composeObservabilityRpcDeps = (
           ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
           ...(settledRunResults !== undefined ? { settledRunResults } : {}),
           ...(triggerPreapprovals !== undefined ? { triggerPreapprovals } : {}),
+          ...(aiAppNameOf !== undefined ? { aiAppNameOf } : {}),
         }
       : undefined;
 

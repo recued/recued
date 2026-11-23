@@ -192,6 +192,7 @@ describe('D-249 — kernel op scope classification', () => {
       'core.kitchen.draft.list',
       'core.kitchen.draft.get',
       'core.kitchen.draft.update',
+      'core.kitchen.draft.from_job',
       // D-345 — the server's own fetch of a public address reads nothing stored.
       'core.http.get',
       'core.http.read',

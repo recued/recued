@@ -74,7 +74,10 @@ export const dispatchAnswer = async (deps: {
   if (ask.status !== 'answered' || ask.answer === undefined) return false;
   const fn = registry.get(ask.handler_kind);
   if (fn === undefined) return false;
-  await fn(ask.handler_payload, ask.answer);
+  // A consumer may transform its input; it must not mutate the durable
+  // prepared decision that recovery will replay.
+  const answer = ask.answer.prepared === undefined ? ask.answer : JSON.parse(JSON.stringify(ask.answer));
+  await fn(ask.handler_payload, answer);
   await store.markHandled(ask.ask_id);
   return true;
 };

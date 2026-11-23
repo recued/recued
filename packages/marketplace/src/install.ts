@@ -234,6 +234,10 @@ export interface BulkPackInstallContext {
   }) => Promise<unknown>;
   /** Exact rollback counterpart for `applyWebhookBindings`. */
   restoreWebhookBindings?: (rollbackToken: unknown) => Promise<void>;
+  /** D-201 Slice 10Y (10V finding 7) — whether a prior version of this pack
+   *  left webhook bindings. An update that declares no webhook then calls
+   *  `applyWebhookBindings` with none, so they are replaced with none. */
+  hasWebhookBindings?: (packSlug: string) => boolean;
 }
 
 /** Per-recipe outcome inside the install transaction. */
@@ -702,7 +706,15 @@ export const installBulkPack = async (
   // triggers only after all recipe rows exist. The consumer store returns an
   // opaque snapshot so any later grant failure restores a prior install rather
   // than merely deleting it.
-  if (hasWebhookDeclarations && ctx.applyWebhookBindings) {
+  // D-201 Slice 10Y (10V finding 7) — an update that declares no webhook
+  // replaces what a prior version bound with none, as a Kitchen save dropping
+  // its webhook does: its history closes with a record and its doors retire.
+  // It was skipped, so the binding stayed on and the old door stamped, and
+  // every delivery started the new version.
+  const dropsWebhookBindings = !hasWebhookDeclarations
+    && ctx.restoreWebhookBindings !== undefined
+    && ctx.hasWebhookBindings?.(input.pack_slug) === true;
+  if ((hasWebhookDeclarations || dropsWebhookBindings) && ctx.applyWebhookBindings) {
     try {
       webhookBindingsRollbackToken = await ctx.applyWebhookBindings({
         pack_slug: input.pack_slug,

@@ -1,6 +1,7 @@
 import { readPreviewWorker } from './read-preview-worker.js';
 import { parseXlsxSheet, parseXlsxWorkbook, xlsxColumnName, type XlsxSheetData } from './xlsx-workbook.js';
 import { XlsxPreviewError, type XlsxParts } from './xlsx-model.js';
+import { mountSpreadsheetFinder, spreadsheetAddress } from './spreadsheet-finder.js';
 
 const PAGE_ROWS = 50;
 
@@ -44,6 +45,7 @@ export const renderXlsxPreview = async (doc: Document, host: HTMLElement, bytes:
       for (let column = 1; column <= data.columnCount; column++) {
         const cell = doc.createElement('td'), value = data.rows.get(index)?.get(column);
         cell.textContent = value?.text ?? '';
+        cell.setAttribute('data-spreadsheet-cell', spreadsheetAddress(index, column));
         if (value?.missing) { cell.className = 'xlsx-preview-missing'; cell.title = 'This formula has no saved result. Open the workbook in a spreadsheet app to calculate it.'; }
         else if (value?.formula) cell.title = 'Formula result saved with the workbook.';
         else if (value && value.raw !== value.text && value.raw) cell.title = `Stored value: ${value.raw}`;
@@ -56,6 +58,7 @@ export const renderXlsxPreview = async (doc: Document, host: HTMLElement, bytes:
     grid.hidden = data.rowCount === 0; navigation.hidden = data.rowCount <= PAGE_ROWS;
     previous.setAttribute('aria-disabled', String(page === 0)); next.setAttribute('aria-disabled', String(end >= data.rowCount));
     grid.scrollTop = 0; grid.scrollLeft = left;
+    finder.paint();
   };
   const drawSheet = () => {
     if (signal.aborted) return;
@@ -78,11 +81,32 @@ export const renderXlsxPreview = async (doc: Document, host: HTMLElement, bytes:
   };
   select.addEventListener('change', () => {
     if (signal.aborted) return;
+    finder.manualNavigation();
     positions.set(selected, { page, top: grid.scrollTop, left: grid.scrollLeft });
     selected = Number(select.value); drawSheet();
   }, { signal });
-  previous.addEventListener('click', () => { if (!signal.aborted && data && page > 0) { page--; drawPage(); } }, { signal });
-  next.addEventListener('click', () => { if (!signal.aborted && data && (page + 1) * PAGE_ROWS < data.rowCount) { page++; drawPage(); } }, { signal });
+  previous.addEventListener('click', () => { if (!signal.aborted && data && page > 0) { finder.manualNavigation(); page--; drawPage(); } }, { signal });
+  next.addEventListener('click', () => { if (!signal.aborted && data && (page + 1) * PAGE_ROWS < data.rowCount) { finder.manualNavigation(); page++; drawPage(); } }, { signal });
+  const finder = mountSpreadsheetFinder({ doc, root, table, grid, signal,
+    sheets: workbook.sheets.map(sheet => sheet.name + (sheet.hidden ? ' (hidden)' : '')), currentSheet: () => selected,
+    read: sheet => {
+      const values = sheet === selected && data ? data : parseXlsxSheet(doc, workbook, workbook.sheets[sheet]!);
+      return { rowCount: values.rowCount, columnCount: values.columnCount, cells: (function* () {
+        for (const [row, columns] of values.rows) for (const [column, value] of columns) {
+          // A missing-result label is preview guidance, not a saved value.
+          if (!value.missing) yield { row, column, text: value.text };
+        }
+      })() };
+    },
+    open: cell => {
+      if (cell.sheet !== selected) {
+        positions.set(selected, { page, top: grid.scrollTop, left: grid.scrollLeft });
+        selected = cell.sheet; select.value = String(selected); drawSheet();
+      }
+      page = Math.floor((cell.row - 1) / PAGE_ROWS); drawPage();
+    },
+  });
+  controls.after(finder.element);
   drawSheet();
 };
 

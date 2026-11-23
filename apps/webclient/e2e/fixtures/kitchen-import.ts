@@ -54,6 +54,61 @@ const pack = {
   } }],
 };
 
+/** D-402 slice C5 — `?kitchen_import=trial`: a draft Recued compiled from a browser job, with a setting
+ *  the request gave (`query`) and the browser the job ran in (`browser`, a bare setting). "Try it" is held
+ *  at its first change. The spec answers for the owner elsewhere (`TRIAL_ANSWER_KEY` in this tab's
+ *  sessionStorage: `approved` or `denied`), then broadcasts the run's event, as the server does. The
+ *  server's side is `backend/server/src/__tests__/d-402-trial-run.test.ts`. */
+export const TRIAL_ANSWER_KEY = 'recued-test-kitchen-trial-answer';
+export const TRIAL_RUN_ID = 'run-trial-1';
+export const TRIAL_TRIES_KEY = 'recued-test-kitchen-trial-tries';
+const TRIAL_ACTION_REF = 'act-trial-1';
+const trialRecipe = {
+  recipe_id: 'shop-search-draft', version: 1, ttl: 0,
+  metadata: { name: 'Shop search', description: 'Looks a book up on the shop.', author: 'you', supported_platforms: [] },
+  variables: { query: { label: 'Search for', type: 'text', default: 'Grace Hopper' }, browser: 'b-home' },
+  prefetch_steps: [],
+  steps: [{ id: 'search', op: 'core.dom.act', args: { target: 'https://shop.example.com/*', bridge_id: '{{config.browser}}',
+    steps: [{ do: 'open', address: 'https://shop.example.com/search' }, { do: 'type', selector: '#q', value: '{{config.query}}' },
+      { do: 'click', selector: 'button[type=submit]' }] } }],
+  output: { render: [] },
+};
+const trialAnswered = (): string => sessionStorage.getItem(TRIAL_ANSWER_KEY) ?? 'waiting';
+const trialCapture = () => {
+  const answered = trialAnswered();
+  return { capture_id: 'capture-trial-1', recipe_id: trialRecipe.recipe_id, created_at: 1_700_000_000_000,
+    expires_at: Date.now() + 600_000, trial: true, run_id: TRIAL_RUN_ID,
+    ...(answered === 'approved' ? { state: 'ready', run_outcome: 'passed' }
+      : answered === 'denied' ? { state: 'unavailable', run_outcome: 'failed',
+        reason: 'The trial did not finish, so it is no saved test. Try the recipe again once it works.' }
+      : { state: 'running', run_outcome: 'held' }) };
+};
+const trialResult = (fields: Record<string, unknown>) => ({ recipe_id: trialRecipe.recipe_id, recipe_hash: 'fixture',
+  output: { render: [], sidebar: [] }, steps: [], errors: [], duration_ms: 40, run_id: TRIAL_RUN_ID, ...fields });
+/** What the server answers about the trial: the try itself, held; then the hold's receipt, the run's
+ *  kept result once approved, and the capture. Each try is recorded for the spec (`TRIAL_TRIES_KEY`). */
+const trialAnswer = (method: string, args: unknown): FixtureAnswer => {
+  if (method === 'pair.browsers') {
+    return { result: { browsers: [{ browser_id: 'b-home', name: 'Home', online: true }, { browser_id: 'b-work', name: 'Work', online: true }] } };
+  }
+  if (method === 'recipe.try') {
+    sessionStorage.setItem(TRIAL_TRIES_KEY, JSON.stringify([...JSON.parse(sessionStorage.getItem(TRIAL_TRIES_KEY) ?? '[]') as unknown[], args]));
+    return { result: trialResult({ success: false, awaiting_approval: true, action_ref: TRIAL_ACTION_REF, capture: trialCapture() }) };
+  }
+  if (method === 'execution.action.get') {
+    const answered = trialAnswered();
+    return { result: { receipt: { action_ref: TRIAL_ACTION_REF, run_id: TRIAL_RUN_ID,
+      status: answered === 'approved' ? 'completed' : answered === 'denied' ? 'denied' : 'awaiting_approval' }, group: {} } };
+  }
+  if (method === 'execution.get') {
+    return { result: { run: {}, ...(trialAnswered() === 'approved'
+      ? { result: trialResult({ success: true, steps: [{ id: 'search', type: 'op', skipped: false, duration_ms: 30, error: null }] }) }
+      : {}) } };
+  }
+  if (method === 'recipe.capture.list') return { result: { captures: [trialCapture()] } };
+  return undefined;
+};
+
 /** D-333 — Kitchen's work in progress as the server keeps it, for `?kitchen_import=<mode>`.
  *  Every mode but `new`, `saved-recipe` and `missing` starts with one item an AI app handed
  *  over; `new` and `saved-recipe` start with none, and a first change creates one (with
@@ -63,7 +118,7 @@ const pack = {
 type FixtureAnswer = { result?: unknown; error?: { code: string; message: string } } | undefined;
 
 export const createKitchenImportFixture = (mode: string | null) => {
-  let source = JSON.stringify(mode === 'pack' ? pack : recipe, null, 2);
+  let source = JSON.stringify(mode === 'pack' ? pack : mode === 'trial' ? trialRecipe : recipe, null, 2);
   if (mode === 'crlf') source = source.replace(/\n/g, '\r\n');
   if (mode === 'invalid') source = '{"recipe_id":';
   let draftId = 'import-fixture';
@@ -101,6 +156,7 @@ export const createKitchenImportFixture = (mode: string | null) => {
   return async (method: string, args: unknown): Promise<FixtureAnswer> => {
     if (!mode) return undefined;
     if (mode === 'kitchen-pack') return kitchenPack(method, args);
+    if (mode === 'trial') { const answer = trialAnswer(method, args); if (answer !== undefined) return answer; }
     if (method === 'recipe.save') {
       const saved = (args as { recipe: RecipeDefinition }).recipe;
       return { result: { saved: true, recipe_id: saved.recipe_id, version: 1, name: saved.metadata.name } };

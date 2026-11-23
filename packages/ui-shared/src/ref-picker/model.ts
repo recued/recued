@@ -61,6 +61,7 @@ export const setResults = (
   options: readonly RefPickerOption[],
   truncated = false,
   retryableError: string | null = null,
+  emptyText?: string,
 ): RefPickerState => ({
   ...state,
   options,
@@ -68,6 +69,7 @@ export const setResults = (
   loading: false,
   error: null,
   retryableError,
+  emptyText,
   activeIndex: state.activeIndex < options.length ? state.activeIndex : -1,
 });
 

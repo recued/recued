@@ -2180,6 +2180,95 @@ describe('a person alias the model wrote without its prefix', () => {
   });
 });
 
+describe('an address alias the model wrote without its domain half', () => {
+  // D-406's thread check, 2026-11-19: 5 of 154 answers named the people "m1" and "m2" ("from m1 to m2"), and the
+  // owner read them so: a bare `m<N>` matched no alias pattern, so nothing restored it.
+  const pair = () => {
+    const ledger = createLedger('bare-email-local');
+    const dana = aliasIdentifierField(ledger, 'email', 'dana.ortiz@harborline.example');
+    const me = aliasIdentifierField(ledger, 'email', 'me@recued.example');
+    return { ledger, dana, me, packet: JSON.stringify({ rows: [{ from: dana, to: [me] }] }) };
+  };
+  const DANA = 'dana.ortiz@harborline.example';
+  const ME = 'me@recued.example';
+
+  it('restores it to the address the request showed, in the reply and in a tool call', () => {
+    const { ledger, dana, me, packet } = pair();
+    expect([dana, me]).toEqual(['m1@d1.invalid', 'm2@d2.invalid']);
+    const authority = derivePiiRestoreAuthority(ledger, packet);
+    expect(restoreInStringWithAuthority(authority, 'Nov 3 (from m1 to m2): renew? m2 replied to m1.'))
+      .toBe(`Nov 3 (from ${DANA} to ${ME}): renew? ${ME} replied to ${DANA}.`);
+    expect(restoreArgsWithAuthority(authority, { response: '**m1** wrote.', tool_calls: [{ tool: 'mail.search', args: { query: 'from m1' } }] }))
+      .toEqual({ response: `**${DANA}** wrote.`, tool_calls: [{ tool: 'mail.search', args: { query: `from ${DANA}` } }] });
+    expect(restoreArgsAndKeysWithAuthority(authority, { to: 'm2' })).toEqual({ to: ME });
+    // The whole alias restores as it always did.
+    expect(restoreInStringWithAuthority(authority, `${dana} and ${me}`)).toBe(`${DANA} and ${ME}`);
+  });
+
+  it('restores it when the request showed the address with an overlap tail', () => {
+    const { ledger } = pair();
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: ['m1.dana.ortiz@d1.invalid'] }));
+    expect(restoreInStringWithAuthority(authority, 'from m1')).toBe(`from ${DANA}`);
+  });
+
+  it('leaves it as written when the request also holds that bare form as text, in any case', () => {
+    const { ledger, dana, me } = pair();
+    const cases: Array<[string, string]> = [
+      ['Is my M1 MacBook covered?', `m1 and ${ME}`],
+      ['the flat is 80 m2', `${DANA} and m2`],
+      ['model m1 or model m2?', 'm1 and m2'],
+      ['line one\nm1 at the start', `m1 and ${ME}`],
+      ['(m2)', `${DANA} and m2`],
+    ];
+    for (const [typed, restored] of cases) {
+      const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ user_message: typed, rows: [{ from: dana, to: [me] }] }));
+      expect(restoreInStringWithAuthority(authority, 'm1 and m2')).toBe(restored);
+    }
+    // As chat sends it, the prompt is JSON inside JSON, so a line's start is escaped twice.
+    const nested = JSON.stringify({ 'llm.prompt': JSON.stringify({ user_message: 'first\nm1 second', rows: [{ from: dana, to: [me] }] }) });
+    expect(nested).toContain('\\\\nm1');
+    expect(restoreInStringWithAuthority(derivePiiRestoreAuthority(ledger, nested), 'm1 and m2')).toBe(`m1 and ${ME}`);
+  });
+
+  it('a word that only contains the form does not hold the alias back', () => {
+    const { ledger, dana, me } = pair();
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ user_message: 'item1, param2, room-m1, x.m2, m1@d1.invalid', rows: [{ from: dana, to: [me] }] }));
+    expect(restoreInStringWithAuthority(authority, 'm1 and m2')).toBe(`${DANA} and ${ME}`);
+  });
+
+  it('leaves one the request never showed', () => {
+    const { ledger, dana } = pair();
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: [{ from: dana }] }));
+    expect(restoreInStringWithAuthority(authority, 'm1 and m2')).toBe(`${DANA} and m2`);
+  });
+
+  it('takes only a whole lowercase token, and never a measure', () => {
+    const { ledger, packet } = pair();
+    const authority = derivePiiRestoreAuthority(ledger, packet);
+    for (const text of ['M1', 'M2 motorway', 'm12', 'xm1', 'm1x', 'm1_id', 'm1.ana', 'a/m1', 'item1', 'm1@example.com', '80 m2', '80m2', '80 m2', '3m2']) {
+      expect(restoreInStringWithAuthority(authority, text)).toBe(text);
+    }
+    for (const [text, restored] of [['(m1)', `(${DANA})`], ['m1.', `${DANA}.`], ['m1, then', `${DANA}, then`], ['"m2"', `"${ME}"`]]) {
+      expect(restoreInStringWithAuthority(authority, text)).toBe(restored);
+    }
+  });
+
+  it('stays one pass: a restored address is never scanned again', () => {
+    // A real address whose local part is itself `m2` is aliased like any other.
+    const ledger = createLedger('bare-email-local-one-pass');
+    expect(aliasIdentifierField(ledger, 'email', 'm2@shop.example')).toBe('m1@d1.invalid');
+    expect(aliasIdentifierField(ledger, 'email', 'lee@x.example')).toBe('m2@d2.invalid');
+    const authority = derivePiiRestoreAuthority(ledger, JSON.stringify({ rows: ['m1@d1.invalid', 'm2@d2.invalid'] }));
+    expect(restoreInStringWithAuthority(authority, 'm1 and m2')).toBe('m2@shop.example and lee@x.example');
+  });
+
+  it('is the request authority only: the session ledger restore keeps a bare form as written', () => {
+    const { ledger } = pair();
+    expect(restoreInString(ledger, 'm1 and m1@d1.invalid')).toBe(`m1 and ${DANA}`);
+    expect(restoreArgs(ledger, { text: 'm1' })).toEqual({ text: 'm1' });
+  });
+});
+
 describe('D-326 — an address is aliased together with the contact it belongs to', () => {
   /** The owner's data says whose an address is; the request supplies the lookup,
    *  as the chat egress sets it on each staged ledger. */

@@ -743,6 +743,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // for READ too: whether this machine travels with its owner is a
       // deployment fact, not an agent's to learn.
       'server.timezone.',
+      // D-403 — what takes space and the purge are the owner's own decisions about their server's
+      // data: no agent lists them, and none deletes through them.
+      'storage.',
       // Supervision feature — cli-daemon keep-alive (owner-only; an MCP-channel
       // agent must never enrol / flip / start / stop a supervised daemon).
       'supervision.',

@@ -351,6 +351,8 @@ export interface ParsedVEvent {
   timezone: string;
   isAllDay: boolean;
   status: 'confirmed' | 'cancelled' | 'tentative';
+  /** D-407 Q8 — `CLASS:PRIVATE` or `CLASS:CONFIDENTIAL` (RFC 5545 §3.8.1.3). An override keeps its own. */
+  markedPrivate?: true;
   rrule?: string;
   /** Every EXDATE value — a line may hold several — as an instant (all-day:
    *  midnight UTC of the date). */
@@ -400,6 +402,15 @@ export interface CalDavReadOptions {
  *  `.ics` file and sits in a `source_id` split on `:`, so no `:`, `/`, `%` or
  *  space. Google's, Outlook's, Apple's and the booking services' all fit. */
 const CALDAV_SAFE_UID = /^[A-Za-z0-9][A-Za-z0-9@._+-]{0,254}$/;
+
+/** D-407 slice 4 — one display alarm, `minutes` before the event starts (RFC 5545 §3.6.6). */
+const alarmLines = (minutes: number, summary: string): string[] => [
+  'BEGIN:VALARM',
+  'ACTION:DISPLAY',
+  icsLine('TRIGGER', minutes === 0 ? 'PT0M' : `-PT${String(minutes)}M`),
+  icsLine('DESCRIPTION', escapeIcsText(summary)),
+  'END:VALARM',
+];
 
 const DAY_MS = 86_400_000;
 
@@ -519,6 +530,7 @@ const readVEvent = (
   const statusValue = (one('STATUS')?.value ?? '').trim().toUpperCase();
   const status: ParsedVEvent['status'] =
     statusValue === 'CANCELLED' ? 'cancelled' : statusValue === 'TENTATIVE' ? 'tentative' : 'confirmed';
+  const classValue = (one('CLASS')?.value ?? '').trim().toUpperCase();
   const organizerProp = one('ORGANIZER');
   const organizer = organizerProp === undefined ? null : attendeeOf(organizerProp);
   const attendees = componentProps(doc, component, 'ATTENDEE')
@@ -550,6 +562,7 @@ const readVEvent = (
     timezone,
     isAllDay,
     status,
+    ...(classValue === 'PRIVATE' || classValue === 'CONFIDENTIAL' ? { markedPrivate: true as const } : {}),
     rrule: one('RRULE')?.value.trim() || undefined,
     exdates: exdateValues.map((e) => e.at),
     recurrenceId: rid?.at,
@@ -982,6 +995,7 @@ const canonicalOf = (
         }
       : {}),
     status: ev.status,
+    ...(ev.markedPrivate ? { marked_private: true as const } : {}),
     ...(rrule ? { recurrence_rule: rrule } : {}),
     ...(!first ? { recurring_event_id: seriesId } : {}),
     created_at: ev.createdAt,
@@ -1306,6 +1320,17 @@ export const createCalDavProvider = (
       );
     }
     return resolved.toString();
+  };
+  /** One resource, however its server spells the path. ⛔ Radicale answers an event Recued named `…@recued.ics` with the
+   *  href `…%40recued.ics`, and the URL parser keeps both spellings, so a plain comparison never matched it: every event
+   *  Recued had made read as not writable, and no edit or removal of one reached the calendar (found live, D-407,
+   *  2026-11-21). Compared decoded; a path that does not decode is compared as it is. */
+  const sameResource = (calendarHref: string, a: string, b: string): boolean => {
+    const decoded = (href: string): string => {
+      const url = absolute(calendarHref, href);
+      try { return decodeURIComponent(url); } catch { return url; }
+    };
+    return decoded(a) === decoded(b);
   };
 
   const fetchEventIcs = async (
@@ -1789,6 +1814,15 @@ export const createCalDavProvider = (
       significant = true;
     }
     if (patch.attendees !== undefined) writeAttendees(ctx, component, patch.attendees);
+    // D-407 slice 4 — the private marking set or taken away, and its alarms replaced by those given.
+    if (patch.marked_private !== undefined) {
+      setComponentProperty(editor, component, 'CLASS', patch.marked_private ? icsLine('CLASS', 'PRIVATE') : null);
+    }
+    if (patch.reminders !== undefined) {
+      for (const child of component.children) if (child.name === 'VALARM') editor.deleteComponent(child);
+      const lines = patch.reminders.flatMap((reminder) => alarmLines(reminder.minutes, patch.summary ?? ev.summary ?? ''));
+      if (lines.length > 0) editor.insertBefore(component.end, lines);
+    }
     touch(ctx, component, ev.sequence, significant);
   };
 
@@ -2127,6 +2161,9 @@ export const createCalDavProvider = (
       ]));
     }
     if (event.recurrence_rule) lines.push(icsLine('RRULE', event.recurrence_rule));
+    // D-407 slice 4 — private (CLASS), and its alarms as given.
+    if (event.marked_private) lines.push(icsLine('CLASS', 'PRIVATE'));
+    for (const reminder of event.reminders ?? []) lines.push(...alarmLines(reminder.minutes, event.summary));
     lines.push('END:VEVENT', 'END:VCALENDAR');
     return `${lines.flatMap(foldIcsLine).join('\r\n')}\r\n`;
   };
@@ -2215,7 +2252,7 @@ export const createCalDavProvider = (
         `<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:current-user-privilege-set/></d:prop></d:propfind>`, 'PROPFIND event privileges');
       const canWrite = allBlocks(permission.text, 'response').some(response => {
         const resource = decodeXml((innerOf(response, 'href') ?? '').trim());
-        if (!resource || absolute(cal.href, resource) !== absolute(cal.href, href)) return false;
+        if (!resource || !sameResource(cal.href, resource, href)) return false;
         return allBlocks(response, 'propstat').some(ps => {
           const status = innerOf(ps, 'status');
           if (!status || !/HTTP\/\S+ 2\d\d\b/.test(status)) return false;
@@ -2224,7 +2261,7 @@ export const createCalDavProvider = (
         });
       });
       return { payload: payloadOf(object, occurrence, existing.etag ?? '', cal),
-        editable_fields: canWrite ? ['summary', 'description', 'location', 'start_at', 'end_at'] : [],
+        editable_fields: canWrite ? ['summary', 'description', 'location', 'start_at', 'end_at', 'marked_private', 'alert_minutes'] : [],
         ...(!canWrite ? { read_only_reason: 'Write access to this CalDAV event could not be verified.' } : {}),
         edit_notice: 'Changes are saved to this CalDAV calendar. Its existing invitation and provider details are kept.' };
     },

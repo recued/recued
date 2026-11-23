@@ -13,6 +13,7 @@ import { buildActionExecutor, type BridgeBrowserApi } from '../actions/executor.
 import { capturePage, measurePageArea, PAGE_SCREEN_STEP, restorePageScroll, waitForPaint, waitForPictures,
   type PageCaptureChrome } from '../actions/page-capture.js';
 import { scrollTarget, waitForQuiet } from '../actions/page-scroll.js';
+import { pageIdentity } from '../actions/page-tabs.js';
 import { PAGE_TABLE_LIMITS, readPageTable } from '../actions/page-table.js';
 import { checkPageElement, readWaitRequest } from '../actions/page-wait.js';
 import { pageProblem } from '../actions/page-problems.js';
@@ -96,6 +97,16 @@ describe('wait_for_element — the service worker keeps the clock', () => {
     expect((out.outputs as { waited_ms: number }).waited_ms).toBeGreaterThanOrEqual(440);
   });
 
+  it.each([false, true])('match counts are opt-in outputs, so older servers keep their closed reply shape (requested=%s)', async requested => {
+    const match_counts = { matched: 0, visible: 0, text_matched: 0 };
+    const out = await run(browser({ executeInDocument: async () => ({ document_id: 'DOC7', result: { outputs: {
+      url: 'https://app.example.com/deals', title: 'Deals', met: false, match_counts } } }) }),
+      command('wait_for_element', { page: '7:DOC7', selector: '#absent', timeout_ms: 0 }, requested ? [...WAIT_KEYS, 'match_counts'] : WAIT_KEYS));
+    expect(out).toMatchObject({ status: 'ok', outputs: { found: false } });
+    if (requested) expect(out.outputs?.match_counts).toEqual(match_counts);
+    else expect(out.outputs).not.toHaveProperty('match_counts');
+  });
+
   it('ends inside the command\'s own budget, however long it was asked to wait', () => {
     // The executor passes the budget less two seconds as the most.
     expect(readWaitRequest({ selector: '#x', timeout_ms: 60_000 }, 1_000, 1_000)).toMatchObject({ timeout_ms: 1_000 });
@@ -177,6 +188,16 @@ describe('D-335 slice K — a wait races the step\'s failure and an error messag
     expect((shown as { outputs: Record<string, unknown> }).outputs).not.toHaveProperty('problem');
   });
 
+  it('a message that shows between the asks, and is the step\'s own failure too: the failure, asked again, wins, with the page\'s words', async () => {
+    // "Wrong password. Try again." shows just after the step's failure was asked: seen by the message's ask
+    // alone, it was reported as the message, the step's own `fail_when` lost.
+    let failsAsked = 0;
+    const t = page({ fails: () => (failsAsked += 1) >= 2, problem: () => 'Wrong password. Try again.' });
+    const out = await run(t.api, wait({ fail: { selector: '.error', text: 'wrong password' }, problems: true }));
+    expect(out).toMatchObject({ status: 'ok', outputs: { found: false, failed: true, problem: 'Wrong password. Try again.' } });
+    expect(t.asked).toEqual(['shows', 'fails', 'problem', 'fails']);
+  });
+
   it('ends at an error message the step led to, quoting it', async () => {
     const t = page({ problem: (poll) => (poll >= 3 ? 'Your password is invalid!' : null) });
     const out = await run(t.api, wait({ problems: true }));
@@ -255,6 +276,7 @@ describe('screenshot_page — refuse before any tab moves, and always put the ow
       },
       captureVisible: async () => { calls.push('capture'); return 'data:image/png;base64,PNG'; },
       executeInDocument: async (_target, func) => {
+        if (func === pageIdentity) return { document_id: 'DOC7', result: { url: 'https://app.example.com/deals', title: 'Deals' } };
         if (func === waitForPaint) return { document_id: 'DOC7', result: true };
         calls.push('measure');
         return { document_id: 'DOC7', result: { outputs: { url: 'https://app.example.com/deals', title: 'Deals', area, viewport } } };
@@ -303,6 +325,8 @@ describe('screenshot_page — refuse before any tab moves, and always put the ow
     let measures = 0;
     const { chrome, calls } = fake({
       executeInDocument: async (_target, func) => {
+        if (func === pageIdentity) return { document_id: measures === 0 ? 'DOC7' : 'DOC9',
+          result: { url: 'https://app.example.com/deals', title: 'Deals' } };
         if (func === waitForPaint) return { document_id: 'DOC7', result: true };
         return ++measures === 1
           ? { document_id: 'DOC7', result: { outputs: { url: 'https://app.example.com/deals', title: 'Deals', area, viewport } } }
@@ -321,7 +345,8 @@ describe('screenshot_page — refuse before any tab moves, and always put the ow
     // Slice R — a frame from another site, named as a page of its own.
     ['a frame\'s own page', { framed: true }, 'tab_navigation_blocked'],
   ])('%s is refused before any tab moves', async (_label, answer, code) => {
-    const { chrome, calls } = fake({ executeInDocument: async () => ({ document_id: 'DOC7', result: answer }) });
+    const { chrome, calls } = fake({ executeInDocument: async (_target, func) => ({ document_id: 'DOC7',
+      result: func === pageIdentity ? { url: 'https://app.example.com/deals', title: 'Deals' } : answer }) });
     expect(await shoot(chrome, { ref: 'e4' })).toMatchObject({ status: 'error', error: { code } });
     expect(calls).toEqual([]);
   });
@@ -330,7 +355,7 @@ describe('screenshot_page — refuse before any tab moves, and always put the ow
     const { chrome, calls } = fake();
     const out = await capturePage(chrome, { page: { tab_id: 7, document_id: 'DOC7' }, scope: {}, pattern: SITE, blocked: () => true });
     expect(out).toMatchObject({ status: 'error', error: { code: 'tab_navigation_blocked' } });
-    expect(calls).toEqual(['measure']);
+    expect(calls).toEqual([]);
   });
 
   it('screenshots the owner has not allowed are refused before anything is read or any tab moves', async () => {
@@ -360,11 +385,11 @@ describe('screenshot_page — refuse before any tab moves, and always put the ow
     expect(out).toMatchObject({ status: 'ok', outputs: { page: '7:DOC7', image: 'JPEG' } });
   });
 
-  it('the measuring function is the one injected into the page', async () => {
+  it('an unreadable identity stops before injecting a measurement', async () => {
     const funcs: unknown[] = [];
     const { chrome } = fake({ executeInDocument: async (_target, func) => { funcs.push(func); return null; } });
     await shoot(chrome);
-    expect(funcs).toEqual([measurePageArea]);
+    expect(funcs).toEqual([pageIdentity]);
   });
 });
 
@@ -390,6 +415,7 @@ describe('screenshot_page — a screen of a long page, and the page put back whe
       },
       captureVisible: async () => { calls.push('capture'); return 'data:image/png;base64,PNG'; },
       executeInDocument: async (_target, func, args) => {
+        if (func === pageIdentity) return { document_id: 'DOC7', result: { url: 'https://app.example.com/deals', title: 'Deals' } };
         if (func === waitForPaint) return { document_id: 'DOC7', result: true };
         if (func === waitForPictures) {
           calls.push('pictures');
@@ -476,11 +502,12 @@ describe('scroll — a screen at a time, from where the page is, and left there'
     expect([scrollTarget({ screen: 7, screens: 7 }, 'next'), scrollTarget({ screen: 1, screens: 7 }, 'previous')]).toEqual([7, 1]);
   });
 
-  it('measures where the page is, scrolls to the screen, gives the page a moment, and answers it as it is then', async () => {
+  it('checks the document before measuring, scrolls to the screen, gives the page a moment, and answers it as it is then', async () => {
     const calls: Array<[string, unknown[]]> = [];
     const answers = [{ screen: 2, screens: 5 }, { screen: 3, screens: 5 }, { screen: 3, screens: 6 }];
     const api = browser({ executeInDocument: async (_target, func, args) => {
       calls.push([func.name, [...args]]);
+      if (func === pageIdentity) return { document_id: 'DOC7', result: { url: 'https://app.example.com/deals', title: 'Deals' } };
       if (func === waitForQuiet) return { document_id: 'DOC7', result: true };
       const at = answers.shift()!;
       return { document_id: 'DOC7', result: { outputs: { url: 'https://app.example.com/deals', title: 'Deals',
@@ -489,7 +516,9 @@ describe('scroll — a screen at a time, from where the page is, and left there'
     expect(await run(api, command('scroll', { page: '7:DOC7', to: 'next' }, ['page', 'url', 'title', 'screen', 'screens'])))
       .toEqual({ status: 'ok', outputs: { page: '7:DOC7', url: 'https://app.example.com/deals', title: 'Deals', screen: 3, screens: 6 } });
     expect(calls.map(([name, args]) => name === 'measurePageArea' ? `measure ${String(args[2])}` : name))
-      .toEqual(['measure null', 'measure 3', 'waitForQuiet', 'measure null']);
+      .toEqual(['pageIdentity', 'measure null', 'measure 3', 'waitForQuiet', 'measure null']);
+    expect(calls.filter(([name]) => name === 'measurePageArea').map(([, args]) => args[1]))
+      .toEqual(['https://app.example.com/deals', 'https://app.example.com/deals', 'https://app.example.com/deals']);
     // A scroll measures as a frame's own page may: no picture is taken.
     expect(calls.find(([name]) => name === 'measurePageArea')![1].slice(4)).toEqual([PAGE_SCREEN_STEP, false]);
   });

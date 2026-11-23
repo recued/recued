@@ -16,5 +16,13 @@ export const RECORDS_REVIEW_FIXTURE: ResourceReview = {
     kind: 'records', key: 'note-2', label: 'New note', binding: 'binding', version: 'reviewed-absence',
     precondition: { kind: 'records_absent', generated_for: 3 }, before: {}, after: { id: 'note-2', title: 'Inserted note' },
     changes: [{ operation_index: 3, action: 'create', before: null, after: { id: 'note-2', title: 'Inserted note' } }],
-  }],
+  },
+  // An import in the same batch: long enough that the review scrolls in its box, as one does.
+  ...Array.from({ length: 12 }, (_, index) => ({
+    kind: 'records' as const, key: 'import-' + String(index + 1), label: 'Imported note ' + String(index + 1),
+    binding: 'binding', version: 'reviewed-absence', precondition: { kind: 'records_absent' as const, generated_for: index + 4 },
+    before: {}, after: { id: 'import-' + String(index + 1), title: 'Imported note ' + String(index + 1), body: 'From the March list' },
+    changes: [{ operation_index: index + 4, action: 'create' as const, before: null,
+      after: { id: 'import-' + String(index + 1), title: 'Imported note ' + String(index + 1), body: 'From the March list' } }],
+  }))],
 };

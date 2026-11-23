@@ -30,6 +30,7 @@ import type {
   WebhookRejectedDeliveryReasonCode,
   WebhookSourceTruthPolicy,
   WebhookTransportAssurance,
+  WebhookDeadLetterServerReason,
 } from '@recued/contracts';
 import type { WebhookProfileHttpResponse } from '../webhook-profile-runtime.js';
 import {
@@ -40,6 +41,18 @@ import {
 import type {
   WebhookParsedPositiveSafeIntegerText,
 } from '../webhook-positive-safe-integer-text-parser.js';
+import { WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS } from './webhook-ingress-store.js';
+import {
+  WebhookDeadLetterActionError,
+  deadLetterPageCondition,
+  ensureWebhookDeadLetterReviewSchema,
+  closingWebhookDeadLetterReview,
+  pruneWebhookDeadLetterReviews,
+  insertWebhookDeadLetterReview,
+  type WebhookDeadLetterDecision,
+  type WebhookDeadLetterPageBound,
+  type WebhookDeadLetterReviewRow,
+} from './webhook-dead-letter-reviews.js';
 
 export const DEFAULT_WEBHOOK_PAYLOAD_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const DEFAULT_WEBHOOK_DEDUP_RETENTION_MS = 45 * 24 * 60 * 60 * 1_000;
@@ -138,6 +151,9 @@ export interface WebhookDeliveryPage {
 
 interface WebhookStoredEventInspectionBase {
   event: AcceptedWebhookEventRecord;
+  /** D-201 Slice 10B — when this event's dead letter was closed (its
+   *  `dispatch_state` stays `dead_letter`); null otherwise. */
+  resolved_at: number | null;
 }
 
 export type WebhookStoredEventInspection = WebhookStoredEventInspectionBase & (
@@ -196,7 +212,12 @@ export interface WebhookDeliveryStoreOptions {
   >[];
   rejectionRetentionMs?: number;
   rejectionBucketMs?: number;
+  /** D-201 Slice 10AU (10AS finding 4) — per webhook, for the refusals for the
+   *  signature (`authentication_failed`) and for the other kinds apart: none
+   *  of one kind evicts the other. */
   maxRejectionSummariesPerIngress?: number;
+  /** D-201 Slice 10AU — across the server, for the kinds other than the
+   *  refusals for the signature, which only the per-webhook cap bounds. */
   maxRejectionSummaries?: number;
   maxOutboxBacklog?: number;
   /** Slice 4 binding-aware front-line selector. The ingress's remote event
@@ -207,6 +228,24 @@ export interface WebhookDeliveryStoreOptions {
     ingressId: string,
     providerEventType: string,
   ) => boolean;
+  /** D-201 Slice 10A — events whose recipe work the outbox has handed off
+   * but that is not done: pending, running (an owner hold excepted) or
+   * dead-lettered targets (`WebhookConsumerStore.countActiveDispatchEvents`).
+   * The outbox used to hold that work until its recipes finished, so its
+   * backlog bound it; the bound now counts both. An event between its targets'
+   * commit and its outer row's `dispatched` mark counts twice, for a moment:
+   * a capacity gate may err that way. Absent counts nothing (no consumer). */
+  countActiveConsumerWork?: () => number;
+  /** D-201 Slice 10F — the consumer store's side of an event dead letter,
+   * each run inside the decision's own transaction (both stores share one
+   * database): closing it cancels its targets and releases their pins; trying
+   * it again gives them fresh attempts, and is refused (`no_recipe`) when no
+   * recipe takes the event now. Retention also removes the finished target
+   * rows of the events it deletes. Absent: no consumer (an isolated harness). */
+  onDeadLetterEventClosed?: (eventId: string) => void;
+  onDeadLetterEventRequeued?: (eventId: string) => void;
+  eventHasCurrentRecipe?: (eventId: string) => boolean;
+  pruneConsumerRows?: () => void;
   /** Test-only crash point. Throwing here rolls the whole accept transaction back. */
   beforeAcceptCommit?: () => void;
 }
@@ -232,6 +271,17 @@ export interface WebhookDeliveryStore {
   readEventPayload(eventId: string): Promise<unknown | null>;
   readRetainedEventPayload(eventId: string): Promise<WebhookRetainedEventPayload | null>;
   recordRejectedDelivery(input: WebhookRejectedDeliveryInput): void;
+  /** D-201 Slice 10AN (the owner's call, 2026-11-20) — the messages refused for
+   *  their signature (`authentication_failed`) recorded after `since`, the
+   *  ingress's last verified message (null: none yet), and when the first of
+   *  them came. Counted from the bounded summaries, so at least that many were
+   *  refused: an unauthenticated sender adds no write of its own. Null when
+   *  none was. D-201 Slice 10AU (10AS findings 4 and 25) — no other kind of
+   *  bad request evicts them, and only what is not ahead of now is read. */
+  authenticationRefusalsSince(
+    ingressId: string,
+    since: number | null,
+  ): { readonly refused: number; readonly first_at: number } | null;
   listRejectedDeliveriesPage(input: {
     ingress_id: string;
     limit: number;
@@ -263,6 +313,64 @@ export interface WebhookDeliveryStore {
   prune(at?: number): WebhookRetentionResult;
   /** Owner-control-plane prune. It deliberately has no timestamp parameter. */
   pruneIngress(input: { ingress_id: string }): WebhookRetentionResult;
+  /** D-201 Slice 10B — one ingress's unresolved event dead letters (events
+   * whose handoff to their recipes spent its attempts), newest first. */
+  /** One webhook's event dead letters, newest first: the open ones, or (Slice
+   * 10F, `closed`) the closed ones with who closed them and why. */
+  listDeadLetterEvents(input: {
+    ingress_id: string;
+    limit: number;
+    before?: WebhookDeadLetterPageBound;
+    closed?: boolean;
+  }): WebhookDeadLetterEventRow[];
+  /** D-201 Slice 10F — close the open event dead letters of one webhook,
+   * recording that Recued did and why (a retired webhook). Returns how many. */
+  closeDeadLetterEventsForIngress(
+    ingressId: string,
+    reason: WebhookDeadLetterServerReason,
+  ): number;
+  /** Unresolved event dead letters on one ingress, or on the server. */
+  countUnresolvedDeadLetterEvents(ingressId?: string): number;
+  /** The oldest unresolved event dead letters, for the review limit. */
+  oldestUnresolvedDeadLetterEvents(limit: number): WebhookDeadLetterAge[];
+  /** Try an event dead letter again: its outbox row is pending at once with
+   * fresh attempts, under its original event id; the handoff then re-derives
+   * the event's current targets. Records the decision. */
+  requeueDeadLetterEvent(
+    input: { outbox_id: string } & WebhookDeadLetterDecision,
+  ): WebhookDeadLetterReviewRow;
+  /** Close an event dead letter: a reviewed end, never a claim that it was
+   * handed off. Its event and payload then follow their retention. */
+  resolveDeadLetterEvent(
+    input: { outbox_id: string; action: 'resolve' | 'expire' } & WebhookDeadLetterDecision,
+  ): WebhookDeadLetterReviewRow;
+}
+
+/** D-201 Slice 10B — an event whose handoff to its recipes spent its attempts. */
+export interface WebhookDeadLetterEventRow {
+  outbox_id: string;
+  event_id: string;
+  delivery_id: string;
+  ingress_id: string;
+  provider_event_type: string;
+  received_at: number;
+  attempt_count: number;
+  last_error_code: string | null;
+  dead_lettered_at: number;
+  payload_retained: boolean;
+  /** Slice 10F — on a closed one: when, by whom and why. */
+  closure?: {
+    closed_at: number;
+    closed_by: 'owner' | 'server';
+    reason: string | null;
+  };
+}
+
+/** A dead letter's identity and age, for the review limit's oldest-first close. */
+export interface WebhookDeadLetterAge {
+  id: string;
+  ingress_id: string;
+  dead_lettered_at: number;
 }
 
 interface DeliverySqlRow {
@@ -302,6 +410,8 @@ interface EventSqlRow {
   selected_for_dispatch: number;
   dispatch_state: string;
   expires_at: number;
+  /** D-201 Slice 10B — absent from a row the store builds before inserting. */
+  resolved_at?: number | null;
 }
 
 interface EventInspectionSqlRow extends EventSqlRow {
@@ -332,6 +442,8 @@ interface OutboxSqlRow {
   expires_at: number;
   created_at: number;
   updated_at: number;
+  /** D-201 Slice 10B — when a dead letter was closed; null otherwise. */
+  resolved_at: number | null;
 }
 
 interface RejectedDeliverySqlRow {
@@ -499,6 +611,28 @@ const createSchema = (db: Database.Database): void => {
     CREATE INDEX IF NOT EXISTS idx_webhook_outbox_expiry
       ON webhook_event_outbox(expires_at, state);
   `);
+  // D-201 Slice 10B — an event dead letter the owner (or the review limit)
+  // closed keeps its state, which says what happened, and gains the time it
+  // was closed. A column, not a new state: the events table is the parent of
+  // the outbox's foreign key, so widening its state CHECK would mean rebuilding
+  // it with foreign keys off at boot. Added in place on an older database.
+  for (const table of ['webhook_event_outbox', 'webhook_accepted_events']) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'resolved_at')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN resolved_at INTEGER`);
+    }
+  }
+  // D-201 Slice 10F — the open and the closed event dead letters on their own,
+  // so the review limit's count on every worker poll reads only the open ones.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_webhook_outbox_open_dead_letters
+      ON webhook_event_outbox(updated_at, outbox_id)
+      WHERE state = 'dead_letter' AND resolved_at IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_webhook_outbox_closed_dead_letters
+      ON webhook_event_outbox(updated_at, outbox_id)
+      WHERE state = 'dead_letter' AND resolved_at IS NOT NULL;
+  `);
+  ensureWebhookDeadLetterReviewSchema(db);
 };
 
 const deliveryFromSql = (row: DeliverySqlRow): AcceptedWebhookDeliveryRecord => ({
@@ -684,6 +818,7 @@ export const createWebhookDeliveryStore = (
     ?? DEFAULT_WEBHOOK_REJECTION_SUMMARIES_TOTAL;
   const maxOutboxBacklog = options.maxOutboxBacklog ?? 10_000;
   const hasDispatchTarget = options.hasDispatchTarget ?? (() => false);
+  const countActiveConsumerWork = options.countActiveConsumerWork ?? (() => 0);
   assertPositiveDuration(payloadRetentionMs, 'payloadRetentionMs');
   assertPositiveDuration(dedupRetentionMs, 'dedupRetentionMs');
   assertPositiveDuration(rejectionRetentionMs, 'rejectionRetentionMs');
@@ -899,26 +1034,59 @@ export const createWebhookDeliveryStore = (
         recordedIncrement,
         expiresAt,
       );
+      // D-201 Slice 10AU (10AS finding 4) — the refusals for the signature are
+      // kept apart from the other kinds: each is capped among its own, so no
+      // other bad request evicts the refusals a run counts from
+      // (`authenticationRefusalsSince`). Evicted oldest first whatever their
+      // reason, they went to an outsider's requests of any other kind (a GET,
+      // a long query, a large header), and a webhook that refused every
+      // message read healthy. Only the other kinds are capped across the
+      // server too: a webhook's refusals for the signature are at most the
+      // per-webhook cap, for as many webhooks as the owner made, so the
+      // requests to another webhook cannot evict them either.
+      const signatureRefusal = input.reason_code === 'authentication_failed' ? 1 : 0;
+      // D-201 Slice 10BB (10AY finding 6) — a row stamped ahead of this one, by
+      // a clock that ran ahead and was set right, goes first: it is never read
+      // until its time comes. Kept as the newest, rows a clock stamped ahead
+      // filled the cap and every real refusal after it was evicted, so a
+      // webhook refusing every message read healthy until those rows expired.
       db.prepare(`
         DELETE FROM webhook_rejected_delivery_summaries
         WHERE rejection_id IN (
           SELECT rejection_id FROM webhook_rejected_delivery_summaries
-          WHERE ingress_id = ?
-          ORDER BY bucket_started_at DESC, last_recorded_at DESC, rejection_id ASC
+          WHERE ingress_id = ? AND (reason_code = 'authentication_failed') = ?
+          ORDER BY (first_recorded_at > ?) ASC, bucket_started_at DESC, last_recorded_at DESC, rejection_id ASC
           LIMIT -1 OFFSET ?
         )
-      `).run(input.ingress_id, maxRejectionSummariesPerIngress);
-      db.prepare(`
-        DELETE FROM webhook_rejected_delivery_summaries
-        WHERE rejection_id IN (
-          SELECT rejection_id FROM webhook_rejected_delivery_summaries
-          ORDER BY bucket_started_at DESC, last_recorded_at DESC, rejection_id ASC
-          LIMIT -1 OFFSET ?
-        )
-      `).run(maxRejectionSummaries);
+      `).run(input.ingress_id, signatureRefusal, input.received_at, maxRejectionSummariesPerIngress);
+      if (signatureRefusal === 0) {
+        db.prepare(`
+          DELETE FROM webhook_rejected_delivery_summaries
+          WHERE rejection_id IN (
+            SELECT rejection_id FROM webhook_rejected_delivery_summaries
+            WHERE reason_code <> 'authentication_failed'
+            ORDER BY (first_recorded_at > ?) ASC, bucket_started_at DESC, last_recorded_at DESC, rejection_id ASC
+            LIMIT -1 OFFSET ?
+          )
+        `).run(input.received_at, maxRejectionSummaries);
+      }
     });
     persist();
     counter.persisted = counter.observed;
+  };
+
+  /** D-201 Slice 10AU (10AS finding 25) — a verified message ends the run of
+   *  refusals: those before it, by its time (the run's start), and those
+   *  stamped after it by a clock that ran ahead, by this. Kept, they came back
+   *  into a run once the clock passed them, while every message verified. The
+   *  tolerance is the one its time keeps (`last_delivery_at`). */
+  const forgetRefusalsStampedAhead = (
+    input: Pick<WebhookAcceptedDeliveryInput, 'ingress_id' | 'received_at'>,
+  ): void => {
+    db.prepare(`
+      DELETE FROM webhook_rejected_delivery_summaries
+      WHERE ingress_id = ? AND reason_code = 'authentication_failed' AND last_recorded_at > ?
+    `).run(input.ingress_id, input.received_at + WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS);
   };
 
   const markMatchedCredentialVerified = (
@@ -958,11 +1126,14 @@ export const createWebhookDeliveryStore = (
   });
 
   const requireOutboxCapacity = (): void => {
+    // D-201 Slice 10B — active work only. A dead letter waits for the owner
+    // and is bounded by the review limit on its own; counted here, enough of
+    // them stopped all new intake for good (the post-9BQ audit's Gate 22).
     const row = db.prepare(`
       SELECT COUNT(*) AS count FROM webhook_event_outbox
-      WHERE state IN ('pending', 'leased', 'dead_letter')
+      WHERE state IN ('pending', 'leased')
     `).get() as { count: number };
-    if (row.count >= maxOutboxBacklog) {
+    if (row.count + countActiveConsumerWork() >= maxOutboxBacklog) {
       throw new WebhookDeliveryStoreError(
         'backpressure',
         'webhook outbox backlog is at capacity',
@@ -987,6 +1158,7 @@ export const createWebhookDeliveryStore = (
     ) as DeliverySqlRow | undefined;
     if (existing) {
       markMatchedCredentialVerified(input, matchedCredentialVersion);
+      forgetRefusalsStampedAhead(input);
       return duplicateResult(existing);
     }
     const initialSelection = parseSelectedEventTypes(
@@ -1189,8 +1361,10 @@ export const createWebhookDeliveryStore = (
             THEN 'enabled'
             ELSE intake_state
           END,
+          -- D-201 Slice 10AR (10AM finding 28) — one stamped ahead by a clock
+          -- that ran ahead gives way, as the ingress store's does.
           last_delivery_at = CASE
-            WHEN last_delivery_at IS NULL OR last_delivery_at < ? THEN ?
+            WHEN last_delivery_at IS NULL OR last_delivery_at < ? OR last_delivery_at > ? THEN ?
             ELSE last_delivery_at
           END,
           last_error_code = CASE
@@ -1208,11 +1382,13 @@ export const createWebhookDeliveryStore = (
         input.received_at,
         input.received_at,
         input.received_at,
+        input.received_at + WEBHOOK_LAST_DELIVERY_AHEAD_TOLERANCE_MS,
         input.received_at,
         acceptedAt,
         input.ingress_id,
       );
       markMatchedCredentialVerified(input, matchedCredentialVersion);
+      forgetRefusalsStampedAhead(input);
       options.beforeAcceptCommit?.();
 
       const persisted = selectDeliveryById.get(deliveryId) as DeliverySqlRow;
@@ -1549,12 +1725,14 @@ export const createWebhookDeliveryStore = (
           AND NOT EXISTS (
             SELECT 1 FROM webhook_accepted_events event
             WHERE event.event_id = webhook_decoded_payloads.event_id
-              AND event.dispatch_state IN ('pending', 'dead_letter')
+              AND (event.dispatch_state = 'pending'
+                OR (event.dispatch_state = 'dead_letter' AND event.resolved_at IS NULL))
           )
           AND NOT EXISTS (
             SELECT 1 FROM webhook_event_outbox outbox
             WHERE outbox.event_id = webhook_decoded_payloads.event_id
-              AND outbox.state IN ('pending', 'leased', 'dead_letter')
+              AND (outbox.state IN ('pending', 'leased')
+                OR (outbox.state = 'dead_letter' AND outbox.resolved_at IS NULL))
           )
           AND NOT EXISTS (
             SELECT 1 FROM webhook_payload_pins pin
@@ -1564,7 +1742,9 @@ export const createWebhookDeliveryStore = (
 
       const outbox = db.prepare(`
         DELETE FROM webhook_event_outbox
-        WHERE expires_at <= @at AND state = 'dispatched'
+        WHERE expires_at <= @at
+          AND (state = 'dispatched'
+            OR (state = 'dead_letter' AND resolved_at IS NOT NULL))
           AND (
             @ingress_id IS NULL
             OR EXISTS (
@@ -1582,7 +1762,8 @@ export const createWebhookDeliveryStore = (
             SELECT event_id FROM webhook_accepted_events
             WHERE expires_at <= @at
               AND (@ingress_id IS NULL OR ingress_id = @ingress_id)
-              AND dispatch_state IN ('ignored', 'dispatched')
+              AND (dispatch_state IN ('ignored', 'dispatched')
+                OR (dispatch_state = 'dead_letter' AND resolved_at IS NOT NULL))
           )
           AND NOT EXISTS (
             SELECT 1 FROM webhook_payload_pins pin
@@ -1593,7 +1774,8 @@ export const createWebhookDeliveryStore = (
         DELETE FROM webhook_accepted_events
         WHERE expires_at <= @at
           AND (@ingress_id IS NULL OR ingress_id = @ingress_id)
-          AND dispatch_state IN ('ignored', 'dispatched')
+          AND (dispatch_state IN ('ignored', 'dispatched')
+            OR (dispatch_state = 'dead_letter' AND resolved_at IS NOT NULL))
           AND NOT EXISTS (
             SELECT 1 FROM webhook_event_outbox outbox
             WHERE outbox.event_id = webhook_accepted_events.event_id
@@ -1617,6 +1799,13 @@ export const createWebhookDeliveryStore = (
         WHERE expires_at <= @at
           AND (@ingress_id IS NULL OR ingress_id = @ingress_id)
       `).run(parameters);
+      // D-201 Slice 10F — what was kept about an event goes with it: its
+      // dead-letter review records, and its finished target rows (done,
+      // cancelled or closed). Both grew without bound before.
+      if (events.changes > 0) {
+        pruneWebhookDeadLetterReviews(db);
+        options.pruneConsumerRows?.();
+      }
       return {
         payloads_deleted: payloads.changes,
         outbox_rows_deleted: outbox.changes,
@@ -1630,6 +1819,201 @@ export const createWebhookDeliveryStore = (
   const prune = (at = now()): WebhookRetentionResult => pruneScope(at, null);
   const pruneIngress: WebhookDeliveryStore['pruneIngress'] = (input) =>
     pruneScope(now(), input.ingress_id);
+
+  // ── D-201 Slice 10B — event dead letters for the owner's review ──────────
+
+  const listDeadLetterEvents: WebhookDeliveryStore[
+    'listDeadLetterEvents'
+  ] = (input) => {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 101) {
+      throw new Error('webhook dead letters: limit must be in 1..101');
+    }
+    const bound = deadLetterPageCondition(input.before, 'outbox.updated_at', 'outbox.outbox_id');
+    const rows = db.prepare(`
+      SELECT
+        outbox.outbox_id, outbox.event_id, event.delivery_id, event.ingress_id,
+        event.provider_event_type, delivery.received_at, outbox.attempt_count,
+        outbox.last_error_code, outbox.updated_at AS dead_lettered_at,
+        EXISTS (
+          SELECT 1 FROM webhook_decoded_payloads payload
+          WHERE payload.event_id = outbox.event_id
+        ) AS payload_retained
+      FROM webhook_event_outbox outbox INDEXED BY ${input.closed === true
+        ? 'idx_webhook_outbox_closed_dead_letters'
+        : 'idx_webhook_outbox_open_dead_letters'}
+      JOIN webhook_accepted_events event ON event.event_id = outbox.event_id
+      JOIN webhook_accepted_deliveries delivery
+        ON delivery.delivery_id = event.delivery_id
+      WHERE outbox.state = 'dead_letter'
+        AND ${input.closed === true ? 'outbox.resolved_at IS NOT NULL' : 'outbox.resolved_at IS NULL'}
+        AND event.ingress_id = @ingress_id
+        AND ${bound.sql}
+      ORDER BY outbox.updated_at DESC, outbox.outbox_id DESC
+      LIMIT @limit
+    `).all({ ingress_id: input.ingress_id, limit: input.limit, ...bound.params }) as Array<
+      Omit<WebhookDeadLetterEventRow, 'payload_retained' | 'closure'> & { payload_retained: number }
+    >;
+    return rows.map((row) => {
+      const view: WebhookDeadLetterEventRow = { ...row, payload_retained: row.payload_retained === 1 };
+      if (input.closed !== true) return view;
+      const closing = closingWebhookDeadLetterReview(db, { kind: 'event', id: row.outbox_id });
+      return {
+        ...view,
+        closure: {
+          closed_at: row.dead_lettered_at,
+          closed_by: closing?.actor_kind ?? 'server',
+          reason: closing?.reason ?? null,
+        },
+      };
+    });
+  };
+
+  const countUnresolvedDeadLetterEvents: WebhookDeliveryStore[
+    'countUnresolvedDeadLetterEvents'
+  ] = (ingressId) => (db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM webhook_event_outbox outbox INDEXED BY idx_webhook_outbox_open_dead_letters
+    JOIN webhook_accepted_events event ON event.event_id = outbox.event_id
+    WHERE outbox.state = 'dead_letter' AND outbox.resolved_at IS NULL
+      AND (@ingress_id IS NULL OR event.ingress_id = @ingress_id)
+  `).get({ ingress_id: ingressId ?? null }) as { count: number }).count;
+
+  const oldestUnresolvedDeadLetterEvents: WebhookDeliveryStore[
+    'oldestUnresolvedDeadLetterEvents'
+  ] = (limit) => {
+    if (!Number.isSafeInteger(limit) || limit < 1) return [];
+    return db.prepare(`
+      SELECT outbox.outbox_id AS id, event.ingress_id AS ingress_id,
+        outbox.updated_at AS dead_lettered_at
+      FROM webhook_event_outbox outbox INDEXED BY idx_webhook_outbox_open_dead_letters
+      JOIN webhook_accepted_events event ON event.event_id = outbox.event_id
+      WHERE outbox.state = 'dead_letter' AND outbox.resolved_at IS NULL
+      ORDER BY outbox.updated_at ASC, outbox.outbox_id ASC
+      LIMIT ?
+    `).all(limit) as WebhookDeadLetterAge[];
+  };
+
+  /** The dead letter a decision names, checked against what its caller saw. */
+  const requireUnresolvedDeadLetterEvent = (
+    input: { outbox_id: string } & WebhookDeadLetterDecision,
+  ): OutboxSqlRow & { ingress_id: string } => {
+    const row = db.prepare(`
+      SELECT outbox.*, event.ingress_id AS ingress_id
+      FROM webhook_event_outbox outbox
+      JOIN webhook_accepted_events event ON event.event_id = outbox.event_id
+      WHERE outbox.outbox_id = ?
+    `).get(input.outbox_id) as (OutboxSqlRow & { ingress_id: string }) | undefined;
+    if (!row || row.ingress_id !== input.ingress_id) {
+      throw new WebhookDeadLetterActionError('not_found', 'webhook dead letter not found');
+    }
+    if (row.state !== 'dead_letter' || row.resolved_at !== null) {
+      throw new WebhookDeadLetterActionError(
+        'not_dead_letter',
+        'webhook event is no longer a dead letter',
+      );
+    }
+    if (row.updated_at !== input.dead_lettered_at) {
+      throw new WebhookDeadLetterActionError(
+        'stale',
+        'webhook dead letter changed since it was read',
+      );
+    }
+    return row;
+  };
+
+  const requeueDeadLetterEvent: WebhookDeliveryStore['requeueDeadLetterEvent'] = (
+    input,
+  ) => db.transaction((): WebhookDeadLetterReviewRow => {
+    const row = requireUnresolvedDeadLetterEvent(input);
+    // Slice 10F — tried again, it must reach a recipe. Before, one no recipe
+    // takes now was handed to nothing and marked dispatched, while Settings
+    // said Recued was trying it again.
+    if (options.eventHasCurrentRecipe !== undefined
+      && !options.eventHasCurrentRecipe(row.event_id)) {
+      throw new WebhookDeadLetterActionError(
+        'no_recipe',
+        'no recipe takes this dead letter now',
+      );
+    }
+    options.onDeadLetterEventRequeued?.(row.event_id);
+    const stamp = now();
+    db.prepare(`
+      UPDATE webhook_event_outbox SET
+        state = 'pending', attempt_count = 0, available_at = ?,
+        last_error_code = NULL, updated_at = ?
+      WHERE outbox_id = ? AND state = 'dead_letter' AND resolved_at IS NULL
+    `).run(stamp, stamp, row.outbox_id);
+    db.prepare(`
+      UPDATE webhook_accepted_events SET dispatch_state = 'pending'
+      WHERE event_id = ?
+    `).run(row.event_id);
+    return insertWebhookDeadLetterReview(db, {
+      subject_kind: 'event',
+      subject_id: row.outbox_id,
+      event_id: row.event_id,
+      ingress_id: row.ingress_id,
+      action: 'requeue',
+      actor_kind: input.actor_kind,
+      actor_instance_id: input.actor_instance_id,
+      reason: input.reason,
+      attempt_count: row.attempt_count,
+      created_at: stamp,
+    });
+  })();
+
+  const resolveDeadLetterEvent: WebhookDeliveryStore['resolveDeadLetterEvent'] = (
+    input,
+  ) => db.transaction((): WebhookDeadLetterReviewRow => {
+    const row = requireUnresolvedDeadLetterEvent(input);
+    // Slice 10F — its targets can never run now: cancelled, their pins gone,
+    // and no longer counted against intake.
+    options.onDeadLetterEventClosed?.(row.event_id);
+    const stamp = now();
+    db.prepare(`
+      UPDATE webhook_event_outbox SET resolved_at = ?, updated_at = ?
+      WHERE outbox_id = ? AND state = 'dead_letter' AND resolved_at IS NULL
+    `).run(stamp, stamp, row.outbox_id);
+    db.prepare(`
+      UPDATE webhook_accepted_events SET resolved_at = ?
+      WHERE event_id = ? AND dispatch_state = 'dead_letter'
+    `).run(stamp, row.event_id);
+    return insertWebhookDeadLetterReview(db, {
+      subject_kind: 'event',
+      subject_id: row.outbox_id,
+      event_id: row.event_id,
+      ingress_id: row.ingress_id,
+      action: input.action,
+      actor_kind: input.actor_kind,
+      actor_instance_id: input.actor_instance_id,
+      reason: input.reason,
+      attempt_count: row.attempt_count,
+      created_at: stamp,
+    });
+  })();
+
+  const closeDeadLetterEventsForIngress: WebhookDeliveryStore[
+    'closeDeadLetterEventsForIngress'
+  ] = (ingressId, reason) => db.transaction((): number => {
+    const rows = db.prepare(`
+      SELECT outbox.outbox_id AS outbox_id, outbox.updated_at AS dead_lettered_at
+      FROM webhook_event_outbox outbox INDEXED BY idx_webhook_outbox_open_dead_letters
+      JOIN webhook_accepted_events event ON event.event_id = outbox.event_id
+      WHERE outbox.state = 'dead_letter' AND outbox.resolved_at IS NULL
+        AND event.ingress_id = ?
+    `).all(ingressId) as Array<{ outbox_id: string; dead_lettered_at: number }>;
+    for (const row of rows) {
+      resolveDeadLetterEvent({
+        outbox_id: row.outbox_id,
+        action: 'expire',
+        ingress_id: ingressId,
+        dead_lettered_at: row.dead_lettered_at,
+        actor_kind: 'server',
+        actor_instance_id: null,
+        reason,
+      });
+    }
+    return rows.length;
+  })();
 
   return {
     accept,
@@ -1697,6 +2081,41 @@ export const createWebhookDeliveryStore = (
       };
     },
     recordRejectedDelivery,
+    authenticationRefusalsSince(ingressId, since) {
+      // A summary's minute may straddle the verified message: its last record
+      // is after it, so it counts, from that record when its first is before,
+      // as one, the one known to be after. "At least" holds: a summary records
+      // at most the refusals it saw.
+      // D-201 Slice 10AU (10AS finding 25) — and only what is not ahead of now:
+      // a record a clock that ran ahead stamped is not trusted. One whose first
+      // is not ahead counts as one, from its first; one wholly ahead is not
+      // read. Read, refusals stamped a day ahead kept a webhook degraded, and
+      // set again, while every message verified.
+      const row = db.prepare(`
+        SELECT COALESCE(SUM(CASE
+            WHEN last_recorded_at <= @now AND (@since IS NULL OR first_recorded_at > @since)
+              THEN recorded_attempt_count
+            ELSE 1
+          END), 0) AS refused,
+          MIN(CASE
+            WHEN @since IS NULL OR first_recorded_at > @since THEN first_recorded_at
+            ELSE last_recorded_at
+          END) AS first_at
+        FROM webhook_rejected_delivery_summaries
+        WHERE ingress_id = @ingress_id
+          AND reason_code = 'authentication_failed'
+          AND expires_at > @now
+          AND first_recorded_at <= @now
+          AND (
+            @since IS NULL
+            OR first_recorded_at > @since
+            OR (last_recorded_at <= @now AND last_recorded_at > @since)
+          )
+      `).get({ ingress_id: ingressId, since, now: now() }) as { refused: number; first_at: number | null };
+      return row.refused > 0 && row.first_at !== null
+        ? { refused: row.refused, first_at: row.first_at }
+        : null;
+    },
     listRejectedDeliveriesPage(input) {
       if (!Number.isSafeInteger(input.limit)
         || input.limit < 1
@@ -1788,10 +2207,12 @@ export const createWebhookDeliveryStore = (
           );
         }
         const event = eventFromSql(row);
+        const resolvedAt = row.resolved_at ?? null;
         return row.payload_expires_at === null
-          ? { event, payload_retained: false, payload_expires_at: null }
+          ? { event, resolved_at: resolvedAt, payload_retained: false, payload_expires_at: null }
           : {
               event,
+              resolved_at: resolvedAt,
               payload_retained: true,
               payload_expires_at: row.payload_expires_at,
             };
@@ -1811,5 +2232,11 @@ export const createWebhookDeliveryStore = (
     releaseOutboxClaim,
     prune,
     pruneIngress,
+    listDeadLetterEvents,
+    closeDeadLetterEventsForIngress,
+    countUnresolvedDeadLetterEvents,
+    oldestUnresolvedDeadLetterEvents,
+    requeueDeadLetterEvent,
+    resolveDeadLetterEvent,
   };
 };

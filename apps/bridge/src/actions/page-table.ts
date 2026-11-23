@@ -60,9 +60,15 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
   const isTable = (element: Element) => (element.localName === 'table'
     ? !['presentation', 'none'].includes(roleOf(element))
     : ['table', 'grid', 'treegrid'].includes(roleOf(element)));
-  const shown = (element: Element) => element.getAttribute('aria-hidden') !== 'true'
-    && (element.checkVisibility({ checkVisibilityCSS: true })
-      || getComputedStyle(element).display === 'contents');
+  const shown = (element: Element) => {
+    // ARIA exclusion is inherited, including through component hosts and slots.
+    for (let at: Element | null = element; at;) {
+      if (at.getAttribute('aria-hidden') === 'true') return false;
+      at = at.assignedSlot ?? at.parentElement ?? (at.getRootNode() as ShadowRoot).host ?? null;
+    }
+    return element.checkVisibility({ checkVisibilityCSS: true })
+      || getComputedStyle(element).display === 'contents';
+  };
   const firstShownTable = (within: ParentNode) =>
     [...within.querySelectorAll(TABLES)].find(element => isTable(element) && shown(element)) ?? null;
 
@@ -187,7 +193,7 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
   }
 
   const width = Math.max(0, ...headerRows.map(row => row.length), ...body.map(row => row.length));
-  const columns = Array.from({ length: width }, (_, i) => {
+  const labels = Array.from({ length: width }, (_, i) => {
     const names: string[] = [];
     for (const row of headerRows) {
       const name = row[i] ?? '';
@@ -195,13 +201,39 @@ export const readPageTable = (scope: PageInspectScope, limits: PageTableLimits, 
     }
     return names.length > 0 ? names.join(' / ') : `column ${i + 1}`;
   });
+  // Headers (including joined names and generated ones) share the cells'
+  // budget. Keep complete labels as a prefix, then whole rows within those
+  // columns, so a cut never shifts a value under another column's name.
+  let chars = 0;
+  const columns: string[] = [];
+  for (const label of labels) {
+    if (chars + label.length > limits.max_chars) {
+      truncated = true;
+      break;
+    }
+    columns.push(label);
+    chars += label.length;
+  }
+  const keptRows: string[][] = [];
+  if (columns.length > 0) {
+    for (const row of body) {
+      const cells = Array.from({ length: columns.length }, (_, i) => row[i] ?? '');
+      const size = cells.reduce((sum, value) => sum + value.length, 0);
+      if (chars + size > limits.max_chars) {
+        truncated = true;
+        break;
+      }
+      keptRows.push(cells);
+      chars += size;
+    }
+  }
   const title = document.title.length > 200 ? `${document.title.slice(0, 200)}…` : document.title;
   return {
     outputs: {
       url: location.href,
       title,
       columns,
-      rows: body.map(row => Array.from({ length: width }, (_, i) => row[i] ?? '')),
+      rows: keptRows,
       truncated,
     },
   };

@@ -87,11 +87,13 @@ export const mountBackupHealth = (options: {
     const unknown = (issue: 'history_unavailable' | 'clock_changed' | undefined) => issue === 'clock_changed' ? 'Check the server clock.' : 'Saved history could not be read.';
     backup.textContent = !b ? '' : b.state === 'unavailable' ? `Backup age is unknown. ${unknown(b.issue)}`
       : `${b.state === 'due' ? 'Backup overdue' : b.created_at === undefined ? 'Waiting for the first verified backup' : 'Verified backup within the age limit'}`
-        + (b.created_at === undefined ? ' · No verified copy is recorded for this destination' : ` · Backup started ${formatClientDateTime(b.created_at)} · Backup ${b.operation_id}`)
+        + (b.created_at === undefined ? ' · No verified copy is recorded for this destination' : ` · Backup started ${formatClientDateTime(b.created_at)}`
+          + (b.operation_id === undefined ? '' : ` · Backup ${b.operation_id}`))
         + ` · Fresh copy due ${formatClientDateTime(b.due_at!)}`;
     recovery.textContent = !r ? '' : r.state === 'unavailable' ? `Recovery test age is unknown. ${unknown(r.issue)}`
       : `${r.state === 'due' ? 'Recovery test overdue' : r.finished_at === undefined ? 'Waiting for the first passing recovery test' : 'Passing recovery test within the age limit'}`
-        + (r.finished_at === undefined ? '' : ` · Passed ${formatClientDateTime(r.finished_at)} · Test ${r.operation_id}`)
+        + (r.finished_at === undefined ? '' : ` · Passed ${formatClientDateTime(r.finished_at)}`
+          + (r.operation_id === undefined ? '' : ` · Test ${r.operation_id}`))
         + ` · Test due ${formatClientDateTime(r.due_at!)}`;
     alerts.textContent = !value.policy.alerts_enabled ? 'Health alerts are off. Receipt checks stay available.'
       : value.alerts.some(a => a.delivery === 'pending') ? 'Health alert awaiting notification delivery.'

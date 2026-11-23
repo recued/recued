@@ -30,6 +30,10 @@ export interface BrowserPassKey {
   readonly recipe: string;
   /** The page's origin, `https://github.com`: scheme, host and port. */
   readonly site: string;
+  /** D-402 slice H4c (§4.2 item 8) — for a recipe that names its browsers, the browser the write runs in
+   *  (its lasting id): a pass granted for one lets no other through. Absent for a recipe that names none,
+   *  such as the Browser Toolkit's, whose browser is its caller's choice: those passes are as they were. */
+  readonly browser?: string;
 }
 
 export const browserPassKeyHash = (key: BrowserPassKey): string => sha256Hex(canonicalJSONStringify({
@@ -38,6 +42,8 @@ export const browserPassKeyHash = (key: BrowserPassKey): string => sha256Hex(can
     : { kind: 'owner_chat' },
   recipe: key.recipe,
   site: key.site,
+  // Only when present, so every pass granted without one keeps its hash.
+  ...(key.browser !== undefined ? { browser: key.browser } : {}),
 }));
 
 /** The origin of an http(s) address, or undefined: a pass names a web site, nothing else. */
@@ -125,6 +131,9 @@ export interface BrowserPassOffer {
   /** The conversation a session pass is for (`chat:<id>`, `messenger:<vendor>:<from>`,
    *  `mcp:<token>`, D-177's `channel_session_id`). */
   readonly channel_session_id: string;
+  /** D-402 slice H4d — the owner's name for the browser the key names, as the hold could name it: the
+   *  ask says its answers are for that browser alone. */
+  readonly browser_name?: string;
 }
 
 const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
@@ -145,10 +154,16 @@ export const readBrowserPassOffer = (value: unknown): BrowserPassOffer | undefin
   if (principal === undefined || !nonEmptyString(key.recipe) || !nonEmptyString(key.site)
     || browserPassSiteOf(key.site) !== key.site || !nonEmptyString(offer.host)
     || !nonEmptyString(offer.channel_session_id)) return undefined;
+  // D-402 slice H4c — a key that names its browser keeps it, a lasting id: the answer's pass is that
+  // browser's alone. ⛔ Dropped here, the pass an "Always allow" answer minted was for a key no write of
+  // the run's has (the hash leaves the browser out), so it allowed nothing and each write asked again.
+  if (key.browser !== undefined && !nonEmptyString(key.browser)) return undefined;
   return {
-    key: { principal, recipe: key.recipe, site: key.site },
+    key: { principal, recipe: key.recipe, site: key.site, ...(key.browser !== undefined ? { browser: key.browser } : {}) },
     host: offer.host,
     channel_session_id: offer.channel_session_id,
+    // D-402 slice H4d — only beside a browser the key names; a name it cannot read is left out (it is words).
+    ...(key.browser !== undefined && nonEmptyString(offer.browser_name) ? { browser_name: offer.browser_name } : {}),
   };
 };
 
@@ -189,6 +204,11 @@ export interface BrowserPassRow {
   readonly revoked_at?: number;
   readonly uses: number;
   readonly last_used_at?: number;
+  /** D-402 slice H4d — for a key that names its browser: the owner's name for it, or the name it last
+   *  went by, when the list could name it. */
+  readonly browser_name?: string;
+  /** D-402 slice H4d — false once that browser is no longer paired: the pass is never used again. */
+  readonly browser_paired?: boolean;
 }
 
 export const isBrowserPassLive = (
@@ -212,9 +232,39 @@ export interface BrowserPassSuggestionRow {
   readonly occasions: number;
   readonly elements: readonly string[];
   readonly suggested_at: number;
+  /** D-402 slice H4d — as on a pass row. */
+  readonly browser_name?: string;
+  readonly browser_paired?: boolean;
 }
 
-/** What a pass covers, for a sentence: "clicks on github.com". */
+/** D-402 slice H4d — the browser a pass is for, as the owner knows it. */
+export interface BrowserPassBrowser {
+  /** The owner's name for it, or the name it last went by. */
+  readonly name?: string;
+  /** False once it is no longer paired. */
+  readonly paired?: boolean;
+}
+
+/** D-402 slice H4d — a row's browser, as `browserPassWhere` reads it. */
+export const browserPassBrowserOfRow = (
+  row: { readonly browser_name?: string; readonly browser_paired?: boolean },
+): BrowserPassBrowser => ({
+  ...(row.browser_name !== undefined ? { name: row.browser_name } : {}),
+  ...(row.browser_paired !== undefined ? { paired: row.browser_paired } : {}),
+});
+
+/** D-402 slice H4d — where a pass for a recipe that names its browsers acts, since it acts in that
+ *  browser alone: " in “Home”", " in “Old laptop” (no longer paired)". Empty for a key that names no
+ *  browser: every Browser Toolkit pass, and every pass before H4c, read as they did. */
+export const browserPassWhere = (key: BrowserPassKey, browser: BrowserPassBrowser = {}): string => {
+  if (key.browser === undefined) return '';
+  const gone = browser.paired === false;
+  if (browser.name === undefined) return gone ? ' in a browser no longer paired' : ' in one of your browsers';
+  return ` in “${browser.name}”${gone ? ' (no longer paired)' : ''}`;
+};
+
+/** What a pass covers, for a sentence: "clicks on github.com". A sentence that needs the browser of a
+ *  key that names one says it apart (D-402 slice H4d): "Both are for “Home” alone". */
 export const browserPassActsOf = (key: BrowserPassKey): string => {
   const host = browserPassHostOf(key.site);
   switch (key.recipe) {
@@ -228,14 +278,15 @@ export const browserPassActsOf = (key: BrowserPassKey): string => {
 };
 
 /** What a pass lets happen, in the owner's words. The toolkit's writes by name; any other
- *  recipe by its id. */
-export const describeBrowserPass = (key: BrowserPassKey): string => {
+ *  recipe by its id; and, for a key that names its browser (D-402 slice H4d), in which one. */
+export const describeBrowserPass = (key: BrowserPassKey, browser?: BrowserPassBrowser): string => {
   const host = browserPassHostOf(key.site);
+  const where = browserPassWhere(key, browser);
   switch (key.recipe) {
-    case 'open-web-page': return `Open pages on ${host}`;
-    case 'type-into-web-page': return `Type into pages on ${host}`;
-    case 'click-web-element': return `Click on ${host}`;
-    case 'act-on-web-page': return `Act on pages on ${host}`;
-    default: return `Run ${key.recipe} on ${host}`;
+    case 'open-web-page': return `Open pages on ${host}${where}`;
+    case 'type-into-web-page': return `Type into pages on ${host}${where}`;
+    case 'click-web-element': return `Click on ${host}${where}`;
+    case 'act-on-web-page': return `Act on pages on ${host}${where}`;
+    default: return `Run ${key.recipe} on ${host}${where}`;
   }
 };

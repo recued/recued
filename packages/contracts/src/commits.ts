@@ -835,6 +835,8 @@ export const standingClosureAdmits = (
    *  🔑 `'review_send'` deliberately still ADMITS. Its unattended relax IS the
    *  feature — a form's reply email running without a pause is the point — and
    *  D-192 F1 enumerates that asymmetry against the commitment lift on purpose.
+   *  (Nothing reports it since D-177 §N.15.6 removed the send lift; a hold stored
+   *  before then still may.)
    *  Commitment proposals and customer-accepted quote releases require their
    *  own review. `'quality'` also still admits:
    *  it is not a meaning-bearing surface distinction.
@@ -1019,6 +1021,10 @@ export interface Commit {
    *  asking, by its id: the write's own record names what allowed it, after the pre-approval has
    *  ended. Absent on every write that asked, or needed no asking. */
   trigger_preapproval?: { id: string };
+  /** D-348 — the rule the owner accepted for a request that let this write through without
+   *  asking, by its id: an undo of the write's change ends that rule (§7.8). Absent on every write
+   *  that asked, or that another permission let through. */
+  chain_rule?: { id: string };
   // ────────────────────────────────────────────────────────────────
   // D-177 P1b — canonical action identity, stamped at canonicalization.
   // Computed from the RESOLVED-minus-vault payload (post-`{{config.*}}`/
@@ -1162,6 +1168,10 @@ export const isCommit = (value: unknown): value is Commit => {
   if (v.trigger_preapproval !== undefined) {
     if (v.trigger_preapproval === null || typeof v.trigger_preapproval !== 'object' || Array.isArray(v.trigger_preapproval)) return false;
     if (!nonEmpty((v.trigger_preapproval as Record<string, unknown>).id)) return false;
+  }
+  if (v.chain_rule !== undefined) {
+    if (v.chain_rule === null || typeof v.chain_rule !== 'object' || Array.isArray(v.chain_rule)) return false;
+    if (!nonEmpty((v.chain_rule as Record<string, unknown>).id)) return false;
   }
   // D-177 P1b — stamped action identity (optional; absent on degraded rows).
   if (!optString(v.arg_shape_hash)) return false;

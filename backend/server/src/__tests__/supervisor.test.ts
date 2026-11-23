@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -246,23 +246,53 @@ describe('childOfInstallSupervisor', () => {
     expect(probe(null)).toBe(false);
   });
 
-  it.runIf(process.platform === 'darwin' || process.platform === 'linux')(
-    'reads a real parent through ps',
-    async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'recued-supervise-probe-'));
-      const script = join(dir, 'recued-supervise');
-      writeFileSync(script, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
-      const parent = spawn(script, [], { stdio: 'ignore' });
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        expect(childOfInstallSupervisor({ parentPid: parent.pid!, execPath: join(dir, 'recued') })).toBe(true);
-        expect(childOfInstallSupervisor({ parentPid: parent.pid!, execPath: join(tmpdir(), 'recued') })).toBe(false);
-      } finally {
-        parent.kill();
-        rmSync(dir, { recursive: true, force: true });
-      }
-    },
-  );
+  for (const path of ['inherited', 'empty'] as const) {
+    it.runIf(process.platform === 'darwin' || process.platform === 'linux')(
+      `reads a real parent through ps (${path} PATH)`,
+      async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'recued-supervise-probe-'));
+        const script = join(dir, 'recued-supervise');
+        // Shell builtins keep the real parent alive independently of PATH.
+        // Wait for readiness, then release and reap the parent before removing its files.
+        writeFileSync(script, '#!/bin/sh\nprintf "ready\\n"\nIFS= read -r release || :\n', { mode: 0o755 });
+        const parent = spawn(script, [], { stdio: 'pipe',
+          ...(path === 'empty' ? { env: { ...process.env, PATH: '' } } : {}) });
+        let stderr = '';
+        parent.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+        const closed = new Promise<void>(resolve => parent.once('close', () => resolve()));
+        let readyTimer: ReturnType<typeof setTimeout> | undefined;
+        const ready = new Promise<void>((resolve, reject) => {
+          parent.stdout.once('data', (chunk: Buffer) => {
+            if (chunk.toString() === 'ready\n') resolve();
+            else reject(new Error(`Unexpected parent readiness: ${chunk.toString()}`));
+          });
+          parent.once('error', reject);
+          parent.once('close', code => reject(new Error(`Parent exited before readiness (${code}): ${stderr}`)));
+          readyTimer = setTimeout(() => reject(new Error(`Parent did not become ready: ${stderr}`)), 5_000);
+        });
+        try {
+          await ready;
+          const detected = childOfInstallSupervisor({ parentPid: parent.pid!, execPath: join(dir, 'recued') });
+          const diagnostic = detected ? undefined : spawnSync('/bin/ps', ['-o', 'pid=,ppid=,stat=,command=', '-p', String(parent.pid)],
+            { encoding: 'utf8', timeout: 2_000 });
+          expect(detected, JSON.stringify({ path, exit_code: parent.exitCode, stderr,
+            diagnostic_ps: diagnostic && { status: diagnostic.status, stdout: diagnostic.stdout, stderr: diagnostic.stderr,
+              error: diagnostic.error?.message } })).toBe(true);
+          expect(childOfInstallSupervisor({ parentPid: parent.pid!, execPath: join(tmpdir(), 'recued') })).toBe(false);
+        } finally {
+          clearTimeout(readyTimer);
+          parent.stdin.end();
+          const killTimer = setTimeout(() => parent.kill('SIGKILL'), 2_000);
+          try { await closed; }
+          finally { clearTimeout(killTimer); rmSync(dir, { recursive: true, force: true }); }
+        }
+        expect(parent.exitCode).toBe(0);
+        expect(parent.signalCode).toBeNull();
+      },
+      15_000,
+    );
+  }
+
 });
 
 describe('createSupervisor', () => {

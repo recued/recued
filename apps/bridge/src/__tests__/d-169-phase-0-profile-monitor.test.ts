@@ -99,6 +99,18 @@ afterEach(() => {
 });
 
 describe('D-169 P0 - buildCapabilityProfile', () => {
+  it('preserves negotiated browser capabilities across permission profile rebuilds', async () => {
+    const chromePermissions = buildChromePermissions({ origins: ['https://example.com/*'] });
+    for (const value of [true, false]) {
+      const profile = await buildCapabilityProfile({ chromePermissions,
+        snapshot: () => profileSnapshot({ dom_readiness: value, guarded_links: value, wait_read: value, structural_reads: value }) });
+      expect(profile).toMatchObject({ dom_readiness: value, guarded_links: value, wait_read: value, structural_reads: value });
+    }
+    const legacy = await buildCapabilityProfile({ chromePermissions, snapshot: () => profileSnapshot() });
+    expect(legacy.guarded_links).toBeUndefined();
+    expect(legacy.wait_read).toBeUndefined();
+    expect(legacy.structural_reads).toBeUndefined();
+  });
   it('produces a well-shaped profile from chrome.permissions.getAll and omits absent user_agent', async () => {
     const chromePermissions = buildChromePermissions({
       permissions: ['storage', 'tabs'],
@@ -284,7 +296,7 @@ describe('D-169 P0 - createBridgeCapabilityProfileMonitor', () => {
     const pushed: BridgeCapabilityProfile[] = [];
     const monitor = createBridgeCapabilityProfileMonitor({
       chromePermissions,
-      snapshot: () => profileSnapshot({ user_agent: userAgent }),
+      snapshot: () => ({ ...profileSnapshot({ user_agent: userAgent }), dom_readiness: true }),
       push: async (profile) => {
         pushed.push(profile);
       },
@@ -295,5 +307,6 @@ describe('D-169 P0 - createBridgeCapabilityProfileMonitor', () => {
     await monitor.pushNow();
 
     expect(pushed.map((p) => p.user_agent)).toEqual(['ua-one', 'ua-two']);
+    expect(pushed.map((p) => p.dom_readiness)).toEqual([true, true]);
   });
 });

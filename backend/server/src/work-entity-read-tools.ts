@@ -66,6 +66,7 @@
  *  The vendor escalation itself is gated by the connection gateway on EVERY
  *  channel, independent of all of the above. */
 
+import { valuesOnRequestNote, withheldValuesOf, withoutPrivateSettings } from './situations/values-on-request.js';
 import type {
   Asset,
   AssetAnchor,
@@ -144,6 +145,9 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 export interface WorkEntityReadToolsDeps {
+  /** D-339 slice 12a — for the owner's chats, their switch for a Body's numbers, which a held Body's
+   *  note tells them (`bodyNumbersFor`). Absent, or another caller ⇒ the note says the read asks. */
+  bodyNumbersFor?: (ctx: ChatDispatchContext) => import('@recued/contracts').BodyNumbersMode | undefined;
   getReadScope?: (ctx: ChatDispatchContext) => ReturnType<typeof import('./situations/read-scope.js').createReadScope> | undefined;
   /** D-205 #3 — the `data.<collection>` READ FENCE for the work-entity kind being read
    *  (`task` / `note` / `commitment` / `project` are all `READABLE_COLLECTIONS`, and the
@@ -512,6 +516,9 @@ export interface WorkEntityToolItem extends Partial<Pick<Asset, 'name' | 'class_
   | 'document_number' | 'serial_number' | 'exact_address' | 'audience' | 'sphere' | 'sphere_override'
   | 'dates' | 'readings' | 'observations' | 'values' | 'attributes' | 'settings' | 'rules' | 'retirement' | 'field_sources'>> {
   __entity?: 'asset';
+  /** D-339 slice 6 (§5.3) — an asset whose values a model reads only when the owner allows it (a
+   *  Body): the names of its readings and states, in place of `readings` and `observations`. */
+  values_on_request?: { readings: string[]; states: string[]; how: string };
   /** Each anchor carries its own privacy marker, so its tags hold at any index. */
   anchors?: Array<AssetAnchor & { __entity?: 'asset_anchor' }>;
   /** Versioned Source-qualified id. Pass it unchanged to `work.read` or the
@@ -687,7 +694,7 @@ const clampLimit = (v: unknown): number => {
 
 const projectItem = (
   entity: WorkEntity,
-  opts: { clampLongText: number | false; assetDetail?: boolean },
+  opts: { clampLongText: number | false; assetDetail?: boolean; chats?: import('@recued/contracts').BodyNumbersMode },
 ): WorkEntityToolItem => {
   const item: WorkEntityToolItem = {
     id: entity.id,
@@ -705,6 +712,18 @@ const projectItem = (
           'dates', 'readings', 'observations', 'values', 'anchors', 'attributes', 'settings', 'rules', 'retirement', 'field_sources'] as const;
         Object.assign(item, Object.fromEntries(fields.filter(key => entity[key] !== undefined).map(key => [key, entity[key]])));
         if (item.anchors) item.anchors = item.anchors.map(anchor => ({ ...anchor, __entity: 'asset_anchor' as const }));
+        // D-339 slice 6 — a Body set to "AI reads the numbers only when you allow it": names, never values.
+        const withheld = withheldValuesOf(entity);
+        if (withheld) {
+          // Slice 13: its dates and details too (a birth date, a gender), and never its conversation.
+          delete item.readings; delete item.observations; delete item.dates; delete item.attributes;
+          if (item.settings) item.settings = withoutPrivateSettings(item.settings);
+          // Slice 15: and a body goal's numbers, kept in its settings.
+          if (item.field_sources) item.field_sources = Object.fromEntries(Object.entries(item.field_sources)
+            .filter(([key]) => !['readings.', 'observations.', 'dates.', 'attributes.'].some(group => key.startsWith(group))
+              && key !== 'settings.goal' && key !== 'settings.ranges'));
+          item.values_on_request = valuesOnRequestNote(opts.chats !== undefined ? { ...withheld, chats: opts.chats } : withheld);
+        }
       }
       break;
     }
@@ -2190,7 +2209,9 @@ export const runWorkEntityReadTool = async (
     has_read_op: described.has_read_op,
   });
 
-  const item = withSlotWhen(qualifyItem(row, projectItem(row, { clampLongText: false, assetDetail: true })), ctx.time_zone);
+  const chats = deps.bodyNumbersFor?.(ctx);
+  const item = withSlotWhen(qualifyItem(row, projectItem(row, { clampLongText: false, assetDetail: true,
+    ...(chats !== undefined ? { chats } : {}) })), ctx.time_zone);
   if (item.holder_contact !== undefined) {
     const name = holderNameFor(deps, scope, item.holder_contact); if (name !== undefined) item.holder_name = name;
   }

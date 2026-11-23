@@ -356,6 +356,7 @@ const classifyUploadOp = (
   method: string | undefined,
 ): { op: ReceptionUploadOp; upload_id: string | null } | null => {
   if (action_rest.length === 0) {
+    if (method === 'GET') return { op: 'nonce', upload_id: null };
     return method === 'POST' ? { op: 'create', upload_id: null } : null;
   }
   const upload_id = action_rest[0];
@@ -578,6 +579,8 @@ export const createReceptionPortHandler = (
     deps.auditLog !== undefined
       ? createSchedulingLinkBookHandler({
           getStore: deps.getStore,
+          getPepper: deps.getPepper,
+          trustForwardedProto: deps.trustForwardedFor === true,
           getSubmissionStore: deps.getIntakeFormSubmissionStore!,
           getCalendarReader: deps.getSchedulingCalendarReader!,
           getFormNonceStore: deps.getSchedulingFormNonceStore!,
@@ -642,6 +645,8 @@ export const createReceptionPortHandler = (
   const intakeFormSubmitHandler = intakeFormPostReady
     ? createIntakeFormSubmitHandler({
         getStore: deps.getStore,
+        getPepper: deps.getPepper,
+        trustForwardedProto: deps.trustForwardedFor === true,
         getSubmissionStore: deps.getIntakeFormSubmissionStore!,
         getFormNonceStore: deps.getIntakeFormNonceStore!,
         getFormSubmissionPiiKey: deps.getIntakeFormSubmissionPiiKey!,
@@ -715,6 +720,8 @@ export const createReceptionPortHandler = (
   const dropLinkUploadHandler = dropLinkPostReady
     ? createDropLinkUploadHandler({
         getStore: deps.getStore,
+        getPepper: deps.getPepper,
+        trustForwardedProto: deps.trustForwardedFor === true,
         getDropBlobStore: deps.getDropBlobStore!,
         getBlobStore: deps.getBlobStore!,
         getDropLinkNonceStore: deps.getDropLinkNonceStore!,
@@ -741,7 +748,11 @@ export const createReceptionPortHandler = (
   const dropUploadHandler = deps.getReceptionUploadService
     ? createDropUploadHandler({
         getService: deps.getReceptionUploadService,
+        getStore: deps.getStore,
+        getPepper: deps.getPepper,
+        now: deps.now,
         trustForwardedProto: deps.trustForwardedFor === true,
+        ...(deps.getDropLinkNonceStore ? { getDropLinkNonceStore: deps.getDropLinkNonceStore } : {}),
       })
     : null;
 
@@ -777,6 +788,7 @@ export const createReceptionPortHandler = (
         ...(deps.checkQuoteCompletionLink ? { checkQuoteCompletionLink: deps.checkQuoteCompletionLink } : {}),
         ...(deps.checkQuoteSignoffLink ? { checkQuoteSignoffLink: deps.checkQuoteSignoffLink } : {}),
         getStore: deps.getStore,
+        getPepper: deps.getPepper,
         getApprovalIntentStore: deps.getApprovalIntentStore!,
         getApprovalLinkNonceStore: deps.getApprovalLinkNonceStore!,
         getApprovalIntentPiiKey: deps.getApprovalIntentPiiKey!,
@@ -1280,7 +1292,7 @@ export const createReceptionPortHandler = (
     // finalize / delete) is gated by the unguessable `upload_id` + the core
     // disk caps, NOT the link-style request limiter: a chunked GiB upload is
     // 60+ requests, which would blow the drop_link 5/hr per-IP + 50/day buckets.
-    // So only CREATE runs the per-IP pre-verify, and NO resumable verb consumes
+    // CREATE and nonce refresh run the per-IP pre-verify; NO resumable verb consumes
     // the per-endpoint daily cap (the daily cap counts COMPLETED uploads,
     // enforced in the service's create gate against the drop store). The IP
     // block + bearer verify + registry checks below STILL apply to every verb.
@@ -1289,12 +1301,12 @@ export const createReceptionPortHandler = (
         ? classifyUploadOp(route.action_rest, req.method)
         : null;
     const isResumableUpload = uploadRoute !== null;
-    const isResumableCreate = uploadRoute?.op === 'create';
+    const isResumableAdmission = uploadRoute?.op === 'create' || uploadRoute?.op === 'nonce';
 
     // Per Must Hold I-10 — pre-verify rate limit FIRST. Resumable chunk/probe/
-    // finalize/delete bypass it (upload_id capability + disk caps); create runs
+    // finalize/delete bypass it (upload_id capability + disk caps); admission runs
     // it (the design's "per-IP rate-limit on Creation").
-    if (!isResumableUpload || isResumableCreate) {
+    if (!isResumableUpload || isResumableAdmission) {
       const preVerify = deps.getRateLimiter().consumePreVerify({
         source_ip_hash: rate_limit_ip_key,
         endpoint_kind: route.kind,
@@ -1493,6 +1505,7 @@ export const createReceptionPortHandler = (
     // real per-upload record.
     const logThisRequest =
       !isResumableUpload ||
+      uploadRoute?.op === 'nonce' ||
       uploadRoute?.op === 'create' ||
       uploadRoute?.op === 'finalize' ||
       uploadRoute?.op === 'delete';

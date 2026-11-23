@@ -12,6 +12,10 @@ export type LLMProvider = 'anthropic' | 'openai' | 'openai-compatible' | 'google
 /** D-344 — the owner's setting for a model's thinking: on or off. Absent is the provider's default. */
 export type ThinkingSetting = 'on' | 'off';
 
+/** D-344 — the `reasoning_effort` values that turn an OpenAI model's thinking down as far as it
+ *  goes. Each model takes only some (`OPENAI_OFF_EFFORTS` in `thinking-switch.ts`). */
+export type OpenAIOffEffort = 'none' | 'minimal' | 'low';
+
 /** Adapter registry key. The executor picks an adapter by this key after the
  *  match resolver runs — no transport branching downstream of the registry lookup. */
 export type AdapterKey = LLMProvider;
@@ -101,8 +105,19 @@ export interface LLMCompletionOptions {
   /** Upper bound for output tokens. */
   max_tokens: number;
   /** D-344 — the model's thinking: `true` on, `false` off, absent the provider's default. An
-   *  adapter sends its provider's switch only when this is set (Anthropic's `thinking` only on). */
+   *  adapter sends its provider's switch only when this is set. */
   thinking?: boolean;
+  /** Optional per-request reasoning-token hint. Only a verified native
+   * capability maps it to a provider field, and only while thinking is on.
+   * It never changes the owner's setting or the answer-token cap. */
+  reasoning_token_budget?: number;
+  /** D-344 — which of the provider's ways to send `thinking` to use (`thinkingStepCount`): set by the
+   *  executor once the endpoint has refused the earlier ones; absent is the first. Read by the OpenAI
+   *  and Anthropic adapters. */
+  thinking_step?: number;
+  /** D-343 — the caller's cancel: aborting it ends the provider request at once (`AI_TIMEOUT`, "LLM
+   *  call was cancelled"), and the executor tries no other provider for it. */
+  signal?: AbortSignal;
   /** Enable provider's built-in web search tool when supported. */
   search?: boolean;
   /** Request the provider's native JSON-object response mode
@@ -538,6 +553,11 @@ export interface TokenUsage {
   reasoning_tokens?: number;
   /** Resolved provider model id (`slot.model` at call time). */
   model_id?: string;
+  /** The model the provider says answered, as it names it (OpenAI's and Anthropic's `model`,
+   *  Gemini's `modelVersion`), when it names one. ⚠ Often a dated name of `model_id` (OpenAI answers
+   *  every alias with a snapshot); `answeredByAnotherModel` tells a swap from that. `model_id` stays
+   *  what was asked for, so rollups group by the owner's choice. */
+  answered_model?: string;
   /** @deprecated Populated only for slot attributions. New code should read `attribution`. */
   slot_key?: 'slot_1' | 'slot_2';
   /** Which configured source produced this call. Unified across slots and pool. */
@@ -549,6 +569,21 @@ export interface TokenUsage {
 export type TokenUsageAttribution =
   | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' }
   | { kind: 'pool'; entry_id: string };
+
+/** A model its provider says it does not have (retired, renamed or mistyped), and where the owner set
+ *  it. A failed call carries it as `details.model_unavailable`, so whatever shows the failure can name
+ *  the model and send the owner to choose another, instead of "the provider failed". Recued keeps no
+ *  list of models: the provider is the one that knows, at the moment of the call. No key rides here,
+ *  and of the address only its host. */
+export interface UnavailableModel {
+  model: string;
+  provider: AdapterKey;
+  /** The owner's name for the service ("Groq"), when they gave one. */
+  provider_name?: string;
+  /** The host of the source's address, when it has one. */
+  host?: string;
+  source: TokenUsageAttribution;
+}
 
 /** Provider-normalized reason a completion stopped. */
 export type LLMFinishReason = 'stop' | 'length' | 'content_filter';
@@ -616,6 +651,26 @@ export class LLMError extends Error {
     this.retryable = retryable;
   }
 }
+
+/** A reply with no answer because it stopped at its output limit: the model spent the whole limit,
+ *  usually reasoning, before it wrote anything. Still a parse failure for a real call, but the
+ *  endpoint ACCEPTED the request and answered, which is all Test connection asks; it allows one
+ *  token, which a thinking model can spend thinking (`gemini-3.8-flash` live, 2026-11-16: "had no
+ *  text parts"). Adapters mark it with {@link markOutputLimit}. */
+export const stoppedAtOutputLimit = (e: unknown): e is LLMError =>
+  e instanceof LLMError && e.code === 'AI_RESPONSE_PARSE_FAILED' && e.details?.finish_reason === 'length';
+
+/** The usage field for the model a provider says answered (`TokenUsage.answered_model`), from the
+ *  response field that names it; nothing when it names none. */
+export const answeredModelField = (value: unknown): { answered_model?: string } =>
+  typeof value === 'string' && value.trim() !== '' ? { answered_model: value.trim() } : {};
+
+/** An adapter's text extraction failed: when the reply stopped at its output limit, say so on the
+ *  error, with what the call used. Anything else comes back unchanged. */
+export const markOutputLimit = (e: unknown, finishReason: LLMFinishReason | undefined, usage: TokenUsage): unknown =>
+  e instanceof LLMError && e.code === 'AI_RESPONSE_PARSE_FAILED' && finishReason === 'length'
+    ? new LLMError(e.code, e.message, { ...e.details, finish_reason: 'length', usage }, e.retryable)
+    : e;
 
 /** Fill missing `speed` / `supports_json` on legacy slots so match-time code
  *  can assume both are set. Convention: slot_1 → 'fast', slot_2 → 'quality';

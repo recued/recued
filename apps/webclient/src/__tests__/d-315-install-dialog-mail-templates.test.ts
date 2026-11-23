@@ -7,9 +7,9 @@
  *  Driven through `mountPacksPanel`, as the owner meets it: a test that handed
  *  the render its props could pass with the panel never passing them. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import type { BulkPackManifest, MailTemplateInstallPreview, PackListEntry } from '@recued/contracts';
+import type { BulkPackManifest, MailTemplateInstallPreview, PackListEntry, PackVendorPermissionReview } from '@recued/contracts';
 
 import {
   PACKS_DIALOG_ATTR,
@@ -23,9 +23,16 @@ import {
   PACKS_DIALOG_FACT_SOURCES_ATTR,
   PACKS_DIALOG_MAIL_TEMPLATE_KEEP_ATTR,
   PACKS_DIALOG_MAIL_TEMPLATES_ATTR,
+  PACKS_DIALOG_WEBHOOK_DOOR_ATTR,
+  PACKS_DIALOG_WEBHOOK_DOORS_ATTR,
   type InstallPreview,
 } from '../settings/packs-install-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import type { PackPermissionRepairRequest } from '../settings/pack-permission-repair.js';
+import {
+  PACK_VENDOR_PERMISSION_CONSENT_ATTR,
+  PACK_VENDOR_PERMISSION_RECONNECT_ATTR,
+} from '../settings/pack-vendor-permissions.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake DOM (same shape as the sibling packs-panel suites)
@@ -200,7 +207,10 @@ interface Harness {
   installs: Array<Parameters<PacksInstallCaller>[0]>;
 }
 
-const setup = (preview: PacksInstallPreviewCaller): Harness => {
+const setup = (
+  preview: PacksInstallPreviewCaller,
+  more: Partial<Parameters<typeof mountPacksPanel>[0]> = {},
+): Harness => {
   const host = makeFakeElement('div');
   const installs: Array<Parameters<PacksInstallCaller>[0]> = [];
   const subscribe = (() => () => undefined) as unknown as BroadcastSubscriber['on'];
@@ -215,6 +225,7 @@ const setup = (preview: PacksInstallPreviewCaller): Harness => {
     },
     runInstallPreview: preview,
     subscribe,
+    ...more,
   });
   return { host, mount, installs };
 };
@@ -298,6 +309,134 @@ describe('the templates a pack’s recipes bring (§5.2)', () => {
       { field: 'subject', op: 'contains', value: 'Delivered', negate: true },
       { field: 'label', op: 'is', value: 'Receipts' },
     ])).toBe('from anyone at amazon.com, subject lacks “Delivered”, labelled Receipts');
+  });
+});
+
+// D-201 Slice 10AF (10AE finding 17; the owner's ruling of 2026-11-20) — a
+// pack update from another publisher (an owner who edited the pack) raises each
+// webhook door's switch, as Kitchen's save asks before keeping a webhook on:
+// set to the state the owner left it in, and the owner's answer is sent.
+describe('D-201 Slice 10AF — a pack update from another publisher raises each webhook door’s switch', () => {
+  const change = (door: 'open' | 'closed') => ({
+    pack_slug: manifest.slug,
+    recipe_id: 'shop-parcels-watch',
+    name: 'Shop parcels watch',
+    from_publisher: 'the-first-publisher',
+    door,
+  });
+
+  // D-201 Slice 10AJ (10AI finding 3) — a switch left as shown sends nothing,
+  // so the door keeps the state it has when the install runs: the state shown
+  // was sent as an answer, and reopened a door the owner closed after it.
+  it('sets each switch to the state the owner left it in, and sends no answer the owner did not give', async () => {
+    for (const door of ['open', 'closed'] as const) {
+      const h = setup(async () => previewWith([], { webhook_publisher_changes: [change(door)] }));
+      const section = findByAttr(await openDialog(h), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!;
+      expect(text(section), door).toContain('These Recipes now come from another publisher.');
+      expect(text(section), door).toContain(`“Shop parcels watch” was made by the-first-publisher. ${door === 'closed' ? 'You closed its door.' : 'Its door was open.'}`);
+      const radios = findAllByAttr(section, PACKS_DIALOG_WEBHOOK_DOOR_ATTR);
+      expect(radios.map((radio) => [radio.getAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR), radio.checked]), door)
+        .toEqual([['open', door === 'open'], ['closed', door === 'closed']]);
+      await install(h);
+      expect(h.installs[0], door).not.toHaveProperty('webhook_door_choices');
+    }
+  });
+
+  // D-201 Slice 10AJ (10AI findings 3 and 5) — the preview's doors are the
+  // server's to change meanwhile, and a pick is the dialog's only while open.
+  it('reopened, reads the doors again, and a pick made before is gone', async () => {
+    let door: 'open' | 'closed' = 'open';
+    const preview = vi.fn(async () => previewWith([], { webhook_publisher_changes: [change(door)] }));
+    const h = setup(preview);
+    const states = (section: FakeElement) => findAllByAttr(section, PACKS_DIALOG_WEBHOOK_DOOR_ATTR)
+      .map((radio) => [radio.getAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR), radio.checked]);
+    let section = findByAttr(await openDialog(h), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!;
+    const closed = findAllByAttr(section, PACKS_DIALOG_WEBHOOK_DOOR_ATTR)
+      .find((radio) => radio.getAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR) === 'closed')!;
+    for (const fn of closed.listeners.get('change') ?? []) fn({ target: closed });
+    await settle();
+    expect(states(findByAttr(h.host, PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!)).toEqual([['open', false], ['closed', true]]);
+    // Closed without installing: the pick goes, and the doors are read again.
+    h.mount.clickCancelDialog();
+    await settle();
+    section = findByAttr(await openDialog(h), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!;
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(states(section)).toEqual([['open', true], ['closed', false]]);
+    // The owner closes the door on its webhook's card meanwhile: shown as it is.
+    h.mount.clickCancelDialog();
+    await settle();
+    door = 'closed';
+    section = findByAttr(await openDialog(h), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!;
+    expect(preview).toHaveBeenCalledTimes(3);
+    expect(states(section)).toEqual([['open', false], ['closed', true]]);
+    await install(h);
+    expect(h.installs[0]).not.toHaveProperty('webhook_door_choices');
+  });
+
+  it('keeps the owner’s answer', async () => {
+    const h = setup(async () => previewWith([], { webhook_publisher_changes: [change('closed')] }));
+    const section = findByAttr(await openDialog(h), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!;
+    const open = findAllByAttr(section, PACKS_DIALOG_WEBHOOK_DOOR_ATTR)
+      .find((radio) => radio.getAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR) === 'open')!;
+    for (const fn of open.listeners.get('change') ?? []) fn({ target: open });
+    await settle();
+    expect(findAllByAttr(findByAttr(h.host, PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!, PACKS_DIALOG_WEBHOOK_DOOR_ATTR)
+      .map((radio) => radio.checked)).toEqual([true, false]);
+    await install(h);
+    expect(h.installs[0]?.webhook_door_choices).toEqual([{ pack_slug: manifest.slug, recipe_id: 'shop-parcels-watch', door: 'open' }]);
+  });
+
+  // D-201 Slice 10AO (10AM finding 14) — a vendor-permission repair leaves the
+  // dialog and comes back to it. The switches the owner set came back unset,
+  // and an unset switch is not sent: the door was made as it was left.
+  it('keeps the owner’s answer through a vendor-permission repair', async () => {
+    const review: PackVendorPermissionReview = { fingerprint: 'a'.repeat(64), resolved: true, changes: [{
+      pack_slug: manifest.slug, pack_name: manifest.name, slot: 'graph', required_scopes: ['Mail.Read'],
+      current_connections: ['native'], connections: [{ name: 'native', display_name: 'Native', authentication: 'direct_oauth',
+        coverage: 'missing', granted_scopes: [], missing_scopes: ['Mail.Read'] }],
+    }] };
+    const preview = async () => previewWith([], { webhook_publisher_changes: [change('closed')], vendor_permissions: review });
+    const states = (section: FakeElement) => findAllByAttr(section, PACKS_DIALOG_WEBHOOK_DOOR_ATTR)
+      .map((radio) => [radio.getAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR), radio.checked]);
+    const requests: PackPermissionRepairRequest[] = [];
+    const first = setup(preview, { onPermissionRepair: (request) => { requests.push(request); } });
+    const section = findByAttr(await openDialog(first), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!;
+    const open = findAllByAttr(section, PACKS_DIALOG_WEBHOOK_DOOR_ATTR)
+      .find((radio) => radio.getAttribute(PACKS_DIALOG_WEBHOOK_DOOR_ATTR) === 'open')!;
+    for (const fn of open.listeners.get('change') ?? []) fn({ target: open });
+    await settle();
+    findByAttr(first.host, PACK_VENDOR_PERMISSION_RECONNECT_ATTR)!.click();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.resume.webhook_doors).toEqual([[`${manifest.slug}\u0000shop-parcels-watch`, 'open']]);
+    // Back from the repair: the dialog opens again, its switch as the owner set it.
+    const back = setup(preview, {
+      initialPermissionRepairReturn: {
+        id: `ppr-${'b'.repeat(32)}`,
+        name: 'native',
+        required_scopes: ['Mail.Read'],
+        review_fingerprint: review.fingerprint,
+        authentication: 'direct_oauth',
+        expires_at: Date.now() + 60_000,
+        resume: requests[0]!.resume,
+        verified: true,
+      },
+    });
+    await back.mount.whenLoaded();
+    await settle();
+    expect(states(findByAttr(back.host, PACKS_DIALOG_WEBHOOK_DOORS_ATTR)!)).toEqual([['open', true], ['closed', false]]);
+    const consent = findByAttr(back.host, PACK_VENDOR_PERMISSION_CONSENT_ATTR)!;
+    consent.checked = true;
+    for (const fn of consent.listeners.get('change') ?? []) fn({ target: consent });
+    await settle();
+    await install(back);
+    expect(back.installs[0]?.webhook_door_choices).toEqual([{ pack_slug: manifest.slug, recipe_id: 'shop-parcels-watch', door: 'open' }]);
+  });
+
+  it('raises nothing, and sends none, for an update from the same publisher', async () => {
+    const h = setup(async () => previewWith([]));
+    expect(findByAttr(await openDialog(h), PACKS_DIALOG_WEBHOOK_DOORS_ATTR)).toBeNull();
+    await install(h);
+    expect(h.installs[0]).not.toHaveProperty('webhook_door_choices');
   });
 });
 

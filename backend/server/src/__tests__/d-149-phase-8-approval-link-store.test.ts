@@ -12,8 +12,12 @@
  *      handler has processed the row. */
 
 import Database from 'better-sqlite3';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ensureReceptionSchema } from '../storage/reception-store.js';
+import { createPublicEndpointRegistryStore } from '../storage/public-endpoint-registry-store.js';
 import {
   createReceptionApprovalIntentStore,
   type ApprovalIntentConsumeResult,
@@ -80,6 +84,53 @@ describe('D-149 P8 § A.5.5 — ApprovalIntentStore basic CRUD', () => {
 });
 
 describe('D-149 P8 § A.5.5 + Must Hold I-11 — tryConsume single-use', () => {
+  it('binds the consumed intent to the endpoint whose authority was checked', () => {
+    const db = buildDb();
+    try {
+      const store = createReceptionApprovalIntentStore(db);
+      store.create(goodCreate());
+      expect(store.tryConsume(goodConsume('i_1', 'another-endpoint'), () => true))
+        .toEqual({ ok: false, reason: 'not_found' });
+      expect(store.findById('i_1')?.consumed_at).toBeNull();
+      expect(store.tryConsume(goodConsume(), () => true).ok).toBe(true);
+    } finally { db.close(); }
+  });
+
+  it('serializes live authorization and consumption against a second connection revoking the endpoint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'approval-authority-'));
+    const db = new Database(join(dir, 'reception.db'));
+    let peer: Database.Database | undefined;
+    try {
+      ensureReceptionSchema(db);
+      db.pragma('journal_mode=WAL');
+      peer = new Database(join(dir, 'reception.db'));
+      peer.pragma('busy_timeout=0');
+      const registry = createPublicEndpointRegistryStore(db), other = createPublicEndpointRegistryStore(peer);
+      registry.create({ endpoint_id: 'e_1', kind: 'approval_link',
+        packet_declaration: { packet_kind: 'approval_link_packet',
+          source_query_ref: { kind: 'reception_approval_intent', intent_id: 'i_1' } },
+        bearer_secret_hmac: Buffer.alloc(32, 1), created_at: NOW, created_by_client_id: 'fixture',
+        expires_at: null, long_lived_acknowledged_at: NOW, metadata: {} });
+      registry.enable('e_1', NOW);
+      const store = createReceptionApprovalIntentStore(db);
+      store.create(goodCreate());
+      let concurrent: unknown;
+      const result = store.tryConsume(goodConsume(), () => {
+        try { concurrent = other.revoke({ endpoint_id: 'e_1', now: NOW + 1, reason: 'Owner revoked' }); }
+        catch (error) { concurrent = error; }
+        return registry.findById('e_1')?.enabled === true;
+      });
+      expect(concurrent).toMatchObject({ code: 'SQLITE_BUSY' });
+      expect(result.ok).toBe(true);
+      expect(other.revoke({ endpoint_id: 'e_1', now: NOW + 1, reason: 'Owner revoked' })).toBe('revoked');
+      const accepted = store.findById('i_1');
+      expect(accepted?.consumed_at).toBe(NOW);
+      expect(store.tryConsume(goodConsume(), () => registry.findById('e_1')?.enabled === true))
+        .toEqual({ ok: false, reason: 'not_authorized' });
+      expect(store.findById('i_1')).toEqual(accepted);
+    } finally { peer?.close(); db.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('first consume succeeds + persists encrypted columns + flips consumed_at', () => {
     const db = buildDb();
     const store = createReceptionApprovalIntentStore(db);

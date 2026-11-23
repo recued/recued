@@ -62,6 +62,7 @@ import {
   SERVER_RPC_METHOD_SET,
   WS_VERSION_SUBPROTOCOL,
   decodeBearerSubprotocol,
+  recipeBrowserSettings,
   type BridgeCapabilityProfile,
   type BridgeResult,
   type BridgeWireEnvelope,
@@ -70,6 +71,7 @@ import {
 } from '@recued/contracts';
 import type { BridgeRegistry } from './bridges/registry.js';
 import { createBridgeReminderPort } from './bridges/reminder-port.js';
+import { createBrowserIdentity } from './bridges/browser-identity.js';
 import {
   createBridgeDispatcher,
   createBridgeResultListener,
@@ -99,6 +101,7 @@ import { makeRecipeSaveHandlers } from './recipe-save-handler.js';
 import { makeRecipeSimulationHandlers } from './recipe-simulation-handler.js';
 import { makeRecipeRegressionHandlers, type RecipeRegressionDeps } from './recipe-regression-handler.js';
 import { makeRecipeRunCaptureHandlers, type RecipeRunCaptureDeps } from './recipe-run-capture-handler.js';
+import { makeRecipeTryHandlers } from './recipe-try-handler.js';
 import { makeRecipeReleaseHandlers, type RecipeReleaseDeps } from './recipe-release-handler.js';
 import { makePermissionRegressionHandlers, type PermissionRegressionDeps } from './permission-regression-handler.js';
 import { makePackUpdateHandlers, packUpdateOwner, type PackUpdateDeps } from './pack-update-handler.js';
@@ -371,6 +374,10 @@ import {
   type RecordsRpcDeps,
 } from './records-rpc-handler.js';
 import {
+  makeOwnerStorageRpcHandlers,
+  type OwnerStorageRpcDeps,
+} from './owner-storage-rpc.js';
+import {
   makeTimelineRpcHandlers,
   type TimelineRpcDeps,
 } from './timeline-rpc-handler.js';
@@ -454,7 +461,7 @@ import { makeMailWorkRpcHandlers } from './mail-work-rpc-handler.js';
 import type { MailWorkService } from './mail-work-service.js';
 import { makePreapprovalHandlers, type PreapprovalHandlerDeps } from './preapproval-handler.js';
 import type { SavedDataViewStore } from './saved-data-view-store.js';
-import { makePairHandlers } from './pair-handler.js';
+import { forgetLoginsOnRevoke, makePairHandlers } from './pair-handler.js';
 import { makeAccountBindingHandlers } from './account-binding-handler.js';
 import { makeProConvenienceHandlers } from './pro-convenience-handler.js';
 import { makeDdnsHandlers } from './ddns-handler.js';
@@ -1463,6 +1470,8 @@ export interface AttachWebSocketOptions {
   mailWorkService?: MailWorkService;
   /** D-221 owner-only `records.*` explorer/lifecycle control plane. */
   recordsRpcDeps?: RecordsRpcDeps;
+  /** D-403 — what takes space, by kind, and the owner's purge. Absent ⇒ `not_configured`. */
+  ownerStorageRpcDeps?: OwnerStorageRpcDeps;
   savedDataViewStore?: SavedDataViewStore;
   preapprovalDeps?: PreapprovalHandlerDeps;
   recipeRegressionDeps?: RecipeRegressionDeps;
@@ -1661,6 +1670,7 @@ const buildWsBinding = (
     mailFactRpcDeps,
     mailWorkService,
     recordsRpcDeps,
+    ownerStorageRpcDeps,
     savedDataViewStore,
     preapprovalDeps,
     recipeRegressionDeps,
@@ -1797,6 +1807,16 @@ const buildWsBinding = (
   // Yours holds these same dependencies before the RPC dispatcher is built.
   // Late-bind its direct saves to the same account validation as dishes.create.
   if (dishDeps && checkedDishDeps?.checkConnectionChoices) dishDeps.checkConnectionChoices = checkedDishDeps.checkConnectionChoices;
+  // D-402 slice H3c — "Use this browser instead": a recipe's browser settings, and the browsers paired now
+  // (the dispatcher is made further down; read when a dish asks).
+  if (dishDeps) {
+    dishDeps.browserSettingsOf = (recipe_id) => {
+      const recipe = executeDeps?.recipeStore.get(recipe_id);
+      return recipe ? { keys: recipeBrowserSettings(recipe).map((setting) => setting.key),
+        variables: (recipe.variables ?? {}) as Record<string, unknown> } : null;
+    };
+    dishDeps.pairedBrowsers = () => bridgeDispatcher?.listBrowsers?.() ?? [];
+  }
   const regressionHandlers = makeRecipeRegressionHandlers(recipeRegressionDeps);
   const reviewedPackInstallDeps = withSharedSignInConnections(packInstallDeps,packConnectionsDeps);
   const packInstallWithReview = reviewedPackInstallDeps ? { ...reviewedPackInstallDeps,
@@ -1805,6 +1825,8 @@ const buildWsBinding = (
   const { handlers, wiredMethods } = composeHandlers<ServerRpcRegistry, WsClient>([
     makeExecuteHandlers(executeDeps),
     makeRecipeRunCaptureHandlers(recipeRunCaptureDeps,executeDeps),
+    // D-402 slice C — "Try it": a draft run once, every change asked about first.
+    makeRecipeTryHandlers(recipeRunCaptureDeps === undefined ? undefined : { clientTokens: recipeRunCaptureDeps.clientTokens, captures: recipeRunCaptureDeps.store },executeDeps),
     makeExecutionControlHandlers(executionControlDeps),
     // D-172 resumable uploads — the owner-only webclient upload control plane
     // (create / probe / finalize / delete). The chunk BYTES ride the dedicated
@@ -1831,6 +1853,8 @@ const buildWsBinding = (
       pairRevokeAuditLog,
       clientTokens,
       pairRosterBus ? (event) => pairRosterBus.emit(event) : undefined,
+      // D-402 slice H5 — a revoked browser's remembered logins are forgotten with it.
+      forgetLoginsOnRevoke(contractDeps?.browserLogins),
     ),
     // D-175 P5 — recued.com account binding pair-RPC. Receives the
     // relayed binding token, exchanges it with the auth Worker, and
@@ -2283,6 +2307,8 @@ const buildWsBinding = (
     // D-221 — full-ref Records explorer and lifecycle controls. Every arrow
     // enforces a registered paired client and `records.` is MCP-reserved.
     makeRecordsRpcHandlers(recordsRpcDeps),
+    // D-403 — the owner's storage view and purge; paired-owner only, MCP-reserved like `records.`.
+    makeOwnerStorageRpcHandlers(ownerStorageRpcDeps),
     makeSavedDataViewHandlers(savedDataViewStore),
     makePreapprovalHandlers(preapprovalDeps),
     // D-174 #22 — `data.timeline` read pair-RPC (Data route drill-down).
@@ -2627,10 +2653,25 @@ const buildWsBinding = (
     };
     if (clientTokens) bridgeReminders = createBridgeReminderPort({ registry: bridgeRegistry,
       tokens: () => clientTokens.list({ client_kind: 'bridge' }), send: sendEnvelope });
+    // D-402 slice H1 — each paired browser under its current token, by the owner's name, with the
+    // lasting id a rotation keeps (`browser-identity.ts`).
+    const browserIdentity = createBrowserIdentity({
+      // Revoked ones too, so a browser no longer paired is still named by its pairing (slice H3).
+      tokens: () => clientTokens?.list({ client_kind: 'bridge', include_revoked: true }) ?? [],
+      instance: (instance_id) => pairedInstances?.get(instance_id),
+    });
     bridgeDispatcher = createBridgeDispatcher({
+      pairedBridges: () => browserIdentity.list().map(browser => ({ bridge_id: browser.bridge_id,
+        bridge_label: browser.name, browser_id: browser.browser_id })),
+      browserName: (browser_id) => browserIdentity.formerName(browser_id),
       registry: bridgeRegistry,
       transport: bridgeTransport,
       listener: bridgeResultListener,
+      domReadiness: process.env.RECUED_BRIDGE_DOM_READY !== '0',
+      readyClicks: process.env.RECUED_BRIDGE_READY_CLICKS === '1',
+      ...(process.env.RECUED_BRIDGE_TIMINGS === '1' ? {
+        onTiming: (timing: import('./bridges/bridge-performance.js').BridgeDispatchTiming) => console.info('[bridge-timing]', JSON.stringify(timing)),
+      } : {}),
       ...(bridgeDispatcherAuditLog ? { auditLog: bridgeDispatcherAuditLog } : {}),
     });
   }

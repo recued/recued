@@ -70,11 +70,11 @@ describe('Run palette page argument binding', () => {
     const slots = [{ slot: 'canva', connections: [{ connection_name: 'design', connection_revision: revision }] }];
     expect(recipePagePrefill(entry, context(vendor), slots).config)
       .toEqual({ asset_id: 'local-passport', name: 'Passport' });
-    entry.recipe.variables.asset_id = hint('text', { page_binding: { kind: 'asset', field: 'id' } });
+    entry.recipe.variables!.asset_id = hint('text', { page_binding: { kind: 'asset', field: 'id' } });
     expect(recipePagePrefill(entry, context(local)).config).toEqual({ asset_id: 'local-passport' });
     entry.recipe.metadata.supported_platforms = [];
     expect(recipePagePrefill(entry, context(vendor), slots).config).toEqual({});
-    entry.recipe.variables.asset_id = hint('text', { page_binding: { kind: 'asset', field: 'id', platform: 'canva' } });
+    entry.recipe.variables!.asset_id = hint('text', { page_binding: { kind: 'asset', field: 'id', platform: 'canva' } });
     expect(recipePagePrefill(entry, context(vendor), slots).config).toEqual({ asset_id: 'local-passport' });
     expect(recipePagePrefill(entry, context(local)).config).toEqual({ name: 'Passport' });
   });

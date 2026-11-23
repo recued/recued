@@ -138,13 +138,13 @@ describe('D-340 slice 3 — the day\'s reminders wait for the daily stream and g
     const items = [{ title: 'Run 5 km', ref: { collection: 'calendar', id: 'work:run' } }];
     const quote = quotedClosingDay(quoting(`${lead!.title}\n${lead!.text}`), '2026-10-19')!;
     expect(quote).toEqual({ title: 'Your day · Mon 19 Oct', from: '2026-10-19', to: '2026-10-19', reminders: true });
-    expect(closingDayNote(quote, items)).toContain('\n3. Ask about each item above they did not mention (not the notice\'s Reminders, which they answer separately): '
-      + 'leave it out, or record it as skipped?\n');
+    expect(closingDayNote(quote, items)).toContain('\n1. If they did not mention every item above (not the notice\'s Reminders, which they answer separately), '
+      + 'first ask about each one they left out');
     // A stream with none, and a day's item called "Reminders", as before.
     for (const text of ['Agenda\n07:00 Run 5 km', 'Agenda\n07:00 Reminders']) {
       const plain = quotedClosingDay(quoting(`${lead!.title}\n${text}`), '2026-10-19')!;
       expect(plain).toEqual({ title: 'Your day · Mon 19 Oct', from: '2026-10-19', to: '2026-10-19' });
-      expect(closingDayNote(plain, items)).toContain('\n3. Ask about each item above they did not mention: leave it out, or record it as skipped?\n');
+      expect(closingDayNote(plain, items)).toContain('\n1. If they did not mention every item above, first ask about each one they left out');
     }
   });
 

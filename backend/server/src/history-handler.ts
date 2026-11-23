@@ -52,7 +52,7 @@ import {
   sanitizeTimelineOriginFilter,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
-import { PREFLIGHT_HANDLER_KIND, type planApproval } from '@recued/gateway';
+import { isPreflightApprovalKind, preflightAskHolds, type planApproval } from '@recued/gateway';
 import type { PendingAsk } from '@recued/notification';
 import { PAUSED_APPROVAL_ANSWERS, PAUSED_APPROVAL_REFUSAL } from './pause-approval.js';
 
@@ -381,12 +381,17 @@ export const handlePendingAsks = async (
 export const createAskChatPlanFinder = (
   plans: Pick<planApproval.PlanApprovalStore, 'findByHoldRun'>,
 ) => async (ask: PendingAsk): Promise<ServerPendingAsk['chat_plan'] | null> => {
-  const run_id = ask.handler_payload.run_id;
-  if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND || typeof run_id !== 'string' || run_id === '') return null;
+  // D-177 §N.15.9 (1c-b) — a round's one approval of several of the chat's own writes is their
+  // group's card: found by its first hold.
+  const [first, ...more] = preflightAskHolds(ask);
+  const run_id = first?.run_id;
+  if (!isPreflightApprovalKind(ask.handler_kind) || run_id === undefined) return null;
   // A lapsed hold's plan is cancelled, so it no longer waits either.
   const plan = await plans.findByHoldRun?.(run_id);
   if (plan === undefined || plan.status !== 'proposed') return null;
-  const changeable = (plan.editable_args?.length ?? 0) > 0 && plan.args !== null && typeof plan.args === 'object';
+  // An approval of several takes no change to one of them.
+  const changeable = more.length === 0
+    && (plan.editable_args?.length ?? 0) > 0 && plan.args !== null && typeof plan.args === 'object';
   return { session_id: plan.session_id, plan_id: plan.plan_id, ...(changeable ? { changeable: true } : {}) };
 };
 

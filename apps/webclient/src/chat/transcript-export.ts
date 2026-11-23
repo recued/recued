@@ -1,8 +1,16 @@
+import { readRecordChatMessage, isSelectedRecordsContext, recordChatHref } from './record-context.js';
 /** Readable downloads of the server's full conversation export. No extra reads. */
 import { chatSourceCitationsOf, isChatMessageRole, isChatToolCallRecord, type ChatMessageRole } from '@recued/contracts';
 import { formatClientDateTime, type ClientDateTimeOptions } from '@recued/ui-shared';
 import { answerTextSegments, type AnswerTextSegment } from './answer-text.js';
 import { sourceCitationHref } from './source-citations.js';
+import { callLabel } from './activity.js';
+
+/** A recorded call's state in the export, in words. */
+const EXPORT_STATE_WORDS: Readonly<Record<'running' | 'held' | 'succeeded' | 'failed' | 'interrupted', string>> = {
+  running: 'still running', held: 'waiting for your approval', succeeded: 'done', failed: 'did not finish',
+  interrupted: 'interrupted',
+};
 
 export type ChatExportFormat = 'json' | 'markdown';
 
@@ -150,10 +158,15 @@ export const formatChatMarkdownExport = (
     parts.push('---', `## ${roles[message.role]}${message.noticeTitle ? ` · ${label(message.noticeTitle)}` : ''} · ${stamp(message.ts)}`);
     const tool = message.toolCall;
     if (isChatToolCallRecord(tool) && tool.message_id === message.id && tool.session_id === options.sessionId) {
-      parts.push(`Recorded tool status: ${label(tool.tool_name)} · ${
-        tool.denied ? 'not approved' : tool.expired ? 'not answered in time' : tool.state}`);
+      // As the chat names the call ("Search your mail"), never its tool's name or a raw state.
+      parts.push(`Action: ${label(callLabel(tool))} · ${
+        tool.denied ? 'not approved' : tool.expired ? 'not answered in time' : EXPORT_STATE_WORDS[tool.state]}`);
     }
-    if (message.content) parts.push(message.role === 'tool' || message.role === 'system'
+    const context = message.role === 'user' ? readRecordChatMessage(message.content) : null;
+    if (context && isSelectedRecordsContext(context.context)) {
+      parts.push(messageBody(context.question, message.sources, options.baseUrl), '### Selected records', context.context.records.map(record => '- ' + link(record.reference.title, workspaceLink(record.reference.target.hash, options.baseUrl))).join('\n'));
+      if (context.context.base) parts.push(link('Original selected context', workspaceLink(recordChatHref(context.context.base), options.baseUrl)));
+    } else if (message.content) parts.push(message.role === 'tool' || message.role === 'system'
       ? codeFence(message.content, 'text') : messageBody(message.content, message.sources, options.baseUrl));
     if (message.attachments.length) {
       hasAttachments = true;

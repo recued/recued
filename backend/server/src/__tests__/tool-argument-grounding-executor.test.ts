@@ -240,6 +240,29 @@ describe('an identical call, once refused, is not sent through the gate again', 
     expect(dispatchTool).not.toHaveBeenCalled();
   });
 
+  it('also escalates an unchanged placeholder refusal while preserving its first explanation', async () => {
+    const { prompts, dispatchTool } = await runRepeating({ building_id: '__first__' }, 3);
+    expect(dispatchTool).not.toHaveBeenCalled();
+    const calls = JSON.parse(prompts[3]!).prior_tool_calls;
+    expect(calls[0].detail).toContain('placeholder');
+    expect(calls.at(-1).detail).toContain('already refused');
+    expect(calls.at(-1).detail).not.toContain('wait for its result');
+  });
+
+  it('rechecks a refused placeholder when the host subsequently issues that exact value', async () => {
+    let n = 0, issued = false;
+    const dispatchTool = vi.fn(async (): Promise<ChatDispatchResult> => ({ ok: true, result: {} }));
+    await runChatTurn(input as never, { registry, dispatchTool, emit() {}, now: () => 0,
+      wasValueIssuedToModel: (value: string) => issued && value === '__first__',
+      executeAiCall: async () => {
+        const round = n++;
+        if (round === 1) issued = true;
+        return { body: round < 2 ? outputWith({ building_id: '__first__' }) : { response: 'Done.', events: [], tool_calls: [] } as AIOutput };
+      },
+    } as never);
+    expect(dispatchTool).toHaveBeenCalledTimes(1);
+  });
+
   /** 🔑 THE GUARD MUST NOT BLOCK A MODEL THAT IS CORRECTING ITSELF. Only a
    *  byte-identical `(tool, args)` pair is short-circuited; change an argument
    *  and the call is evaluated fresh — which for a grounded value means it

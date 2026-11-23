@@ -237,6 +237,8 @@ describe('runCatalogOperation D-177 rule-5 slice-D scoped destinations', () => {
     expect(consume).toHaveBeenCalledWith('scoped-grant-1', {
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       destination_emails: ['ada@example.com', 'grace@example.com'],
+      // D-177 N.15 — the op the match named, which a `'kind'` row re-verifies.
+      operation_id: 'pub/cat.send',
     });
     expect(mint).not.toHaveBeenCalled();
     expect(ingredientExecutor).toHaveBeenCalledTimes(1);

@@ -20,14 +20,19 @@
  *
  *  ⚠ Everything below returns `undefined` until an endpoint has actually
  *  refused something, so an install that has never overflowed behaves exactly
- *  as it does today. */
+ *  as it does today.
+ *
+ *  2026-11-20 (the owner: "on the slot that knows the limit (from the api or hit the limit before) we use that") —
+ *  or until its owner typed the window (`slot.context_window_tokens`). That one was read only by the gateway, so a
+ *  chat on a slot whose owner had typed 128,000 composed as though it had no limit at all. */
 
 import {
   candidateSlotsForLayer,
   computeContextInputTokenBudget,
   computeMaxTokens,
   maxProvenAcceptedInput,
-  minLearnedContextWindow,
+  minEstimateTokenRatio,
+  minKnownContextWindow,
   type LLMConfig,
   type ModelHint,
 } from '@recued/llm';
@@ -85,7 +90,7 @@ export const resolveChatInputTokenBudget = (
 ): number | undefined => {
   if (!config) return undefined;
   const candidates = chatCandidateSlots(config, route);
-  const window = minLearnedContextWindow(candidates);
+  const window = minKnownContextWindow(candidates);
   if (window === undefined) return undefined;
   // Reserve the LARGEST output any candidate might ask for. Under-reserving
   // promises the model room it will not get, which is the failure this
@@ -96,8 +101,14 @@ export const resolveChatInputTokenBudget = (
     (max, slot) => Math.max(max, computeMaxTokens(modelHint, slot)),
     0,
   );
-  const budget = computeContextInputTokenBudget(window, reserved);
-  if (budget === null) return undefined;
+  const computed = computeContextInputTokenBudget(window, reserved);
+  if (computed === null) return undefined;
+  // 2026-11-20 (the owner: "go ahead", the estimate) — the window is in the provider's tokens, and every trim and fold
+  //   measures the prompt with our estimate, which counted P at about twice the provider. In the estimator's units the
+  //   budget is the window's times the ratio each candidate has shown (`minEstimateTokenRatio`); until every candidate
+  //   has shown one, it stays as it was.
+  const ratio = minEstimateTokenRatio(candidates);
+  const budget = ratio === undefined ? computed : Math.floor(computed * ratio);
   // ⛔ Never trim below an input some candidate has already ACCEPTED — that
   // would discard context demonstrably known to fit.
   const floor = maxProvenAcceptedInput(candidates);

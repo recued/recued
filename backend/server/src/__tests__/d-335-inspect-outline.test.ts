@@ -4,17 +4,20 @@
  *  real Bridge in real Chrome by `browser-toolkit-browser.test.ts`. */
 
 import { describe, expect, it, vi } from 'vitest';
-import { BRIDGE_PAGE_CHANGED_MESSAGE, bridgeElementChangedMessage, type BridgeResult } from '@recued/contracts';
+import { BRIDGE_PAGE_CHANGED_MESSAGE, bridgeElementChangedMessage, parseBrowserActSteps, type BridgeResult } from '@recued/contracts';
 import type { ResolvedCall } from '@recued/ingredients';
 
 import type { BridgeDispatcher, DispatchOutcome, DispatchRequest } from '../bridges/dispatcher.js';
 import { createBridgeDomAdapter, isFindSelector, PAGE_CHANGED_NOTE, PAGE_CHANGES_CHARS, PAGE_END_NOTE, PAGE_FIND_CUT_NOTE, PAGE_HTML_READ,
-  PAGE_OUTLINE_CUT_NOTE, PAGE_OUTLINE_READ, PAGE_READ_FRESH_MS, PAGE_TEXT_END_NOTE, PAGE_UNCHANGED_NOTE } from '../bridges/dom-adapter.js';
+  PAGE_OUTLINE_CUT_NOTE, PAGE_OUTLINE_READ, PAGE_READ_FRESH_MS, PAGE_TEXT_END_NOTE, PAGE_UNCHANGED_NOTE, PAGE_LOADING_NOTE } from '../bridges/dom-adapter.js';
 import { createPageReadStore, PAGE_OUTLINE_PART_CHARS, type PageReadStore } from '../bridges/page-outline.js';
 import { KERNEL_MANIFESTS } from '../kernel-manifests.js';
+import { BROWSER_PAGE_OBSERVATION_CHARS, type BrowserPageObservation } from '../bridges/browser-page-observation.js';
 import { withPreapprovalIo, type PreapprovalIoContext } from '../preapproval-io-context.js';
 
 const PAGE = '7:DOC1';
+const retainedData = { read_ranges: expect.any(Array), data_ref: expect.stringMatching(/^data:[a-f0-9-]{36}$/), data_fields: expect.any(Array),
+  data_format: 'lines', data_source_complete: true, data_scope: 'captured_page', data_hint: expect.any(Object) };
 const URL_ = 'https://en.example.org/wiki/Ada';
 const LONG = 'Lovelace wrote the first program for the Analytical Engine. '.repeat(3).trim();
 /** Its line in the outline, cut in its middle (slice AU): its start, `…`, its end, then its block. */
@@ -54,15 +57,114 @@ const harness = (answer: DispatchOutcome | ((request: DispatchRequest) => Dispat
   return { inspect, run, requests, store };
 };
 
+describe('browser read continuation arguments', () => {
+  it('continues an element in its own line space without widening to the full page', async () => {
+    const html = '<section id="part"><h2>Selected</h2>' + Array.from({ length: 6 }, (_, i) => `<p>Region ${i}: ${'x'.repeat(40)}</p>`).join('')
+      + '<p>REGION_TAIL</p></section>';
+    const { inspect, run, requests, store } = harness(request => page(request.args.selector === '#part' ? html : '<main><p>OUTSIDE_ONLY</p></main>'));
+    await inspect({ page: PAGE, form: 'outline' });
+    const whole = store.dataSnapshot(PAGE);
+    const first = (await inspect({ page: PAGE, selector: '#part', form: 'outline', chars: 100 })).result!;
+    expect(first).toMatchObject({ complete: false, next_read: { page: PAGE, selector: '#part', form: 'outline', from: expect.any(Number), chars: 100 },
+      next_step: { do: 'read', selector: '#part', form: 'outline' }, read_state: { scope: { kind: 'element', selector: '#part' } } });
+    expect(String(first.outline)).not.toContain('OUTSIDE_ONLY');
+    let part = first;
+    for (let i = 0; i < 10 && part.next_read; i++) part = (await inspect(part.next_read as Record<string, unknown>)).result!;
+    expect(part).toMatchObject({ complete: true });
+    expect(String(part.outline)).toContain('REGION_TAIL');
+    expect(String(part.outline)).toContain('End of the selected element');
+    expect(store.dataSnapshot(PAGE)).toEqual(whole);
+    expect(requests.slice(1).every(request => request.args.selector === '#part')).toBe(true);
+    const batch = await run('dom-act', { page: PAGE, steps: [first.next_step] }) as { tabs: Array<{ reads: Array<Record<string, unknown>> }> };
+    expect(batch.tabs[0]!.reads[0]).toMatchObject({ read_state: { scope: { kind: 'element', selector: '#part' } } });
+    expect(String(batch.tabs[0]!.reads[0]!.outline)).not.toContain('OUTSIDE_ONLY');
+  });
+
+  it('continues a partial text section with standalone arguments and a valid batch step', async () => {
+    const html = '<main><h2>Codes</h2>' + Array.from({ length: 30 }, (_, i) =>
+      `<p>Entry ${i}: ${'long section content '.repeat(40)}</p>`).join('')
+      + '<p>TAIL_SENTINEL</p><h2>Other section</h2><p>Done.</p></main>';
+    const { inspect, run } = harness(page(html));
+    const first = (await inspect({ page: PAGE, form: 'text', find: 'Codes' })).result!;
+    expect(first).toMatchObject({ complete: false, truncated: false, next: expect.any(Number),
+      next_read: { page: PAGE, from: first.next, find: '' },
+      next_step: { do: 'read', page: PAGE, form: 'text', from: first.next } });
+    expect(String(first.text)).not.toContain('TAIL_SENTINEL');
+    const continued = (await inspect({ ...(first.next_read as Record<string, unknown>), form: 'text' })).result!;
+    expect(continued).toMatchObject({ complete: true, truncated: false });
+    expect(String(continued.text)).toContain('TAIL_SENTINEL');
+    expect(continued.next_read).toBeUndefined();
+    const parsed = parseBrowserActSteps([first.next_step]);
+    expect(parsed.ok).toBe(true);
+    const batch = await run('dom-act', { page: PAGE, steps: [first.next_step] }) as {
+      tabs: Array<{ reads: Array<{ text: string; complete: boolean }> }>;
+    };
+    expect(batch.tabs[0]!.reads[0]).toMatchObject({ complete: true });
+    expect(batch.tabs[0]!.reads[0]!.text).toContain('TAIL_SENTINEL');
+  });
+
+  it('does not claim a loading or source-cut read is complete or invent a cursor past its end', async () => {
+    for (const state of [{ loading: true, truncated: false }, { truncated: true }]) {
+      const { inspect } = harness(ok({ page: PAGE, url: URL_, title: 'Codes', html: '<h2>Codes</h2><p>Only captured content.</p>', ...state }));
+      const result = (await inspect({ page: PAGE, form: 'text', find: 'Codes' })).result!;
+      expect(result).toMatchObject({ complete: false });
+      expect(result.next).toBeUndefined();
+      expect(result.next_read).toBeUndefined();
+      expect(result.next_step).toBeUndefined();
+    }
+  });
+
+  it('marks omitted text sections incomplete even when the character budget fits', async () => {
+    const html = '<main>' + Array.from({ length: 4 }, (_, i) => `<h2>Group ${i}</h2><p>Body ${i}</p>`).join('') + '</main>';
+    const { inspect } = harness(page(html));
+    const result = (await inspect({ page: PAGE, form: 'text', find: 'Group' })).result!;
+    expect(result).toMatchObject({ sections: 3, complete: false, next_read: { page: PAGE, find: '' } });
+    expect(String(result.text)).not.toContain('Body 3');
+    const tail = (await inspect({ ...(result.next_read as Record<string, unknown>), form: 'text' })).result!;
+    expect(String(tail.text)).toContain('Body 3');
+  });
+});
+
 describe('D-335 slice O — an inspection answers an outline when asked, and HTML as before when not', () => {
+  it('labels a loading snapshot and refreshes it for a search even when the read is recent', async () => {
+    let loaded = false;
+    const { inspect, requests, store } = harness(() => ok({ page: PAGE, url: URL_, title: 'Ada',
+      html: loaded ? HTML + '<p>Later content</p>' : HTML, truncated: false, ...(!loaded ? { loading: true } : {}) }));
+    const initial = (await inspect({ page: PAGE, form: 'outline' })).result!;
+    expect(initial).toMatchObject({ loading: true, note: PAGE_LOADING_NOTE });
+    expect(String(initial.outline)).toContain(PAGE_LOADING_NOTE);
+    expect(store.age(PAGE)).toBe(Infinity);
+    expect(store.controls(PAGE)).toBeUndefined();
+    loaded = true;
+    const found = (await inspect({ page: PAGE, find: 'Later', form: 'text' })).result!;
+    expect(requests).toHaveLength(2);
+    expect(String(found.text)).toContain('Later content');
+    expect(found.loading).toBeUndefined();
+    expect(store.age(PAGE)).toBeLessThan(PAGE_READ_FRESH_MS);
+  });
+
+  it('a scoped read cannot make a previously loading whole-page snapshot fresh', async () => {
+    const { inspect, store } = harness(request => ok({ page: PAGE, url: URL_, title: 'Ada', html: HTML,
+      truncated: false, loading: request.args.selector === undefined }));
+    await inspect({ page: PAGE, form: 'outline' });
+    const scoped = (await inspect({ page: PAGE, selector: '#part', form: 'outline' })).result!;
+    expect(scoped).toMatchObject({ complete: true, read_state: { loading: false, scope: { kind: 'element', selector: '#part' } } });
+    expect(store.age(PAGE)).toBe(Infinity);
+  });
+
   it('reads the page through the Bridge as ever, and answers the outline in place of the HTML', async () => {
     const { inspect, requests } = harness();
     const { result } = await inspect({ page: PAGE, form: 'outline' });
     // The Bridge gets the inspect it always did, now naming how much to read (slice P): the whole
     // page, since the outline is the server's to cut down.
     expect(requests.map((r) => [r.action, r.args])).toEqual([['inspect', { page: PAGE, max_chars: 600_000, max_value_chars: 20_000 }]]);
-    expect(result).toEqual({ page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', truncated: false,
-      outline: `# Ada Lovelace\n${LONG_CUT}\nSee [Babbage](e5).\n${PAGE_END_NOTE}` });
+    expect(result).toEqual({ ...retainedData, page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', truncated: false,
+      complete: true,
+      extraction_targets: { source: 'captured_dom', scope: 'page', source_complete: true, tables_complete: true, tables: [] },
+      read_state: { source: 'bridge_read', scope: { kind: 'page', form: 'outline' }, loading: 'unknown', complete: true, truncated: false },
+      field_evidence: expect.objectContaining({ scope: 'page', complete: true }),
+      interaction_targets: expect.objectContaining({ captured_editable_fields: 0, captured_clickable_controls: 1 }),
+      outline: `# Ada Lovelace\n${LONG_CUT}\nSee [link: Babbage](e5).\n${PAGE_END_NOTE}` });
   });
 
   it('without form, a recipe written before the outline gets the HTML it reads, as much as it always did', async () => {
@@ -85,22 +187,24 @@ describe('D-335 slice O — an inspection answers an outline when asked, and HTM
 });
 
 describe('D-335 slice O — block and find answer from what was kept, without the Bridge', () => {
-  it('a block answers its line in full; one the page does not have says to inspect again', async () => {
+  it('a block answers its line in full; a missing block reports its absence without another read', async () => {
     const { inspect, requests } = harness();
     await inspect({ page: PAGE, form: 'outline' });
     expect((await inspect({ page: PAGE, block: 'b1' })).result).toEqual({ page: PAGE, url: URL_,
-      title: 'Ada Lovelace - Wikipedia', block: 'b1', text: LONG });
+      title: 'Ada Lovelace - Wikipedia', block: 'b1', text: LONG,
+      read_state: { source: 'kept_snapshot', scope: { kind: 'block', form: 'outline', block: 'b1' }, loading: 'unknown', complete: 'unknown', truncated: 'unknown' } });
     const missing = await inspect({ page: PAGE, block: 'b9' });
     expect(missing.error?.code).toBe('DOM_SELECTOR_NOT_FOUND');
-    expect(missing.error?.message).toBe('core.dom.inspect: Recued keeps no b9 for this page. Inspect it again: a line it cuts short names its block.');
+    expect(missing.error?.message).toBe('core.dom.inspect: no retained block b9 exists for this page.');
     expect(requests).toHaveLength(1);
   });
 
   it('find answers every line holding the text from the kept read; with none kept, it reads the whole page once first', async () => {
     const { inspect, requests } = harness();
     const first = await inspect({ page: PAGE, find: 'babbage' });
-    expect(first.result).toEqual({ page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', find: 'babbage', matches: 1,
-      lines: 'line 3: See [Babbage](e5).   (under "Ada Lovelace")', truncated: false });
+    expect(first.result).toEqual({ ...retainedData, page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', find: 'babbage', matches: 1,
+      read_state: { source: 'kept_snapshot', scope: { kind: 'search', form: 'outline', find: 'babbage' }, loading: 'unknown', complete: true, truncated: false },
+      lines: 'line 3: See [link: Babbage](e5).   (under "Ada Lovelace")', truncated: false, complete: true });
     expect(requests.map((r) => [r.action, r.args])).toEqual([['inspect', { page: PAGE, ...PAGE_OUTLINE_READ }]]);
     const again = await inspect({ page: PAGE, find: 'Analytical' });
     expect(again.result).toMatchObject({ matches: 1 });
@@ -135,10 +239,10 @@ describe('D-335 slice O — block and find answer from what was kept, without th
       inspect({ page: PAGE, form: 'markdown' }),
     ]).then((all) => all.map(({ error }) => error?.message));
     expect(messages).toEqual([
-      'core.dom.inspect: give one of block, find and from',
-      'core.dom.inspect: give one of block, find and from',
-      'core.dom.inspect: block, find and from answer from the page as it was read; a ref or a selector reads a part of it again',
-      'core.dom.inspect: block, find and from answer from the page as it was read; a ref or a selector reads a part of it again',
+      expect.stringContaining('To continue, clear find and block and pass from alone'),
+      expect.stringContaining('To continue, clear find and block and pass from alone'),
+      'core.dom.inspect: give ref or selector, without block or find; from continues within that element',
+      'core.dom.inspect: from within an element needs form outline or text',
       'core.dom.inspect: a block needs the page it reads: pass the page handle the outline answered',
       'core.dom.inspect: from needs the page it reads: pass the page handle the outline answered',
       "core.dom.inspect: 'from' is a line number, such as 213",
@@ -166,8 +270,9 @@ describe('D-335 slice P — the whole page, answered in parts, read on from the 
     // A recipe's 0, or text holding a number, reads the same way.
     expect((await inspect({ page: PAGE, from: String(next) })).result).toEqual(second);
     const last = (await inspect({ page: PAGE, from: ROWS })).result!;
-    expect(last).toEqual({ page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia',
-      outline: `Paragraph ${String(ROWS)} of the long page.\n${PAGE_END_NOTE}`, truncated: false });
+    expect(last).toEqual({ ...retainedData, page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia',
+      read_state: { source: 'kept_snapshot', scope: { kind: 'page_part', form: 'outline', from: ROWS }, loading: 'unknown', complete: true, truncated: false },
+      outline: `Paragraph ${String(ROWS)} of the long page.\n${PAGE_END_NOTE}`, truncated: false, complete: true });
     const past = await inspect({ page: PAGE, from: ROWS + 1 });
     expect(past.error?.message).toBe(`core.dom.inspect: the outline of this page has ${String(ROWS)} lines, so from ${String(ROWS + 1)} is past its end`);
     expect(requests).toHaveLength(1);
@@ -195,7 +300,7 @@ describe('D-335 slice P — the whole page, answered in parts, read on from the 
   it('on a page the Bridge cut, find and a from past the end say the read stopped there, and how to read on', async () => {
     const { inspect } = harness(page(HTML, true));
     const found = (await inspect({ page: PAGE, find: 'babbage' })).result!;
-    expect(String(found.lines).split('\n')).toEqual(['line 3: See [Babbage](e5).   (under "Ada Lovelace")', PAGE_FIND_CUT_NOTE]);
+    expect(String(found.lines).split('\n')).toEqual(['line 3: See [link: Babbage](e5).   (under "Ada Lovelace")', PAGE_FIND_CUT_NOTE]);
     expect((await inspect({ page: PAGE, find: 'See also' })).result).toMatchObject({ matches: 0, lines: PAGE_FIND_CUT_NOTE });
     const past = await inspect({ page: PAGE, from: 9 });
     expect(past.error?.message).toBe('core.dom.inspect: the outline of this page has 3 lines, so from 9 is past its end. The Browser Bridge '
@@ -223,7 +328,11 @@ describe('D-335 slice Q — the page as text; a page that changed; an action on 
     const { inspect, requests } = harness(page(ARTICLE));
     const { result } = await inspect({ page: PAGE, form: 'text' });
     expect(requests.map((r) => r.args)).toEqual([{ page: PAGE, ...PAGE_OUTLINE_READ }]);
-    expect(result).toEqual({ page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', truncated: false,
+    expect(result).toEqual({ ...retainedData, page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', truncated: false, complete: true,
+      extraction_targets: { source: 'captured_dom', scope: 'page', source_complete: true, tables_complete: true, tables: [] },
+      read_state: { source: 'bridge_read', scope: { kind: 'page_text', form: 'text' }, loading: 'unknown', complete: true, truncated: false },
+      field_evidence: expect.objectContaining({ scope: 'main', complete: true }),
+      interaction_targets: expect.objectContaining({ captured_editable_fields: 1, captured_clickable_controls: 1 }),
       text: `# Ada Lovelace\n${LONG}\n[image: Augusta Ada King, Countess of Lovelace, daguerrotype portrait circa 1843] Daguerreotype\n`
         + PAGE_TEXT_END_NOTE });
   });
@@ -251,7 +360,7 @@ describe('D-335 slice Q — the page as text; a page that changed; an action on 
     const again = (await inspect({ page: PAGE, find: 'Babbage' })).result!;
     expect(requests.map((r) => r.args)).toEqual([{ page: PAGE, ...PAGE_OUTLINE_READ }, { page: PAGE, ...PAGE_OUTLINE_READ }]);
     // Unchanged: no note, and the block the first read named still answers.
-    expect(again.lines).toBe('line 3: See [Babbage](e5).   (under "Ada Lovelace")');
+    expect(again.lines).toBe('line 3: See [link: Babbage](e5).   (under "Ada Lovelace")');
     expect((await inspect({ page: PAGE, block: 'b1' })).result).toMatchObject({ text: LONG });
   });
 
@@ -282,7 +391,7 @@ describe('D-335 slice Q — the page as text; a page that changed; an action on 
     await run('dom-click', { page: PAGE, ref: 'e5' });
     // The read after the click is kept: a search answers from it, with nothing more sent.
     const found = (await inspect({ page: PAGE, find: 'Charles' })).result!;
-    expect(String(found.lines).split('\n')).toEqual(['line 3: See [Charles Babbage](e5).   (under "Ada Lovelace")']);
+    expect(String(found.lines).split('\n')).toEqual(['line 3: See [link: Charles Babbage](e5).   (under "Ada Lovelace")']);
     expect(requests.map((r) => r.action)).toEqual(['inspect', 'click', 'reread']);
   });
 
@@ -304,8 +413,7 @@ describe('D-335 slice Q — the page as text; a page that changed; an action on 
     html = HTML.replace('<h1>', '<p>New.</p><h1>');
     now = PAGE_READ_FRESH_MS + 1;
     await inspect({ page: PAGE, find: 'x' });
-    expect((await inspect({ page: PAGE, block: 'b1' })).error?.message).toBe('core.dom.inspect: the page changed after b1 was read, '
-      + 'and Recued has read it again since: inspect it for its lines as they are now.');
+    expect((await inspect({ page: PAGE, block: 'b1' })).error?.message).toBe('core.dom.inspect: b1 belongs to an earlier page observation and is no longer current.');
   });
 
   it('searches made together on a page that needs reading again wait for one read', async () => {
@@ -334,9 +442,13 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
     // A dialog opens in place of the link.
     html = HTML.replace('<p>See <a ref="e5" href="https://x.org/b">Babbage</a>.</p>',
       '<div role="dialog"><p>Delete this deal?</p><button ref="e9">Delete</button></div>');
-    expect(changesOf(await run('dom-click', { page: PAGE, ref: 'e5' }))).toEqual([
-      '(What changed on the page, numbered as it is now: 2 new lines, 1 line gone.)', 'line 3: Delete this deal?', 'line 4: [Delete](e9)',
-      'gone: See [Babbage](e5).']);
+    const clicked = await run('dom-click', { page: PAGE, ref: 'e5' }) as Record<string, unknown>;
+    expect(changesOf(clicked)).toEqual([
+      '(What changed on the page, numbered as it is now: 2 new lines, 1 line gone.)', 'line 3: Delete this deal?', 'line 4: [button: Delete](e9)',
+      'gone: See [link: Babbage](e5).']);
+    expect(clicked.page_observation).toMatchObject({ state: 'changed', page: PAGE, loading: false, source_truncated: false,
+      changes: { added: [{ line: 3, text: 'Delete this deal?' }, { line: 4, text: '[button: Delete](e9)' }],
+        removed: [{ text: 'See [link: Babbage](e5).' }], added_total: 2, removed_total: 1, complete: true } });
     // The whole page was read, as an outline reads it, after the click.
     expect(requests.at(-1)).toMatchObject({ action: 'reread', args: { page: PAGE, ...PAGE_OUTLINE_READ } });
     expect((await inspect({ page: PAGE, find: 'Delete' })).result).toMatchObject({ matches: 2 });
@@ -346,15 +458,48 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
   it('nothing changed says so', async () => {
     const { inspect, run } = harness((request) => request.action === 'click' ? clickAnswer() : page());
     await inspect({ page: PAGE, form: 'outline' });
-    expect(changesOf(await run('dom-click', { page: PAGE, ref: 'e5' }))).toEqual([PAGE_UNCHANGED_NOTE]);
+    const clicked = await run('dom-click', { page: PAGE, ref: 'e5' }) as Record<string, unknown>;
+    expect(changesOf(clicked)).toEqual([PAGE_UNCHANGED_NOTE]);
+    expect(clicked.page_observation).toMatchObject({ state: 'unchanged', loading: false });
   });
 
   it('a page the click loaded, or one never read, answers its first lines', async () => {
     const { run, requests } = harness((request) => request.action === 'click' ? clickAnswer('7:DOC2') : page());
     expect(changesOf(await run('dom-click', { page: PAGE, ref: 'e5' }))).toEqual(['(The page now, as Inspect a web page answers it: lines 1 to 3 of 3.)',
-      '# Ada Lovelace', `${LONG_CUT}`, 'See [Babbage](e5).', PAGE_END_NOTE]);
+      '# Ada Lovelace', `${LONG_CUT}`, 'See [link: Babbage](e5).', PAGE_END_NOTE]);
     // The page read is the one the click answered.
     expect(requests.at(-1)).toMatchObject({ action: 'reread', args: { page: '7:DOC2', ...PAGE_OUTLINE_READ } });
+  });
+
+  it('adds exact fields from the destination read without another browser command or carrying the old page fields', async () => {
+    let moved = false;
+    const { inspect, run, requests } = harness(request => {
+      if (request.action === 'click') { moved = true; return clickAnswer('7:DOC2'); }
+      return moved ? ok({ page: '7:DOC2', url: 'https://example.org/portrait', title: 'Portrait', truncated: false,
+        html: '<main><figure><img alt="Alternative description"><figcaption>Daguerreotype of Lovelace (c. 1843)</figcaption></figure></main>' })
+        : page('<main><h1>Old page heading</h1><a ref="e5">Portrait</a></main>');
+    });
+    await inspect({ page: PAGE, form: 'outline' });
+    const clicked = await run('dom-click', { page: PAGE, ref: 'e5' }) as { page_observation: BrowserPageObservation };
+    expect(clicked.page_observation).toMatchObject({ state: 'snapshot', page: '7:DOC2', loading: false,
+      range: { from: 1 }, field_evidence: { scope: 'main', complete: true } });
+    expect(clicked.page_observation.field_evidence!.items.find(item => item.tag === 'img')!.fields).toEqual({
+      alt: { value: 'Alternative description', source: 'alt' },
+      caption: { value: 'Daguerreotype of Lovelace (c. 1843)', source: 'figcaption.textContent' },
+    });
+    expect(JSON.stringify(clicked.page_observation)).not.toContain('Old page heading');
+    expect(requests.map(r => r.action)).toEqual(['inspect', 'click', 'reread']);
+  });
+
+  it('keeps loading and cut-source observations distinct from a complete settled field view', async () => {
+    for (const loading of [true, false]) {
+      const { run } = harness(request => request.action === 'click' ? clickAnswer()
+        : ok({ page: PAGE, url: URL_, title: 'Partial', html: HTML, truncated: true, loading }));
+      const clicked = await run('dom-click', { page: PAGE, ref: 'e5' }) as { page_observation: BrowserPageObservation };
+      expect(clicked.page_observation).toMatchObject({ loading, source_truncated: true });
+      if (loading) expect(clicked.page_observation.field_evidence).toBeUndefined();
+      else expect(clicked.page_observation.field_evidence).toMatchObject({ complete: false, incomplete: ['page_truncated'] });
+    }
   });
 
   it('a long change is cut, saying where to read on, and from reads on there from what was kept', async () => {
@@ -364,7 +509,11 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
     const rows = Array.from({ length: 300 }, (_, i) => `<p>Row ${String(i + 1)} of a long list the click brought in.</p>`).join('');
     // The rows come in and the link goes: once the new lines are cut, the line that went is not listed after them.
     html = HTML.replace('<p>See <a ref="e5" href="https://x.org/b">Babbage</a>.</p>', '').replace('</body>', `${rows}</body>`);
-    const changes = String((await run('dom-click', { page: PAGE, ref: 'e5' }) as Record<string, unknown>).changes);
+    const answer = await run('dom-click', { page: PAGE, ref: 'e5' }) as { changes: string; page_observation: BrowserPageObservation };
+    const changes = answer.changes;
+    expect(JSON.stringify(answer.page_observation).length).toBeLessThanOrEqual(BROWSER_PAGE_OBSERVATION_CHARS);
+    expect(answer.page_observation.changes).toMatchObject({ added_total: 300, removed_total: 1, complete: false,
+      next_line: expect.any(Number) });
     const lines = changes.split('\n');
     expect(lines.slice(0, 2)).toEqual(['(What changed on the page, numbered as it is now: 300 new lines, 1 line gone.)',
       'line 3: Row 1 of a long list the click brought in.']);
@@ -404,15 +553,16 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
   });
 
   it('typing and a wait answer it too', async () => {
-    let html = HTML;
+    const editable = HTML.replace('<a ref="e5" href="https://x.org/b">Babbage</a>', '<input ref="e5" aria-label="Search">');
+    let html = editable;
     const { inspect, run } = harness((request) => request.action === 'fill' ? ok({ filled: true })
       : request.action === 'wait_for_element' ? ok({ page: PAGE, url: URL_, title: 'Ada Lovelace - Wikipedia', found: true, waited_ms: 5 })
         : page(html));
     await inspect({ page: PAGE, form: 'outline' });
-    html = HTML.replace('</body>', '<p>Saved.</p></body>');
+    html = editable.replace('</body>', '<p>Saved.</p></body>');
     expect(changesOf(await run('dom-write', { page: PAGE, ref: 'e5', value: 'x' }))).toEqual([
       '(What changed on the page, numbered as it is now: 1 new line.)', 'line 4: Saved.']);
-    html = HTML.replace('</body>', '<p>Saved.</p><p>Synced.</p></body>');
+    html = editable.replace('</body>', '<p>Saved.</p><p>Synced.</p></body>');
     expect(changesOf(await run('dom-wait', { page: PAGE, selector: '#x' }))).toEqual([
       '(What changed on the page, numbered as it is now: 1 new line.)', 'line 5: Synced.']);
   });
@@ -424,7 +574,9 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
         : page(html));
     await inspect({ page: PAGE, form: 'outline' });
     html = HTML.replace('Babbage', 'Charles Babbage');
-    expect(await run('dom-click', { page: PAGE, ref: 'e5' })).not.toHaveProperty('changes');
+    const clicked = await run('dom-click', { page: PAGE, ref: 'e5' });
+    expect(clicked).not.toHaveProperty('changes');
+    expect(clicked).toHaveProperty('page_observation', { state: 'unavailable', requested_page: PAGE, reason: 'read_failed' });
     const found = (await inspect({ page: PAGE, find: 'Charles' })).result!;
     expect(String(found.lines).split('\n')[0]).toBe(PAGE_CHANGED_NOTE);
     expect(requests.map((r) => r.action)).toEqual(['inspect', 'click', 'reread', 'inspect']);
@@ -450,7 +602,7 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
     html = HTML.replace('Babbage', 'Charles Babbage');
     expect(await run('dom-click', { page: PAGE, ref: 'e5' })).not.toHaveProperty('changes');
     const found = (await inspect({ page: PAGE, find: 'Charles' })).result!;
-    expect(String(found.lines).split('\n')).toEqual([PAGE_CHANGED_NOTE, 'line 3: See [Charles Babbage](e5).   (under "Ada Lovelace")']);
+    expect(String(found.lines).split('\n')).toEqual([PAGE_CHANGED_NOTE, 'line 3: See [link: Charles Babbage](e5).   (under "Ada Lovelace")']);
     expect(requests.map((r) => r.action)).toEqual(['inspect', 'click', 'reread', 'inspect']);
   });
 
@@ -466,7 +618,7 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
     await inspect({ page: PAGE, form: 'outline' });
     html = HTML.replace('Babbage</a>', 'Charles Babbage</a>');
     const error = await run('dom-click', { page: PAGE, ref: 'e5' }).then(() => undefined,
-      (thrown: unknown) => thrown as { code?: string; message?: string });
+      (thrown: unknown) => thrown as { code?: string; message?: string; details?: { page_observation?: BrowserPageObservation } });
     return { error, actions: requests.map((r) => r.action) };
   };
 
@@ -475,9 +627,11 @@ describe('D-335 slice T — an action answers what changed on the page', () => {
       const { error, actions } = await clickRefused(refusedWith(message));
       expect(error?.code).toBe('DOM_SELECTOR_NOT_FOUND');
       expect(String(error?.message).split('\n')).toEqual([message,
-        '(What changed on the page, numbered as it is now: 1 new line, 1 line gone.)', 'line 3: See [Charles Babbage](e5).',
-        'gone: See [Babbage](e5).']);
+        '(What changed on the page, numbered as it is now: 1 new line, 1 line gone.)', 'line 3: See [link: Charles Babbage](e5).',
+        'gone: See [link: Babbage](e5).']);
       expect(actions).toEqual(['inspect', 'click', 'reread']);
+      expect(error?.details?.page_observation).toMatchObject({ state: 'changed', page: PAGE });
+      expect(JSON.stringify(error?.details?.page_observation?.field_evidence)).toContain('Charles Babbage');
     }
   });
 
@@ -524,6 +678,26 @@ describe('D-335 slice V — a part of the size a caller asks for', () => {
 // D-335 slice AH — Read the text of a web page takes `find`: the section it names, whole, in place of
 // a part of the page, so a section far down a long article is read in one call.
 describe('D-335 slice AH — the text of one section', () => {
+  it('outline heading reads retain returned form values past eight lines without another Bridge read', async () => {
+    const html = '<main><h2>Submitted Values</h2>' + '<p>Other field</p>'.repeat(10)
+      + '<p>checkboxes</p><ul><li>cb1</li><li>cb2</li></ul><p>radioval</p><p>rd3</p>'
+      + '<h2>Editable form</h2><input ref="e9" value="different"></main>';
+    const { inspect, requests } = harness(page(html));
+    await inspect({ page: PAGE, form: 'outline' });
+    const { result } = await inspect({ page: PAGE, find: 'Submitted Values' });
+    expect(result).toMatchObject({ complete: true, truncated: false });
+    for (const value of ['cb1', 'cb2', 'rd3']) expect(result!.lines).toContain(value);
+    expect(result!.lines).not.toContain('Editable form');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('a bounded heading read exposes incompleteness and its next line through the adapter', async () => {
+    const { inspect } = harness(page('<h2>Results</h2>'
+      + Array.from({ length: 600 }, (_, i) => `<p>Result ${i}: ${'x'.repeat(40)}</p>`).join('')));
+    const { result } = await inspect({ page: PAGE, find: 'Results' });
+    expect(result).toMatchObject({ complete: false, truncated: false, next: expect.any(Number) });
+    expect(result!.lines).toContain(`read on with from ${result!.next}`);
+  });
   it('find with the text form answers the section under the heading it names, not the page from its top', async () => {
     const SECTIONS = '<body><main><h1>Ada Lovelace</h1><h2>Early life</h2><p>She was born in London in 1815.</p>'
       + '<h2>Work</h2><p>Her notes on Menabrea\'s paper hold the first published program, in Note G.</p>'

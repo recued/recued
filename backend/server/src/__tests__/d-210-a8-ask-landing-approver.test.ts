@@ -9,6 +9,7 @@
  *  would satisfy the predicate by writing a paired admin client into the
  *  record that was never there. */
 
+import { testPreparedInboxAnswer } from './prepared-inbox-test-helpers.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createAuditLogStore,
@@ -100,6 +101,7 @@ const makeHarness = () => {
       }) as unknown as ResolvedInboxSource,
     isReceptionOrigin: defaultIsReceptionOriginAnchor,
     submitAnswer,
+    submitPreparedAnswer: testPreparedInboxAnswer({ checkpointStore, auditLog, submitAnswer: (id, option) => deps.submitAnswer!(id, option), now: () => NOW }),
     subviewStore: {
       record: () => {},
       list: () => [],

@@ -1,5 +1,6 @@
+import { mountCustomerFinancialWorkspaceStyles } from './customer-financial-workspace-styles.js';
 import { accountStatementDocument } from './customer-financial-document.js';
-import { focusCustomerWorkspace } from './customer-workspace-focus.js';
+import { focusCustomerWorkspace,trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { mountCustomerAccountContactDefaults,readCustomerAccountContactDefaults,type CustomerAccountContactDefaultsConn } from './customer-account-contact-defaults.js';
 import { mountCustomerAccountPaymentReminders,type CustomerAccountPaymentReminderConn } from './customer-account-payment-reminders.js';
 import { customerAccountStatementLines,CUSTOMER_ACCOUNT_MAX_JOBS,type Conn,type ServerRpcRegistry,type CustomerAccount,
@@ -20,6 +21,7 @@ export const mountCustomerAccountsPanel = (opts: {
   canReviewEmail?: () => boolean;onStateChanged?: () => void;now?: () => number;
 }) => {
   const { document: doc,conn } = opts;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const add = <K extends keyof HTMLElementTagNameMap>(tag: K,text: string,host: HTMLElement) => {
     const node = doc.createElement(tag);node.textContent = text;host.appendChild(node);return node;
   };
@@ -27,6 +29,7 @@ export const mountCustomerAccountsPanel = (opts: {
     const node = add('button',text,host);node.type = 'button';node.addEventListener('click',click);return node;
   };
   const root = add('section','',opts.host);root.hidden = true;root.tabIndex = -1;root.setAttribute('data-customer-accounts','');root.setAttribute('aria-label','Customer accounts');
+  mountCustomerFinancialWorkspaceStyles(doc,root);
   add('style',`[data-customer-accounts]{display:grid;gap:12px;min-width:0}[data-customer-accounts] [hidden]{display:none!important}
     [data-customer-accounts] form,[data-customer-accounts] fieldset{display:grid;gap:10px;min-width:0}
     [data-customer-accounts] p,[data-customer-accounts] label{overflow-wrap:anywhere}
@@ -49,13 +52,13 @@ export const mountCustomerAccountsPanel = (opts: {
   const paging = add('div','',root);paging.setAttribute('data-account-actions','');
   const newer = button('Previous accounts',paging,() => { if (canReplace() && previous.length) void loadAccounts(previous.at(-1),previous.slice(0,-1)); });
   const older = button('More accounts',paging,() => { if (canReplace() && next) void loadAccounts(next,[...previous,cursor]); });
-  const savedAccount = add('section','',root);savedAccount.hidden = true;savedAccount.tabIndex = -1;savedAccount.setAttribute('aria-label','Saved customer account');
+  const savedAccount = add('section','',root);savedAccount.hidden = true;savedAccount.tabIndex = -1;savedAccount.setAttribute('aria-label','Saved customer account');savedAccount.className = 'financial-stack';
   const savedText = add('p','',savedAccount);const savedReference = add('p','',savedAccount);
   const editor = add('form','',root);editor.hidden = true;editor.setAttribute('aria-label','Edit customer account');
   const editHeading = add('h4','New customer account',editor);
   const nameLabel = add('label','Customer account name',editor);const name = add('input','',nameLabel);name.required = true;name.maxLength = 200;name.name = 'customer_account_name';
   add('p','The selected jobs are the full account selection. Removing a job does not delete its invoices or history.',editor);
-  const chosen = add('div','',editor);chosen.setAttribute('aria-label','Selected account jobs');
+  const chosen = add('div','',editor);chosen.className = 'financial-stack';chosen.setAttribute('aria-label','Selected account jobs');
   const finder = add('fieldset','',editor);add('legend','Find jobs to link',finder);
   const searchLabel = add('label','Search jobs to link',finder);const search = add('input','',searchLabel);search.type = 'search';search.maxLength = 200;
   const find = button('Find customer jobs',finder,() => { if (!busy) { jobQuery = search.value.trim();void loadJobs(); } });
@@ -65,6 +68,7 @@ export const mountCustomerAccountsPanel = (opts: {
   add('span','I confirm these jobs belong to this customer account.',confirmation);
   const save = add('button','Save customer account',editor);save.type = 'submit';
   const discard = button('Discard account edits',editor,() => { if (busy) return;dirty = false;editor.hidden = true;controls();fresh.focus(); });
+  const editorActions = add('div','',editor);editorActions.className = 'financial-actions';editorActions.appendChild(save);editorActions.appendChild(discard);
   let disposed = false;let busy = false;let dirty = false;let generation = 0;
   let cursor: string | undefined;let next: string | undefined;let previous: Array<string | undefined> = [];
   let jobNext: string | undefined;let jobQuery = '';let selected = new Set<string>();let editing: CustomerAccount | null = null;let lastSaved: CustomerAccount | null = null;
@@ -133,7 +137,7 @@ export const mountCustomerAccountsPanel = (opts: {
   const renderSelection = () => {
     chosen.replaceChildren();add('p',`${selected.size} selected job${selected.size === 1 ? '' : 's'} (maximum 100).`,chosen);
     for (const id of selected) {
-      const job = knownJobs.get(id);const line = add('div','',chosen);
+      const job = knownJobs.get(id);const line = add('div','',chosen);line.className = 'financial-actions';
       const label = job ? `${job.quote_label} · ${job.customer} · ${job.quote_reference ?? id}` : `Saved job ${id}`;
       add('p',label,line);const remove = button(`Remove job ${job?.quote_label ?? id}`,line,() => {
         selected.delete(id);changed();renderSelection();syncChoices();(chosen.querySelector<HTMLButtonElement>('button') ?? name).focus();
@@ -160,15 +164,15 @@ export const mountCustomerAccountsPanel = (opts: {
     } catch (error) { if (!disposed && generation === current) status.textContent = message(error); }
     finally { if (!disposed && generation === current) { busy = false;controls(); } }
   };
-  const edit = async (account: CustomerAccount) => {
+  const edit = async (account: CustomerAccount,ownsFocus = focusOwner.capture()) => {
     savedAccount.hidden = true;lastSaved = null;editing = account;selected = new Set(account.job_ids);name.value = account.customer;dirty = false;confirm.checked = false;
     editor.hidden = false;editHeading.textContent = account.revision ? `Edit customer account — ${account.customer}` : 'New customer account';
-    search.value = '';jobQuery = '';jobNext = undefined;renderSelection();controls();await loadJobs();if (!disposed && !editor.hidden && !busy) { focusCustomerWorkspace(editor);name.focus({preventScroll:true}); }
+    search.value = '';jobQuery = '';jobNext = undefined;renderSelection();controls();await loadJobs();if (!disposed && !editor.hidden && !busy && ownsFocus()) { focusCustomerWorkspace(editor);name.focus({preventScroll:true}); }
   };
   const openEditor = (id: string) => {
-    if (!canReplace()) return;busy = true;controls();const current = ++generation;
+    if (!canReplace()) return;const ownsFocus = focusOwner.capture();busy = true;controls();const current = ++generation;
     void conn('reception.accounts.get',{ account_id: id }).then(account => {
-      if (!disposed && generation === current) { busy = false;void edit(account); }
+      if (!disposed && generation === current) { busy = false;void edit(account,ownsFocus); }
     }).catch(error => { if (!disposed && generation === current) { status.textContent = message(error);busy = false;controls(); } });
   };
   const loadAccounts = async (desired?: string,history: Array<string | undefined> = []) => {
@@ -207,15 +211,16 @@ export const mountCustomerAccountsPanel = (opts: {
   search.addEventListener('keydown',event => { if (event.key === 'Enter') { event.preventDefault();find.click(); } });
   editor.addEventListener('submit',event => {
     event.preventDefault();if (busy || contacts?.isOpen() || reminders?.isOpen() || reminders?.hasOpenEmail() || reminders?.hasUnsavedChanges() || !editing || !dirty || !confirm.checked || statement.hasOpenEmail() || statement.hasInFlightWork()) return;
+    let ownsFocus = focusOwner.capture();
     const input = { account_id: editing.account_id,expected_revision: editing.revision,customer: name.value.trim(),job_ids: [...selected] };
     const current = ++generation;busy = true;controls();
     void conn('reception.accounts.save',input).then(account => {
       if (disposed || generation !== current) return;editing = account;lastSaved = account;dirty = false;confirm.checked = false;editor.hidden = true;
       savedText.textContent = `Customer account saved: ${account.customer}. ${account.job_ids.length} selected jobs.`;
-      savedReference.textContent = `Account ${account.account_id}`;savedAccount.hidden = false;savedAccount.focus();
+      savedReference.textContent = `Account ${account.account_id}`;savedAccount.hidden = false;if (ownsFocus()) { savedAccount.focus();ownsFocus = focusOwner.capture(); }
       status.textContent = 'Customer account saved. Review its statement to prepare a customer copy.';busy = false;controls();
       void loadAccounts(cursor,previous).then(() => {
-        if (!disposed && lastSaved?.account_id === account.account_id && !dirty && !savedAccount.hidden && !inFlight()) {
+        if (!disposed && lastSaved?.account_id === account.account_id && !dirty && !savedAccount.hidden && !inFlight() && ownsFocus()) {
           (account.job_ids.length ? viewSaved : savedAccount).focus();
         }
       });
@@ -223,9 +228,9 @@ export const mountCustomerAccountsPanel = (opts: {
   });
   controls();
   return {
-    open: async (onClosed?: () => void) => { if (!canReplace()) return;returnFocus = onClosed;root.hidden = false;reminders?.update();await loadAccounts(cursor,previous);if (!disposed) focusCustomerWorkspace(root); },
+    open: async (onClosed?: () => void) => { if (!canReplace()) return;const ownsFocus = focusOwner.capture();returnFocus = onClosed;root.hidden = false;reminders?.update();await loadAccounts(cursor,previous);if (!disposed && ownsFocus()) focusCustomerWorkspace(root); },
     update: () => { if (!root.hidden) reminders?.update(); },
     hasOpenEmail: () => contacts?.isOpen() === true || statement.hasOpenEmail() || payments.hasOpenEmail() || reminders?.hasOpenEmail() === true,hasUnsavedChanges: () => dirty || contacts?.hasUnsavedChanges() === true || statement.hasUnsavedChanges() || payments.hasUnsavedChanges() || reminders?.hasUnsavedChanges() === true,hasInFlightWork: inFlight,
-    dispose: () => { disposed = true;generation++;contacts?.dispose();statement.dispose();payments.dispose();reminders?.dispose();root.remove(); },
+    dispose: () => { disposed = true;generation++;focusOwner.dispose();contacts?.dispose();statement.dispose();payments.dispose();reminders?.dispose();root.remove(); },
   };
 };

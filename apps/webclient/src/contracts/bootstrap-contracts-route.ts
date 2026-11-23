@@ -1,4 +1,10 @@
 import { mountPermissionRegressionPanel } from './permission-regression-panel.js';
+import {
+  CALLER_PREAPPROVAL_PANEL_STYLES,
+  mountCallerPreapprovalPanel,
+  type CallerPreapprovalPanelCallers,
+  type CallerPreapprovalPanelMount,
+} from './caller-preapproval-panel.js';
 import type { Conn, ServerRpcRegistry } from '@recued/contracts';
 /** Top-level Contracts route: Built-in / Customer / Others inventories, with a
  *  tabbed detail view for one editable contract at a time.
@@ -80,6 +86,12 @@ import {
   type WriteRulesPanelMount,
 } from './write-rules-panel.js';
 import {
+  CHAIN_RULES_PANEL_STYLES,
+  mountChainRulesPanel,
+  type ChainRulesPanelCallers,
+  type ChainRulesPanelMount,
+} from './chain-rules-panel.js';
+import {
   mountScopedGrantPanel,
   type ScopedGrantPanelMount,
   type ScopedSuggestionsAcceptCaller,
@@ -139,6 +151,8 @@ export const CONTRACTS_ROUTE_HEADING_ATTR = 'data-recued-contracts-route-heading
 export const CONTRACTS_ROUTE_BODY_ATTR = 'data-recued-contracts-body';
 export const CONTRACTS_ROUTE_LOADING_ATTR = 'data-recued-contracts-loading';
 export const CONTRACTS_ROUTE_ERROR_ATTR = 'data-recued-contracts-error';
+/** D-402 slice F4d — the section on an AI app's page listing what it runs without asking. */
+export const CONTRACTS_ROUTE_APP_PREAPPROVALS_ATTR = 'data-recued-contracts-app-preapprovals';
 export const CONTRACTS_ROUTE_PROPOSALS_ATTR = 'data-recued-contracts-proposals';
 /** The LIST view container. */
 export const CONTRACTS_ROUTE_LIST_ATTR = 'data-recued-contracts-list';
@@ -1149,6 +1163,9 @@ export const CONTRACTS_ROUTE_STYLES = [
   PRIMITIVE_STYLES,
   SUGGESTED_RULES_PANEL_STYLES,
   WRITE_RULES_PANEL_STYLES,
+  // D-402 slice F4d — the recipes your chats and AI apps run without asking.
+  CALLER_PREAPPROVAL_PANEL_STYLES,
+  CHAIN_RULES_PANEL_STYLES,
   CONTRACT_GRANTS_PANEL_STYLES,
   CONTRACTS_ROUTE_CHROME_STYLES,
   // The list page mounts the rules editor and the Connect tab the key panel.
@@ -1225,6 +1242,11 @@ export interface BootstrapContractsRouteOptions {
   standingTasks?: Omit<StandingTasksOptions, 'host' | 'subscribe'>;
   /** D-329 §3.4 — the write rules an AI's approvals teach: suggestions and live rules. */
   writeRules?: Omit<WriteRulesPanelCallers, 'listContracts'>;
+  /** D-348 — the chains the owner's approvals teach: a request they repeat, and its rule. */
+  chainRules?: ChainRulesPanelCallers;
+  /** D-402 slice F4d (§7.9) — what your chats and AI apps run without asking, and ending it: listed on
+   *  the list page, and on an AI app's page for that app. */
+  callerPreapprovals?: CallerPreapprovalPanelCallers;
   /** D-177 rule 5 — the scoped-grant proposal surface (same all-three gate). */
   scopedSuggestionsListCaller?: ScopedSuggestionsListCaller;
   scopedSuggestionsAcceptCaller?: ScopedSuggestionsAcceptCaller;
@@ -1727,6 +1749,9 @@ export const bootstrapContractsRoute = (
   let standingTasksPanel: ReturnType<typeof mountStandingTasksPanel> | null = null;
   let scopedGrantPanel: ScopedGrantPanelMount | null = null;
   let writeRulesPanel: WriteRulesPanelMount | null = null;
+  let chainRulesPanel: ChainRulesPanelMount | null = null;
+  let callerPreapprovalPanel: CallerPreapprovalPanelMount | null = null;
+  let appPreapprovalPanel: CallerPreapprovalPanelMount | null = null;
   let connectPanel: ContractKeyPanelMount | null = null;
   let rulesPanel: PermissionsPanelMount | null = null;
   let detailGrantPanel: ContractGrantsPanelMount | null = null;
@@ -1752,6 +1777,9 @@ export const bootstrapContractsRoute = (
     || standingTasksPanel?.hasUnsavedChanges() === true
     || scopedGrantPanel?.hasInFlightWork() === true
     || writeRulesPanel?.hasInFlightWork() === true
+    || chainRulesPanel?.hasInFlightWork() === true
+    || callerPreapprovalPanel?.pending() === true
+    || appPreapprovalPanel?.pending() === true
     || connectPanel?.hasInFlightWork() === true
     || rulesPanel?.hasInFlightWork() === true
     || detailGrantPanel?.hasInFlightWork() === true;
@@ -1768,6 +1796,9 @@ export const bootstrapContractsRoute = (
       scopedGrantPanel = null;
     }
     writeRulesPanel?.dispose(); writeRulesPanel = null;
+    chainRulesPanel?.dispose(); chainRulesPanel = null;
+    callerPreapprovalPanel?.dispose(); callerPreapprovalPanel = null;
+    appPreapprovalPanel?.dispose(); appPreapprovalPanel = null;
     if (connectPanel !== null) {
       connectPanel.dispose();
       connectPanel = null;
@@ -1838,7 +1869,35 @@ export const bootstrapContractsRoute = (
         ...(opts.permissionsListContractsCaller !== undefined
           ? { listContracts: opts.permissionsListContractsCaller }
           : {}),
+        // D-402 — the triggers' pre-approvals, and what "Stop allowing" ends elsewhere, read again live.
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       });
+      body.appendChild(section);
+    }
+    // D-402 slice F4d — the recipes your chats and AI apps run without asking, after what else happens
+    // without asking. Ending one ends its site passes and rules for that recipe too, so the write rules
+    // above are read again.
+    if (opts.callerPreapprovals !== undefined) {
+      const section = doc.createElement('section');
+      section.setAttribute(CONTRACTS_ROUTE_PROPOSALS_ATTR, '');
+      callerPreapprovalPanel = mountCallerPreapprovalPanel({
+        host: section,
+        document: doc,
+        callers: opts.callerPreapprovals,
+        heading: 'Recipes that run without asking',
+        headingLevel: 2,
+        intro: 'Each is an “Always” you answered when your chats or an AI app asked to run a recipe. End one and '
+          + 'it asks again from then on; its site passes and rules for that recipe end with it.',
+        onEnded: () => { void writeRulesPanel?.refresh(); },
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+      });
+      body.appendChild(section);
+    }
+    // D-348 — a request the owner repeats, and its rule, beside the write rules.
+    if (opts.chainRules !== undefined) {
+      const section = doc.createElement('section');
+      section.setAttribute(CONTRACTS_ROUTE_PROPOSALS_ATTR, '');
+      chainRulesPanel = mountChainRulesPanel({ host: section, document: doc, ...opts.chainRules });
       body.appendChild(section);
     }
   };
@@ -3277,6 +3336,25 @@ export const bootstrapContractsRoute = (
     detail.appendChild(content);
     if (activeTab !== null) selectTab(activeTab, false);
 
+    // D-402 slice F4d (§7.9) — an AI app's page lists each recipe it runs without asking, with "End it"
+    // and "End all". Below the tabs, so it shows whichever is open; hidden while there is none.
+    if (opts.callerPreapprovals !== undefined && isAppContractRow(row)) {
+      const section = doc.createElement('section');
+      section.setAttribute(CONTRACTS_ROUTE_APP_PREAPPROVALS_ATTR, '');
+      appPreapprovalPanel = mountCallerPreapprovalPanel({
+        host: section,
+        document: doc,
+        callers: opts.callerPreapprovals,
+        only: { contract_id: row.contract_id },
+        endAll: true,
+        heading: 'Runs without asking',
+        intro: 'Recipes this app runs without asking you, because you answered “Always”. End one and it asks '
+          + 'again from then on.',
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+      });
+      detail.appendChild(section);
+    }
+
     if (opts.permissionWorkbenchCall && !row.is_self && !isCustomerTemplateRow(row) && anonymousDoorType(row) === null) {
       const permissionHost = doc.createElement('details');
       const summary = doc.createElement('summary'); summary.textContent = 'Permission tests and reviewed grants'; permissionHost.append(summary);
@@ -3499,6 +3577,9 @@ export const bootstrapContractsRoute = (
         scopedGrantPanel = null;
       }
       writeRulesPanel?.dispose(); writeRulesPanel = null;
+      chainRulesPanel?.dispose(); chainRulesPanel = null;
+      callerPreapprovalPanel?.dispose(); callerPreapprovalPanel = null;
+      appPreapprovalPanel?.dispose(); appPreapprovalPanel = null;
       if (connectPanel !== null) {
         connectPanel.dispose();
         connectPanel = null;

@@ -67,12 +67,14 @@ import {
   CALENDAR_INLINE_CUTOFF_BYTES,
   CALENDAR_MAX_LIST_LIMIT,
   calendarEventChanges,
+  calendarMarkingLearned,
   calendarRuleLearned,
   createCalendarTable,
   type CalendarCollectionTable,
   type CalendarListQuery,
   type CalendarRowSnapshot,
 } from './calendar-table.js';
+import { inviteUidFromExchangeId } from './exchange-invite-uid.js';
 import { calendarSyncFailureOf } from './provider.js';
 import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import type {
@@ -372,9 +374,11 @@ export const createCalendarCollection = (
           // Only a change is an update, named by what changed: a restart's scan
           // lists every stored event again, and each would otherwise wake every
           // `updated` trigger. A correction is no change to the event either:
-          // the provider's copy is the same, read differently now.
+          // the provider's copy is the same, read differently now; nor is a
+          // series rule or a private marking Recued newly reads.
           const changed = calendarEventChanges(prev.event, payload.event);
-          if (changed.length > 0 && payload.correction !== true && !calendarRuleLearned(prev.event, payload.event, changed)) {
+          if (changed.length > 0 && payload.correction !== true && !calendarRuleLearned(prev.event, payload.event, changed)
+            && !calendarMarkingLearned(prev.event, payload.event, changed)) {
             emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>, changed);
           }
         } else emitter.created(recordId);
@@ -496,9 +500,40 @@ export const createCalendarCollection = (
     if (rows.length > 0) log?.('info', `calendar ${slug}: stored ${rows.length} all-day event(s) as days`);
   };
 
+  /** Outlook rows stored before the Graph mapping read an outside invite's
+   *  UID out of Exchange's id (`inviteUidFromExchangeId`, 2026-11-22) get it
+   *  now, quietly, as a sync would write them. Until then a join by the
+   *  invite's UID found none of them; a delta sync rewrites only what
+   *  changed, and the window re-reads everything only every few weeks. */
+  const repairExchangeInviteUids = (): void => {
+    let rows: CalendarRowSnapshot[];
+    try {
+      rows = table.listExchangeOutsideIds();
+    } catch (err) {
+      bumpError('calendar invite UID repair failed', err);
+      return;
+    }
+    let repaired = 0;
+    for (const row of rows) {
+      const uid = inviteUidFromExchangeId(row.event.ical_uid);
+      if (uid === undefined) continue;
+      table.upsert({
+        event: { ...row.event, ical_uid: uid },
+        size_bytes: row.size_bytes,
+        ...(row.body_inline !== null ? { body_inline: row.body_inline } : {}),
+        ...(row.blob_hash !== null ? { blob_hash: row.blob_hash } : {}),
+        ...(row.etag !== null ? { etag: row.etag } : {}),
+        now: nowOf(),
+      });
+      repaired += 1;
+    }
+    if (repaired > 0) log?.('info', `calendar ${slug}: read ${repaired} invite UID(s) out of Exchange's meeting ids`);
+  };
+
   const runSyncStart = async (generation: number): Promise<void> => {
     state = stateName('syncing');
     repairAllDayRows();
+    repairExchangeInviteUids();
     try {
       await provider.connect();
     } catch (err) {

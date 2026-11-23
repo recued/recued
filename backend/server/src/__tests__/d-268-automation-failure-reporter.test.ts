@@ -204,3 +204,19 @@ describe('D-268 the notice', () => {
     expect(notice.title).toBe('pub/thing failed');
   });
 });
+
+describe('D-402 slice E4 — a hand-off counts as a failed run (the owner\'s ruling, 2026-11-17)', () => {
+  it('a breaker failure: told on the first, turned off at the threshold; a plain guard stays no failure', async () => {
+    const { classifyAutomationFailure } = await import('@recued/contracts');
+    const { decideAutomationFailure } = await import('../automation-failure-reporter.js');
+    expect(classifyAutomationFailure({ code: 'RECIPE_HAND_OFF' })).toEqual({ kind: 'failure', stop: 'breaker', basis: 'environment_transient' });
+    expect(classifyAutomationFailure({ code: 'RECIPE_GUARD_TRIGGERED' })).toEqual({ kind: 'not_a_failure' });
+    const unit = { kind: 'schedule', id: 'sch_1', recipe_id: 'buy-lamp' } as const;
+    const first = decideAutomationFailure({ unit, code: 'RECIPE_HAND_OFF', reason: 'The page showed something this recipe has not met.',
+      prior_consecutive_failures: 0, threshold: 3 });
+    expect(first).toMatchObject({ consecutive_failures: 1, disarm: false, not_a_failure: false });
+    expect(first.notice).toBeDefined();
+    expect(decideAutomationFailure({ unit, code: 'RECIPE_HAND_OFF', reason: 'x', prior_consecutive_failures: 2, threshold: 3 }))
+      .toMatchObject({ consecutive_failures: 3, disarm: true });
+  });
+});

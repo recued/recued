@@ -71,6 +71,9 @@ export type StepPages = 'all';
  *  fields. Middleware that doesn't care (cache, dispatch) forwards it
  *  unchanged. */
 export interface StepMeta {
+  /** Opaque host-issued budget proof for this kernel read dispatch. The
+   * gateway replaces inherited values; authored step JSON never supplies it. */
+  contract_dispatch_reservation?: object;
   /** Host checkpoint evidence; never copied from authored step JSON. */
   resource_review?: import('./resource-review.js').ResourceReview;
   /** Actual external tool chosen at the authenticated host entry point. */
@@ -81,6 +84,11 @@ export interface StepMeta {
   /** D-261 structural occurrence, populated only from host engine context.
    * This is an address, never an approval marker or a dispatch permit. */
   invocation_path?: PreapprovalInvocationPath;
+  /** D-402 slice D5b — the step's turn in each `foreach` it runs in, outermost first; absent outside a
+   *  loop. Each turn is its own logical step: a Bridge command it sends is keyed apart from another
+   *  turn's (`dom-adapter.ts`), so a later turn's same read is read again, never the first's replayed.
+   *  Set by the engine on every run, not only a reviewed one (`invocation_path`). */
+  iteration_indices?: readonly number[];
   /** The recipe step's `id` field. Threaded so approval pending records
    *  carry the originating step_id. */
   step_id: string;
@@ -440,6 +448,11 @@ export interface IngredientStep extends BaseStep {
 
 export interface GuardStep extends BaseStep {
   guard: string;
+  /** D-402 slice E4 (§6.6) — this guard is a hand-off: when it holds, the page showed something the recipe
+   *  has not met, and the run stops with `RECIPE_HAND_OFF` instead of `RECIPE_GUARD_TRIGGERED`. That is a
+   *  failure an unattended run's owner is told of, and it counts toward turning the automation off (the
+   *  owner's ruling); a plain guard is the recipe deciding not to act, and is not. */
+  hand_off?: true;
 }
 
 /** Connection-agnostic canonical op-step. Addresses a CRM operation by

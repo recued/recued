@@ -40,6 +40,12 @@ import type { DependencyReadAdmission } from './work-entity-dependency-admission
 // see the omission.
 import { WORK_ENTITY_KINDS } from './work-entities.js';
 import { SITUATION_QUERY_SCHEMA, SITUATION_TOOL_MAX_ITEMS } from './situation.js';
+
+/** D-343 (2026-11-14) — the chat's `situation.query`: the shared query, and `close` for a day the
+ *  user wants to close without replying to its notice. Only the chat's handler reads it, and it
+ *  takes it off before the query, so an AI app's `situation.query` is unchanged. */
+const SITUATION_CHAT_QUERY_SCHEMA = { ...SITUATION_QUERY_SCHEMA, properties: { ...SITUATION_QUERY_SCHEMA.properties,
+  close: { type: 'boolean', description: 'With one day as `time`: the user wants to close that day. Adds the evening\'s pursuits and `how_to_close`.' } } } as const;
 import { ASSET_SEARCH_TERMS } from './asset-search-terms.js';
 import { MEMORY_RELATION_GROUPS, type MemorySaveConflict } from './memory-relations.js';
 
@@ -117,6 +123,7 @@ export type Tier1ToolName =
   | 'file.search'
   | 'recipe.run'
   | 'recipe.stop'
+  | 'recipe.stop_allowing'
   | 'recipe.schedule'
   | 'schedule.run_prompt'
   | 'schedule.list'
@@ -153,6 +160,7 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'file.search',
   'recipe.run',
   'recipe.stop',
+  'recipe.stop_allowing',
   'recipe.schedule',
   'schedule.run_prompt',
   'schedule.list',
@@ -168,6 +176,21 @@ export const TIER1_TOOL_NAME_SET: ReadonlySet<Tier1ToolName> =
 export const isTier1ToolName = (value: unknown): value is Tier1ToolName =>
   typeof value === 'string' &&
   TIER1_TOOL_NAME_SET.has(value as Tier1ToolName);
+
+/** D-407 slice 1 (§3, §5.2; Q7, Q10) — what goes where, written once for every tool that could take a personal
+ *  date (`work.create`, `calendar.create`): a reminder, a task, an occasion, a calendar event, a contact's birthday.
+ *  Health is private. A reminder (D-324: told once, at a time) is "Remind me", bundled in every server (its pack need
+ *  not be installed): a chat finds it with `tools.search`, an MCP app in its own tool list, so the text names both; slice 1's text said nothing of it, and "remind me" then went to tasks (2026-11-21). Was
+ *  `OCCASION_WHAT_GOES_WHERE`. ⚠ Model-facing — `chat-prompt-optimization-log.md`. */
+export const WHAT_GOES_WHERE = 'Being told something once, on a day or at a time ("remind me at 3pm to call the '
+  + 'plumber", "remind me on 1 December to pay the rent"), is a reminder, not a task: use Remind me (in chat, '
+  + '`tools.search` finds it), and if there is none, say so rather than making a task. Work due by a deadline is a task, even said '
+  + 'as "remind me" ("remind me to finish the slides by Thursday", "finish the report by Friday"). A date that matters beyond its time slot (a person in it, something to prepare, '
+  + 'a need to stay private, or it comes back) is an occasion, `work.create` kind `occasion`, which reminds by itself, '
+  + 'and never also a calendar '
+  + 'event: a doctor, dentist or therapist, a test or a biopsy, a school play, a vet visit, a reunion, grandma\'s 80th. A '
+  + 'health one is private. A meeting or a haircut slot is a calendar event. A person\'s birthday or anniversary goes on '
+  + 'their contact (`contact.write`), never an occasion of its own.';
 
 /** Per-Tier-1 implicit topic tags (§ A.1.1). Augmentation input for
  *  the `filter-tools` pre-synthesis catalog narrowing (§ A.6.1 —
@@ -190,14 +213,17 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   'enrichment.search': ['enrichment', 'derived', 'inference', 'lookup'],
   'deal.search': ['deal', 'crm', 'opportunity', 'pipeline', 'lookup'],
   'account.search': ['account', 'company', 'organization', 'crm', 'lookup'],
-  'work.search': [...WORK_ENTITY_KINDS, 'todo', 'lookup'],
+  'work.search': [...WORK_ENTITY_KINDS, 'occasion', 'todo', 'lookup'],
   'situation.query': ['situation', 'asset', 'due', 'trip', 'occasion'],
-  'work.read': [...WORK_ENTITY_KINDS, 'detail', 'lookup'],
+  'work.read': [...WORK_ENTITY_KINDS, 'occasion', 'detail', 'lookup'],
   'work.type': ['asset', 'type', 'shape', 'fields', 'dates', 'reminder', 'passport'],
-  'work.create': [...WORK_ENTITY_KINDS, 'add', 'capture', 'todo', 'create'],
+  // D-407 slice 1 (A4) — an occasion's words, and no longer a booking, which it refuses. ⛔ Not `reminder` (2026-11-21):
+  // "remind me at a time" is D-324's reminder, never a task. These tags label tools for MCP apps and D-402's cases; the
+  // chat's model reads every built-in tool whole and never searches them.
+  'work.create': [...WORK_ENTITY_KINDS.filter((kind) => kind !== 'booking'), 'occasion', 'appointment', 'add', 'capture', 'todo', 'create'],
   'calendar.create': ['calendar', 'event', 'meeting', 'schedule', 'book', 'create'],
   'calendar.update': ['calendar', 'event', 'meeting', 'reschedule', 'move', 'cancel'],
-  'work.update': [...WORK_ENTITY_KINDS, 'done', 'complete', 'reschedule', 'update'],
+  'work.update': [...WORK_ENTITY_KINDS, 'occasion', 'done', 'complete', 'reschedule', 'update'],
   'episode.record': ['episode', 'day', 'did', 'done', 'skipped', 'evening', 'history'],
   'file.search': ['file', 'attachment', 'document', 'upload', 'lookup'],
   'recipe.run': ['recipe', 'invoke', 'action', 'workflow'],
@@ -205,6 +231,8 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   // the pair is start/stop: a model that can find only one of them turns
   // "do X instead" into "do X as well".
   'recipe.stop': ['recipe', 'stop', 'cancel', 'steer', 'workflow'],
+  // D-402 slice F4 (§7.9) — taking an "Always" back: what a recipe may do without asking.
+  'recipe.stop_allowing': ['recipe', 'allow', 'always', 'ask', 'permission', 'revoke', 'workflow'],
   // D-193 amendment — "every Monday at 8", "tomorrow at 9": arming a recipe to
   // run LATER, on its own. Tagged beside the pair it completes.
   'recipe.schedule': ['recipe', 'schedule', 'later', 'recurring', 'automation', 'workflow'],
@@ -307,6 +335,9 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   // durable run state (terminal `killed` + audit), even though it creates
   // nothing.
   'recipe.stop': 'write',
+  // D-402 slice F4 — never held: it only removes permissions, and its handler refuses any chat but the
+  // owner's own. `write` would put an approval to the owner before they could take one back.
+  'recipe.stop_allowing': 'unknown',
   // D-329 (2026-10-24) — `write` on the owner's *"do the Other writes too"*. It was `unknown`
   // with the reasoning `work.create` had: a new schedule is additive and visible (Automation
   // lists it, and the owner switches it off or deletes it), every run it starts meets the
@@ -389,6 +420,7 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // Never batched in parallel with anything: a stop and the call it would stop
   // must not race inside one turn's tool batch.
   'recipe.stop': false,
+  'recipe.stop_allowing': false,
   // Sequential for the shared-identity reason, not the write reason: each call
   // mints its own schedule, but two schedules for ONE recipe in a turn ("every
   // Monday at 8 and every Thursday at 5") join the same main dish, which the
@@ -599,6 +631,9 @@ export type ChatDispatchReason =
   | 'not_implemented'
   | 'unknown_tool'
   | 'invalid_args'
+  // The local identifier guard has no eligible source for a value. Nothing
+  // dispatched; a later independent lookup can make the same call eligible.
+  | 'identifier_evidence_missing'
   | 'channel_denied'
   | 'kind_gated'
   | 'classification_blocked'
@@ -633,12 +668,18 @@ export type ChatDispatchReason =
   // conversation that carries on once they answer. Nothing was proposed,
   // held or run. The `detail` tells the agent to make the call then, if it
   // should still happen (the owner: "AI proposes it after").
-  | 'not_asked_yet';
+  | 'not_asked_yet'
+  // 2026-11-19 (the owner: "do check against re-proposing an unconfirmed rename") — an approved earlier attempt
+  // of this exact write has no confirmed result (an execution error or an unknown receipt), and no earlier round of
+  // this turn read the record. Nothing was proposed: the `detail` asks for that read first, and after it the same
+  // call can be proposed again, since the owner may want it.
+  | 'unconfirmed_attempt';
 
 export const CHAT_DISPATCH_REASONS: ReadonlyArray<ChatDispatchReason> = [
   'not_implemented',
   'unknown_tool',
   'invalid_args',
+  'identifier_evidence_missing',
   'channel_denied',
   'kind_gated',
   'classification_blocked',
@@ -651,6 +692,8 @@ export const CHAT_DISPATCH_REASONS: ReadonlyArray<ChatDispatchReason> = [
   'run_cancelled',
   // D-337 slice K — not asked while a call of the same turn waits.
   'not_asked_yet',
+  // An earlier attempt of this exact write has no confirmed result; the record is read first.
+  'unconfirmed_attempt',
 ] as const;
 
 export const CHAT_DISPATCH_REASON_SET: ReadonlySet<ChatDispatchReason> =
@@ -676,6 +719,10 @@ export interface ChatRunFailure {
  * therefore not executed in this dispatch. */
 export interface ChatRunHeld {
   readonly kind: 'approval' | 'container_pick' | 'create_plan';
+  /** D-177 §N.15.9 — an approval its round keeps for the round's end, asked once with the round's
+   *  other held calls of its op (Q7): the round raises it, waits on it and settles it, so the call
+   *  neither waits alone nor is noted as waiting before then. */
+  readonly gathered?: true;
 }
 
 export type ChatDispatchResult =
@@ -690,6 +737,8 @@ export type ChatDispatchResult =
       /** Existing standing dish that was dispatched. Omitted for the
        * run-derived ephemeral dish used by ordinary ad-hoc calls. */
       dish_id?: string;
+      /** D-402 slice F5 — `ChatToolCall.stop_allowing_recipe_id`. The model reads `result`. */
+      stop_allowing_recipe_id?: string;
       /** D-323 — packs this call needed and did not have, `<publisher>.<pack>`,
        * as data: `document.read` with no reader pack, or a refusal chat
        * offered them for. The model reads `result`. */
@@ -708,11 +757,17 @@ export type ChatDispatchResult =
       ok: false;
       reason: ChatDispatchReason;
       detail?: string;
+      /** D-329 — the approval card the call waits on (`ChatToolCall.awaiting_plan_id`), so its
+       *  line follows the card. The model reads `detail` only. */
+      awaiting_plan_id?: string;
       /** Present when the failed/cancelled dispatch still wrote a durable run
        * that the executing host can open in Logs. */
       run_id?: string;
       /** Existing standing dish that was dispatched; never an ephemeral id. */
       dish_id?: string;
+      /** D-402 slice F5 — `ChatToolCall.stop_allowing_recipe_id`: a cancelled run may have written
+       *  before it stopped. The model reads `detail` only. */
+      stop_allowing_recipe_id?: string;
       /** D-323 — a run or a schedule refused `pack_not_installed`: the packs
        * the refusal named, `<publisher>.<pack>`, as data. The model reads
        * `detail` only. Offered on the owner's chat, the refusal comes back as
@@ -1095,6 +1150,12 @@ export const CHAT_MAIN_TURN_INGREDIENT_SLUG = 'recued/chat-main-turn' as const;
  *  this again to rescue a flow; fix what makes the flow long. */
 export const CHAT_MAIN_TURN_TOOL_LOOP_CAP = 10;
 
+/** D-340 slice 4 — the answer's stop reason when a turn used all its rounds with tools still wanted
+ *  (`max_rounds_exhausted`), always its last line. 2026-11-21 (the owner: "can it be resumed manually by user") — here,
+ *  so Chat can offer Continue under an answer that ends with it. ⚠ Owner- and model-facing (the next turn's history). */
+export const CHAT_TOOL_BUDGET_EXHAUSTED_MESSAGE =
+  'The AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.';
+
 /** Rounds a turn may spend on CATALOG DISCOVERY without charging
  *  {@link CHAT_MAIN_TURN_TOOL_LOOP_CAP}.
  *
@@ -1279,9 +1340,41 @@ export interface ChatToolCall {
   /** Durable audit address for this exact recipe dispatch. Addressability
    * only; consumers must re-read the anchor before acting on it. */
   run_id?: string;
+  /** D-348 §7.8 — the call's own row (`ChatToolCallRecord.message_id`), so its line finds the
+   *  record of a call with no run, such as a chat's own write a permission let through (its
+   *  receipt, for Undo). Addressability only. */
+  call_id?: string;
+  /** D-329 — the approval card a call that stopped for the owner's yes waits on
+   *  (`reason: 'awaiting_approval'`, `chat.plan_proposed`), so its line follows the card:
+   *  "waiting for your yes", then "changed a calendar event ✓" or "didn't …". It read "couldn't
+   *  change a calendar event: it is waiting for your yes" under a card saying it was done (live,
+   *  2026-11-13). Display only, and never `chat.tool_call_*`'s `plan_id`, which names the
+   *  approval a call carried out. Absent on any other call; a call an older server recorded names
+   *  its card only in `detail` (`plan_id=<id>…`). */
+  awaiting_plan_id?: string;
   /** Existing standing dish used by the dispatch. Omitted for ephemeral
    * manual-run attribution. */
   dish_id?: string;
+  /** D-402 slice F5 (§7.9) — the recipe whose standing permission for the owner's chats let some of
+   *  this call's writes through without asking: an "Always", a site pass, a grant or a rule
+   *  (`RUN_LET_THROUGH_STOPPABLE`). Its line offers "Stop allowing" for that recipe
+   *  (`collection.contract.stopAllowing`), as the run's page does. Display only; absent on any other
+   *  call, on a run "Yes, this time" alone let through (that ended with the run), on an AI app's
+   *  run, and on calls an older server recorded. */
+  stop_allowing_recipe_id?: string;
+  /** The installed recipe the call names, by its name as the owner sees it ("Weekly digest" for
+   *  `recued-core/weekly-digest`): a recipe's own tool, or `recipe.run`, `recipe.schedule` or
+   *  `recipe.stop` naming one by `recipe_id`. Its line names the call so ("ran “Weekly digest” ✓",
+   *  "scheduled “Weekly digest” ✓"), where it read the tool's name. Display only; absent on any
+   *  other call, on an inline recipe (the model wrote its name), on a stop by `run_id`, and on
+   *  calls an older server recorded. ⚠ A browser from before `recipe.schedule` and `recipe.stop`
+   *  were named reads every name as a run: they ship in the release that first names a call. */
+  recipe_name?: string;
+  /** D-402 slice A4 — the call ran a recipe that acts in a web page (a `core.dom.*` step): a
+   *  recipe's own tool, or `recipe.run` naming one or carrying one inline. Its answer offers "Make a
+   *  recipe" while Recued holds what the request did. Display only; absent on any other call and on
+   *  calls an older server recorded. */
+  browser?: true;
   /** Reference into chat-side ephemeral storage; the orchestrator
    *  persists the raw result keyed on this id so the message row
    *  stays compact. */
@@ -1297,6 +1390,10 @@ export interface ChatToolCall {
   started_at: number;
   completed_at?: number;
 }
+
+/** D-402 slice A4 — how long Recued holds what a call of the owner's chat did, for "Make a recipe":
+ *  an hour from the call. The chat offers the button only while the server can still answer it. */
+export const CHAT_BROWSER_PLAN_HOLD_MS = 60 * 60_000;
 
 /** D-137 Trio #B — per-prior-tool-call shape threaded back into the
  *  chat main turn on re-invocation. The chat orchestrator's tool loop
@@ -1704,6 +1801,14 @@ export interface ChatMessage {
   tool_call?: import('./chat-tool-call.js').ChatToolCallRecord;
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
+  /** D-406 — the emails the owner picked for this message (`chat-mail-refs.ts`): each named by its mailbox and
+   *  record id, with the sender, subject and date the server read when it was sent. The turn read each with
+   *  `mail.read` before its first round. Absent when none was picked. */
+  mail_refs?: import('./chat-mail-refs.js').ChatMailRef[];
+  /** D-406 (Q4) — the calendar events the owner picked for this message (`chat-calendar-refs.ts`): each named by its
+   *  calendar and record id, with the title and start the server read when it was sent. The turn read each before
+   *  its first round. Absent when none was picked. */
+  calendar_refs?: import('./chat-calendar-refs.js').ChatCalendarRef[];
   reply_to?: ChatMessageReply;
   /** D-323 — packs or recipes from the marketplace that would do what the
    *  owner asked, when nothing installed did: the last `tools.search` of the
@@ -1732,6 +1837,12 @@ export interface ChatMessage {
    *  The app labels it "without AI". Absent on every model-written answer, and
    *  on every row from a server before D-338. */
   answered_without_model?: { from?: ChatAnswerSource };
+  /** 2026-11-21 (the owner: "recued sees the limit, stop the model, show a continue") — an assistant row whose turn
+   *  ended at its round limit: its last model call had no tool round left, and it answered there or still asked for
+   *  tools. The app offers Continue under the conversation's latest such answer, whatever the model wrote. Absent on
+   *  every other row and on every row from an earlier server, which offers Continue only under the stop text
+   *  (`CHAT_TOOL_BUDGET_EXHAUSTED_MESSAGE`). */
+  reached_round_limit?: true;
   /** D-177 5.f — server-stamped contributor (see
    *  {@link ChatSessionContributor}). Attachments inherit the row's stamp
    *  (an attachment on a user turn is user-contributed). Stamped by the
@@ -1870,6 +1981,14 @@ export type ChatRpcMethod =
   | 'chat.schedule.remove'
   | 'chat.schedule.run_now'
   | 'chat.schedule.preview'
+  | 'chat.schedule.skip_preview'
+  | 'chat.schedules.bulk.preview'
+  | 'chat.schedules.bulk.apply'
+  | 'chat.schedule.pause_preview'
+  | 'chat.schedule.pause_until'
+  | 'chat.schedule.runs.list'
+  | 'chat.schedule.skip_next'
+  | 'chat.schedule.undo_skip'
   | 'chat.turns.list'
   | 'chat.turn.withdraw'
   | 'chat.turn.cancel'
@@ -1902,6 +2021,10 @@ export type ChatRpcMethod =
   // D-335 slice W4 — a kept browser flow's forget, and its recipe.
   | 'chat.execution.browser_flow.forget'
   | 'chat.execution.browser_flow.recipe'
+  // D-402 slice A4 — "Make a recipe" on a request in the chat.
+  | 'chat.execution.request_recipe'
+  // D-402 slice E4b — "Carry on in Chat" from a run a hand-off stopped.
+  | 'chat.execution.carry_on'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   // D-167 chat provider-threading — per-session model-pref override
@@ -1920,6 +2043,14 @@ export type ChatRpcMethod =
   | 'chat.rolling_brief.set'
   | 'chat.install_offers.get'
   | 'chat.install_offers.set'
+  // D-404 slice B1 — which steps under chat answers have landed.
+  | 'chat.next_steps.state'
+  // D-405 slice 3 — "Not now" on a hint under a chat answer, and the hints set aside.
+  | 'chat.hints.list'
+  | 'chat.hints.not_now'
+  | 'chat.hints.restore'
+  // D-405 slice 4 — the Set up page: mail, a calendar, files, connected or not.
+  | 'chat.setup.features'
   | 'chat.session.brief.get'
   | 'chat.session.brief.clear'
   // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
@@ -2011,6 +2142,14 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.schedule.remove',
   'chat.schedule.run_now',
   'chat.schedule.preview',
+  'chat.schedule.skip_preview',
+  'chat.schedules.bulk.preview',
+  'chat.schedules.bulk.apply',
+  'chat.schedule.pause_preview',
+  'chat.schedule.pause_until',
+  'chat.schedule.runs.list',
+  'chat.schedule.skip_next',
+  'chat.schedule.undo_skip',
   'chat.turns.list',
   'chat.turn.withdraw',
   'chat.turn.cancel',
@@ -2029,6 +2168,8 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.execution.authored',
   'chat.execution.browser_flow.forget',
   'chat.execution.browser_flow.recipe',
+  'chat.execution.request_recipe',
+  'chat.execution.carry_on',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   'chat.session.clear_model_pref',
@@ -2038,6 +2179,11 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.rolling_brief.set',
   'chat.install_offers.get',
   'chat.install_offers.set',
+  'chat.next_steps.state',
+  'chat.hints.list',
+  'chat.hints.not_now',
+  'chat.hints.restore',
+  'chat.setup.features',
   'chat.session.brief.get',
   'chat.session.brief.clear',
   'chat.connection_mcp.list',
@@ -2382,6 +2528,7 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'file.search': 'file',
   'recipe.run': 'recipe',
   'recipe.stop': 'recipe',
+  'recipe.stop_allowing': 'recipe',
   // Grouped with the op that grants it (`core.schedule.recipe`, entity `schedule`).
   'recipe.schedule': 'schedule',
   'schedule.run_prompt': 'schedule',
@@ -2504,7 +2651,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   },
   'document.read': {
     name: 'document.read',
-    description: 'Read text from an exact local file_ref returned by mail.read or file.search. Text files are read directly unless converter is set; other documents use an installed local MarkItDown or Docling pack through normal execution gates. Set converter to docling for OCR or complex PDF layout. Missing support returns a pack suggestion; never install silently. Continue with both next_offset and read_version from the previous page and the same converter; restart at offset 0 if the version changed. Extraction may omit images, layout or tables even when the tool succeeds; keep unsupported conclusions provisional and cite the original file and content_hash.',
+    description: 'Read text from an exact local file_ref returned by an upload, browser download/PDF capture, mail.read or file.search. The file is already stored; this tool reads and extracts its contents, not a web URL. Download metadata is not document content. Text files are read directly unless converter is set; other documents use an installed local reader such as MarkItDown, Docling or PDFToText through normal execution gates. Set converter to docling for OCR or complex PDF layout. Missing support returns a pack suggestion; never install silently. Continue with both next_offset and read_version from the previous page and the same converter; restart at offset 0 if the version changed. Extraction may omit images, layout or tables even when the tool succeeds; keep unsupported conclusions provisional and cite the original file and content_hash.',
     arg_schema: { type: 'object', required: ['file_ref'], additionalProperties: false, properties: {
       file_ref: { type: 'string' }, converter: { type: 'string', enum: ['auto', 'markitdown', 'docling'] },
       offset: { type: 'integer', minimum: 0 },
@@ -2573,7 +2720,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'calendar.search': {
     name: 'calendar.search',
     description:
-      "Search the owner's calendar mirror — free-text `query` over titles, locations, and attendee/organizer names + emails (so a person's name or canonical email finds the events they are on), narrowed by an optional event-time window (`start_since`/`start_until`). `source_freshness` is the per-calendar verdict for THIS read (`age_ms` / `pending` / `degraded` / `stale`): \"nothing scheduled\" from a `stale` calendar is NOT a verified absence — say the mirror may be behind — and an empty `collections` means no calendar is enrolled at all. Use over `memory.search` when the user wants the actual meeting / event entry; use `memory.search` for past-meeting discussion context.",
+      "Search the owner's calendar mirror — free-text `query` over titles, locations, and attendee/organizer names + emails (so a person's name or canonical email finds the events they are on), narrowed by an optional event-time window (`start_since`/`start_until`). `source_freshness` is the per-calendar verdict for THIS read (`age_ms` / `pending` / `degraded` / `stale`): \"nothing scheduled\" from a `stale` calendar is NOT a verified absence — say the mirror may be behind — and an empty `collections` means no calendar is enrolled at all. Use over `memory.search` when the user wants the actual meeting / event entry; use `memory.search` for past-meeting discussion context. `private: true` marks an event the owner's notifications call only \"a reminder in Yours\": text meant for a notification writes that, never its title; any other answer names it as usual.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -2587,6 +2734,12 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         since: { type: 'number', description: 'Alias for `start_since`.' },
         until: { type: 'number', description: 'Alias for `start_until`.' },
         calendar_id: { type: 'string', description: 'Restrict to a single calendar instance.' },
+        record_id: {
+          type: 'string',
+          description: 'One event exactly: the `record_id` of an earlier result, or of an event the owner picked or '
+            + 'referenced. Pass its `collection_slug` as `slug`. The other filters are then ignored.',
+        },
+        slug: { type: 'string', description: 'With `record_id`: the event\'s `collection_slug`.' },
         limit: { type: 'number', description: 'Max events to return.' },
       },
     },
@@ -2818,13 +2971,13 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.search': {
     name: 'work.search',
     description:
-      "Search the owner's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, `asset` (a durable possession or document with typed facts and rule clocks), or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source: Recued's own records, synced vendor mirrors, and `read_through` Sources read live on demand. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was read live and not stored; other states describe local mirrors that can trail the vendor. `long_text.truncated: true` means the text was CUT to keep the result small, and `omitted_chars` says by how much — decide from that number whether a `work.read` is worth a round-trip (a hundred missing characters usually is not; several thousand usually is). ⛔ Only `truncated` tells you text is missing: `fidelity: 'complete'` says where the text CAME FROM (a canonical column, not a vendor preview), NOT that you hold all of it, and `fidelity: 'preview'` is a bounded vendor excerpt, never complete whatever its length. Either way `work.read` with `fidelity: 'remote_detail'` has the full text, and a cut excerpt is never the whole body. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. It invokes no LLM, only declared provider reads.",
+      "Search the owner's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, `asset` (a durable possession or document with typed facts and rule clocks), `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar), or `occasion` (a date of the user's that matters beyond its slot: its next date, who and where, whether it is private, its steps) — across every registered Source: Recued's own records, synced vendor mirrors, and `read_through` Sources read live on demand. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was read live and not stored; other states describe local mirrors that can trail the vendor. `long_text.truncated: true` means the text was CUT to keep the result small, and `omitted_chars` says by how much — decide from that number whether a `work.read` is worth a round-trip (a hundred missing characters usually is not; several thousand usually is). ⛔ Only `truncated` tells you text is missing: `fidelity: 'complete'` says where the text CAME FROM (a canonical column, not a vendor preview), NOT that you hold all of it, and `fidelity: 'preview'` is a bounded vendor excerpt, never complete whatever its length. Either way `work.read` with `fidelity: 'remote_detail'` has the full text, and a cut excerpt is never the whole body. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. It invokes no LLM, only declared provider reads.",
     arg_schema: {
       type: 'object',
       properties: {
         kind: {
           type: 'string',
-          enum: [...WORK_ENTITY_KINDS],
+          enum: [...WORK_ENTITY_KINDS, 'occasion'],
           description: 'Which work-item family to search.',
         },
         query: {
@@ -2865,13 +3018,13 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.read': {
     name: 'work.read',
     description:
-      "Read ONE work item (task / project / note / commitment / booking / asset) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body. Set `include_related: true` to also get the item's declared links (parent project, contacts, CRM records, sibling items) in one call.",
+      "Read ONE work item (task / project / note / commitment / booking / asset / occasion) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body. Set `include_related: true` to also get the item's declared links (parent project, contacts, CRM records, sibling items) in one call.",
     arg_schema: {
       type: 'object',
       properties: {
         kind: {
           type: 'string',
-          enum: [...WORK_ENTITY_KINDS],
+          enum: [...WORK_ENTITY_KINDS, 'occasion'],
           description: 'The work-item family.',
         },
         id: {
@@ -2898,8 +3051,8 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   },
   'situation.query': {
     name: 'situation.query',
-    description: 'For owner Chat comparisons of a saved reading with a declared rule target, request context: it returns host-calculated comparison facts with both input citations. Attribute text is not a rule target. What is due or coming up for the owner in a `time`: a day `"2026-11-05"`, or days `{"first_day":"2026-11-05","last_day":"2026-11-11"}` with both included, on the owner\'s clock (Unix ms only for an exact moment: an instant, or `{from, to}`): trips with each traveller\'s passport check and visas on file, renewals and expiries of what the owner holds (passport, visa, insurance, vehicle) with its recorded fields, birthdays, bookings, events, reminders, tasks, promises, and bills and reservations from email. `text`, `people`, `place` and `subjects` add matches from outside the span; a past span also returns what ended in it. Returns values, verdicts, reasons and source references for every match, up to ' + SITUATION_TOOL_MAX_ITEMS + ' items a call; `omitted` counts any past that, so narrow `time`, `people` or `text`. Or copy a returned item’s context as the only argument to inspect its rule input, supporting evidence and registered enabled writers. writer_check reports enabled_count, disabled_count when the registry was checked, coverage and manual priority. Disabled registrations remain on file. A missing disabled_count is unknown; zero enabled writers alone does not prove no registrations. Restricted, unavailable or partial checks cannot prove absence. A registered writer does not prove scheduling or execution. execution_status=not_checked leaves current running/stopped state and scheduling unknown. Writer delivery receipts cover only settled admitted field submissions, not whole-recipe success or continuous operation. Missing receipts do not prove no execution; receipt at is settlement time, observation_at dates the sample, and older acceptance does not establish the current entry’s source. Observation age is not activity evidence. Use the returned context citation for rule, relationship and writer-state claims, and field citations only for saved values. reaction.emit publishes rule events; it does not write readings. Unknown is not outside. Limited to this contract\'s sources and spheres. Several matches for one name need clarification first. A refusal does not mean no records exist. `private: true` marks an item the owner\'s notifications call only "a reminder in Yours": text meant for a notification writes that, never its title; any other answer names it as usual.',
-    arg_schema: SITUATION_QUERY_SCHEMA,
+    description: 'For owner Chat comparisons of a saved reading with a declared rule target, request context: it returns host-calculated comparison facts with both input citations. Attribute text is not a rule target. What is due or coming up for the owner in a `time`: a day `"2026-11-05"`, or days `{"first_day":"2026-11-05","last_day":"2026-11-11"}` with both included, on the owner\'s clock (Unix ms only for an exact moment: an instant, or `{from, to}`): trips with each traveller\'s passport check and visas on file, renewals and expiries of what the owner holds (passport, visa, insurance, vehicle) with its recorded fields, birthdays, bookings, events, reminders, tasks, promises, and bills and reservations from email. `text`, `people`, `place` and `subjects` add matches from outside the span; a past span also returns what ended in it. Returns values, verdicts, reasons and source references for every match, up to ' + SITUATION_TOOL_MAX_ITEMS + ' items a call; `omitted` counts any past that, so narrow `time`, `people` or `text`. Or copy a returned item’s context as the only argument to inspect its rule input, supporting evidence and registered enabled writers. writer_check reports enabled_count, disabled_count when the registry was checked, coverage and manual priority. Disabled registrations remain on file. A missing disabled_count is unknown; zero enabled writers alone does not prove no registrations. Restricted, unavailable or partial checks cannot prove absence. A registered writer does not prove scheduling or execution. execution_status=not_checked leaves current running/stopped state and scheduling unknown. Writer delivery receipts cover only settled admitted field submissions, not whole-recipe success or continuous operation. Missing receipts do not prove no execution; receipt at is settlement time, observation_at dates the sample, and older acceptance does not establish the current entry’s source. Observation age is not activity evidence. Use the returned context citation for rule, relationship and writer-state claims, and field citations only for saved values. reaction.emit publishes rule events; it does not write readings. Unknown is not outside. Limited to this contract\'s sources and spheres. Several matches for one name need clarification first. A refusal does not mean no records exist. `private: true` marks an item the owner\'s notifications call only "a reminder in Yours": text meant for a notification writes that, never its title; any other answer names it as usual. When the user wants to close a day (say what they did or skipped) without replying to its notice, read that one day with `close: true`: the result adds the pursuits asked about in the evening and `how_to_close`.',
+    arg_schema: SITUATION_CHAT_QUERY_SCHEMA,
     classification: TIER1_CLASSIFICATIONS['situation.query'],
     topic_tags: TIER1_TOPIC_TAGS['situation.query'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['situation.query'],
@@ -2923,16 +3076,16 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.create': {
     name: 'work.create',
     description:
-      "Create something the user has to ACT ON or KEEP — a `task`, `note`, `commitment`, `project`, or an `asset` they own (call `work.type` first) — in their own local work graph. It needs no account and no connection, never leaves this machine, and shows up in Today and the matching list, where the user can edit or delete it. \u26a0 It is proposed to them first and runs once they approve it, unless they have let it run without asking: say what you are about to add, do not promise it is done. Reach for it when they ask you to add, capture, note down, or track something: \"add a task to call the dentist\", \"note that down\", \"start a project for the Dublin move\". When they tell you something they want to achieve or keep up (\"I want to run a marathon next year\"), propose keeping it as a pursuit (kind `asset`, type `pursuit`), not a memory, with any time in it as the date it means (\"2027\", not \"next year\"). Never one they did not state. \u26d4 This is for things to DO or KEEP; `memory.write` is for knowledge to RECALL later. The user's wording usually settles it: \"remember TO send the invoice\" is a task, \"remember THAT Acme moved to net-60\" is a memory. When both fit, prefer this one — a row the user can see and work through beats a fact they have to search for. \u26a0 Creating is not idempotent: each call makes a new row, so do not re-create something you already created in this turn. This governs what you CREATE, nothing else — reading and reporting work items is unchanged.",
+      "Create something the user has to ACT ON or KEEP — a `task`, `note`, `commitment`, `project`, an `asset` they own (call `work.type` first), or an `occasion` — in their own local work graph. It needs no account and no connection, never leaves this machine, and shows up in Today and the matching list, where the user can edit or delete it. \u26a0 It is proposed to them first and runs once they approve it, unless they have let it run without asking: say what you are about to add, do not promise it is done. Reach for it when they ask you to add, capture, note down, or track something: \"add a task to call the dentist\", \"note that down\", \"start a project for the Dublin move\". When they tell you something they want to achieve or keep up (\"I want to run a marathon next year\"), propose keeping it as a pursuit (kind `asset`, type `pursuit`), not a memory, with any time in it as the date it means (\"2027\", not \"next year\"). Never one they did not state. \u26d4 This is for things to DO or KEEP; `memory.write` is for knowledge to RECALL later. The user's wording usually settles it: \"remember TO send the invoice\" is a task, \"remember THAT Acme moved to net-60\" is a memory. When both fit, prefer this one — a row the user can see and work through beats a fact they have to search for. \u26a0 Creating is not idempotent: each call makes a new row, so do not re-create something you already created in this turn. This governs what you CREATE, nothing else — reading and reporting work items is unchanged. " + WHAT_GOES_WHERE,
     arg_schema: {
       type: 'object',
       required: ['kind'],
       properties: {
         kind: {
           type: 'string',
-          enum: ['task', 'note', 'commitment', 'project', 'asset'],
+          enum: ['task', 'note', 'commitment', 'project', 'asset', 'occasion'],
           description:
-            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under. `asset` = a thing they own, such as a passport or a bike, or a pursuit they work toward (type `pursuit`); a type is optional.',
+            'REQUIRED — what to create. `task` = something to do (optionally with a due date); being told something at a time is a reminder, not a task. `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under. `asset` = a thing they own, such as a passport or a bike, or a pursuit they work toward (type `pursuit`); a type is optional. `occasion` = a date of theirs that matters beyond its time slot: its `on` date, `repeat` `yearly`, `once`, or `after_each` when each one sets the next (a doctor, a dentist), and `private: true` for a health one unless they say otherwise; a check-up or test before it is one of its `steps`, or an occasion of its own when it has its own booked time. It needs no end or length and keeps no `body`: a time of day goes in `time` ("17:00").',
         },
         title: {
           type: 'string',
@@ -2945,9 +3098,9 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
             "Longer detail. REQUIRED for `note` (it is the note). Optional for a task, and for a project it is the project's description — omit when the title already says it all. A commitment has none; for an asset, a note about it.",
         },
         due_at: {
-          type: 'number',
+          type: ['string', 'number'],
           description:
-            'Tasks only. Optional Unix-ms deadline. Set it only when the user gave one; do NOT invent a date to make a task look complete.',
+            'Tasks only. Optional deadline: the day "YYYY-MM-DD", or the day and time on the user\'s clock "YYYY-MM-DDTHH:mm" (no offset; Recued converts it). Set it only when the user gave one; do NOT invent a date to make a task look complete.',
         },
         target_completion_at: {
           type: 'string',
@@ -2979,6 +3132,19 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         place: { type: 'string', description: 'Assets only — where it is kept, as the user said it ("the garage").' },
         belongs_to: { type: 'string', description: 'Assets only — the id, from `work.search`, of the thing it is part of or covers, such as the car a policy covers. It is kept where that is, and follows it when it is sold or retired.' },
         readings: { type: 'object', description: 'Assets only — readings by its type\'s names: {"odometer": {"value": 12400, "unit": "km"}}; add `as_of` (YYYY-MM-DD, or a time with its offset) unless read just now.' },
+        // D-407 slice 1 — an occasion's own fields. ⚠ Model-facing — `chat-prompt-optimization-log.md`.
+        on: { type: 'string', format: 'date', description: 'Occasions only. REQUIRED for an occasion: its date, YYYY-MM-DD (the next one, for a yearly one).' },
+        repeat: { type: 'string', enum: ['yearly', 'once', 'after_each'], description: 'Occasions only. `yearly` comes back each year on that day; `once` happens once; `after_each` comes back whenever the last one says, and after each one Recued asks the user when the next is. Omitted, once.' },
+        people: { type: 'array', items: { type: 'string' }, description: 'Occasions only. Who it is with or for: an email `contact.search` found, or a name; a name no contact has is added as a contact of that name.' },
+        where: { type: 'string', description: 'Occasions only. Where it is, as the user said it ("the state hospital").' },
+        private: { type: 'boolean', description: 'Occasions only. `true` keeps its name out of the user\'s messages ("Reminder in Yours"); a health one is private unless the user says otherwise. Omitted, it is private when a person is in it.' },
+        steps: { type: 'array', description: 'Occasions only. What to do before it, each a task that many days before: [{"title": "Blood test", "days_before": 7}].',
+          items: { type: 'object', required: ['title', 'days_before'], properties: { title: { type: 'string' }, days_before: { type: 'integer', minimum: 0 } } } },
+        remind_days_before: { type: 'array', items: { type: 'integer', minimum: 1 }, description: 'Occasions only. Its reminders before the day, in days: [21, 1] for three weeks and one day before. Omitted, a week before. It reminds on the day too.' },
+        time: { type: 'string', description: 'Occasions only. Its time of day, HH:mm on the user\'s clock ("10:30"), when they gave one.' },
+        time_zone: { type: 'string', description: 'Occasions only. With `time`, the IANA zone it is on when that is not the user\'s own: a hospital in another state.' },
+        alert_minutes_before: { type: 'integer', minimum: 0, maximum: 1440, description: 'Occasions with a `time` only. When the user asks to be alerted before it, the minutes before: "2 hours before" is 120, "at the time" 0. The occasion sends it itself, never a separate reminder.' },
+        in_calendar: { type: 'boolean', description: 'Occasions only. Omitted, its event goes in the calendar the user chose for occasions, when they chose one. `false` when they want it in Recued only, with no calendar entry.' },
       },
     },
     classification: TIER1_CLASSIFICATIONS['work.create'],
@@ -2988,7 +3154,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'calendar.create': {
     name: 'calendar.create',
     description:
-      "Put a new event on the user's calendar. \u26a0 This CHANGES their schedule, so it is proposed to them first and only runs once they confirm \u2014 say what you are about to add, do not promise it is done. Times are Unix ms and you must supply the `timezone` the user means; when they say \"3pm\" without one, use the timezone of their other events rather than guessing UTC. \u26d4 Do NOT invent a duration: if they gave a start and no end, ask, or use the length they used for the same kind of meeting before \u2014 a wrong end time is a double-booking they will not notice until it bites. By default this writes to the LOCAL calendar, which always exists and needs no account. Name `calendar_id` only to write to one they told you about or one a `calendar.search` result actually showed.",
+      "Put a new event on the user's calendar. \u26a0 This CHANGES their schedule, so it is proposed to them first and only runs once they confirm \u2014 say what you are about to add, do not promise it is done. Times are Unix ms and you must supply the `timezone` the user means; when they say \"3pm\" without one, use the timezone of their other events rather than guessing UTC. \u26d4 Do NOT invent a duration: if they gave a start and no end, ask, or use the length they used for the same kind of meeting before \u2014 a wrong end time is a double-booking they will not notice until it bites. By default this writes to the LOCAL calendar, which always exists and needs no account. Name `calendar_id` only to write to one they told you about or one a `calendar.search` result actually showed. " + WHAT_GOES_WHERE,
     arg_schema: {
       type: 'object',
       required: ['summary', 'start_at', 'end_at', 'timezone'],
@@ -3030,7 +3196,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.update': {
     name: 'work.update',
     description:
-      "Change something already in the user's work graph: mark a task done or a commitment kept or cancelled, record how a booking went or move it, rename an occasion, move its date or stop its reminders, close a bill, reservation or parcel read from their mail, move a task's deadline, a project's target date or a promise's date, retitle it, edit a note's text, or record what the user says about a thing they own. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
+      "Change something already in the user's work graph: mark a task done or a commitment kept or cancelled, record how a booking went or move it, rename an occasion, move its date, set when its next one is or stop its reminders, close a bill, reservation or parcel read from their mail, move a task's deadline, a project's target date or a promise's date, retitle it, edit a note's text, or record what the user says about a thing they own. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
     arg_schema: {
       type: 'object',
       required: ['kind', 'id'],
@@ -3041,15 +3207,23 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         done_on: { type: 'string', format: 'date', description: 'Commitments and mail facts. With `done`, the day it was done, YYYY-MM-DD, when not today.' },
         title: { type: 'string', description: 'Optional new one-line subject. For a commitment, what was promised; for an asset, its name.' },
         body: { type: 'string', description: "Optional new detail: a note's text, a task's detail, a project's description, a note about an asset. A commitment has none." },
-        due_at: { type: 'number', description: 'Tasks only. Optional new deadline, Unix ms. Set only when the user gave one.' },
+        due_at: { type: ['string', 'number'], description: 'Tasks only. Optional new deadline: the day "YYYY-MM-DD", or the day and time on the user\'s clock "YYYY-MM-DDTHH:mm" (no offset; Recued converts it). Set only when the user gave one.' },
         clear_due_at: { type: 'boolean', description: 'Tasks only. `true` removes the deadline — only when the user asked for that. Never with `due_at`.' },
         target_completion_at: { type: 'string', format: 'date', description: "Projects only. The project's new target date, YYYY-MM-DD — a day, not a time. Set only when the user gave one." },
         clear_target_completion_at: { type: 'boolean', description: 'Projects only. `true` removes the target date — only when the user asked for that. Never with `target_completion_at`.' },
         state: { type: 'string', description: "Tasks, projects, commitments, bookings and mail facts. A task's free-form pipeline state (e.g. 'blocked'); a project's is one of active / paused / completed / archived; a commitment's is `cancelled` when it is no longer needed; a booking's is `completed`, `no_show`, `cancelled` or `confirmed`; a mail fact's is `cancelled`, or a reservation's `no_show`. Apart from a booking's, it does NOT mark anything done — use `done` for that." },
         starts_at: { type: 'string', description: "Bookings only. Its new start, as ISO 8601 with its offset. Alone, the booking keeps its length." },
         ends_at: { type: 'string', description: "Bookings only. Its new end, with `starts_at`." },
-        on: { type: 'string', format: 'date', description: 'Occasions only. Its new date, YYYY-MM-DD; a yearly one keeps that month and day every year.' },
+        on: { type: 'string', format: 'date', description: 'Occasions only. Its new date, YYYY-MM-DD; a yearly one keeps that month and day every year. For one `waiting_for_next`, the date of the next one.' },
         muted: { type: 'boolean', description: 'Occasions only. `true` stops its reminders, `false` starts them again.' },
+        private: { type: 'boolean', description: 'Occasions only. `true` keeps its name out of the user\'s messages, `false` shows it by name.' },
+        no_next: { type: 'boolean', description: 'Occasions only. `true` when the user says there is no next one of an `after_each` occasion: it stops asking. The next one\'s date goes in `on`.' },
+        time: { type: 'string', description: 'Occasions only. Its time of day, HH:mm on its own clock ("10:30").' },
+        alert_minutes_before: { type: ['integer', 'null'], minimum: 0, maximum: 1440, description: 'Occasions only. Its alert before its `time`, in minutes ("2 hours before" is 120); `null` takes it away.' },
+        in_calendar: { type: 'boolean', description: 'Occasions only. `true` puts its event in the calendar the user chose for occasions; `false` keeps it in Recued only.' },
+        where: { type: 'string', description: 'Occasions only. Where it is now.' },
+        add_steps: { type: 'array', description: 'Occasions only. Steps to add before it, as in `work.create`: [{"title": "Book dinner", "days_before": 21}].',
+          items: { type: 'object', required: ['title', 'days_before'], properties: { title: { type: 'string' }, days_before: { type: 'integer', minimum: 0 } } } },
         promised_for_at: { type: 'string', description: 'Commitments only. When it is promised for: a day as YYYY-MM-DD, or an exact time as ISO 8601 with its offset. Set only when the user gave one.' },
         clear_promised_for_at: { type: 'boolean', description: 'Commitments only. `true` removes the promised date — only when the user asked for that. Never with `promised_for_at`.' },
         readings: { type: 'object', description: 'Assets only — a new reading, as in `work.create`, under a name the asset has and in its unit.' },
@@ -3202,6 +3376,24 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['recipe.stop'],
     topic_tags: TIER1_TOPIC_TAGS['recipe.stop'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.stop'],
+  },
+  /** D-402 slice F4 (§7.9, ruling 12) — the owner's chat takes an "Always" back: every standing
+   *  permission the owner's chats, or one AI app, hold for a recipe, ended at once. */
+  'recipe.stop_allowing': {
+    name: 'recipe.stop_allowing',
+    description:
+      "Stop letting a recipe run without asking the user. Use it when the user takes back an \"Always\" or says to ask again (\"stop letting Claude Desktop file the water bill without asking\", \"ask me before you send those again\"). It ends every standing permission for that recipe at once: its \"Always\", \"Allow in this chat\", site passes and rules. Pass `recipe_id` (`<publisher>/<slug>`), and `app` with the AI app's name when the user names one; without `app` it ends what the user's own chats may do. It never asks the user and takes effect at once: a run already going asks at its next action. The result says what it ended. Only the user's own chat can do this.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        recipe_id: { type: 'string', description: 'The recipe, as `<publisher>/<slug>`.' },
+        app: { type: 'string', description: 'The AI app\'s name, when the user names one. Omit for the user\'s own chats.' },
+      },
+      required: ['recipe_id'],
+    },
+    classification: TIER1_CLASSIFICATIONS['recipe.stop_allowing'],
+    topic_tags: TIER1_TOPIC_TAGS['recipe.stop_allowing'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.stop_allowing'],
   },
   /** D-193 amendment (2026-10-05) — how chat schedules. It replaced the D-193
    *  "Schedule recipe" RECIPE, whose step was the only one that could schedule
@@ -3922,8 +4114,14 @@ export interface ChatPlanProposal {
    *  that option's label ("Always allow for this scheduled prompt"), so the card offers it too
    *  (`chat.plan.approve`'s `always_allow`). The answer is checked against the real ask.
    *  `always_allow_note` — what that answer lets happen, as the ask says it before its question
-   *  (`describeTriggerPreapprovalOffer`): the card says it under its buttons. */
-  hold?: { run_id: string; lapsed_at?: number; always_allow?: string; always_allow_note?: string };
+   *  (`describeTriggerPreapprovalOffer`): the card says it under its buttons.
+   *  `group` — D-177 §N.15.9 (Q7): the round of the owner's chat whose held writes of one kind
+   *  were kept and asked once, by a key the server gives the round. The cards of one group are
+   *  one card, and answering it answers each of them. Absent for a write asked on its own.
+   *  `replaced_at` — D-343 (the owner, 2026-11-14): a newer version of the same call was proposed
+   *  in the conversation before this one was answered (a day's record changed while the owner
+   *  talked it over), so it was withdrawn with nothing run: no one said no. */
+  hold?: { run_id: string; lapsed_at?: number; replaced_at?: number; always_allow?: string; always_allow_note?: string; group?: string };
   /** D-329 — how the owner knows the records `args` names, by their names as they were when
    *  it was proposed (an approval's `value_labels`). Display only: `args` is what runs. */
   value_labels?: ApprovalValueLabels;

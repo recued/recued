@@ -118,12 +118,14 @@ export const calendarStep = (id = 'meeting'): RecipeDefinition['steps'][number] 
 export const resourceFixture = async (previous?: { dir: string; clock: { now: number };
   token: Awaited<ReturnType<ReturnType<typeof createClientTokenStore>['issue']>> }, options: {
     mailProvider?: MailProvider; spies?: Pick<typeof import('vitest').vi, 'fn' | 'spyOn'>;
+    openDatabase?: (path: string) => Database.Database | Promise<Database.Database>;
   } = {}) => {
   const vi = options.spies ?? (await import('vitest')).vi;
   const dir = previous?.dir ?? mkdtempSync(join(tmpdir(), 'recued-preapproval-resources-fixture-'));
   if (!previous) resourceFixtureDisposers.push(() => rmSync(dir, { recursive: true, force: true }));
   const clock = previous?.clock ?? { now: Date.now() }; const now = () => clock.now;
-  const db = new Database(join(dir, 'realm.sqlite'));
+  const dbPath = join(dir, 'realm.sqlite');
+  const db = options.openDatabase ? await options.openDatabase(dbPath) : new Database(dbPath);
   const storage = createPreapprovalStorage(db, createSqliteGatedActionChangeClock(db), () => new Uint8Array(32).fill(5), { now });
   const recipes = createRecipeStore('/no-community', db);
   const sources = { db, recipes, schedules: createScheduleStore(db), autoRun: createAutoRunSettingsStore(db),

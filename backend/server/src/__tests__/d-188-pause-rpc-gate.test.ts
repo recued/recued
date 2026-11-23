@@ -63,6 +63,7 @@ describe('the list of actions a pause refuses', () => {
     for (const method of ['notification.submitAnswer', 'webhook.ingress.disable', 'webhook.ingress.retire',
       'server.setPaused', 'server.getPauseState', 'chat.delivery.skip', 'collection.connection.list',
       'contact.upsert', 'recipe.list',
+      'work_entity.project.attention',
       // Opening an email or an event shows the stored copy; the handler holds the live read.
       'collection.mail.message.get', 'collection.calendar.event.get']) {
       expect(pauseRefusesRpc(method, {})).toBe(false);
@@ -76,6 +77,7 @@ describe('the rpc dispatcher while the server is paused', () => {
     const handlers = {
       'collection.calendar.event.create': handler,
       'collection.connection.list': handler,
+      'work_entity.project.attention': handler,
     };
     const dispatch = createRpcDispatcher(handlers as never, { serverPaused: () => paused });
     return { dispatch, handler };
@@ -91,6 +93,7 @@ describe('the rpc dispatcher while the server is paused', () => {
   it('runs everything else, and every action once resumed', async () => {
     const paused = setup(true);
     expect((await paused.dispatch('collection.connection.list', {}, {} as never)).ok).toBe(true);
+    expect((await paused.dispatch('work_entity.project.attention', {}, {} as never)).ok).toBe(true);
     const running = setup(false);
     expect((await running.dispatch('collection.calendar.event.create', {}, {} as never)).ok).toBe(true);
     expect(running.handler).toHaveBeenCalledTimes(1);

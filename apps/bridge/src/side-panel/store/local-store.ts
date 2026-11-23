@@ -212,6 +212,22 @@ export interface SidePanelSitesState {
   /** D-347 follow-up 22 — what Keep signed in's card says: why its last change did not go through, or what to
    *  fix in its form. Absent when there is nothing to say; `message` is the list of sites never used. */
   keep_message?: string;
+  /** D-347 follow-up 30 — the site last removed from the list of sites never used, and where it stood, while Undo
+   *  can put it back: absent once it is put back, once another site is added to or removed from that list, and
+   *  while the site is listed again. */
+  removed?: SidePanelRemovedSite;
+  /** Follow-up 30 — the same for Keep signed in, whose Undo puts the site back with the settings it had. */
+  keep_removed?: SidePanelRemovedSite;
+  /** Follow-up 30 — the control to focus once this state is drawn, by its attribute and that attribute's value (a
+   *  site): the Undo a removal leaves, the × an undo puts back. Chrome takes focus from a button as it disables
+   *  itself until its action settles, so the panel could not tell otherwise. Given with that one state only. */
+  focus?: { attr: string; value: string };
+}
+
+/** D-347 follow-up 30 — a site just removed from a list of the Sites section, and its place in the list. */
+export interface SidePanelRemovedSite {
+  site: string;
+  index: number;
 }
 
 /** D-347 follow-up 19 — a site Keep signed in refreshes (`keep-signed-in.ts`), and its status. */

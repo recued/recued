@@ -11,6 +11,7 @@ import {
   installKeepaliveAlarm,
   removeKeepaliveAlarm,
   runKeepaliveTick,
+  type ChromeAlarmsApi,
   type KeepaliveTickContext,
 } from '../transport/keepalive.js';
 import { createInMemoryIdempotencyCache } from '../idempotency/cache.js';
@@ -41,6 +42,24 @@ const buildFakeWs = (initial_connected: boolean) => {
     attempts: () => 0,
     send: () => undefined,
   };
+};
+
+const buildAlarms = () => {
+  const listeners = new Set<(alarm: { name: string }) => void>();
+  const scheduled = new Set<string>();
+  const alarms: ChromeAlarmsApi = {
+    create: name => { scheduled.add(name); },
+    clear: name => { scheduled.delete(name); },
+    onAlarm: {
+      addListener: handler => { listeners.add(handler); },
+      removeListener: handler => { listeners.delete(handler); },
+    },
+  };
+  return { alarms, listeners, fire() {
+    if (scheduled.has(KEEPALIVE_ALARM_NAME)) {
+      for (const listener of [...listeners]) listener({ name: KEEPALIVE_ALARM_NAME });
+    }
+  } };
 };
 
 describe('D-148 P3 — keepalive constants', () => {
@@ -126,7 +145,7 @@ describe('D-148 P3 — installKeepaliveAlarm registers + tick fires', () => {
       .mockRejectedValueOnce(new Error('database unavailable'))
       .mockResolvedValue({ ws_connected: true, reconnected: false, expired_swept: 0 });
     installKeepaliveAlarm({ create() {}, clear() {},
-      onAlarm: { addListener: listener => { listeners.push(listener); } },
+      onAlarm: { addListener: listener => { listeners.push(listener); }, removeListener() {} },
     }, { async getPlatformInfo() {} }, tick);
     listeners[0]!({ name: KEEPALIVE_ALARM_NAME });
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -149,6 +168,7 @@ describe('D-148 P3 — installKeepaliveAlarm registers + tick fires', () => {
         addListener: (h: (alarm: { name: string }) => void) => {
           listener_slot.current = h;
         },
+        removeListener() {},
       },
     };
     const runtime = {
@@ -182,6 +202,7 @@ describe('D-148 P3 — installKeepaliveAlarm registers + tick fires', () => {
         addListener: (h: (alarm: { name: string }) => void) => {
           listener_slot.current = h;
         },
+        removeListener() {},
       },
     };
     installKeepaliveAlarm(
@@ -203,9 +224,57 @@ describe('D-148 P3 — removeKeepaliveAlarm', () => {
     const alarms = {
       create: () => {},
       clear: (name: string) => cleared.push(name),
-      onAlarm: { addListener: () => {} },
+      onAlarm: { addListener: () => {}, removeListener() {} },
     };
     removeKeepaliveAlarm(alarms);
     expect(cleared).toEqual([KEEPALIVE_ALARM_NAME]);
+  });
+});
+
+
+describe('Keepalive alarm ownership', () => {
+  it('retires a replaced callback and old cleanup cannot clear the replacement alarm', () => {
+    const { alarms, listeners, fire } = buildAlarms();
+    const runtime = { getPlatformInfo: vi.fn(async () => undefined) };
+    const report = { ws_connected: true, reconnected: false, expired_swept: 0 };
+    const oldTick = vi.fn(async () => report);
+    const newTick = vi.fn(async () => report);
+    const stopOld = installKeepaliveAlarm(alarms, runtime, oldTick);
+    const queuedOld = [...listeners][0]!;
+    const stopNew = installKeepaliveAlarm(alarms, runtime, newTick);
+    const queuedNew = [...listeners].at(-1)!;
+    fire();
+    expect(oldTick).not.toHaveBeenCalled();
+    expect(newTick).toHaveBeenCalledTimes(1);
+    expect(listeners.size).toBe(1);
+
+    stopOld();
+    stopOld();
+    queuedOld({ name: KEEPALIVE_ALARM_NAME });
+    fire();
+    expect(oldTick).not.toHaveBeenCalled();
+    expect(newTick).toHaveBeenCalledTimes(2);
+
+    stopNew();
+    stopNew();
+    queuedNew({ name: KEEPALIVE_ALARM_NAME });
+    fire();
+    expect(newTick).toHaveBeenCalledTimes(2);
+    expect(runtime.getPlatformInfo).toHaveBeenCalledTimes(2);
+    expect(listeners.size).toBe(0);
+  });
+
+  it('removeKeepaliveAlarm removes the listener and makes an already queued callback inert', () => {
+    const { alarms, listeners, fire } = buildAlarms();
+    const tick = vi.fn(async () => ({ ws_connected: true, reconnected: false, expired_swept: 0 }));
+    const runtime = { getPlatformInfo: vi.fn(async () => undefined) };
+    installKeepaliveAlarm(alarms, runtime, tick);
+    const queued = [...listeners][0]!;
+    removeKeepaliveAlarm(alarms);
+    queued({ name: KEEPALIVE_ALARM_NAME });
+    fire();
+    expect(tick).not.toHaveBeenCalled();
+    expect(runtime.getPlatformInfo).not.toHaveBeenCalled();
+    expect(listeners.size).toBe(0);
   });
 });

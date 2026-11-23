@@ -13,6 +13,10 @@ import {
   SIDE_PANEL_DIAGNOSTIC_REFRESH_ATTR,
   SIDE_PANEL_DIAGNOSTIC_COPY_ATTR,
   SIDE_PANEL_DIAGNOSTIC_SUMMARY_ATTR,
+  SIDE_PANEL_KEEP_REMOVE_ATTR,
+  SIDE_PANEL_KEEP_UNDO_ATTR,
+  SIDE_PANEL_SITES_REMOVE_ATTR,
+  SIDE_PANEL_SITES_UNDO_ATTR,
 } from '../views.js';
 
 interface FakeElement {
@@ -98,6 +102,30 @@ const makeFakeDocument = (withRoot = true): { doc: FakeDocument; root: FakeEleme
       },
     },
   };
+};
+
+/** D-347 follow-up 30 — the fake with focus, as the panel's focus keeping reads it: `activeElement` (the body to start
+ *  with), and each element's `focus()`, `contains()` and `querySelectorAll()` of `[attr]` selectors. */
+const makeFocusDocument = () => {
+  const { doc, root } = makeFakeDocument();
+  type Focusable = FakeElement & { focus(): void };
+  const focusDoc = doc as FakeDocument & { activeElement: FakeElement; body: FakeElement };
+  const walk = (el: FakeElement): FakeElement[] => [el, ...el.children.flatMap(walk)];
+  const withFocus = (el: FakeElement): Focusable => Object.assign(el, {
+    focus: () => { focusDoc.activeElement = el; },
+    contains: (node: FakeElement | null) => node !== null && walk(el).includes(node),
+    querySelectorAll: (selector: string) => {
+      const attrs = selector.split(',').map((part) => /^\s*\[([^\]=]+)\]\s*$/.exec(part)?.[1]);
+      if (attrs.some((attr) => attr === undefined)) throw new Error(`the fake has no selector ${selector}`);
+      return walk(el).slice(1).filter((node) => attrs.some((attr) => node.hasAttribute(attr!)));
+    },
+  });
+  const create = doc.createElement;
+  doc.createElement = (tag: string) => withFocus(create(tag));
+  withFocus(root!);
+  focusDoc.body = withFocus(create('body'));
+  focusDoc.activeElement = focusDoc.body;
+  return { doc: focusDoc, root: root!, withFocus };
 };
 
 const findByAttr = (
@@ -337,6 +365,57 @@ describe('D-169 P1 side-panel mount', () => {
     store.applySitesState({ every_site: true, screenshots: false, blocked: ['bank.example.com'], message: '' });
     expect(sites().open).toBe(true);
     expect(textOf(sites())).toContain('bank.example.com');
+  });
+
+  it('D-347 follow-up 30 — a removal focuses its Undo, an undo the × it put back, once each; a redraw keeps either', () => {
+    const { doc, root, withFocus } = makeFocusDocument();
+    const store = createSidePanelStore({
+      pair: { paired: true, server_url: 'https://local.recued.test', server_display_name: 'Local Recued' },
+    });
+    mountSidePanel({ document: doc as unknown as Document, store, now: () => 1_800_000_000_000, sites: {} });
+    const sites: SidePanelSitesState = { every_site: true, screenshots: false, blocked: ['a.test', 'c.test'], message: '' };
+    // Chrome took focus from the × as it disabled itself, so nothing is focused when the removal is drawn.
+    store.applySitesState({ ...sites, removed: { site: 'b.test', index: 1 }, focus: { attr: SIDE_PANEL_SITES_UNDO_ATTR, value: 'b.test' } });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_SITES_UNDO_ATTR, 'b.test'));
+    // Keep signed in's next status draws the section anew: its Undo, a new one, keeps the focus.
+    const before = doc.activeElement;
+    store.applySitesState({ ...sites, removed: { site: 'b.test', index: 1 } });
+    expect(doc.activeElement).not.toBe(before);
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_SITES_UNDO_ATTR, 'b.test'));
+    // Undone: the × put back takes it, the Undo having lost it as it disabled itself.
+    doc.activeElement = doc.body;
+    store.applySitesState({ ...sites, blocked: ['a.test', 'b.test', 'c.test'],
+      focus: { attr: SIDE_PANEL_SITES_REMOVE_ATTR, value: 'b.test' } });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_SITES_REMOVE_ATTR, 'b.test'));
+    // Given once: the same state drawn again takes no focus.
+    doc.activeElement = doc.body;
+    store.applySitesState({ ...store.getState().sites });
+    expect(doc.activeElement).toBe(doc.body);
+    // A redraw keeps the × focused.
+    (findByAttr(root, SIDE_PANEL_SITES_REMOVE_ATTR, 'b.test') as FakeElement & { focus(): void }).focus();
+    store.applySitesState({ ...sites, blocked: ['a.test', 'b.test', 'c.test'] });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_SITES_REMOVE_ATTR, 'b.test'));
+    // Keep signed in's card the same way.
+    doc.activeElement = doc.body;
+    store.applySitesState({ ...sites, keep: [], keep_removed: { site: 'console.example.com', index: 0 },
+      focus: { attr: SIDE_PANEL_KEEP_UNDO_ATTR, value: 'console.example.com' } });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_KEEP_UNDO_ATTR, 'console.example.com'));
+    store.applySitesState({ ...sites, keep: [], keep_removed: { site: 'console.example.com', index: 0 } });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_KEEP_UNDO_ATTR, 'console.example.com'));
+    doc.activeElement = doc.body;
+    const kept = [{ entry: { site: 'console.example.com', every_minutes: 10, mode: 'session' as const } }];
+    store.applySitesState({ ...sites, keep: kept, focus: { attr: SIDE_PANEL_KEEP_REMOVE_ATTR, value: 'console.example.com' } });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_KEEP_REMOVE_ATTR, 'console.example.com'));
+    store.applySitesState({ ...sites, keep: kept.map((row) => ({ ...row,
+      status: { next_at: 2, last: { at: 1, what: 'kept' as const, said: 'Kept the session.' } } })) });
+    expect(doc.activeElement).toBe(findByAttr(root, SIDE_PANEL_KEEP_REMOVE_ATTR, 'console.example.com'));
+    // Never taken from a control the owner moved to meanwhile.
+    const elsewhere = withFocus(doc.createElement('button'));
+    root.appendChild(elsewhere);
+    elsewhere.focus();
+    store.applySitesState({ ...sites, blocked: ['c.test'], removed: { site: 'a.test', index: 0 },
+      focus: { attr: SIDE_PANEL_SITES_UNDO_ATTR, value: 'a.test' } });
+    expect(doc.activeElement).toBe(elsewhere);
   });
 
   it('2026-11-04 — the server opens by itself when it needs the owner, and the header says so', () => {

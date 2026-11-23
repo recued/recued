@@ -1,10 +1,10 @@
 /** Production Close the day card (D-343 slice 4) with explicit read, save and send acknowledgements. */
-import type { SituationAgendaStatus, SituationCloseDaySettings } from '@recued/contracts';
+import type { EmailClosingReplyStatus, SituationAgendaStatus, SituationCloseDaySettings } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { CLOSE_DAY_PANEL_STYLES, mountCloseDayPanel } from '../../src/settings/close-day-panel.js';
 import { WEBCLIENT_POLISH_STYLES } from '../../src/shell/webclient-polish-styles.js';
 
-type Kind = 'read' | 'save' | 'send';
+type Kind = 'read' | 'save' | 'send' | 'retry' | 'review';
 type Outcome = 'success' | 'error' | 'unsupported' | 'unnamed';
 const host = document.querySelector<HTMLElement>('#panel')!;
 const style = document.createElement('style');
@@ -14,12 +14,12 @@ document.head.appendChild(style);
 let current: SituationAgendaStatus = { settings: { enabled: false, time: '07:00', day: 'today', frequency: 'daily', weekday: 1 },
   last_run: null, last_sent: null, pending: 0, uncertain: 0,
   close_day: { settings: { enabled: false, time: '21:00' }, last_run: null, last_sent: null, pending: 0, uncertain: 0 } };
-const calls: Array<{ kind: Kind; settings?: SituationCloseDaySettings }> = [];
+const calls: Array<{ kind: Kind; settings?: SituationCloseDaySettings; reply_id?: string }> = [];
 // Off for the next save: the server answers it but keeps what it had.
 let keeps = true;
 const pending: Array<{ kind: Kind; finish(outcome: Outcome): void }> = [];
-const request = (kind: Kind, result: () => SituationAgendaStatus, settings?: SituationCloseDaySettings) => {
-  calls.push({ kind, ...(settings ? { settings: structuredClone(settings) } : {}) });
+const request = (kind: Kind, result: () => SituationAgendaStatus, settings?: SituationCloseDaySettings, reply_id?: string) => {
+  calls.push({ kind, ...(settings ? { settings: structuredClone(settings) } : {}), ...(reply_id ? { reply_id } : {}) });
   return new Promise<SituationAgendaStatus>((resolve, reject) => {
     let released = false;
     pending.push({ kind, finish(outcome) {
@@ -47,6 +47,14 @@ const mount = () => mountCloseDayPanel({
     current = { ...current, close_day: { ...current.close_day!, last_run: { ...sent, state: 'sent' }, last_sent: sent } };
     return structuredClone(current);
   }),
+  retryReply: id => request('retry', () => {
+    current.close_day!.email_replies = current.close_day!.email_replies?.filter(reply => reply.id !== id);
+    return structuredClone(current);
+  }, undefined, id),
+  reviewReply: id => request('review', () => {
+    current.close_day!.email_replies = current.close_day!.email_replies?.filter(reply => reply.id !== id);
+    return structuredClone(current);
+  }, undefined, id),
 });
 let panel = mount();
 const controls = {
@@ -59,6 +67,7 @@ const controls = {
   refresh: () => { void panel.refresh(); },
   hasUnsavedChanges: () => panel.hasUnsavedChanges(),
   hasInFlightWork: () => panel.hasInFlightWork(),
+  setEmailReplies(replies: EmailClosingReplyStatus[]) { current.close_day!.email_replies = structuredClone(replies); },
   /** The next save is answered but not kept, as a server that dropped the change would answer it. */
   dropNextSave() { keeps = false; },
   remount() { panel.dispose(); panel = mount(); },

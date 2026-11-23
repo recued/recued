@@ -63,6 +63,7 @@ import {
 import type { AuditLogStore, CheckpointStore } from '@recued/storage';
 import type { PreflightResumer } from '@recued/gateway';
 import { createNoAskRelease } from '../../reception-inbox-no-ask-release.js';
+import { createInboxRejectionRecovery } from '../../reception-inbox-rejection-recovery.js';
 import type { EventBus } from '../../events/bus.js';
 import type { ContactRpcDeps } from '../../contact-handler.js';
 import type { LocalManifestStore } from '../../ingredient-authoring/local-manifest-store.js';
@@ -124,6 +125,7 @@ export interface ComposeReceptionInboxDepsInput {
    *  notification block) → approve fails closed with `not_configured`
    *  instead of reporting a no-op release. */
   readonly submitAnswer?: (ask_id: string, option_id: string) => Promise<void>;
+  readonly submitPreparedAnswer?: ReceptionInboxDeps['submitPreparedAnswer'];
   /** D-210 Phase C — the DECORATED preflight resumer. Present ⇒ the inbox
    *  can release a hold that carries NO durable ask by driving
    *  `resumeRun` / `denyRun` directly. Required for `inbox_fanout_mode:
@@ -190,6 +192,7 @@ export interface ComposeReceptionInboxDepsInput {
  *  the P3 dispatch-routing seam + the INT-4 e2e). */
 export interface ReceptionInboxDepsBundle {
   readonly receptionInboxDeps: ReceptionInboxDeps;
+  readonly recoverPendingRejections?: () => Promise<void>;
   /** The projection-op effect (`runReceptionProjection`-backed). The catalog
    *  op's connection-adapter effect binds to this in P3; the e2e exercises
    *  it directly to prove the materialize-through-Source-with-edited-args
@@ -345,6 +348,7 @@ export const composeReceptionInboxDeps = (
     // EXISTING resume path — answer the held op's `gateway.preflight` ask.
     // Unwired notification blocks now fail closed with `not_configured`.
     submitAnswer: input.submitAnswer,
+    submitPreparedAnswer: input.submitPreparedAnswer,
     ...(input.isServerPaused !== undefined ? { isServerPaused: input.isServerPaused } : {}),
     // D-210 Phase C — the no-ask release leg. Bound only when BOTH the
     // decorated resumer and the checkpoint store are present: the release
@@ -415,5 +419,11 @@ export const composeReceptionInboxDeps = (
       projInput,
     );
 
-  return { receptionInboxDeps, projectReception };
+  const rejectionRecovery = createInboxRejectionRecovery(receptionInboxDeps);
+  return { receptionInboxDeps, projectReception,
+    recoverPendingRejections: async () => {
+      const result = await rejectionRecovery?.recover();
+      if (result?.failed) throw new Error(`${result.failed} inbox rejection(s) remain pending recovery`);
+    },
+  };
 };

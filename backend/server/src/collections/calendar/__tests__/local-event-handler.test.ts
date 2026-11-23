@@ -64,6 +64,18 @@ beforeEach(async () => {
 });
 afterEach(async () => { await collection?.close(); db?.close(); rmSync(dir, { recursive: true, force: true }); });
 
+it('exposes a saved conference URL without a write and preserves it across a title edit', async () => {
+  expect(getCalendarEvent(deps(), ref).event.conference_url).toBeUndefined();
+  await seed({ conference_url: 'https://meet.example.test/planning' }); events.length = 0;
+  const before = collection.table.get(ref.source_id);
+  expect(getCalendarEvent(deps(), ref).event.conference_url).toBe('https://meet.example.test/planning');
+  expect(collection.table.get(ref.source_id)).toEqual(before);
+  expect(events).toEqual([]);
+  const saved = await updateCalendarEvent(deps(), request({ summary: 'Updated meeting' }));
+  expect(saved.event.conference_url).toBe('https://meet.example.test/planning');
+  expect(collection.table.get(ref.source_id)?.event.conference_url).toBe(saved.event.conference_url);
+});
+
 it('saves through the local dispatcher and publishes the canonical change without changing identity', async () => {
   const input = request({ summary: 'Customer planning', location: '', description: 'New notes', end_at: NOW + 5_400_000 });
   const saved = await updateCalendarEvent(deps(), input);

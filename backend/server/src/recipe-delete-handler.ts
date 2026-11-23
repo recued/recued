@@ -42,7 +42,9 @@ import type { ContractStore } from './storage/contract-store.js';
 import { getInstalledPack } from './pack-inventory.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { WebhookConsumerStore } from './storage/webhook-consumer-store.js';
+import { recipeRowStamp } from './storage/webhook-consumer-store.js';
 import type { WsClient } from './ws-server.js';
+import { recipeRemainsStored } from './webhook-replacement-finish.js';
 
 export type RecipeDeleteMethods = 'recipe.delete';
 
@@ -107,20 +109,46 @@ export const deleteRecipe = (
 
   // The teardown BEFORE the row drop, so a throw leaves the recipe present rather
   // than leaving a live recipe with its webhook authority already revoked.
-  if (deps.webhookConsumerStore) {
-    deps.webhookConsumerStore.replaceConsumer({
-      consumer_kind: 'local_recipe',
-      consumer_id: recipe_id,
-      requirements: [],
-      selections: [],
-      recipes: [],
-      enabled: false,
-    });
-  }
+  const priorWebhook = deps.webhookConsumerStore
+    ? deps.webhookConsumerStore.replaceConsumer({
+        consumer_kind: 'local_recipe',
+        consumer_id: recipe_id,
+        // D-201 Slice 10AD (10AA finding 21) — as the start would finish it.
+        recipeRemains: (recipeId, publisherId) => recipeRemainsStored(deps.store, recipeId, publisherId),
+        requirements: [],
+        selections: [],
+        recipes: [],
+        enabled: false,
+        // D-201 Slice 10X — the row as it stands: a start finding the row
+        // still there gives the webhook back, rather than closing its history
+        // for a recipe that remains (10Q finding 24).
+        prior_recipe_stamp: recipeRowStamp(stored),
+      })
+    : null;
 
   // `delete` fires the store's mutation hook, which is where D8's seed branches to
   // PURGE the recipe's grant row (D14) — so the grant cannot outlive its subject.
-  const removed = deps.store.delete(recipe_id);
+  let removed: boolean;
+  try {
+    removed = deps.store.delete(recipe_id);
+  } catch (error) {
+    // The recipe stays, so its webhook authority comes back as it was.
+    if (priorWebhook !== null) deps.webhookConsumerStore!.restoreConsumer(priorWebhook);
+    throw error;
+  }
+  // D-201 Slice 10I (10H finding 5) — the recipe is gone, so what its webhook
+  // held goes with it: open dead letters closed with a record that says so,
+  // waiting deliveries cancelled, their pins released. Before, the rows kept
+  // trigger ids nothing referenced, still pending, pinned and counted.
+  if (priorWebhook !== null) deps.webhookConsumerStore!.finalizeConsumerReplacement(priorWebhook);
+  // D-201 Slice 10AC — the doors kept for a later version go with the recipe.
+  if (removed && deps.webhookConsumerStore) {
+    try {
+      deps.webhookConsumerStore.forgetRecipeDoors('local_recipe', recipe_id);
+    } catch {
+      // Best effort: a door kept only shapes the next door this recipe makes.
+    }
+  }
   return removed ? { deleted: true } : { deleted: false, reason: 'not_found' };
 };
 

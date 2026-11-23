@@ -124,6 +124,29 @@ test('a schedule\'s page grants what the owner ticks, with their bounds, and say
   expect(errors).toEqual([]);
 });
 
+test('D-402 ruling 5: a schedule\'s page from a server that grants the whole recipe lists its changes and allows them all', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  const errors = await open(page, 'automation=rules&trigger_preapproval=whole#automation/schedules/schedule-e2e-1');
+  await page.getByText(SUMMARY, { exact: true }).click();
+  const panel = page.locator(PANEL);
+  await expect(panel.getByRole('heading', { name: 'Daily brief' })).toBeVisible();
+  await expect(panel).toContainText('Let these happen without asking when this schedule runs it:');
+  // Its changes, listed: none to tick, and no times a run.
+  await expect(panel.locator('[data-recued-trigger-preapproval-write]')).toHaveText(['Post a note to the team', 'Send an email']);
+  await expect(panel.getByRole('checkbox')).toHaveCount(0);
+  await expect(panel.getByLabel('Times a run')).toHaveCount(0);
+  await expect(panel).toContainText('Every time it runs, until you end it. A change to the recipe asks you again.');
+  expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const allow = panel.getByRole('button', { name: 'Allow without asking' });
+  await allow.click();
+  await expect(panel).toContainText('Without asking: Post a note to the team; Send an email');
+  await expect(panel).toContainText('Every time it runs · not used yet · until you end it');
+  await expect(allow).toHaveCount(0);
+  expect(await calls(page, 'grantTriggerPreapproval')).toEqual([{ trigger: { kind: 'schedule', schedule_id: 'schedule-e2e-1' },
+    recipe_id: 'daily-brief', writes: ['*'] }]);
+  expect(errors).toEqual([]);
+});
+
 test('a schedule page\'s panel stays as the owner left it when the route repaints', async ({ page }) => {
   const errors = await open(page, 'automation=rules&trigger_preapproval=1#automation/schedules/schedule-e2e-1');
   await page.getByText(SUMMARY, { exact: true }).click();
@@ -298,3 +321,59 @@ test('a server from before pre-approvals shows no "What it may do without asking
   }
 });
 
+
+/** D-402 — a pre-approval granted, used or ended anywhere (its ask answered on another device, a run, Contracts)
+ *  arrives as `contract.preapproval_changed`, and each place that lists triggers' pre-approvals reads them again:
+ *  the four pages a trigger has, and Contracts. A caller's use is no change of theirs. */
+test('D-402: every page listing triggers\' pre-approvals reads them again when one changes anywhere', async ({ page }) => {
+  let cursor = 9_000;
+  const changed = (holder: 'trigger' | 'caller', change: 'granted' | 'used' | 'ended') => page.evaluate((event) =>
+    window.__app.fireMessage({ type: 'server_event', event }),
+  { kind: 'contract.preapproval_changed', change, id: 'tpa_elsewhere', holder, cursor: (cursor += 1) });
+  const reads = async (method: string) => (await calls(page, method)).length;
+  // What a page read on opening (its first read, the support check) is over before counting from it.
+  const settled = async (method: string) => {
+    let last = -1;
+    await expect.poll(async () => { const now = await reads(method); const same = now === last; last = now; return same; },
+      { intervals: [400] }).toBe(true);
+    return last;
+  };
+  const readsAgain = async (method: string) => {
+    const before = await settled(method);
+    // A caller's use first: it reads nothing, so the count moves by one, for the trigger's change.
+    await changed('caller', 'used');
+    await changed('trigger', 'granted');
+    await expect.poll(() => reads(method)).toBe(before + 1);
+    await page.waitForTimeout(600);
+    expect(await reads(method)).toBe(before + 1);
+  };
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const openPanel = async (query: string, within = page.locator('body')) => {
+    await page.goto(`${HARNESS_URL}?${query}`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await within.getByText(SUMMARY, { exact: true }).first().click();
+    await expect.poll(() => reads('triggerPreapprovalChoices')).toBeGreaterThan(0);
+    await expect(page.locator(PANEL).locator('h4').first()).toBeVisible();
+  };
+
+  await openPanel('connection=webhooks&trigger_preapproval=1#connections/webhooks', page.locator(`[data-recued-webhooks-card="${WEBHOOK}"]`));
+  await readsAgain('triggerPreapprovalChoices');
+  await openPanel('automation=rules&trigger_preapproval=1#automation/schedules/schedule-e2e-1');
+  await readsAgain('triggerPreapprovalChoices');
+  await openPanel(`trigger_preapproval=form#reception/endpoints/pair/${FORM_ENDPOINT}`);
+  await readsAgain('triggerPreapprovalChoices');
+  await openPanel('automation=rules&trigger_preapproval=prompt#automation/schedules', page.locator('article[data-schedule-id="ps_e2e_morning"]'));
+  await readsAgain('triggerPreapprovalChoices');
+
+  // Contracts lists them among what happens without asking; a caller's ended reads it too ("Stop allowing").
+  // (Its agreements answer from the caller pre-approvals fixture, as Contracts needs them to load.)
+  await page.goto(`${HARNESS_URL}?trigger_preapproval=1&caller_preapprovals=1#contracts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect.poll(() => reads('listTriggerPreapprovals')).toBeGreaterThan(0);
+  await readsAgain('listTriggerPreapprovals');
+  const before = await settled('listTriggerPreapprovals');
+  await changed('caller', 'ended');
+  await expect.poll(() => reads('listTriggerPreapprovals')).toBe(before + 1);
+  expect(errors).toEqual([]);
+});

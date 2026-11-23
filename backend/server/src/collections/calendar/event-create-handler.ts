@@ -1,5 +1,5 @@
 import {
-  CALENDAR_EVENT_EDIT_LIMITS, DAY_MS, RpcError, normalizeCalendarEventGuests,
+  CALENDAR_EVENT_EDIT_LIMITS, DAY_MS, RpcError, isCalendarEventAlertMinutes, normalizeCalendarEventGuests,
   type CalendarEventCreateRequest, type CalendarEventCreateResult, type CalendarEventDestinations,
 } from '@recued/contracts';
 import { resourceReviewHash } from '../../resource-review.js';
@@ -58,6 +58,11 @@ const validate = (input: CalendarEventCreateRequest): CalendarEventCreateRequest
     if (typeof input[key] !== 'string' || Buffer.byteLength(input[key], 'utf8') > CALENDAR_EVENT_EDIT_LIMITS[key]) return invalid('The event title, location or notes exceed the text limit.');
   }
   if (!input.summary.trim()) return invalid('Enter an event title.');
+  // D-407 slice 4 — a private marking, and its one alert (`null`: none; absent: the calendar's default).
+  if (input.marked_private !== undefined && input.marked_private !== true) return invalid('Choose whether the event is private.');
+  if (input.alert_minutes !== undefined && input.alert_minutes !== null && !isCalendarEventAlertMinutes(input.alert_minutes)) {
+    return invalid('Choose an alert from the start up to four weeks before.');
+  }
   if (typeof input.timezone !== 'string' || !input.timezone || input.timezone.length > 256) return invalid('Choose a valid time zone.');
   try { new Intl.DateTimeFormat('en', { timeZone: input.timezone }); } catch { return invalid('Choose a valid time zone.'); }
   for (const at of [input.start_at, input.end_at]) {
@@ -77,7 +82,8 @@ const validate = (input: CalendarEventCreateRequest): CalendarEventCreateRequest
   return { slug: input.slug, calendar_id: input.calendar_id, expected_incarnation: input.expected_incarnation,
     creation_id: input.creation_id, summary: input.summary, description: input.description, location: input.location,
     start_at: input.start_at, end_at: input.end_at, timezone: input.timezone, is_all_day: input.is_all_day,
-    ...(guests.length ? { guests, send_invitations: true as const } : {}) };
+    ...(guests.length ? { guests, send_invitations: true as const } : {}),
+    ...(input.marked_private ? { marked_private: true as const } : {}), ...(input.alert_minutes !== undefined ? { alert_minutes: input.alert_minutes } : {}) };
 };
 
 export const createOwnerCalendarEvent = async (
@@ -115,6 +121,8 @@ export const createOwnerCalendarEvent = async (
     const created = await handleCalendarCreate(deps, { slug: input.slug, calendar_id: input.calendar_id,
       event: { calendar_id: input.calendar_id, summary: input.summary, description: input.description, location: input.location,
         start_at: input.start_at, end_at: input.end_at, timezone: input.timezone, is_all_day: input.is_all_day, status: 'confirmed',
+        ...(input.marked_private ? { marked_private: true as const } : {}),
+        ...(input.alert_minutes !== undefined ? { reminders: input.alert_minutes === null ? [] : [{ method: 'popup' as const, minutes: input.alert_minutes }] } : {}),
         ...(input.guests?.length ? { attendees: input.guests.map(guest => ({ ...guest, response_status: 'needs_action' as const })),
           send_invitations: true as const } : {}) },
       beforeSend: binding,

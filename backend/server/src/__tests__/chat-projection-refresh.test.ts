@@ -215,6 +215,7 @@ const fixture = (details = false, probeEnabled = false, nativeFacts = false) => 
   const clock = { time: NOW };
   const db = new Database(':memory:'); dispose.push(() => db.close()); ensureChatSchema(db); ensureWorkEntitySchema(db);
   const store = createChatStore(db, () => new Uint8Array(32).fill(29), () => undefined);
+  // This projection fixture supplies Standard carry and writer responses.
   const sid = `projection-refresh-${++sequence}`; store.createSession({ id: sid }); store.setRollingBriefEnabled(true);
   const work = createWorkEntityStore(db); autoRegisterRecuedBuiltinSources(work);
   const write = (as_of = 1609459200000, value = 25) => work.writeAsset({ id: ID, source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' },

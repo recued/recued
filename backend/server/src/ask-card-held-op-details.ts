@@ -35,10 +35,10 @@
  *
  *  Spec: D-270. */
 
-import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
+import { PREFLIGHT_GATHERED_HANDLER_KIND, PREFLIGHT_HANDLER_KIND, preflightAskHolds } from '@recued/gateway';
 import {
-  ANY_ARGUMENT, approvalValueLabel, describeEncodedEmail, nameValuesIn, type ArgEditSchema, type Checkpoint,
-  type ServerPendingAskDetail,
+  ANY_ARGUMENT, approvalValueLabel, askDetailLabel, describeEncodedEmail, nameValuesIn, type ArgEditSchema,
+  type Checkpoint, type ServerPendingAskDetail,
 } from '@recued/contracts';
 import type { AuditEntry } from '@recued/storage';
 import type { PendingAsk } from '@recued/notification';
@@ -64,13 +64,17 @@ export interface AskCardDetailResolverDeps {
     operation_id: string,
     prefilled_args: Record<string, unknown>,
   ) => ArgEditSchema;
-  /** LIVE member count for a batch-registered ask. ⛔ Read at RESOLVE time,
-   *  never stamped: an `open` batch ACCUMULATES members, so a count captured
-   *  earlier goes stale in the one direction that matters. Absent ⇒ every
-   *  batched ask resolves to null, which is the fail-closed floor. */
+  /** LIVE members of a batch-registered ask, each with its own held call, and
+   *  the batch's live ask. ⛔ Read at RESOLVE time, never stamped: an `open`
+   *  batch ACCUMULATES members, so a list captured earlier goes stale in the one
+   *  direction that matters. Absent ⇒ every batched ask resolves to null, which
+   *  is the fail-closed floor. */
   readonly getBatch?: (
     batch_id: string,
-  ) => Promise<{ readonly members: readonly unknown[] } | null>;
+  ) => Promise<{
+    readonly members: ReadonlyArray<{ readonly checkpoint_id?: unknown }>;
+    readonly current_ask_id?: string;
+  } | null>;
   /** IANA zone every `datetime` row renders in and NAMES. A function is read
    *  per ask, so the owner's zone setting applies without a restart. Absent ⇒
    *  the host's zone. */
@@ -175,8 +179,9 @@ const asRecord = (v: unknown): Record<string, unknown> =>
  *
  *  `arg_overrides` last: a hold the owner already edited through the link
  *  carries its edits there, and the card must show what will ACTUALLY run
- *  rather than what was originally proposed. */
-const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
+ *  rather than what was originally proposed. D-348 reads a held call's pins
+ *  through it too (`chain-signature.ts`). */
+export const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
   const raw = (checkpoint as { raw_op?: { op_args?: unknown } }).raw_op;
   const base = raw?.op_args !== undefined
     ? asRecord(raw.op_args)
@@ -284,9 +289,13 @@ export const heldCheckpointDetails = (
  *  normal ask because that's honestly out of current capacity"*):
  *
  *    - not a `gateway.preflight` ask — it holds no operation at all;
- *    - a MULTI-MEMBER batched ask — one `checkpoint_id` covers N members, so
- *      rendering "the" args would show one member's values as though they were
- *      the whole approval. The prose already enumerates a batch's items;
+ *    - an approval of several (a batch of an AI app's held calls, or a round's
+ *      gathered approval) with a member it cannot read: its rows are each
+ *      member's, and one missing would cover less than the yes runs. ⛔ Never
+ *      ONE member's rows: the ask's own `checkpoint_id` is one member, so
+ *      rendering it would show that member's values as the whole approval;
+ *    - a batched ask that is not its batch's live ask: a superseded version
+ *      lists fewer members than the batch now holds;
  *    - a held `foreach` step with items still to come — the same thing inside
  *      one checkpoint: its approval covers them all, and the prose lists them;
  *    - no `checkpoint_id`, an unknown checkpoint, a missing anchor, or a run no
@@ -310,24 +319,9 @@ export const createAskCardDetailResolver = (
     const zone = typeof deps.timeZone === 'function' ? deps.timeZone() : deps.timeZone;
     return zone ?? resolveDefaultTimeZone();
   };
-  return async (ask: PendingAsk): Promise<readonly ServerPendingAskDetail[] | null> => {
-    if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return null;
-    const batch_id = ask.handler_payload.batch_id;
-    if (batch_id !== undefined) {
-      // Fail closed on every uncertainty: a non-string id, no reader wired, a
-      // throwing or missing row, or more than one member.
-      if (typeof batch_id !== 'string' || batch_id.length === 0) return null;
-      if (deps.getBatch === undefined) return null;
-      let row: { readonly members: readonly unknown[] } | null;
-      try {
-        row = await deps.getBatch(batch_id);
-      } catch {
-        return null;
-      }
-      if (row === null || row.members.length !== 1) return null;
-    }
-    const checkpoint_id = ask.handler_payload.checkpoint_id;
-    if (typeof checkpoint_id !== 'string' || checkpoint_id.length === 0) return null;
+
+  /** One held call's rows, as its own ask shows them. */
+  const holdRows = async (checkpoint_id: string): Promise<readonly ServerPendingAskDetail[] | null> => {
     let checkpoint: Checkpoint | null;
     let anchor: AuditEntry | null;
     try {
@@ -361,4 +355,70 @@ export const createAskCardDetailResolver = (
     // D-336 (spec §52) — the rows the hold recorded for its ask are these, read by one rule.
     return heldCheckpointDetails(deps, zoneOf(), checkpoint);
   };
+  /** D-177 §N.15.9 — an approval of several held calls: each one's rows, read as its own ask's would
+   *  be, the rows every member shows alike once and the rest numbered by member. One member it cannot
+   *  read and it shows none: a list missing a member would say the approval covers less than it does. */
+  const severalRows = async (
+    checkpoint_ids: readonly unknown[],
+  ): Promise<readonly ServerPendingAskDetail[] | null> => {
+    if (checkpoint_ids.length < 2) return null;
+    const each: Array<readonly ServerPendingAskDetail[]> = [];
+    for (const checkpoint_id of checkpoint_ids) {
+      if (typeof checkpoint_id !== 'string' || checkpoint_id.length === 0) return null;
+      const rows = await holdRows(checkpoint_id);
+      if (rows === null || rows.length === 0) return null;
+      each.push(rows);
+    }
+    return gatheredDetailRows(each);
+  };
+  return async (ask: PendingAsk): Promise<readonly ServerPendingAskDetail[] | null> => {
+    // A round's gathered approval lists its members' holds (§N.15.9).
+    if (ask.handler_kind === PREFLIGHT_GATHERED_HANDLER_KIND) {
+      return severalRows(preflightAskHolds(ask).map((hold) => hold.checkpoint_id));
+    }
+    if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return null;
+    const batch_id = ask.handler_payload.batch_id;
+    if (batch_id !== undefined) {
+      // Fail closed on every uncertainty: a non-string id, no reader wired, a
+      // throwing or missing row, or an ask that is not the batch's live one.
+      if (typeof batch_id !== 'string' || batch_id.length === 0) return null;
+      if (deps.getBatch === undefined) return null;
+      let row: Awaited<ReturnType<NonNullable<AskCardDetailResolverDeps['getBatch']>>>;
+      try {
+        row = await deps.getBatch(batch_id);
+      } catch {
+        return null;
+      }
+      if (row === null || row.members.length === 0) return null;
+      // A batch records its live ask once that ask is raised (`setCurrentAsk`); until then it reads ''.
+      const live = row.current_ask_id;
+      if (typeof live === 'string' && live.length > 0 && live !== ask.ask_id) return null;
+      // An AI app's batch of several: each member holds its own call, read as a gathered
+      // approval's members are (the owner, 2026-11-10: "yes same fix there").
+      if (row.members.length > 1) return severalRows(row.members.map((member) => member.checkpoint_id));
+    }
+    const checkpoint_id = ask.handler_payload.checkpoint_id;
+    if (typeof checkpoint_id !== 'string' || checkpoint_id.length === 0) return null;
+    return holdRows(checkpoint_id);
+  };
+};
+
+/** D-177 §N.15.9 — the rows of an approval of several (a gathered approval, a batch): those every
+ *  member shows alike, once, then each member's others with its number before the label ("2 · To"),
+ *  as the approval's text lists them ("All 3 share", "2."). Every member's rows are shown, so the card
+ *  covers what the approval does.
+ *  A numbered label is named here (`askDetailLabel`): the card names only a label that is a bare
+ *  field name, and "2 · to" is not one. */
+export const gatheredDetailRows = (
+  each: ReadonlyArray<readonly ServerPendingAskDetail[]>,
+): ServerPendingAskDetail[] => {
+  const same = (a: ServerPendingAskDetail, b: ServerPendingAskDetail): boolean => a.label === b.label && a.value === b.value;
+  const shared = (each[0] ?? []).filter((row) => each.every((rows) => rows.some((other) => same(other, row))));
+  const rows: ServerPendingAskDetail[] = [...shared];
+  each.forEach((memberRows, index) => {
+    for (const row of memberRows) {
+      if (!shared.some((kept) => same(kept, row))) rows.push({ label: `${String(index + 1)} · ${askDetailLabel(row.label)}`, value: row.value });
+    }
+  });
+  return rows;
 };

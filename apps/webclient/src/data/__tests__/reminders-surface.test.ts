@@ -24,9 +24,9 @@ const view = (over: Partial<ReminderView> = {}): ReminderView => ({
 const target = (attrs: Record<string, string>, value?: string): HTMLElement =>
   ({ getAttribute: (k: string) => attrs[k] ?? null, ...(value !== undefined ? { value } : {}) }) as unknown as HTMLElement;
 
-const mount = (callers: ReminderCallers, browserZone = 'Europe/London') => {
+const mount = (callers: ReminderCallers, browserZone = 'Europe/London', now?: () => number) => {
   const render = vi.fn();
-  const surface = createRemindersSurface({ callers, actionAttr: 'data-act', render, browserZone: () => browserZone });
+  const surface = createRemindersSurface({ callers, actionAttr: 'data-act', render, browserZone: () => browserZone, ...(now ? { now } : {}) });
   return { surface, render };
 };
 
@@ -39,6 +39,47 @@ describe('reminderWallClockValue', () => {
 });
 
 describe('the Reminders tab', () => {
+  it('previews a frozen preset, keeps wording, and saves the later repeated-hour instant even when the field looks unchanged', async () => {
+    let clock = Date.parse('2030-11-03T05:30:12.345Z');
+    let reminder = view({ at: clock });
+    const update = vi.fn<NonNullable<ReminderCallers['update']>>(async patch => {
+      reminder = { ...reminder, ...patch }; return { updated: true, reminder, message: 'Reminder changed.' };
+    });
+    const { surface } = mount({ list: async () => ({ reminders: [reminder], count: 1 }), update }, 'Asia/Tokyo', () => clock);
+    await surface.refresh(); const item = target({ 'data-reminder-id': 'rem_1' });
+    surface.handleAction('reminders-edit', item);
+    surface.handleAction('reminders-time-preset', target({ 'data-reminder-id': 'rem_1', 'data-reminder-time-preset': '1-hour' }));
+    expect(update).not.toHaveBeenCalled(); expect(surface.render()).toContain('GMT-5');
+    expect(surface.hasUnsavedChanges()).toBe(true); expect(surface.beforeLeave()).toBe(false);
+    surface.handleInput(target({ [REMINDERS_FIELD_ATTR]: 'text', 'data-reminder-id': 'rem_1' }, 'Call Dr Patel'));
+    surface.handleAction('reminders-time-preset', target({ 'data-reminder-id': 'rem_1', 'data-reminder-time-preset': '1-hour' }));
+    expect(surface.render()).toContain('Call Dr Patel');
+    clock += 120_000;
+    surface.handleAction('reminders-save', item);
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ reminder_id: 'rem_1', text: 'Call Dr Patel', at: Date.parse('2030-11-03T06:30:12.345Z') }));
+    expect(reminder.at).toBe(Date.parse('2030-11-03T06:30:12.345Z'));
+    surface.dispose();
+  });
+  it('uses a manual time after a preset and does not offer presets to managed or terminal reminders', async () => {
+    let reminder = view(); const update = vi.fn<NonNullable<ReminderCallers['update']>>(async patch => {
+      reminder = { ...reminder, ...patch }; return { updated: true, reminder, message: 'Reminder changed.' };
+    });
+    const { surface } = mount({ list: async () => ({ reminders: [reminder], count: 1 }), update }, 'Asia/Tokyo', () => AT);
+    await surface.refresh(); const item = target({ 'data-reminder-id': 'rem_1' });
+    surface.handleAction('reminders-edit', item);
+    surface.handleAction('reminders-time-preset', target({ 'data-reminder-id': 'rem_1', 'data-reminder-time-preset': '15-minutes' }));
+    surface.handleInput(target({ [REMINDERS_FIELD_ATTR]: 'at', 'data-reminder-id': 'rem_1' }, '2026-10-17T09:00'));
+    expect(surface.render()).toContain('aria-pressed="false"');
+    surface.handleAction('reminders-save', item);
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ reminder_id: 'rem_1', at: Date.parse('2026-10-17T13:00:00Z') }));
+    await vi.waitFor(() => expect(surface.render()).not.toContain('Choose a reminder time'));
+    for (const changed of [view({ managed_by: 'clock' }), view({ state: 'delivered' })]) {
+      reminder = changed; await surface.refresh(); surface.handleAction('reminders-edit', item);
+      surface.handleAction('reminders-time-preset', target({ 'data-reminder-id': 'rem_1', 'data-reminder-time-preset': 'tomorrow-9' }));
+      expect(surface.render()).not.toContain('Choose a reminder time');
+    }
+    surface.dispose(); surface.handleAction('reminders-time-preset', item); expect(update).toHaveBeenCalledTimes(1);
+  });
   it('keeps loaded pages after a failed Load more and retries the same cursor once', async () => {
     const rows = Array.from({ length: 50 }, (_, index) => view({ reminder_id: 'row-' + String(index).padStart(3, '0'), text: 'Loaded reminder ' + index }));
     const cursor = { at: AT, reminder_id: rows.at(-1)!.reminder_id };
@@ -361,5 +402,51 @@ describe('addressed reminder details', () => {
     expect(surface.render()).not.toContain('Edit reminder');
     expect(surface.render()).not.toContain('reminders-cancel');
     surface.dispose();
+  });
+});
+
+describe('retained reminder history search', () => {
+  it('searches the requested status and returns an exact reminder to its retained filters and result rows', async () => {
+    const finished = view({ reminder_id: 'rem_finished', state: 'delivered', delivered_at: AT, text: 'Clinic history' });
+    const list = vi.fn<NonNullable<ReminderCallers['list']>>(async args => args.page?.state
+      ? { reminders: [finished], count: 1, page: { state: args.page.state, matched_count: 1, next_cursor: null } }
+      : { reminders: [view()], count: 1 });
+    const get = vi.fn<NonNullable<ReminderCallers['get']>>(async () => ({ reminder: finished }));
+    const { surface } = mount({ list, get }); await surface.refresh();
+    surface.handleInput(target({ [REMINDERS_FIELD_ATTR]: 'query' }, 'clinic'));
+    surface.handleChange(target({ [REMINDERS_FIELD_ATTR]: 'status' }, 'all'));
+    surface.handleAction('reminders-apply', target({})); await surface.whenLoaded();
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ page: { state: 'all', query: 'clinic' } }));
+    expect(surface.render()).toContain('Matching reminders'); expect(surface.render()).toContain('America/New_York');
+    surface.handleAction('reminders-open', target({ 'data-reminder-id': 'rem_finished' })); await surface.whenLoaded();
+    expect(get).toHaveBeenCalledExactlyOnceWith({ reminder_id: 'rem_finished' }); expect(surface.detailId()).toBe('rem_finished');
+    surface.handleAction('reminders-back', target({})); await surface.whenLoaded();
+    expect(surface.detailId()).toBeUndefined(); expect(surface.render()).toContain('value="clinic"');
+    expect(surface.render()).toContain('value="all" selected'); expect(surface.render()).toContain('Clinic history');
+    expect(list).toHaveBeenCalledTimes(2); surface.dispose();
+  });
+
+  it('keeps a newer status search when the earlier history query settles late', async () => {
+    let release!: (value: ReminderListResult) => void;
+    const finished = view({ state: 'cancelled', text: 'Clinic cancellation' });
+    const list = vi.fn<NonNullable<ReminderCallers['list']>>(async args => args.page?.state === 'all'
+      ? new Promise(done => { release = done; })
+      : args.page?.state === 'cancelled' ? { reminders: [finished], count: 0, page: { state: 'cancelled', matched_count: 1, next_cursor: null } }
+      : { reminders: [], count: 0 });
+    const { surface } = mount({ list }); await surface.refresh();
+    surface.handleChange(target({ [REMINDERS_FIELD_ATTR]: 'status' }, 'all')); surface.handleAction('reminders-apply', target({}));
+    const older = surface.whenLoaded();
+    surface.handleChange(target({ [REMINDERS_FIELD_ATTR]: 'status' }, 'cancelled')); surface.handleAction('reminders-apply', target({})); await surface.whenLoaded();
+    release({ reminders: [view({ text: 'Stale history' })], count: 1, page: { state: 'all', matched_count: 1, next_cursor: null } }); await older;
+    expect(surface.render()).toContain('Clinic cancellation'); expect(surface.render()).not.toContain('Stale history'); surface.dispose();
+  });
+
+  it('requires history acknowledgement but preserves waiting-list compatibility on an older server', async () => {
+    const { surface } = mount({ list: async () => ({ reminders: [view()], count: 1, page: { matched_count: 1, next_cursor: null } }) });
+    await surface.refresh(); surface.handleChange(target({ [REMINDERS_FIELD_ATTR]: 'status' }, 'delivered'));
+    surface.handleAction('reminders-apply', target({})); await surface.whenLoaded();
+    expect(surface.render()).toContain('Update your Recued server'); expect(surface.render()).not.toContain('No reminders match');
+    surface.handleChange(target({ [REMINDERS_FIELD_ATTR]: 'status' }, 'pending')); surface.handleAction('reminders-apply', target({})); await surface.whenLoaded();
+    expect(surface.render()).toContain('Call the dentist'); expect(surface.render()).not.toContain('Update your Recued server'); surface.dispose();
   });
 });

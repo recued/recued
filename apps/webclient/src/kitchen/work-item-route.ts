@@ -16,6 +16,8 @@ interface Editor {
 }
 
 export const KITCHEN_WORK_ITEM_ATTR = 'data-recued-kitchen-work';
+/** D-402 slice A4 — what to look at first in a draft Recued compiled (`KitchenImportDraft.notes`). */
+export const KITCHEN_WORK_ITEM_NOTES_ATTR = 'data-recued-kitchen-work-notes';
 
 export interface WorkItemEditorHooks {
   /** The recipe changed: keep it as work in progress. */
@@ -87,8 +89,12 @@ export const mountKitchenWorkItemRoute = (options: WorkItemRouteOptions): Editor
   discard.className = 'kitchen-work-action';
   discard.innerHTML = renderActionLabel('delete', 'Discard');
   header.append(heading, meta, discard);
+  // D-402 slice A4 — a draft Recued compiled says what to look at before it runs, as a draft made
+  // from a kept browser flow does (W4).
+  const notes = doc.createElement('ul');
+  notes.setAttribute(KITCHEN_WORK_ITEM_NOTES_ATTR, ''); notes.hidden = true;
   const body = doc.createElement('div');
-  host.append(header, body);
+  host.append(header, notes, body);
   options.root.append(host);
 
   let disposed = false;
@@ -205,6 +211,10 @@ export const mountKitchenWorkItemRoute = (options: WorkItemRouteOptions): Editor
       options.onKind?.(result.kind);
       heading.textContent = result.title;
       what.textContent = `${kindWord(result.kind)} in progress · `;
+      for (const text of result.notes ?? []) {
+        const note = doc.createElement('li'); note.textContent = text; notes.append(note);
+      }
+      notes.hidden = (result.notes ?? []).length === 0;
       autosave = startAutosave(result.kind, result);
       showStatus({ state: 'idle' });
       discard.disabled = false;

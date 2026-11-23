@@ -12,24 +12,31 @@ type ScheduleRef = Pick<PromptSchedule, 'schedule_id' | 'session_id'>;
  *  carry-on turn showed nothing waiting on the schedule and left Run now open, so a second run
  *  could make the write again. A turn the owner typed in the same conversation is the owner's, not
  *  the schedule's. Each lookup goes by the turn (`chat_prompt_occurrences_turn`). */
-export const scheduleTurnSql = (session: string, turn: string): string => `(EXISTS (SELECT 1 FROM chat_prompt_occurrences o
+export const scheduleTurnSql = (session: string, turn: string): string => `(EXISTS (SELECT 1 FROM chat_prompt_occurrences o INDEXED BY chat_prompt_occurrences_turn
       WHERE o.schedule_id=@schedule_id AND o.session_id=${session} AND o.turn_id=${turn})
-    OR EXISTS (SELECT 1 FROM chat_held_result_turns h JOIN chat_prompt_occurrences o ON o.turn_id=h.origin_turn_id
+    OR EXISTS (SELECT 1 FROM chat_held_result_turns h JOIN chat_prompt_occurrences o INDEXED BY chat_prompt_occurrences_turn ON o.turn_id=h.origin_turn_id
       WHERE o.schedule_id=@schedule_id AND h.session_id=${session} AND ${turn} IN (h.turn_id, h.into_turn_id)))`;
 
-const workRows = (db: Database.Database, schedule: ScheduleRef) => ({
+/** A single occurrence and the continuation turns that carry it on. */
+export const promptOccurrenceTurnSql = (session: string, turn: string): string => `(${session}=@session_id AND
+  (${turn}=@origin_turn_id OR EXISTS (SELECT 1 FROM chat_held_result_turns h WHERE h.session_id=@session_id
+    AND h.origin_turn_id=@origin_turn_id AND ${turn} IN (h.turn_id,h.into_turn_id))))`;
+const member = (session: string, turn: string, origin?: string) => origin === undefined ? scheduleTurnSql(session, turn) : promptOccurrenceTurnSql(session, turn);
+const bindings = (schedule: ScheduleRef, origin?: string) => ({ session_id: schedule.session_id, schedule_id: schedule.schedule_id, origin_turn_id: origin ?? null });
+
+const workRows = (db: Database.Database, schedule: ScheduleRef, origin?: string) => ({
   plans: db.prepare(`SELECT p.plan_id, p.turn_id, p.consumed_at, p.execution_status, p.execution_turn_id, p.execution_updated_at
     FROM chat_plans p WHERE p.session_id=@session_id AND p.status='approved'
       AND (p.consumed_at IS NULL OR p.execution_status IN ('running','held'))
-      AND ${scheduleTurnSql('p.session_id', 'p.turn_id')}
-    ORDER BY p.created_at, p.plan_id`).all({ session_id: schedule.session_id, schedule_id: schedule.schedule_id }) as Array<{
+      AND ${member('p.session_id', 'p.turn_id', origin)}
+    ORDER BY p.created_at, p.plan_id`).all(bindings(schedule, origin)) as Array<{
       plan_id: string; turn_id: string; consumed_at: number | null; execution_status: string | null;
       execution_turn_id: string | null; execution_updated_at: number | null }>,
   calls: db.prepare(`SELECT m.message_id, m.turn_id, m.metadata_blob FROM chat_messages m
     WHERE m.session_id=@session_id AND m.role='tool' AND json_valid(m.metadata_blob)
       AND json_extract(m.metadata_blob,'$.tool_call.state') IN ('running','held')
-      AND ${scheduleTurnSql('m.session_id', 'm.turn_id')}
-    ORDER BY m.message_id`).all({ session_id: schedule.session_id, schedule_id: schedule.schedule_id }) as Array<{
+      AND ${member('m.session_id', 'm.turn_id', origin)}
+    ORDER BY m.message_id`).all(bindings(schedule, origin)) as Array<{
       message_id: string; turn_id: string; metadata_blob: string | null }>,
 });
 
@@ -41,14 +48,15 @@ export const readPromptScheduleOutcome = async (
   db: Database.Database,
   schedule: ScheduleRef & Pick<PromptSchedule, 'last_turn_id' | 'last_status'>,
   readPlans: (session: string, turn: string) => Promise<ReadonlyArray<ChatPlanRecord>>,
+  origin?: string,
 ): Promise<Pick<PromptSchedule, 'last_outcome' | 'pending_approvals' | 'pending_work'>> => {
   const pending = db.prepare(`SELECT p.plan_id, p.message_id, COUNT(*) OVER () AS count
-    FROM chat_plans p WHERE p.status='proposed' AND ${scheduleTurnSql('p.session_id', 'p.turn_id')}
+    FROM chat_plans p WHERE p.status='proposed' AND ${member('p.session_id', 'p.turn_id', origin)}
     ORDER BY p.created_at, p.plan_id LIMIT 1`)
-    .get({ schedule_id: schedule.schedule_id }) as { plan_id: string; message_id: string | null; count: number } | undefined;
+    .get(bindings(schedule, origin)) as { plan_id: string; message_id: string | null; count: number } | undefined;
   const pending_approvals = pending ? { count: pending.count, plan_id: pending.plan_id,
     ...(pending.message_id ? { message_id: pending.message_id } : {}) } : null;
-  const active = workRows(db, schedule);
+  const active = workRows(db, schedule, origin);
   const recordCache = new Map<string, Promise<ReadonlyArray<ChatPlanRecord>>>();
   const recordsFor = (turn: string) => {
     let records = recordCache.get(turn);
@@ -88,8 +96,14 @@ export const readPromptScheduleOutcome = async (
   const turn = schedule.last_turn_id;
   if (!turn) return { last_outcome: schedule.last_status
     ? { status: schedule.last_status === 'completed' ? 'finished' : schedule.last_status } : null, pending_approvals, pending_work };
-  const records = await recordsFor(turn), messages = messageRows(turn);
-  const calls = messages.filter(message => message.role === 'tool')
+  const turns = origin === undefined ? [turn] : [turn, ...db.prepare(`SELECT DISTINCT p.turn_id FROM chat_plans p
+    WHERE ${promptOccurrenceTurnSql('p.session_id', 'p.turn_id')}`).all(bindings(schedule, origin)) as Array<{ turn_id: string }>]
+      .map(value => typeof value === 'string' ? value : value.turn_id);
+  const records = (await Promise.all([...new Set(turns)].map(recordsFor))).flat(), messages = messageRows(turn);
+  const toolMessages = origin === undefined ? messages : db.prepare(`SELECT m.message_id,m.role,m.metadata_blob FROM chat_messages m
+    WHERE m.role='tool' AND ${promptOccurrenceTurnSql('m.session_id', 'm.turn_id')} ORDER BY m.ts DESC,m.message_id DESC`)
+    .all(bindings(schedule, origin)) as ReturnType<typeof messageRows>;
+  const calls = toolMessages.filter(message => message.role === 'tool')
     .flatMap(message => { const call = chatToolCallFromMetadata(message.metadata_blob); return call ? [call] : []; });
   const answer = messages.find(message => message.role === 'assistant') ?? messages.find(message => message.role === 'user');
   const outcome = (status: PromptScheduleRunOutcome['status'], reason?: PromptScheduleRunOutcome['reason'], record?: ChatPlanRecord) => {

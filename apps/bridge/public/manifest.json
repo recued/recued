@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Recued Bridge",
-  "version": "0.0.8",
+  "version": "0.0.14",
   "description": "Requires Recued, the free app you run yourself: install it first at recued.com. Adds browser actions, notifications and approvals.",
   "minimum_chrome_version": "120",
 

@@ -37,13 +37,16 @@
  *  `send` constructs an RFC 5322 message (text/plain or
  *  multipart/alternative when body_html is supplied), base64url-
  *  encodes it as the `raw` field, and POSTs to
- *  `users/me/messages/send`. Sent messages land in the INBOX/SENT
+ *  `users/me/messages/send`. A message with files goes to the upload
+ *  address instead, as itself (`message/rfc822`), up to Gmail's 35 MiB
+ *  (2026-11-17). Sent messages land in the INBOX/SENT
  *  label automatically — the next inbound `history` tick picks
  *  them up via the existing ingest path. Status mapping:
- *  401 / 403 → MAIL_SEND_AUTH_FAILED, 4xx → MAIL_SEND_RECIPIENT_INVALID,
- *  5xx → MAIL_SEND_NETWORK_FAILED.
+ *  401 / 403 → MAIL_SEND_AUTH_FAILED, 413 → MAIL_SEND_MESSAGE_REFUSED,
+ *  4xx → MAIL_SEND_RECIPIENT_INVALID, 5xx → MAIL_SEND_NETWORK_FAILED.
  */
 
+import { randomUUID } from 'node:crypto';
 import { simpleParser } from 'mailparser';
 import type { AddressObject, ParsedMail } from 'mailparser';
 import { IngredientError } from '@recued/ingredients';
@@ -73,10 +76,12 @@ import {
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
   MAIL_AUTOMATIC_REPLY_HEADERS,
+  mailHeaderEncoded,
   mailHeaderText,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailSentReconciliationAttachmentPartFromBytes,
+  mailUploadDeadlineMs,
   classifyMailApiStatus,
   classifyOAuthFailure,
   createMailSyncOutcomeReporter,
@@ -173,6 +178,19 @@ export interface CreateGmailProviderOptions {
 }
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+/** D-127 follow-up (2026-11-17): a message with files goes to Gmail's upload
+ *  address, `multipart`: its metadata (`threadId`) in a JSON part, then the
+ *  message itself as `message/rfc822`. The metadata address takes `raw` inside
+ *  JSON, the message base64 again on top of its files' own base64, and its body
+ *  limit is not documented; the upload address's is. */
+const GMAIL_UPLOAD_SEND_URL =
+  'https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=multipart';
+
+/** The largest message the upload address takes, files included: the `maxSize`
+ *  Gmail's API discovery document gives `messages.send` (36700160, 35 MiB;
+ *  read 2026-11-17). A larger message is refused before it is sent up. */
+export const GMAIL_UPLOAD_MESSAGE_MAX_BYTES = 36_700_160;
 
 const LABEL_PRIORITY = ['INBOX', 'IMPORTANT', 'STARRED', 'SENT', 'DRAFT'] as const;
 const DELETED_LABEL = 'TRASH';
@@ -523,7 +541,7 @@ export const buildGmailRfc5322 = (
   if (msg.to.length > 0) headers.push(`To: ${mailHeaderText(msg.to.join(', '))}`);
   if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${mailHeaderText(msg.cc.join(', '))}`);
   if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${mailHeaderText(msg.bcc.join(', '))}`);
-  headers.push(`Subject: ${mailHeaderText(msg.subject)}`);
+  headers.push(`Subject: ${mailHeaderEncoded(msg.subject)}`);
   if (msg.reply_to) headers.push(`Reply-To: ${mailHeaderText(msg.reply_to)}`);
   if (msg.in_reply_to) headers.push(`In-Reply-To: ${mailHeaderText(msg.in_reply_to)}`);
   if (msg.references && msg.references.length > 0) {
@@ -1103,6 +1121,7 @@ export const createGmailProvider = (
   //   401 / 403  → MAIL_SEND_AUTH_FAILED   (recoverable: re-enroll), a 403
   //                 only when its reason is a credential's (`classifyMailApiStatus`)
   //   429, quota 403 → MAIL_SEND_NETWORK_FAILED (throttled: nothing sent)
+  //   413, or over the upload address's limit → MAIL_SEND_MESSAGE_REFUSED
   //   4xx other → MAIL_SEND_RECIPIENT_INVALID (typo / rejected addr)
   //   5xx        → MAIL_SEND_NETWORK_FAILED (transient)
   //
@@ -1190,21 +1209,65 @@ export const createGmailProvider = (
     return { source_id: await readDraftId(res, res.status), saved_at: savedAt, replaced: false };
   };
 
+  /** The request a message goes in: JSON with `raw` at the metadata address, or,
+   *  with files, the message itself at the upload address. */
+  const sendRequest = (msg: OutgoingMessage, rfc822: string): {
+    url: string; contentType: string; body: string; timeoutMs?: number;
+  } => {
+    // D-318 step 5 — a reply joins the sending mailbox's thread only when it
+    // names it (the headers and subject alone thread it for the recipient).
+    const metadata = msg.thread_id ? { threadId: msg.thread_id } : {};
+    if ((msg.attachments ?? []).length === 0) {
+      return {
+        url: `${GMAIL_API_BASE}/messages/send`,
+        contentType: 'application/json',
+        body: JSON.stringify({ raw: base64UrlEncode(rfc822), ...metadata }),
+      };
+    }
+    const bytes = Buffer.byteLength(rfc822, 'utf-8');
+    if (bytes > GMAIL_UPLOAD_MESSAGE_MAX_BYTES) {
+      // The message, not a recipient: sent again, it is refused again.
+      throw new IngredientError(
+        'MAIL_SEND_MESSAGE_REFUSED',
+        `The message is ${(bytes / 1_048_576).toFixed(1)} MB with its files, and Gmail takes `
+          + `up to ${(GMAIL_UPLOAD_MESSAGE_MAX_BYTES / 1_048_576).toFixed(0)} MB, so it was not sent. `
+          + 'Send fewer or smaller files.',
+        { kind: 'gmail', slug: opts.slug, not_sent: true,
+          message_bytes: bytes, max_bytes: GMAIL_UPLOAD_MESSAGE_MAX_BYTES },
+      );
+    }
+    const boundary = `recued_upload_${randomUUID()}`;
+    return {
+      url: GMAIL_UPLOAD_SEND_URL,
+      contentType: `multipart/related; boundary=${boundary}`,
+      body: [
+        `--${boundary}`,
+        'Content-Type: application/json; charset=UTF-8',
+        '',
+        JSON.stringify(metadata),
+        `--${boundary}`,
+        'Content-Type: message/rfc822',
+        '',
+        rfc822,
+        `--${boundary}--`,
+      ].join('\r\n'),
+      timeoutMs: mailUploadDeadlineMs(bytes),
+    };
+  };
+
   const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
     const sentAt = nowOf();
     const rfc822 = buildGmailRfc5322(msg, sentAt);
-    const raw = base64UrlEncode(rfc822);
-    const url = `${GMAIL_API_BASE}/messages/send`;
+    const request = sendRequest(msg, rfc822);
 
-    const post = async (token: string | undefined) => fetcher(url, {
+    const post = async (token: string | undefined) => fetcher(request.url, {
       method: 'POST',
       headers: {
         ...oauthAuthorizationHeaders(token),
-        'Content-Type': 'application/json',
+        'Content-Type': request.contentType,
       },
-      // D-318 step 5 — a reply joins the sending mailbox's thread only when it
-      // names it (the headers and subject alone thread it for the recipient).
-      body: JSON.stringify({ raw, ...(msg.thread_id ? { threadId: msg.thread_id } : {}) }),
+      body: request.body,
+      ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
     });
 
     let res = await post(await ensureToken(false));
@@ -1241,6 +1304,14 @@ export const createGmailProvider = (
         throw new IngredientError(
           'MAIL_SEND_NETWORK_FAILED',
           `Gmail throttled the send (${res.status}): ${text.slice(0, 200)}`,
+          detail,
+        );
+      }
+      // Too large: the message, not a recipient. Sent again, it is refused again.
+      if (res.status === 413) {
+        throw new IngredientError(
+          'MAIL_SEND_MESSAGE_REFUSED',
+          `Gmail refused the message as too large (${res.status}): ${text.slice(0, 200)}`,
           detail,
         );
       }

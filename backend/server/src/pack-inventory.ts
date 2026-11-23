@@ -524,6 +524,10 @@ export interface InstalledPackRow {
   pack_slug: string;
   version: number;
   publisher?: string;
+  /** A Records pack's own slug, when its row is keyed by its generated `records-<hash>` id (the
+   *  Records coordinator writes both). Read by {@link listInstalledPacks}, so "is it installed"
+   *  can match either name (D-404, 2026-11-18: chat offered Body signals while it was installed). */
+  authored_pack_slug?: string;
 }
 
 /** Enumerate EVERY `installed_pack` inventory row — bundled AND
@@ -557,10 +561,12 @@ export const listInstalledPacks = (store: ContractStore): InstalledPackRow[] => 
     const version = parsePackVersion(row.value.version);
     if (version === null) continue; // corrupt/migrated version → skip
     const publisher = readPublisher(row.value.publisher);
+    const authored = typeof row.value.authored_pack_slug === 'string' ? row.value.authored_pack_slug.trim() : '';
     out.push({
       pack_slug: slug,
       version,
       ...(publisher !== undefined ? { publisher } : {}),
+      ...(authored.length > 0 && authored !== slug ? { authored_pack_slug: authored } : {}),
     });
   }
   return out;

@@ -171,39 +171,39 @@ export const LAUNCH_WIZARD_STEP_COPY: Readonly<
   Record<LaunchWizardStepId, { title: string; summary: string }>
 > = {
   profile_check: {
-    title: 'Check who can reach your server',
+    title: 'Public access',
     summary:
-      'Reception is for people who have no account, so your server has to be reachable from the internet. Recued checks this, and offers to change it if it is not.',
+      'Review public access before sharing. You can prepare disabled links without changing who can reach your server.',
   },
   reception_page: {
-    title: 'Set up your Reception page',
+    title: 'Your page',
     summary:
-      'Your front door at /reception/. It shows who you are, how to reach you, and how soon you usually answer. Recued fills it in from your profile. Add a tagline and change anything you like.',
+      'Your front door at /reception/. Set the name, contact options and links people will see.',
   },
   scheduling_link: {
-    title: 'Add a scheduling link',
+    title: 'Bookings',
     summary:
       'People pick a time from when you are free. It starts at 30 minutes. Set the times you are around.',
   },
   intake_form: {
-    title: 'Add an intake form',
+    title: 'Intake form',
     summary:
-      'This starts from the ready-made Client inquiry form. Each answer becomes a promise you have made. Change the boxes before you carry on.',
+      'Choose the fields visitors can send and where approved answers go. Review the form before continuing.',
   },
   drop_link: {
-    title: 'Add a drop link',
+    title: 'File uploads',
     summary:
       'A “send me a file” link. Files go straight to your server, and only the kinds you allow. You can skip this if you do not need it yet.',
   },
   view_as_visitor: {
-    title: 'Review as a visitor',
+    title: 'Visitor preview',
     summary:
       'Before anything goes live, see exactly what a visitor would see for each link: what shows, what Recued strips out, and the privacy checks.',
   },
   share: {
-    title: 'Share your links',
+    title: 'Create links',
     summary:
-      'Every link you switched on gets a card you can copy into email, a text, or Slack. Send them, and your Reception is live.',
+      'Create the reviewed links, then open each endpoint to enable it and copy its share card. New links start disabled.',
   },
 };
 

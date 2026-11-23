@@ -30,6 +30,7 @@ import {
 } from './http.js';
 import type {
   ClosePrompt,
+  DeleteMessage,
   FetchedMedia,
   InteractiveTransport,
   MediaRef,
@@ -366,6 +367,16 @@ export const createTelegramTransport = (
     return handleTelegramEditOutcome(outcome);
   };
 
+  /** D-335 slice Z follow-up (2026-11-17) — `deleteMessage`, the owner's own
+   *  message in their private chat with the bot: a sign-in code, once taken.
+   *  Its answer is `{ ok: true, result: true }`, no message. */
+  const deleteMessage = async (ref: DeleteMessage): Promise<TransportSendResult> =>
+    handleTelegramOutcome(await post(
+      'deleteMessage',
+      { chat_id: ref.recipient, message_id: Number(ref.vendor_message_id) },
+      ref.token,
+    ));
+
   const fetchMedia = async (ref: MediaRef, token: string): Promise<FetchedMedia> => {
     if (ref.remote_id === undefined) {
       throw new Error('Telegram media reference is missing file_id');
@@ -515,5 +526,6 @@ export const createTelegramTransport = (
     parseInboundChoice,
     parseCallbackConversationId,
     closePrompt,
+    deleteMessage,
   };
 };

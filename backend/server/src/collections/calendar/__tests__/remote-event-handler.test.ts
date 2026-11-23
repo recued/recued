@@ -75,6 +75,20 @@ it('writes only supported fields to the original calendar and preserves event, g
   expect(create).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
 });
 
+it('D-407 — takes a private marking and an alert away: neither is read as already written', async () => {
+  // The snapshot the owner reviews carries neither field; read there, both looked done and nothing was sent (live, Outlook).
+  remote = { ...remote, event: { ...remote.event, marked_private: true } }; await collection.applyVerifiedUpsert(remote);
+  context = { ...context, editable_fields: [...context.editable_fields, 'marked_private', 'alert_minutes'] };
+  await updateOwnerCalendarEvent(deps(), await request({ marked_private: false, alert_minutes: null }));
+  expect(provider.updateEvent).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ marked_private: false, reminders: [] }) }));
+  expect(collection.table.get('event-1')?.event.marked_private).not.toBe(true);
+  expect(collection.table.get('event-1')?.event.reminders ?? []).toEqual([]);
+  // Once written, the same edit is what the calendar already says: recovered as a read, not sent again.
+  vi.mocked(provider.updateEvent).mockClear();
+  await updateOwnerCalendarEvent(deps(), await request({ marked_private: false, alert_minutes: null }));
+  expect(provider.updateEvent).not.toHaveBeenCalled();
+});
+
 it('refuses calendar switching and fields the live provider cannot preserve', async () => {
   const input = await request();
   for (const patch of [{ calendar_id: 'local' }, { slug: 'local' }, { attendees: [] }, { is_all_day: true }, { recurrence_rule: 'FREQ=DAILY' }]) {
@@ -125,7 +139,9 @@ it('recovers a lost remote acknowledgement as a read without resending the updat
   const input = await request();
   const update = provider.updateEvent;
   vi.mocked(provider.updateEvent).mockImplementationOnce(async args => {
-    args.before_send?.(); remote = { ...remote, etag: '"e2"', event: { ...remote.event, ...args.patch, updated_at: NOW + 1 } };
+    // This edit renames it; a patch's `marked_private: false` is a field to clear, never an event's own value.
+    const { marked_private: _marking, ...patch } = args.patch;
+    args.before_send?.(); remote = { ...remote, etag: '"e2"', event: { ...remote.event, ...patch, updated_at: NOW + 1 } };
     throw new CalendarAdapterError('io_error', 'Acknowledgement lost');
   });
   await expect(updateOwnerCalendarEvent(deps(), input)).rejects.toMatchObject({ code: 'upstream_error' });

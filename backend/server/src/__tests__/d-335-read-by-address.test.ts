@@ -53,7 +53,7 @@ describe('D-335 slice AA — a read names its page by address', () => {
     expect(requests.map((r) => [r.action, r.args.page])).toEqual([['list_tabs', undefined], ['inspect', ADA.page]]);
     // The answer names the tab it read, so the model can go on by its handle.
     expect(result).toMatchObject({ page: ADA.page, url: ADA.url, title: ADA.title });
-    expect(String(result!.outline)).toContain('[Babbage](e5)');
+    expect(String(result!.outline)).toContain('[link: Babbage](e5)');
   });
 
   it('matched as a batch step\'s url: www, a trailing slash and the fragment aside', async () => {

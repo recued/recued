@@ -7,7 +7,7 @@
  *  the contact store. */
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { isWriteRuleTool, tier1CallDetails, tier1CallTitle, tier1WriteStaysInRecued, writeRuleScopeOf, type ExecutionSource, type SituationRef } from '@recued/contracts';
+import { isWriteRuleTool, qualifyWorkEntityId, tier1CallDetails, tier1CallTitle, tier1WriteStaysInRecued, writeRuleScopeOf, type ExecutionSource, type SituationRef } from '@recued/contracts';
 import { buildChatTier1Handlers, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { withTurnZone } from '../chat-clock.js';
 import { checkEpisodeRecord, EPISODE_RECORD_OP_ID } from '../episode-record-tool.js';
@@ -43,10 +43,13 @@ const harness = (granted: (source: ExecutionSource, op: string) => boolean = () 
   const dispatchers = createWorkEntityDispatchers({ store: work, resolver: createWorkEntityResolver(work), now: () => NOW });
   const history = createProactiveHistoryStore(db, createProactiveProposalStore(db));
   const contacts = createContactStore(db); const calendar = createCalendarTable({ db, slug: 'local' });
+  const announced: string[][] = [];
   const closing = createClosingRecords({ db, history, work, calendars: () => [{ slug: 'local', table: calendar }], contacts,
-    timeZone: () => 'Europe/Dublin', now: () => NOW });
+    timeZone: () => 'Europe/Dublin', now: () => NOW,
+    onRecorded: (episodes) => { announced.push(episodes.map(episode => episode.title)); } });
   const deps = {
     getClosingRecords: () => closing,
+    getWorkEntityCrudDeps: () => ({ store: work, dispatchers }),
     getOpAdmissionGate: () => ({ isFrozenByPause: () => false, isOwnerGoverned: () => true, isOpGranted: (source: ExecutionSource, op?: string) => op === undefined || granted(source, op) }),
     now: () => NOW,
   } as unknown as ChatToolHandlerDeps;
@@ -61,8 +64,46 @@ const harness = (granted: (source: ExecutionSource, op: string) => boolean = () 
   const callRef: SituationRef = { collection: 'calendar', id: `local:${call.record_id}` };
   const spanish = work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner:user-1' }, name: 'Spanish' }, NOW - 86_400_000);
   const spanishRef: SituationRef = { collection: 'asset', id: spanish.id };
-  return { history, dispatchers, deps, ana, callRef, spanishRef, record: buildChatTier1Handlers(deps)['episode.record']! };
+  return { history, work, dispatchers, deps, ana, callRef, spanishRef, announced, record: buildChatTier1Handlers(deps)['episode.record']! };
 };
+
+describe('D-343 — a day closed from a messenger or the chat refreshes an open Yours or Today', () => {
+  it('announces the records once they are written, and nothing for a day refused', async () => {
+    const f = harness();
+    await f.record({ day: '2026-11-07', ...DUBLIN, records: [{ title: 'Spanish', outcome: 'done', item: f.spanishRef },
+      { title: 'Went for a walk', outcome: 'done' }] }, approved);
+    expect(f.announced).toEqual([['Spanish', 'Went for a walk']]);
+    // A day not yet begun is refused before anything is written, so nothing is announced.
+    const refused = await f.record({ day: '2026-11-09', ...DUBLIN, records: [{ title: 'Early', outcome: 'done' }] }, approved);
+    expect(refused).toMatchObject({ ok: false });
+    expect(f.announced).toHaveLength(1);
+  });
+});
+
+describe('D-343 — a record cites a pursuit by the id work.search gives', () => {
+  it('reads it as the pursuit, and keeps its local ref', async () => {
+    // The owner's day, 2026-11-14: a record citing a pursuit by its qualified id was refused.
+    const f = harness();
+    const qualified = qualifyWorkEntityId({ kind: 'asset', source_id: 'recued.asset', local_id: f.spanishRef.id });
+    const day = { day: '2026-11-06', ...DUBLIN, records: [{ title: 'Spanish', outcome: 'done', item: { collection: 'asset', id: qualified } }] };
+    expect(await checkEpisodeRecord(f.deps, day, inChat)).toBeNull();
+    expect(await f.record(day, approved)).toMatchObject({ ok: true, result: { recorded: 1 } });
+    expect(f.history.episodes()[0]).toMatchObject({ subjects: [f.spanishRef] });
+  });
+});
+
+describe('D-343 — recording a task as done ticks it off, with that switch', () => {
+  it('refuses, before the owner is asked, a caller who may record the day but not tick tasks off', async () => {
+    const f = harness((_source, op) => op !== 'core.work-entity.task.mark-done');
+    const task = (await f.dispatchers.taskCreate({ title: 'Book the dentist' } as never)).task;
+    const day = { day: '2026-11-06', ...DUBLIN, records: [{ title: 'Booked the dentist', outcome: 'done', item: { collection: 'task', id: task.id } }] };
+    expect(await checkEpisodeRecord(f.deps, day, inChat)).toMatchObject({ ok: false, detail: expect.stringContaining('needs "Mark a task done"') });
+    // A skipped task ticks nothing off, so it needs no such switch.
+    const skipped = { ...day, records: [{ ...day.records[0]!, outcome: 'skipped' }] };
+    expect(await checkEpisodeRecord(f.deps, skipped, inChat)).toBeNull();
+    expect(f.work.readTask(task.id)?.done).toBe(false);
+  });
+});
 
 describe('D-343 slice 2 — the chat records a day in one call', () => {
   it('writes each thing done or skipped as the owner’s record, asked before the owner is', async () => {
@@ -80,9 +121,10 @@ describe('D-343 slice 2 — the chat records a day in one call', () => {
       { title: 'Went for a walk', outcome: 'done' },
     ] };
     // One ask, the day's checklist in the owner's words.
-    expect(tier1CallTitle('episode.record', day)).toBe('Record your day · Fri 6 Nov');
-    expect(tier1CallDetails('episode.record', day)).toEqual({ args: { Done: ['Did the call with Ana', 'Haircut, Ana cut it', 'Booked the dentist', 'Went for a walk'],
-      Skipped: ['Spanish'] } });
+    expect(tier1CallTitle('episode.record', day)).toBe('Record your day, Fri 6 Nov');
+    // Shown without the "did" its heading says; the record keeps the owner's words (below).
+    expect(tier1CallDetails('episode.record', day)).toEqual({ args: { Done: ['The call with Ana', 'Haircut, Ana cut it', 'Booked the dentist', 'Went for a walk'],
+      Skipped: ['Spanish'], 'Ticks off': ['Booked the dentist'] } });
     expect(await checkEpisodeRecord(f.deps, day, inChat)).toBeNull();
     expect(f.history.episodes()).toEqual([]);
     // It stays in Recued, and three approved days can become one standing rule for any day.
@@ -90,7 +132,12 @@ describe('D-343 slice 2 — the chat records a day in one call', () => {
     expect([isWriteRuleTool('episode.record'), writeRuleScopeOf('episode.record', day)]).toEqual([true, '']);
     expect(await f.record(day, approved)).toEqual({ ok: true, result: { recorded: 5, day: '2026-11-06', records: [
       { title: 'Did the call with Ana', outcome: 'done' }, { title: 'Haircut, Ana cut it', outcome: 'done' }, { title: 'Booked the dentist', outcome: 'done' },
-      { title: 'Spanish', outcome: 'skipped' }, { title: 'Went for a walk', outcome: 'done' }] } });
+      { title: 'Spanish', outcome: 'skipped' }, { title: 'Went for a walk', outcome: 'done' }], ticked_off: ['Booked the dentist'] } });
+    // The owner, 2026-11-14 — one approval for the day: the task recorded as done is ticked off by it.
+    expect(f.work.readTask(task.id)?.done).toBe(true);
+    // Friday closed on Saturday: done on Friday, at its last moment on the owner's clock (Dublin is UTC
+    // in November), not when the record was approved.
+    expect(f.work.readTask(task.id)?.completed_at).toBe(Date.parse('2026-11-07T00:00:00Z') - 1);
     const saved = new Map(f.history.episodes().map((episode) => [episode.title, episode]));
     expect(saved.size).toBe(5);
     for (const episode of saved.values()) {

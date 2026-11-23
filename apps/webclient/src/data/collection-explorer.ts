@@ -276,21 +276,21 @@ const renderStateBadge = (record: CollectionRecord, stateField: StateField | und
 };
 
 /** Mail keeps the familiar sender / subject / preview reading order. */
-const renderMailRow = (record: CollectionRecord, actionAttr: string): string => {
+const renderMailRow = (record: CollectionRecord, actionAttr: string, controls = '', disabled = false): string => {
   const hot = record.hot_fields;
   const sent = hot.direction === 'outbound';
   const addresses = Array.isArray(hot.to) ? hot.to.filter(value => typeof value === 'string').join(', ') : '';
   const sender = sent ? `To ${addresses || 'unknown recipient'}` : typeof hot.from === 'string' && hot.from ? hot.from : 'Unknown sender';
   const subject = typeof hot.subject === 'string' && hot.subject ? hot.subject : '(No subject)';
   const preview = record.body_inline?.slice(0, 400).replace(/\s+/g, ' ').trim().slice(0, 160) ?? '';
-  const unread = !sent && hot.is_read === false;
-  return `<li class="col-explorer-row">
-    <button type="button" class="col-explorer-row-btn col-explorer-mail-row${unread ? ' is-unread' : ''}" ${actionAttr}="${COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}">
+  const unread = !sent && (hot.is_read === false || hot.is_read === 0);
+  return `<li class="col-explorer-row${controls ? ' col-explorer-row--controlled' : ''}">${controls}
+    <button type="button"${disabled ? ' disabled' : ''} class="col-explorer-row-btn col-explorer-mail-row${unread ? ' is-unread' : ''}" ${actionAttr}="${COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}">
       <span class="col-explorer-mail-sender">${e(sender)}</span>
       <time class="col-explorer-mail-date">${e(formatClientDateTime(record.received_at))}</time>
       <span class="col-explorer-mail-subject">${e(subject)}</span>
       ${preview ? `<span class="col-explorer-mail-preview">${e(preview)}</span>` : ''}
-      <span class="col-explorer-mail-status">${sent ? 'Sent' : 'Received'}${unread ? ' · Unread' : ''}${hot.has_attachments === true ? ' · Attachments' : ''}${typeof hot.folder === 'string' && hot.folder && hot.folder.toLowerCase() !== (sent ? 'sent' : 'received') ? ` · ${e(hot.folder)}` : ''}</span>
+      <span class="col-explorer-mail-status">${sent ? 'Sent' : 'Received'}${unread ? ' · Unread' : ''}${hot.is_flagged === true || hot.is_flagged === 1 ? ' · Starred' : ''}${hot.has_attachments === true || hot.has_attachments === 1 ? ' · Attachments' : ''}${typeof hot.folder === 'string' && hot.folder && hot.folder.toLowerCase() !== (sent ? 'sent' : 'received') ? ` · ${e(hot.folder)}` : ''}</span>
     </button>
   </li>`;
 };
@@ -602,7 +602,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     body = `<p class="col-explorer-empty">${e(props.emptyCopy ?? 'No records in this collection yet.')}</p>`;
   } else {
     body = `<ul class="col-explorer-list" role="list">${props.records
-      .map((r) => props.collection === 'mail' ? renderMailRow(r, props.actionAttr) : renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr, props.rowControlHtml?.(r), props.disabled, props.rowOpenAction, props.rowSecondaryHtml?.(r)))
+      .map((r) => props.collection === 'mail' ? renderMailRow(r, props.actionAttr, props.rowControlHtml?.(r), props.disabled) : renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr, props.rowControlHtml?.(r), props.disabled, props.rowOpenAction, props.rowSecondaryHtml?.(r)))
       .join('')}</ul>`;
   }
 

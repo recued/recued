@@ -139,9 +139,11 @@ export interface MountDevicesPageOptions {
 export interface DevicesPageMount {
   /** Re-fetch the roster + re-render. Idempotent. */
   refresh(): Promise<void>;
-  /** A user-confirmed revoke awaiting its command or current roster refresh.
+  /** A rename awaiting its command, or a user-confirmed revoke awaiting its
+   *  command or current roster refresh.
    *  Initial, broadcast, manual, and retry reads alone are excluded. */
   hasInFlightWork(): boolean;
+  pendingOperation(): 'rename' | 'revoke' | null;
   /** Synchronous teardown — clears host + detaches the click
    *  listener. */
   dispose(): void;
@@ -325,7 +327,7 @@ export const mountDevicesPage = (
     if (disposed) return;
     // A refresh mid-rename must not take the typed name with it.
     const typed = renameInput();
-    if (typed !== null && state.renamingInstanceId !== undefined) {
+    if (typed !== null && typed.getAttribute('data-instance-id') === state.renamingInstanceId) {
       state = { ...state, renameDraft: typed.value };
     }
     const pageState: DevicesPageState = {
@@ -405,12 +407,16 @@ export const mountDevicesPage = (
       || action === 'rename-device' || action === 'save-rename' || action === 'cancel-rename';
     const restoreReceipt = owned && active.hasAttribute?.('data-device-revoke-success');
     const restoreRenameInput = owned && active.hasAttribute?.('data-rename-input');
+    const selection = restoreRenameInput ? renameSelection(active as HTMLInputElement) : undefined;
     setState(patch);
     if (!focusIsUnowned()) return;
     if (restoreRenameInput) {
-      focusRenameInput(false);
+      if (renameInput()) focusRenameInput(false, selection);
+      else if (!focusAction('rename-device', instanceId)) focusAction('refresh-devices');
     } else if (restoreAction) {
       if (focusAction(action, instanceId)) return;
+      if ((action === 'save-rename' || action === 'cancel-rename')
+        && focusAction('rename-device', instanceId)) return;
       if (action === 'retry-list') focusRecoveredRoster();
       else focusAction('refresh-devices');
     } else if (restoreReceipt) {
@@ -418,16 +424,21 @@ export const mountDevicesPage = (
     }
   };
 
-  /** Focus the open rename field, its text selected on first opening so
-   *  typing replaces the old name; after a refresh, the caret goes back to
-   *  the end. */
-  const focusRenameInput = (select: boolean): void => {
+  const renameSelection = (input: HTMLInputElement | null) => input === null
+    ? undefined
+    : { start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection };
+
+  /** Select the existing name on opening; preserve the current selection when
+   *  an asynchronous refresh or refusal replaces the field. */
+  const focusRenameInput = (select: boolean, selection?: ReturnType<typeof renameSelection>): void => {
     const input = renameInput();
     if (input === null) return;
     input.focus({ preventScroll: true });
     if (select) {
       input.select?.();
       input.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    } else if (typeof selection?.start === 'number' && typeof selection.end === 'number') {
+      input.setSelectionRange?.(selection.start, selection.end, selection.direction ?? undefined);
     } else input.setSelectionRange?.(input.value.length, input.value.length);
   };
 
@@ -447,6 +458,7 @@ export const mountDevicesPage = (
     const rename = options.runPairRename;
     if (disposed || rename === undefined || state.renameSaving === true) return;
     if (state.renamingInstanceId !== instanceId) return;
+    const selection = renameSelection(renameInput());
     const typed = renameInput()?.value ?? state.renameDraft ?? '';
     const name = typed.trim();
     if (name.length === 0 || name.length > DEVICE_NAME_MAX_CHARS) {
@@ -454,29 +466,35 @@ export const mountDevicesPage = (
         renameDraft: typed,
         renameError: `Type a name of 1 to ${DEVICE_NAME_MAX_CHARS} characters.`,
       });
-      focusRenameInput(false);
+      focusRenameInput(false, selection);
       return;
     }
-    setState({ renameDraft: typed, renameSaving: true, renameError: undefined });
+    setStatePreservingFocus({ renameDraft: typed, renameSaving: true, renameError: undefined });
     focusAction('save-rename', instanceId);
     try {
       await rename({ instance_id: instanceId, display_name: name });
     } catch (err) {
       if (disposed) return;
-      setState({
+      const save = findAction('save-rename', instanceId);
+      const returnToField = save !== null && host.ownerDocument?.activeElement === save;
+      const currentSelection = renameSelection(renameInput());
+      setStatePreservingFocus({
         renameSaving: false,
         renameError: `Recued could not rename this device: ${humanizeRpcError(err)}`,
       });
-      focusRenameInput(false);
+      if (returnToField) focusRenameInput(false, currentSelection);
       return;
     }
     if (disposed) return;
     // Show the new name at once; the roster read confirms it.
-    setState({
+    setStatePreservingFocus({
       rows: state.rows.map((row) =>
         row.instance_id === instanceId ? { ...row, display_name: name } : row),
+      renamingInstanceId: undefined,
+      renameDraft: undefined,
+      renameSaving: false,
+      renameError: undefined,
     });
-    closeRename(instanceId);
     void refresh();
   };
 
@@ -727,7 +745,8 @@ export const mountDevicesPage = (
 
   return {
     refresh,
-    hasInFlightWork: () => !disposed && revokeInFlight,
+    hasInFlightWork: () => !disposed && (revokeInFlight || state.renameSaving === true),
+    pendingOperation: () => disposed ? null : state.renameSaving === true ? 'rename' : revokeInFlight ? 'revoke' : null,
     dispose: () => {
       if (disposed) return;
       disposed = true;

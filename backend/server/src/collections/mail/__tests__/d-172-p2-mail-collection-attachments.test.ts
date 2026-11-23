@@ -552,3 +552,37 @@ describe('⛔⛔ A TEMP ATTACHMENT IS SENT AND NOTHING DURABLE IS CREATED', () =
     cleanupRunScratch(theirs);
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// D-127 follow-up (2026-11-17) — a file over 3 MB goes
+// ────────────────────────────────────────────────────────────────
+
+describe('D-127 follow-up — a file over the old 3 MiB cap goes by email', () => {
+  it('a 5 MB file reaches the provider whole, with no warning', async () => {
+    const h = withHarness();
+    const bytes = Buffer.alloc(5 * 1024 * 1024, 0x6d);
+    const ref = await h.ingestFile(bytes, 'plans.pdf', 'application/pdf', 's-5mb');
+    const result = await h.collection.send({ ...baseInput, attachments: [ref] });
+    expect(h.stub.sendCalls[0]!.attachments).toHaveLength(1);
+    expect(Buffer.from(h.stub.sendCalls[0]!.attachments![0]!.bytes_b64, 'base64').equals(bytes)).toBe(true);
+    expect(result.warnings).toBeUndefined();
+  });
+
+  it('⛔ one file over 3 MiB is claimed by its envelope: reconciliation reads a file back only to 3 MiB', async () => {
+    // Claimed by its size, the reconciliation query is refused as malformed
+    // (`assertMailSentReconciliationQuery`), so the send could never be proven.
+    const h = withHarness();
+    const claimOf = (reconciliation_id: string) => h.db.prepare(
+      `SELECT proof_kind, attachment_sha256, attachment_size_bytes FROM ${MAIL_SEND_CLAIMS_TABLE} WHERE reconciliation_id = ?`,
+    ).get(reconciliation_id) as { proof_kind: string; attachment_sha256: string | null; attachment_size_bytes: number | null };
+
+    const atLimit = await h.ingestFile(Buffer.alloc(3 * 1024 * 1024, 0x6e), 'at.pdf', 'application/pdf', 's-at');
+    await h.collection.send({ ...baseInput, attachments: [atLimit], reconciliation_id: 'recon-at-limit' });
+    expect(claimOf('recon-at-limit')).toMatchObject({ proof_kind: 'attachment', attachment_size_bytes: 3 * 1024 * 1024 });
+
+    const over = await h.ingestFile(Buffer.alloc(3 * 1024 * 1024 + 1, 0x6f), 'over.pdf', 'application/pdf', 's-over-3');
+    await h.collection.send({ ...baseInput, attachments: [over], reconciliation_id: 'recon-over' });
+    expect(claimOf('recon-over')).toEqual({ proof_kind: 'envelope', attachment_sha256: null, attachment_size_bytes: null });
+    expect(h.stub.sendCalls[1]!.attachments).toHaveLength(1);
+  });
+});

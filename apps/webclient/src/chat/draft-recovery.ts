@@ -1,6 +1,10 @@
+import { copySelectedRecords } from './selected-records.js';
+import type { PreparedRecordLink } from '../data/record-link-insert.js';
 import type { ChatMessageAttachment, ChatModelSourceId } from '@recued/contracts';
 import type { ChatReplyDraft } from './quoted-replies.js';
 import type { ChatAssetContext } from './asset-context.js';
+import type { SelectedContactContext } from '../contacts/contact-context.js';
+import type { SelectedCalendarEventContext } from '../calendar/event-context.js';
 
 /** An unfinished upload needs an explicit file pick after pairing repair.
  * Only its label travels with the draft, never browser File objects or bytes. */
@@ -20,6 +24,9 @@ export interface ChatComposerRecoveryDraft {
   readonly attachments?: ChatMessageAttachment[];
   readonly interruptedUploads?: readonly ChatInterruptedUpload[];
   readonly assetContext?: ChatAssetContext;
+  readonly contactContext?: SelectedContactContext;
+  readonly calendarContext?: SelectedCalendarEventContext;
+  readonly selectedRecords?: readonly PreparedRecordLink[];
 }
 
 export interface ChatRouteRecoveryDraft extends ChatComposerRecoveryDraft {
@@ -32,7 +39,7 @@ export interface ChatRouteRecoveryDraft extends ChatComposerRecoveryDraft {
 
 export const hasComposerRecoveryDraft = (draft: ChatComposerRecoveryDraft): boolean =>
   draft.text.trim().length > 0 || draft.replyTo !== undefined || (draft.attachments?.length ?? 0) > 0
-  || (draft.interruptedUploads?.length ?? 0) > 0 || draft.assetContext !== undefined;
+  || (draft.interruptedUploads?.length ?? 0) > 0 || draft.assetContext !== undefined || draft.contactContext !== undefined || draft.calendarContext !== undefined || (draft.selectedRecords?.length ?? 0) > 0;
 
 export const copyComposerRecoveryDraft = (draft: ChatComposerRecoveryDraft): ChatComposerRecoveryDraft => ({
   text: draft.text, protected: draft.protected, modelSourceId: draft.modelSourceId,
@@ -41,6 +48,9 @@ export const copyComposerRecoveryDraft = (draft: ChatComposerRecoveryDraft): Cha
   ...(draft.attachments?.length ? { attachments: draft.attachments.map(file => ({ ...file })) } : {}),
   ...(draft.interruptedUploads?.length ? { interruptedUploads: draft.interruptedUploads.map(upload => ({ ...upload })) } : {}),
   ...(draft.assetContext ? { assetContext: { ...draft.assetContext, fileIds: [...draft.assetContext.fileIds] } } : {}),
+  ...(draft.contactContext ? { contactContext: { ...draft.contactContext } } : {}),
+  ...(draft.selectedRecords?.length ? { selectedRecords: copySelectedRecords(draft.selectedRecords) } : {}),
+  ...(draft.calendarContext ? { calendarContext: { ...draft.calendarContext } } : {}),
 });
 
 /** The recovery form owns the unload guard after Chat has been disposed. */
@@ -49,6 +59,9 @@ export const hasProtectedChatRecoveryDraft = (draft: ChatRouteRecoveryDraft | un
     composer.replyTo !== undefined || (composer.attachments?.length ?? 0) > 0
     || (composer.interruptedUploads?.length ?? 0) > 0
     || composer.assetContext !== undefined
+    || composer.contactContext !== undefined
+    || composer.calendarContext !== undefined
+    || (composer.selectedRecords?.length ?? 0) > 0
     || (composer.protected && composer.text.trim().length > 0);
   return draft !== undefined && (protectedWork(draft)
     || draft.parkedDrafts?.some(parked => protectedWork(parked.draft)) === true);

@@ -1,6 +1,7 @@
-import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, HOME_ASSISTANT_WRITER_SETUP, PROACTIVE_PROPOSAL_KINDS, PURSUIT_CLASS_ID, assetConditionHolds, assetDocumentDetails, isAssetDate, occasionNextDate, type Asset, type AssetClassPreset, type FileAttachmentSelection,
+import { ASSET_CHAT_CONVERSATION, BODY_CHAT_SENT_KEPT, BODY_CLASS_ID, BODY_SUMMARY_RECIPE_ID, WEARABLE_CHECK_RECIPE_ID, WEARABLE_CLASS_ID, BODY_MEASURE_FIELDS, BODY_RANGES_SETTING, isBodyGoalField, readBodyGoal, readBodyRanges, readAssetChatConversation, ASSET_DOCUMENT_DETAILS_ATTRIBUTE, ASSET_EXPECTED_PATTERNS, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_STATUSES, HOME_ASSISTANT_WRITER_SETUP, PROACTIVE_PROPOSAL_KINDS, PURSUIT_CLASS_ID, assetConditionHolds, assetDocumentDetails, isAssetDate, occasionIsPrivate, occasionNextDate, occasionWaitingForNext, type Asset, type OccasionCalendarChoice, type AssetClassPreset, type FileAttachmentSelection,
   type AssetEvidence, type AssetPatch, type AssetRule, type ContactRecord, type Episode, type EpisodeInput, type Link, type Occasion, type ProactiveProposal, type PursuitEnding, type SituationRef,
-  type TimelineRequest, type TimelineResponse, type TripDetails, type YoursAssetFilter, type YoursAssetSphere, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
+  type TimelineRequest, type TimelineResponse, type TripDetails, type YoursAssetFilter, type YoursAssetSphere, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot,
+  type AssetReading, type BodyChatAbout, type BodyChatRequest, type BodyChatSent, type BodyGoalField, type BodyNumbersMode, type BodyRange, type ChatModelSourceId } from '@recued/contracts';
 import {
   claimEndNamingInWords, memoryClaimSentence, type MemoryClaim, type MemoryClaimsResult, type MemoryGetRequest,
   type MemoryGetResponse, type MemoryReplaceRequest, type MemoryUpdateRequest,
@@ -9,18 +10,32 @@ import { isOwnMemoryEntry, isReplaceableEntry } from '../data/memory-lens.js';
 import type { DataCommitmentCloseCaller } from '../data/bootstrap-data-route.js';
 import { renderActionLabel, type IconName } from '@recued/ui-shared/icon-render';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
-import { serializeLogsRunAddress, serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
+import { serializeChatAnswerAddress, serializeLogsRunAddress, serializeShellRoute, serializeSourceRecordAddress, type ChatAnswerAddress } from '../shell/route.js';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
 import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { mountAssetFactsEditor } from './asset-facts-editor.js';
 import { assetRuleWhenWords, mountAssetRuleEditor, parseReminderOffsets, ruleOffsetWords } from './asset-rule-editor.js';
 import { assetObservationFieldName, mountAssetObservationEditor } from './asset-observation-editor.js';
+import { renderReadingSparkline } from './reading-sparkline.js';
+import { assetFieldName, bodySignalsRow, nameInSentence, readingDayDate, readingOriginWords, readingValueWords } from './reading-words.js';
+import { BODY_NUMBERS_DAYS, WHO_ADULT_BMI, ageOn, bodyMassIndex, bodyNumbersText, staleWords, type BodyNumbersAbout, type BodyNumbersDays } from './body-numbers-text.js';
+import { goalAskWords, goalLineWords, rangeAskWords, rangeDue, rangeLineWords } from './body-goal-words.js';
+import { BODY_NUMBERS_CHOICES, BODY_NUMBERS_INTRO, BODY_NUMBERS_TITLE, bodyNumbersSetWords } from './body-numbers-words.js';
+import { trendNumber } from './reading-sparkline.js';
+import type { BodyChat } from './body-chat.js';
+import { BODY_MEASURED_WORDS, BODY_MEASUREMENT_PRIORITY_WORDS, BODY_MEASUREMENT_UNITS, bodyMeasurementFromPatch, type BodyMeasure, type BodyMeasureArgs } from './body-measure.js';
+import { APPLE_HEALTH_HEADER, APPLE_HEALTH_PACK, APPLE_HEALTH_WEBHOOK_NAME, type AppleHealthConnect, type AppleHealthState } from './body-apple-health.js';
+import { blockerLabel as webhookBlockerWords } from '../connections/webhooks-panel.js';
+import { copyText } from '../shell/copy-text.js';
+import type { ChatModelSourceOption } from '../chat/model-routing.js';
 import { mountAssetSummary } from './asset-summary.js';
-import { assetEvidenceText, changedAssetPatch, renderAssetSource } from './asset-provenance.js';
+import { assetEvidenceLines, changedAssetPatch, renderAssetSource, type AssetEvidenceLine } from './asset-provenance.js';
+import { recordsRecordAddress } from '../data/records-navigation.js';
 import { lastTimeClassName } from './last-time-words.js';
 import { dayAfter, dueOnText, renewalDateWords, taskDueWords } from './due-words.js';
 export { parseReminderOffsets } from './asset-rule-editor.js';
+import { proposalSourceWords, proposalWhyLine } from './proposal-why-words.js';
 import { mountAssetPicker, type AssetPicker } from './asset-picker.js';
 import { assetChatContext, type ChatAssetContext } from '../chat/asset-context.js';
 import { YOURS_STYLES } from './yours-styles.js';
@@ -54,6 +69,9 @@ export interface YoursRouteOptions {
   segments?: readonly string[];
   read(input: YoursReadRequest): Promise<YoursSnapshot>;
   change(input: YoursCommand): Promise<YoursCommandResult>;
+  /** D-407 slice 4 — the calendars an event can be written to, for the occasions' calendar chosen once. Absent: the
+   *  page offers no choice. */
+  calendarDestinations?(): Promise<import('@recued/contracts').CalendarEventDestinations>;
   closeCommitment: DataCommitmentCloseCaller;
   contacts?(): Promise<ContactRecord[]>;
   links?(id: string): Promise<Link[]>;
@@ -76,13 +94,30 @@ export interface YoursRouteOptions {
   subscribeReady?: (listener: () => void) => () => void;
   recordOpened?: (ref: import('@recued/contracts').SituationRef) => void;
   askAsset?: (context: ChatAssetContext) => void;
+  /** D-339 slices 11 and 13 (§5.6) — "Ask with the numbers": the models Chat can use, the Body's own
+   *  conversation, and the send (`yours/body-chat.ts`). Absent ⇒ a Body page offers no such button. */
+  bodyChat?: BodyChat;
+  /** D-339 slice 18 — a weight or height typed on a Body's page, saved as a measurement in Records
+   *  (`yours/body-measure.ts`), never as the Body's own reading. Absent ⇒ a typed one goes in the message only. */
+  bodyMeasure?: BodyMeasure;
+  /** D-339 slice 21 — "Connect Apple Health" on a Body's page: the webhook made in one step, the pack's install,
+   *  and the Shortcut's values (`yours/body-apple-health.ts`). Absent ⇒ a Body's page offers no such button. */
+  appleHealth?: AppleHealthConnect;
+  /** D-339 slice 12a — set the owner's chats' switch for every Body's numbers (`contract.grant.body_numbers.write`).
+   *  Absent ⇒ a Body's page shows the switch as it stands, not to be changed there. */
+  bodyNumbers?: { set(chats: BodyNumbersMode): Promise<{ chats: BodyNumbersMode }> };
   prepareFileUpload?: (asset: { id: string; name: string }) => void;
   /** Connection identity keeps private list state separate across server profiles. */
   continuityOwner?: object;
   context?(input: import('@recued/contracts').AssetFactContextRequest): Promise<import('@recued/contracts').AssetFactContext>;
   writerSetup?: AssetWriterSetupCallers;
 }
-type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; correction?: ProactiveProposal; creation_key?: string }
+type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; correction?: ProactiveProposal; creation_key?: string;
+    /** D-404 slice A — a new asset's type, chosen before the form opens (`#yours/new/<type>`, a chat answer's "Add a Passport"). */
+    class_id?: string;
+    /** D-404 slice B2 — the chat answer the form was opened from (`…/return/chat/<session>/<message>`): it
+     *  offers "Back to chat", and saving returns there, where the answer's line says the thing is in Yours. */
+    returnToChat?: ChatAnswerAddress }
   /** D-342 — `pursuits` are what "Part of" offers; `part_of` starts a new pursuit under one. */
   | { type: 'pursuit'; asset?: Asset; pursuits: Asset[]; part_of?: string; creation_key?: string }
   | { type: 'rule'; asset: Asset; rule?: AssetRule; proposal?: ProactiveProposal; classPreset?: AssetClassPreset; classCreating?: boolean; classDirty?: boolean; classFocus?: EditorReturnFocus; initialField?: { group: 'dates' | 'readings' | 'observations'; field: string } }
@@ -92,6 +127,17 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
   | { type: 'close'; proposal: ProactiveProposal }
   | { type: 'recall'; proposal: ProactiveProposal }
   | { type: 'reading'; asset: Asset; field?: string }
+  /** D-339 slice 15 — set a goal on a Body's reading, or change its number and date (`own`). */
+  | { type: 'goal'; body_id: string; body_name: string; field: BodyGoalField; now?: { value: number; unit: string };
+    own?: { pursuit_id: string; target: number; unit: string; target_on?: string } }
+  /** D-339 slice 16 — set, change or remove the owner's own range for a Body's reading. */
+  | { type: 'range'; body_id: string; field: BodyGoalField; now: { value: number; unit: string }; own?: BodyRange }
+  | { type: 'ask_numbers'; asset: Asset; sources: ChatModelSourceOption[]; state?: AskNumbersState }
+  /** D-339 slice 21 — Connect Apple Health: where its three steps stand, and the token made while this form is open.
+   *  Slice 23: opened from chat's step for a Body with no readings, it offers "Back to chat". */
+  | { type: 'apple_health'; asset: Asset; state: AppleHealthState; token?: string; returnToChat?: ChatAnswerAddress }
+  /** D-339 slice 24 — Connect Apple Health from the pack's install, with several Bodies: which one's iPhone sends. */
+  | { type: 'apple_health_body'; bodies: Asset[] }
   | { type: 'condition'; asset: Asset; field?: string }
   | { type: 'date'; asset: Asset; field: string }
   | { type: 'fact'; asset: Asset; field?: string; group: 'attributes' | 'settings' }
@@ -108,8 +154,54 @@ type Editor = { type: 'asset'; asset?: Asset; proposal?: ProactiveProposal; corr
   | { type: 'occasion_rule'; occasion: Occasion; rule?: AssetRule; proposal?: ProactiveProposal }
   | { type: 'episode'; episode?: EpisodeInput; correction?: ProactiveProposal };
 type EditorReturnFocus = { key: string; asset_id: string; scope?: string; menu?: string };
+/** D-339 slice 13 — what the owner has chosen and typed in "Ask with the numbers", kept on the editor so
+ *  a rebuild of the page shows it again. */
+interface AskNumbersState {
+  request: BodyChatRequest; other: string;
+  birth: string; height: string; weight: string; gender: string;
+  include: Record<BodyChatAbout, boolean>;
+  fields: string[]; days: BodyNumbersDays; lenses: boolean;
+  /** The message as it stands; `edited` once the owner has typed in it, after which a choice no longer rewrites it. */
+  message: string; edited: boolean;
+  source: ChatModelSourceId | undefined; conversation: 'body' | 'new';
+}
+const BODY_REQUEST_LABELS: Readonly<Record<BodyChatRequest, string>> = {
+  explain: 'Explain the numbers', diet: 'Suggest a diet', workout: 'Suggest a workout', other: 'Something else',
+};
+/** What about the person went, as a sentence names it. */
+const BODY_ABOUT_LABELS: Readonly<Record<BodyChatAbout, string>> = { age: 'age', height: 'height', weight: 'weight', bmi: 'BMI', gender: 'gender',
+  body_fat: 'body fat', lean_body_mass: 'lean body mass', muscle_mass: 'muscle mass', waist: 'waist', goals: 'goals', ranges: 'ranges' };
 const scheduleText = (rule: AssetRule) => rule.schedule.before.map(ruleOffsetWords).join(', ');
 const newClassId = () => `owner_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
+/** D-407 slice 3 (Q4) — what each state of an occasion's Private box does, said under it. */
+export const OCCASION_PRIVATE_WORDS = 'Private: your messages show it only as Reminder in Yours. The AI still reads it when you ask in chat.';
+export const OCCASION_SHOWN_WORDS = 'Shown by name: your messages name it.';
+export const YOURS_OCCASION_PRIVACY_ATTR = 'data-yours-occasion-privacy';
+/** D-407 slice 5 (U2) — the appointment an occasion holds, on its own page. */
+export const YOURS_OCCASION_APPOINTMENT_ATTR = 'data-yours-occasion-appointment';
+/** D-407 slice 5 (U2) — where an event an occasion holds came from: an invite, by its organizer, or the owner's event. */
+export const occasionHeldFrom = (held: { name: string; appointment?: { organizer?: string } }): string =>
+  held.appointment?.organizer ? `from ${held.appointment.organizer}’s invite` : `follows an event in ${held.name}`;
+/** D-407 slice 2 — an occasion's "When is the next one?" in Yours. */
+export const YOURS_OCCASION_NEXT_ATTR = 'data-yours-occasion-next';
+/** D-407 slice 4 — the occasions' calendar chosen once, and In my calendar's words on the form. */
+export const YOURS_OCCASION_CALENDAR_ATTR = 'data-yours-occasion-calendar';
+/** The next reminder an open item was moved to, on its card. */
+export const YOURS_OCCURRENCE_LATER_ATTR = 'data-yours-occurrence-later';
+export const YOURS_OCCASION_IN_CALENDAR_ATTR = 'data-yours-occasion-in-calendar';
+/** D-407 slice 2 (Q2) — an occasion's zone by its short name on a day ("CST", "GMT+5:30"): the time is shown on the
+ *  clock it was kept on, said, never moved to this device's. */
+const zoneName = (zone: string, day: string): string => {
+  try { return new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'short' }).formatToParts(new Date(`${day}T12:00:00Z`)).find(part => part.type === 'timeZoneName')?.value ?? zone; }
+  catch { return zone; }
+};
+/** D-407 — the alerts the occasion form offers, in minutes before its time. */
+const OCCASION_ALERT_CHOICES = [0, 15, 30, 60, 120, 1440];
+/** An alert said as the form and card say it. */
+const occasionAlertWords = (minutes: number): string => minutes === 0 ? 'at the time'
+  : minutes === 1440 ? '1 day before' : minutes % 60 === 0 ? `${String(minutes / 60)} hour${minutes === 60 ? '' : 's'} before` : `${String(minutes)} minutes before`;
+/** This device's day, YYYY-MM-DD. */
+const localDay = (at: Date): string => `${String(at.getFullYear())}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
 /** §4.7 — the ladder an episode stands on (its `basis`), in the owner's words. */
 const EPISODE_BASIS_WORDS: Record<EpisodeInput['basis'], string> = { declared: 'your record', derived: 'planned, and shown to have happened', inferred: 'pieced together from traces' };
 /** P47 — the schedule as it will be sent: a clock that lapses on its due day
@@ -156,6 +248,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
   const pursuitList = tab === 'pursuits';
   let proposalKind: import('@recued/contracts').ProactiveProposalKind | '' = segments[1] === 'kind' && PROACTIVE_PROPOSAL_KINDS.includes(segments[2] as import('@recued/contracts').ProactiveProposalKind) ? segments[2] as import('@recued/contracts').ProactiveProposalKind : '';
   const pageAt = proposalKind ? 3 : 1;
+  // D-405 slice 7 — `#yours/proposals/return/chat/<session>/<message>`: the first mailbox's Proposals (D-325's
+  // first session), opened from a chat answer's "Connect your mail", carry that answer for the way back.
+  const proposalsReturnToChat: ChatAnswerAddress | undefined = segments[0] === 'proposals' && segments[1] === 'return'
+    && segments[2] === 'chat' && segments[3] && segments[4] && segments.length === 5
+    ? { sessionId: segments[3], messageId: segments[4] } : undefined;
   const pageNumber = (value: string | undefined) => { const number = Number(value); return Number.isSafeInteger(number) && number > 0 && Number.isSafeInteger((number - 1) * 50) ? number - 1 : 0; };
   let page = segments[pageAt] === 'page' ? pageNumber(segments[pageAt + 1]) : 0;
   let assetFilter: YoursAssetFilter | '' = ''; let assetSphere: YoursAssetSphere | '' = ''; let search = '';
@@ -267,6 +364,30 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (fallback?.matches('h2,h3')) fallback.tabIndex = -1;
     fallback?.focus();
   };
+  /** D-407 slice 4 (Q3) — the one calendar occasions put their events in: chosen once, a personal one, or none (every
+   *  occasion Recued only). A calendar that dropped an event's private marking says so: private occasions stay out. */
+  const occasionCalendarChoice = (parent: HTMLElement, chosen: OccasionCalendarChoice | null): void => {
+    const box = el('section', undefined, parent); box.setAttribute(YOURS_OCCASION_CALENDAR_ATTR, ''); box.className = 'yours-card';
+    el('h3', 'Your occasions\' calendar', box);
+    el('p', chosen ? `Occasions you tick In my calendar go in ${chosen.name}.`
+      : 'None chosen: every occasion stays in Recued only, with no entry in your phone\'s calendar.', box);
+    if (chosen?.keeps_private === false) el('p', `${chosen.name} did not keep an event private, so private occasions stay in Recued only.`, box);
+    if (!options.calendarDestinations) return;
+    const actions = yoursActions(box);
+    button(actions, chosen ? 'Change calendar' : 'Choose a calendar', async () => {
+      const found = await options.calendarDestinations!();
+      actions.replaceChildren();
+      const list = select(box, 'Calendar for occasions', 'occasion-calendar', [['', 'None: Recued only'],
+        ...found.destinations.map(row => [JSON.stringify([row.slug, row.calendar_id]), row.name] as [string, string])],
+        chosen ? JSON.stringify([chosen.slug, chosen.calendar_id]) : '');
+      el('p', 'Choose a personal calendar, not one other people can see.', box);
+      const done = yoursActions(box);
+      button(done, 'Save', () => write(() => {
+        const row = found.destinations.find(item => JSON.stringify([item.slug, item.calendar_id]) === list.value);
+        return options.change({ action: 'settings.update', occasion_calendar: row ? { slug: row.slug, calendar_id: row.calendar_id, name: row.name } : null });
+      }), 'occasion-calendar-save').className = 'yours-primary';
+    }, 'occasion-calendar-choose');
+  };
   const write = async (action: () => Promise<YoursCommandResult>, keepEditor = false) => {
     if (busy || disposed) return;
     editorIntent++;
@@ -280,8 +401,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       message = result.message;
       if (result.failed?.length) { setError(result.failed.map(item => item.reason).join(' ')); return; }
       const createdAsset = editor?.type === 'asset' && !editor.asset && !editor.proposal && result.id;
+      // D-404 slice B2 — a thing added from a chat answer returns to that answer.
+      const backToChat = createdAsset && editor?.type === 'asset' ? editor.returnToChat : undefined;
       const returnFocus = !keepEditor ? editorReturnFocus : undefined;
       if (!keepEditor) { editor = undefined; dirty = false; editorReturnFocus = undefined; }
+      if (backToChat && doc.defaultView) { busy = false; doc.defaultView.location.hash = serializeChatAnswerAddress(backToChat); return; }
       if (createdAsset && doc.defaultView) { busy = false; doc.defaultView.location.hash = `#yours/asset/${encodeURIComponent(createdAsset)}`; return; }
       busy = false; await refresh(true);
       restoreEditorFocus(returnFocus);
@@ -295,6 +419,31 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     } }
   };
   const change = (input: YoursCommand, keep = false) => write(() => options.change(input), keep);
+  /** D-339 slice 21 — make or finish the Apple Health webhook. The form stays open with where it now stands, and with
+   *  the token made, which it shows until it closes: the server never returns it. */
+  const prepareAppleHealth = (value: Extract<Editor, { type: 'apple_health' }>) => write(async (): Promise<YoursCommandResult> => {
+    const prepared = await options.appleHealth!.prepare(value.state.webhook?.ingress_id);
+    const token = prepared.token ?? value.token;
+    editor = { ...value, state: { ...value.state, webhook: prepared.webhook }, ...(token ? { token } : {}) };
+    return { message: prepared.webhook.open ? 'The webhook lets messages in.' : 'The webhook is made, but it can’t let messages in yet. The form says why.' };
+  }, true);
+  /** D-339 slice 24 — the owner's Bodies, from every page of their things (a read takes no type), retired ones left out. */
+  const appleHealthBodies = async (): Promise<Asset[]> => {
+    const found = new Map<string, Asset>();
+    for (let offset = 0, pages = 0; pages < 10; pages += 1) {
+      const page = await options.read({ offset, limit: 200 });
+      for (const asset of page.assets) if (asset.class_id === BODY_CLASS_ID && asset.status !== 'retired') found.set(asset.id, asset);
+      offset += page.assets.length;
+      if (page.assets.length < 200 || offset >= (page.total_assets ?? offset)) break;
+    }
+    return [...found.values()];
+  };
+  const copyValue = async (text: string) => {
+    message = await copyText(doc, text) ? 'Copied.' : 'It couldn’t be copied here. Select it and copy it yourself.'; paintStatus();
+  };
+  /** D-339 slice 12a — set the owner's chats' switch for every Body's numbers; the page reads it again. */
+  const setBodyNumbers = (chats: BodyNumbersMode) => write(async (): Promise<YoursCommandResult> =>
+    ({ message: bodyNumbersSetWords((await options.bodyNumbers!.set(chats)).chats) }));
   /** D-342 — every pursuit, for "Part of" when the form opens away from the Pursuits tab. A
    *  server that does not echo the filter has none to offer. */
   const readPursuits = async (): Promise<Asset[]> => {
@@ -414,10 +563,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     node.addEventListener('submit', event => { event.preventDefault(); clearYoursFieldErrors(node); void save(node).catch(showError); });
     return node;
   };
-  const formActions = (node: HTMLFormElement, label = 'Save', back?: () => void) => { const actions = el('div', undefined, node); actions.className = 'yours-actions';
+  const formActions = (node: HTMLFormElement, label = 'Save', back?: () => void, icon: IconName | null = 'save') => { const actions = el('div', undefined, node); actions.className = 'yours-actions';
     actions.dataset.yoursEditorActions = '';
     const alert = root.querySelector<HTMLElement>('[data-yours-error]')!; alert.dataset.yoursFormError = ''; actions.append(alert);
-    const save = el('button', undefined, actions); save.type = 'submit'; save.dataset.yoursFocus = 'save'; save.className = 'yours-primary'; setButtonLabel(save, label, 'save');
+    const save = el('button', undefined, actions); save.type = 'submit'; save.dataset.yoursFocus = 'save'; save.className = 'yours-primary'; setButtonLabel(save, label, icon ?? undefined);
     button(actions, 'Cancel', () => { if (dirty && doc.defaultView?.confirm && !doc.defaultView.confirm('Discard these unsaved changes?')) return; if (back) { back(); return; }
       editorIntent++; const returnFocus = editorReturnFocus; editor = undefined; dirty = false; editorReturnFocus = undefined; render(); restoreEditorFocus(returnFocus); }); };
   const field = (node: HTMLFormElement, key: string) => (node.elements.namedItem(key) as HTMLInputElement | null)?.value ?? '';
@@ -505,6 +654,391 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       fields = mountAssetTextFactEditor(node, value.asset, value.group, value.field, () => { dirty = true; });
       formActions(node, 'Save fact'); return;
     }
+    if (value.type === 'apple_health_body') {
+      // D-339 slice 24 — several Bodies: the owner picks whose iPhone this is; the form opens on that Body's page.
+      const node = form('Connect Apple Health', async picked => {
+        const chosen = (picked.elements.namedItem('apple-health-body') as RadioNodeList | null)?.value;
+        const body = value.bodies.find(row => row.id === chosen) ?? value.bodies[0]!;
+        editorIntent++; editor = undefined; editorReturnFocus = undefined; dirty = false;
+        if (doc.defaultView) doc.defaultView.location.hash = serializeShellRoute('yours', 'asset', body.id, 'setup', APPLE_HEALTH_PACK);
+      });
+      node.dataset.yoursAppleHealthBody = '';
+      el('p', 'Which Body’s iPhone will send its readings? Each phone sends its own Body’s readings, and they can share one webhook.', node).className = 'yours-muted';
+      const choices = el('fieldset', undefined, node); el('legend', 'The Body', choices);
+      value.bodies.forEach((body, at) => {
+        const host = el('label', undefined, choices); host.className = 'yours-radio';
+        const input = el('input', undefined, host); input.type = 'radio'; input.name = 'apple-health-body'; input.value = body.id; input.checked = at === 0;
+        input.dataset.yoursFocus = `apple-health-body-${body.id}`; el('span', body.name, host);
+      });
+      formActions(node, 'Continue', undefined, null); return;
+    }
+    if (value.type === 'apple_health') {
+      // D-339 slice 21 — Connect Apple Health in three steps: the webhook, made here; the pack, installed through its
+      // own review; and the Shortcut, each value it needs ready to copy. The token shows until this form closes.
+      const { asset, state, token } = value; const webhook = state.webhook; const ready = webhook?.open === true;
+      const node = form('Connect Apple Health', async () => {
+        if (!ready) { await prepareAppleHealth(value); return; }
+        editorIntent++; const target = editorReturnFocus; editor = undefined; editorReturnFocus = undefined; dirty = false; render(); restoreEditorFocus(target);
+      });
+      node.dataset.yoursAppleHealth = !webhook ? 'none' : !webhook.keyed ? 'unkeyed' : ready ? 'open' : 'closed';
+      if (value.returnToChat) { const back = link(node, 'Back to chat', serializeChatAnswerAddress(value.returnToChat)); back.dataset.yoursBackToChat = ''; }
+      el('p', 'Each morning, a Shortcut on your iPhone sends Health’s readings to this Body. Three steps set it up.', node).className = 'yours-muted';
+      const steps = el('ol', undefined, node); steps.className = 'yours-guide-steps';
+      const first = el('li', undefined, steps); el('h3', 'A webhook for your phone', first);
+      const name = `“${APPLE_HEALTH_WEBHOOK_NAME}”`;
+      el('p', !webhook ? `Recued makes one, ${name}, with a token that only your Shortcut will know.`
+        : !webhook.keyed ? `${name} has no token yet. Finish it to make one.`
+          : ready ? `${name} lets messages in. ${webhook.last_post_at === null ? 'No post has come yet.' : `The last post came ${yoursDateTime(webhook.last_post_at)}.`}`
+            : `${name} can’t let messages in yet:`, first);
+      if (webhook && webhook.keyed && !ready) {
+        const why = el('ul', undefined, first); why.dataset.yoursAppleHealthBlockers = '';
+        for (const blocker of webhook.blockers) el('li', webhookBlockerWords[blocker] ?? blocker, why);
+        if (!webhook.blockers.length) el('li', 'Choose Let messages in.', why);
+      }
+      if (token) {
+        const kept = el('div', undefined, first); kept.dataset.yoursAppleHealthToken = '';
+        el('p', 'Its token. Copy it into the Shortcut now: once this form closes, it can’t be shown again.', kept);
+        const line = el('div', undefined, kept); line.className = 'yours-guide-value';
+        el('code', token, line); button(line, 'Copy the token', () => copyValue(token), 'apple-health-copy-token');
+      }
+      const second = el('li', undefined, steps); el('h3', 'Body signals from Apple Health', second);
+      if (state.installed) el('p', 'Installed.', second);
+      else if (!webhook?.keyed) el('p', 'Its install needs the webhook, so make that first.', second);
+      else {
+        el('p', `Install it. If its install asks which webhook to use, choose ${name}.`, second);
+        link(second, 'Install Body signals from Apple Health', `#packs/${encodeURIComponent(APPLE_HEALTH_PACK)}`).dataset.yoursAppleHealthInstall = '';
+      }
+      const third = el('li', undefined, steps); el('h3', 'The Shortcut', third);
+      el('p', 'It posts to the address, with the header and the token. Its dictionary holds body_id, day, metrics and sent_at. Section 4 of the Body signals guide shows each action.', third);
+      const values = el('dl', undefined, third); values.className = 'yours-facts';
+      const valueRow = (title: string, text: string | null, key: string, missing: string) => {
+        const row = el('div', undefined, values); row.className = 'yours-fact'; row.dataset.yoursAppleHealthValue = key;
+        el('dt', title, row); const detail = el('dd', undefined, row); detail.className = 'yours-guide-value';
+        if (text === null) { detail.textContent = missing; return; }
+        el('code', text, detail); button(detail, 'Copy', () => copyValue(text), `apple-health-copy-${key}`).setAttribute('aria-label', `Copy the ${title}`);
+      };
+      valueRow('Address', webhook?.address ?? null, 'address', !webhook ? 'Made with the webhook.' : webhookBlockerWords.public_url_unavailable);
+      valueRow('Header name', APPLE_HEALTH_HEADER, 'header', '');
+      valueRow('Token', null, 'token', token ? 'The one in step 1.' : webhook?.keyed ? 'The one you copied when the webhook was made. Lost it? Give this webhook new keys in Connections → Webhooks.' : 'Made with the webhook.');
+      valueRow('body_id', asset.id, 'body_id', '');
+      formActions(node, ready ? 'Done' : !webhook ? 'Make the webhook' : !webhook.keyed ? 'Finish the webhook' : 'Let messages in', undefined, null); return;
+    }
+    if (value.type === 'ask_numbers') {
+      // D-339 slices 11 and 13 (§5.6) — the owner chooses what for, what about the person, which readings
+      // and days, and which model, and sees the message word for word, changing it as they like. Send is
+      // the approval: it is kept on the Body (what kinds of thing went, and to which model), and the
+      // message goes to the Body's own conversation as the owner's own words, never as an attachment, so
+      // nothing asks to read the numbers again.
+      const asset = value.asset; const sources = value.sources;
+      const trends = snapshot?.reading_trends?.asset_id === asset.id ? snapshot.reading_trends.readings : [];
+      let kept = readAssetChatConversation(asset.settings[ASSET_CHAT_CONVERSATION]);
+      const browserDay = (at: number) => { const d = new Date(at); return `${String(d.getFullYear())}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+      const today = browserDay(Date.now());
+      const holder = asset.holder_contact ? contacts.find(row => (row.contact_id ?? row.email) === asset.holder_contact) : undefined;
+      const birthOnBody = typeof asset.dates.birth_date === 'string' ? asset.dates.birth_date : '';
+      const heightOnBody = asset.readings.height ?? null;
+      const weightOnBody = asset.readings.weight ?? null;
+      const genderOnBody = typeof asset.attributes.gender === 'string' ? asset.attributes.gender : '';
+      // The weight's own day: the Body signals row its writer cites, else the day it was observed.
+      const weightDay = weightOnBody ? weightOnBody.evidence.map(row => bodySignalsRow(row)?.day).find((day): day is string => day !== undefined)
+        ?? browserDay(weightOnBody.as_of) : undefined;
+      const lastSource = kept?.sent[0]?.source;
+      // D-339 slice 14 — what has probably changed since it was measured starts unticked, with why.
+      const staleness = snapshot?.reading_staleness?.asset_id === asset.id ? snapshot.reading_staleness.readings : [];
+      const staleOf = (field: string) => staleness.find(row => row.field === field);
+      const dayOf = (reading: AssetReading) => reading.evidence.map(row => bodySignalsRow(row)?.day).find((day): day is string => day !== undefined)
+        ?? browserDay(reading.as_of);
+      const measures = BODY_MEASURE_FIELDS.filter(field => asset.readings[field]);
+      // D-339 slice 15 — the Body's goals, ticked to start: the request is read against them.
+      const goals = (snapshot?.goal_progress ?? []).filter(row => row.goal.asset_id === asset.id);
+      // D-339 slice 16 — the Body's own ranges, ticked unless one was set long enough ago to need checking.
+      const ranges = Object.entries(readBodyRanges(asset.settings)).map(([reading, range]) => ({ reading, ...range!, due: rangeDue(range!, today) }));
+      // The Body's own birth date, else its holder's from their contact, when it has a year.
+      const birthHeld = birthOnBody || (holder?.birthday && isAssetDate(holder.birthday) ? holder.birthday : '');
+      // D-339 slice 18 — the owner: "offers only weight visible when its value is old (other fields such as bday &
+      // height & gender only when the data does not exist) because those numbers matter for model to make
+      // judgement". A box only for what the Body lacks, or for a weight that has probably changed; what it holds
+      // shows as it is, ticked to go, and is changed on the Body's page.
+      const asks = { birth: birthHeld === '' || ageOn(birthHeld, today) === undefined, height: heightOnBody?.unit !== 'cm',
+        weight: !weightOnBody || staleOf('weight') !== undefined, gender: genderOnBody === '' };
+      // A typed weight or height reaches the Body through its summary: with none enrolled (a Body not yet set
+      // up), it goes in the message and is saved in Records, and the Body shows it once the summary is set up.
+      const summaryKeeps = (snapshot?.observation_bindings ?? []).some(binding => binding.enabled && binding.available !== false
+        && binding.asset_id === asset.id && binding.fields.includes('readings.weight'));
+      const state = value.state ??= {
+        // With no readings yet, the basics about the person answer a diet best (slice 18).
+        request: trends.length > 0 ? 'explain' : 'diet', other: '',
+        birth: birthHeld,
+        height: heightOnBody?.unit === 'cm' ? String(heightOnBody.value) : '', weight: '', gender: genderOnBody,
+        include: { age: true, height: !staleOf('height'), weight: !staleOf('weight'), bmi: !staleOf('weight'), gender: true,
+          ...Object.fromEntries(BODY_MEASURE_FIELDS.map(field => [field, !staleOf(field)])), goals: true, ranges: !ranges.some(range => range.due) } as Record<BodyChatAbout, boolean>,
+        fields: trends.map(trend => trend.field), days: 7, lenses: true, message: '', edited: false,
+        source: lastSource !== undefined && sources.some(source => source.id === lastSource) ? lastSource : sources[0]?.id,
+        conversation: 'body',
+      };
+      let typed = false;
+      /** A typed number, when it is one inside `low`–`high`. */
+      const within = (text: string, low: number, high: number): number | undefined => {
+        const number = Number(text.trim().replace(',', '.'));
+        return text.trim() !== '' && Number.isFinite(number) && number >= low && number <= high ? number : undefined;
+      };
+      const aboutNow = (): BodyNumbersAbout => {
+        const age = state.birth ? ageOn(state.birth, today) : undefined;
+        const height = within(state.height, 30, 260);
+        const typedWeight = within(state.weight, 2, 500);
+        // D-339 slice 18 — a weight typed today is the latest one, whatever the Body holds.
+        const weight = typedWeight !== undefined ? { value: typedWeight, unit: 'kg', day: today }
+          : weightOnBody ? { value: weightOnBody.value, unit: weightOnBody.unit, ...(weightDay ? { day: weightDay } : {}), ...(staleOf('weight') ? { stale: {} } : {}) }
+          : undefined;
+        const bmi = bodyMassIndex(height === undefined ? null : { value: height, unit: 'cm' }, weight ?? null);
+        // A height kept on the Body says its day when it has probably changed (a child's); a typed one is new.
+        const heightStale = staleOf('height') && heightOnBody && heightOnBody.value === height ? { day: dayOf(heightOnBody), stale: {} } : {};
+        const measured = measures.filter(field => state.include[field]).map(field => {
+          const reading = asset.readings[field]!; const stale = staleOf(field);
+          return { field, value: reading.value, unit: reading.unit, day: dayOf(reading),
+            ...(stale ? { stale: stale.weight_then ? { weight_then: stale.weight_then } : {} } : {}) };
+        });
+        return {
+          ...(state.include.age && age !== undefined ? { age } : {}),
+          ...(state.include.height && height !== undefined ? { height: { value: height, unit: 'cm', ...heightStale } } : {}),
+          ...(state.include.weight && weight ? { weight } : {}),
+          ...(state.include.bmi && bmi !== undefined ? { bmi } : {}),
+          ...(state.include.gender && state.gender.trim() ? { gender: state.gender.trim() } : {}),
+          ...(measured.length > 0 ? { measures: measured } : {}),
+          ...(state.include.goals && goals.length > 0 ? { goals: goals.map(row => ({ reading: row.goal.reading, target: row.goal.target, unit: row.goal.unit,
+            ...(row.target_on ? { target_on: row.target_on } : {}) })) } : {}),
+          ...(state.include.ranges && ranges.length > 0 ? { ranges } : {}),
+        };
+      };
+      /** What about the person went, by name, for the record. */
+      const aboutList = (about: BodyNumbersAbout): BodyChatAbout[] => [
+        ...(about.age !== undefined ? ['age' as const] : []), ...(about.height ? ['height' as const] : []), ...(about.weight ? ['weight' as const] : []),
+        ...(about.bmi !== undefined ? ['bmi' as const] : []), ...(about.gender ? ['gender' as const] : []),
+        ...(about.measures ?? []).map(measure => measure.field as BodyChatAbout), ...(about.goals?.length ? ['goals' as const] : []),
+        ...(about.ranges?.length ? ['ranges' as const] : [])];
+      const generate = () => bodyNumbersText(asset.name, trends, { fields: state.fields, days: state.days, lenses: state.lenses,
+        about: aboutNow(), request: { kind: state.request, text: state.other } }, Date.now()) ?? '';
+      if (!state.edited) state.message = generate();
+
+      const node = form(`Ask with the numbers · ${asset.name}`, async () => {
+        const bodyChat = options.bodyChat;
+        const text = state.message.trim();
+        const source = sources.find(row => row.id === state.source);
+        if (busy || !bodyChat) return;
+        if (!text) { setError('The message is empty.'); paintStatus(); return; }
+        if (!source) { setError('Choose a model.'); paintStatus(); return; }
+        busy = true; submit.disabled = true; setButtonLabel(submit, 'Sending…'); paintStatus();
+        try {
+          const conversation = await bodyChat.open({ ...(state.conversation === 'body' && kept ? { session_id: kept.session_id } : {}), title: asset.name, source });
+          const about = aboutNow();
+          const entry: BodyChatSent = { at: Date.now(), request: state.request, days: state.days,
+            readings: trends.filter(trend => state.fields.includes(trend.field)).map(trend => trend.field),
+            about: aboutList(about), source: source.id, source_label: source.label };
+          const sent = [entry, ...(kept?.sent ?? [])].slice(0, BODY_CHAT_SENT_KEPT);
+          const patch: AssetPatch = { settings: { [ASSET_CHAT_CONVERSATION]: { session_id: conversation.session_id, sent } } };
+          // D-339 slice 18 — a weight or height typed here is a measurement, a row in Records from `typed`, which
+          // the summary shows until a reading from a newer day comes. As the Body's own reading it would outrank
+          // every later one until the owner allowed automatic updates on it (slice 13 kept it so).
+          const height = within(state.height, 30, 260);
+          const typedWeight = within(state.weight, 2, 500);
+          const measured: BodyMeasureArgs = { asset_id: asset.id, ...(typedWeight !== undefined ? { weight: typedWeight } : {}),
+            ...(height !== undefined && !(heightOnBody?.unit === 'cm' && heightOnBody.value === height) ? { height } : {}) };
+          if (options.bodyMeasure && (measured.weight !== undefined || measured.height !== undefined)) await options.bodyMeasure.record(measured);
+          // The birth date and gender stay on the Body for next time: no source sends them.
+          if (state.birth && state.birth !== birthOnBody && ageOn(state.birth, today) !== undefined) patch.dates = { birth_date: state.birth };
+          if (state.gender.trim() && state.gender.trim() !== genderOnBody) patch.attributes = { gender: state.gender.trim() };
+          // The approval is kept before the send: what the owner said yes to, whatever the send does next.
+          const recorded = await options.change({ action: 'asset.update', id: asset.id, patch });
+          if (recorded.failed?.length) throw new Error(recorded.failed.map(item => item.reason).join(' '));
+          kept = { session_id: conversation.session_id, sent };
+          await bodyChat.send({ session_id: conversation.session_id, text, source });
+          // Done before Chat opens: the shell asks before leaving a page with work still going.
+          editorIntent++; editor = undefined; dirty = false; editorReturnFocus = undefined; busy = false;
+          bodyChat.openChat(conversation.session_id);
+        } finally {
+          busy = false;
+          if (!disposed && submit.isConnected) { setButtonLabel(submit, 'Send'); submit.disabled = !sources.some(row => row.id === state.source) || state.message.trim() === ''; }
+        }
+      });
+      node.dataset.yoursAskNumbers = '';
+      el('p', 'Choose what goes to Chat, and to which model. You see the message here, word for word, and can change it before you send it.', node);
+      const radio = (parent: HTMLElement, name: string, id: string, title: string, on: boolean, chosen: () => void): HTMLInputElement => {
+        const host = el('label', undefined, parent); host.className = 'yours-radio';
+        const input = el('input', undefined, host); input.type = 'radio'; input.name = name; input.value = id; input.checked = on;
+        input.dataset.yoursFocus = `${name}-${id}`; el('span', title, host);
+        input.addEventListener('change', () => { if (input.checked) chosen(); });
+        return input;
+      };
+      const typedInto = (input: HTMLInputElement, keep: (text: string) => void) =>
+        input.addEventListener('input', () => { keep(input.value); typed = true; update(); });
+
+      const requestBox = el('fieldset', undefined, node); el('legend', 'What for', requestBox);
+      for (const kind of ['explain', 'diet', 'workout', 'other'] as const) {
+        radio(requestBox, 'numbers-request', kind, BODY_REQUEST_LABELS[kind], state.request === kind, () => { state.request = kind; update(); });
+      }
+      const other = label(requestBox, 'What you ask', 'numbers-request-other', state.other);
+      typedInto(other, text => { state.other = text; });
+
+      const aboutBox = el('fieldset', undefined, node); el('legend', 'About the person', aboutBox);
+      el('p', [asks.birth || asks.height || asks.weight || asks.gender
+        ? summaryKeeps ? 'What you enter is kept for next time: a weight or height as typed by you, until a reading from a newer day comes, and a birth date or gender on the Body.'
+          : 'A birth date or gender you enter is kept on the Body. A weight or height is saved in Records as typed by you, and shows on the Body once its summary is set up.' : '',
+      !asks.birth || !asks.height || weightOnBody || !asks.gender ? 'To change what the Body holds, change it on its page.' : '',
+      'The age goes, never the birth date.'].filter(Boolean).join(' '), aboutBox).className = 'yours-muted';
+      const include = (key: BodyChatAbout): HTMLInputElement => {
+        const box = checked(aboutBox, `Include the ${BODY_ABOUT_LABELS[key]}`, `numbers-about-${key}`, state.include[key]);
+        box.addEventListener('change', () => { state.include[key] = box.checked; update(); });
+        return box;
+      };
+      include('age');
+      if (asks.birth) {
+        const birth = label(aboutBox, 'Birth date', 'numbers-birth', state.birth, 'date'); birth.max = today;
+        typedInto(birth, text => { state.birth = text; });
+      }
+      const ageLine = el('small', '', aboutBox); ageLine.dataset.yoursNumbersAge = '';
+      include('height');
+      if (asks.height || !heightOnBody) {
+        const height = label(aboutBox, 'Height (cm)', 'numbers-height', state.height, 'number');
+        height.min = '30'; height.max = '260'; height.step = '0.1'; height.inputMode = 'decimal';
+        typedInto(height, text => { state.height = text; });
+      } else {
+        el('p', `${readingValueWords(heightOnBody.value, heightOnBody.unit)} · ${readingDayDate(dayOf(heightOnBody), new Date())}`, aboutBox)
+          .dataset.yoursNumbersHeight = '';
+        const heightStale = staleOf('height');
+        if (heightStale) el('small', `${staleWords(heightStale, new Date())} It starts unticked.`, aboutBox).dataset.yoursNumbersStale = 'height';
+      }
+      const weightBox = include('weight');
+      let bmiBox: HTMLInputElement | undefined;
+      let weightStaleNote: HTMLElement | undefined;
+      if (weightOnBody) {
+        el('p', `${readingValueWords(weightOnBody.value, weightOnBody.unit)}${weightDay ? ` · ${readingDayDate(weightDay, new Date())}` : ''}`, aboutBox)
+          .dataset.yoursNumbersWeight = '';
+        const weightStale = staleOf('weight');
+        if (weightStale) {
+          weightStaleNote = el('small', `${staleWords(weightStale, new Date())} It starts unticked.`, aboutBox); weightStaleNote.dataset.yoursNumbersStale = 'weight';
+          weightStaleNote.hidden = within(state.weight, 2, 500) !== undefined;
+        }
+      }
+      // D-339 slice 18 — asked for when the Body has none, or one that has probably changed: a weight typed today
+      // is the latest, and is saved as typed by you.
+      if (asks.weight) {
+        const weight = label(aboutBox, 'Weight today (kg)', 'numbers-weight', state.weight, 'number');
+        weight.min = '2'; weight.max = '500'; weight.step = '0.1'; weight.inputMode = 'decimal';
+        let weightTypedFresh = within(state.weight, 2, 500) !== undefined;
+        typedInto(weight, text => {
+          state.weight = text;
+          // The first weight typed is today's: one that had probably changed no longer holds the weight and the BMI back.
+          if (weightTypedFresh || within(text, 2, 500) === undefined) return;
+          weightTypedFresh = true;
+          if (weightStaleNote) weightStaleNote.hidden = true;
+          if (!staleOf('weight')) return;
+          state.include.weight = true; weightBox.checked = true;
+          state.include.bmi = true; if (bmiBox) bmiBox.checked = true;
+        });
+      }
+      bmiBox = include('bmi');
+      const bmiLine = el('small', '', aboutBox); bmiLine.dataset.yoursNumbersBmi = '';
+      include('gender');
+      if (asks.gender) {
+        const gender = label(aboutBox, 'Gender', 'numbers-gender', state.gender);
+        typedInto(gender, text => { state.gender = text; });
+      } else el('p', genderOnBody, aboutBox).dataset.yoursNumbersGender = '';
+      for (const field of measures) {
+        include(field);
+        const reading = asset.readings[field]!;
+        el('p', `${readingValueWords(reading.value, reading.unit)} · ${readingDayDate(dayOf(reading), new Date())}`, aboutBox).dataset.yoursNumbersMeasure = field;
+        const stale = staleOf(field);
+        if (stale) el('small', `${staleWords(stale, new Date())} It starts unticked.`, aboutBox).dataset.yoursNumbersStale = field;
+      }
+      if (goals.length > 0) {
+        include('goals');
+        for (const row of goals) {
+          const words = goalAskWords(row.goal, row.target_on, new Date());
+          el('p', words.charAt(0).toUpperCase() + words.slice(1), aboutBox).dataset.yoursNumbersGoal = row.goal.reading;
+        }
+      }
+      if (ranges.length > 0) {
+        include('ranges');
+        for (const range of ranges) {
+          const words = rangeAskWords(range.reading, { ...range, due: false }, new Date());
+          el('p', words.charAt(0).toUpperCase() + words.slice(1), aboutBox).dataset.yoursNumbersRange = range.reading;
+          if (range.due) el('small', `Set on ${readingDayDate(range.set_on, new Date())}, over 6 months ago. It starts unticked.`, aboutBox).dataset.yoursNumbersRangeDue = range.reading;
+        }
+      }
+
+      const readingsBox = el('fieldset', undefined, node); el('legend', 'Readings', readingsBox);
+      if (trends.length === 0) el('p', 'No readings yet. The message goes with what you enter about the person.', readingsBox).dataset.yoursNumbersNoReadings = '';
+      for (const trend of trends) {
+        const box = checked(readingsBox, assetObservationFieldName(trend.field), `numbers-reading-${trend.field}`, state.fields.includes(trend.field));
+        box.dataset.yoursNumbersField = trend.field;
+        box.addEventListener('change', () => {
+          state.fields = trends.map(row => row.field).filter(field => (field === trend.field ? box.checked : state.fields.includes(field))); update();
+        });
+      }
+      const days = select(node, 'Days', 'numbers-days', BODY_NUMBERS_DAYS.map(count => [String(count), `The last ${String(count)} days`] as [string, string]), String(state.days));
+      days.addEventListener('change', () => { state.days = Number(days.value) as BodyNumbersDays; update(); });
+      const lenses = checked(node, 'The usual range and the trend', 'numbers-lenses', state.lenses);
+      lenses.addEventListener('change', () => { state.lenses = lenses.checked; update(); });
+      // No readings, so no days to choose and no lenses to add.
+      if (trends.length === 0) for (const control of [days, lenses]) { const host = control.closest('label'); if (host) host.hidden = true; }
+
+      el('h3', 'The message', node);
+      const message = el('textarea', undefined, node); message.name = 'numbers-message'; message.className = 'yours-numbers-message';
+      message.dataset.yoursNumbersMessage = ''; message.rows = 14; message.setAttribute('aria-label', 'The message'); message.value = state.message;
+      message.addEventListener('input', () => { state.message = message.value; state.edited = true; typed = true; update(); });
+      const rewrites = el('small', '', node); rewrites.dataset.yoursNumbersRewrites = '';
+      const startOver = button(node, 'Start over from the choices', () => {
+        state.edited = false; state.message = generate(); message.value = state.message; update(); message.focus();
+      }, 'numbers-start-over');
+
+      const sourceBox = el('fieldset', undefined, node); el('legend', 'Model', sourceBox);
+      if (sources.length === 0) el('p', 'Chat has no AI model set up yet. Set one up in Settings ▸ AI models, then come back.', sourceBox).dataset.yoursNumbersNoModel = '';
+      for (const source of sources) radio(sourceBox, 'numbers-source', source.id, source.label, state.source === source.id, () => { state.source = source.id; update(); });
+
+      const conversationBox = el('fieldset', undefined, node); el('legend', 'Conversation', conversationBox);
+      if (kept) {
+        const last = kept.sent[0] ? ` · last ${new Date(kept.sent[0].at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : '';
+        radio(conversationBox, 'numbers-conversation', 'body', `The one kept for this Body${last}`, state.conversation === 'body', () => { state.conversation = 'body'; update(); });
+        radio(conversationBox, 'numbers-conversation', 'new', 'A new one, kept for it from now on', state.conversation === 'new', () => { state.conversation = 'new'; update(); });
+      } else el('p', 'Recued keeps one conversation for this Body. This starts it.', conversationBox).className = 'yours-muted';
+
+      const goes = el('p', '', node); goes.className = 'yours-muted'; goes.dataset.yoursNumbersGoes = '';
+      formActions(node, 'Send', undefined, null);
+      const submit = node.querySelector<HTMLButtonElement>('button[type=submit]')!;
+      if (kept && kept.sent.length > 0) {
+        const before = el('section', undefined, node); before.dataset.yoursNumbersSent = '';
+        el('h3', 'Sent before', before);
+        const list = el('ul', undefined, before);
+        for (const row of kept.sent.slice(0, 3)) {
+          el('li', [new Date(row.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), BODY_REQUEST_LABELS[row.request],
+            `${String(row.days)} days`, `${String(row.readings.length)} reading${row.readings.length === 1 ? '' : 's'}`,
+            ...(row.about.length > 0 ? [row.about.map(item => BODY_ABOUT_LABELS[item]).join(', ')] : []), row.source_label].join(' · '), list);
+        }
+      }
+      const update = () => {
+        if (!state.edited) { state.message = generate(); if (message.value !== state.message) message.value = state.message; }
+        // The owner's own words are asked for only when they chose to ask something else.
+        other.disabled = state.request !== 'other';
+        if (other.parentElement) other.parentElement.hidden = state.request !== 'other';
+        const age = state.birth ? ageOn(state.birth, today) : undefined;
+        ageLine.textContent = state.birth === '' ? 'No birth date: the age stays out.' : age === undefined ? 'That date is not a birth date.' : `${String(age)} years old`;
+        const typedWeight = within(state.weight, 2, 500);
+        const bmi = aboutNow().bmi ?? bodyMassIndex(within(state.height, 30, 260) === undefined ? null : { value: within(state.height, 30, 260)!, unit: 'cm' },
+          typedWeight !== undefined ? { value: typedWeight, unit: 'kg' } : weightOnBody ?? null);
+        bmiLine.textContent = bmi === undefined ? 'BMI needs a height and a weight.' : `BMI ${trendNumber(bmi)}, worked out from the height and weight`;
+        rewrites.textContent = state.edited ? 'You changed the message, so the choices above no longer rewrite it.' : 'A choice above rewrites the message.';
+        startOver.hidden = !state.edited;
+        const source = sources.find(row => row.id === state.source);
+        goes.textContent = source
+          ? `Nothing is sent until you press Send. It goes to ${source.label}, in ${state.conversation === 'new' || !kept ? 'a new conversation kept for this Body' : 'the conversation kept for this Body'}.`
+          : 'Nothing is sent until you press Send.';
+        submit.disabled = busy || !source || state.message.trim() === '';
+        // What the owner typed is work to keep; a choice is not.
+        dirty = typed;
+      };
+      update();
+      return;
+    }
     if (value.type === 'parent' || value.type === 'same_thing') {
       const asset = value.asset; const isParent = value.type === 'parent'; let picker: AssetPicker;
       const node = form(isParent ? `Choose a parent for ${asset.name}` : `Link another record for ${asset.name}`, async () => {
@@ -581,7 +1115,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const own: Partial<Asset> = value.asset ? { ...value.asset,
         ...(inherited.audience ? { audience: undefined } : {}), ...(inherited.exact_address ? { exact_address: undefined } : {}),
         ...(inherited.anchors ? { anchors: value.asset.anchors.filter(anchor => anchor.kind !== 'place') } : {}) }
-        : (value.proposal?.payload.asset as Partial<Asset> | undefined) ?? {};
+        : (value.proposal?.payload.asset as Partial<Asset> | undefined) ?? (value.class_id ? { class_id: value.class_id } : {});
       const parentName = own.belongs_to ? snapshot?.related_assets.find(row => row.id === own.belongs_to)?.name ?? 'the asset it belongs to' : '';
       let chosenClass = own.class_id ?? ''; const dates = { ...own.dates }; let initialAudience = '';
       let showNationality = true;
@@ -637,6 +1171,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           return options.change({ action: 'asset.create', input: { ...patch, name: patch.name!, idempotency_key: creationKey }, ...(patch.class_id ? { class_id: patch.class_id } : {}) });
         });
       });
+      // D-404 slice B2 — opened from a chat answer: the way back to it.
+      if (value.returnToChat && !value.asset && !value.proposal) {
+        const back = link(node, 'Back to chat', serializeChatAnswerAddress(value.returnToChat)); back.dataset.yoursBackToChat = '';
+      }
       label(node, 'Name', 'name', own.name ?? '').required = true;
       // D-342 — a pursuit is added on the Pursuits tab, so this form offers its type only to one.
       const classChoice = select(node, simpleCreation ? 'Type (optional)' : 'Class', 'class', [['', simpleCreation ? 'Choose later' : 'Unclassified'],
@@ -763,13 +1301,72 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       date.required = true; date.min = '0001-01-01'; date.max = '9999-12-31';
       formActions(node, 'Save date'); return;
     }
+    if (value.type === 'goal') {
+      // D-339 slice 15 — a goal on a Body's reading: its number and, if the owner likes, a date. The server takes where it
+      // starts from the Body; a new one is a pursuit, private as the Body is.
+      const words = nameInSentence(assetFieldName(value.field)); const own = value.own;
+      const unit = own?.unit ?? value.now?.unit ?? '';
+      let target: HTMLInputElement | undefined; let by: HTMLInputElement | undefined; let named: HTMLInputElement | undefined; let why: HTMLInputElement | undefined;
+      const node = form(own ? `Change the ${words} goal` : `Set a ${words} goal`, async () => {
+        const typed = target!.value.trim().replace(',', '.'); const number = Number(typed);
+        if (!typed || !Number.isFinite(number)) throw new Error(`Enter the ${words} you are working toward.`);
+        await change({ action: 'goal.set', asset_id: value.body_id, reading: value.field, target: number, target_on: by!.value || null,
+          ...(own ? { pursuit_id: own.pursuit_id } : {}),
+          ...(named?.value.trim() ? { name: named.value.trim() } : {}), ...(why?.value.trim() ? { why: why.value.trim() } : {}) });
+      });
+      if (value.now) el('p', `Now ${readingValueWords(value.now.value, value.now.unit)}.${own ? '' : ' The goal starts from it.'}`, node).className = 'yours-muted';
+      target = label(node, `Your goal (${unit})`, 'goal-target', own ? String(own.target) : '', 'number');
+      target.step = 'any'; target.required = true; target.inputMode = 'decimal';
+      by = label(node, 'By (optional)', 'goal-target-on', own?.target_on ?? '', 'date');
+      if (!own) {
+        named = label(node, 'Name', 'goal-name', `${assetFieldName(value.field)} goal · ${value.body_name}`);
+        why = label(node, 'Why (optional)', 'goal-why');
+        el('small', 'It is kept as a pursuit. It is private, and its numbers reach an AI only when you send them, as the Body\'s readings do.', node).className = 'yours-muted';
+      }
+      formActions(node, own ? 'Change goal' : 'Set goal'); return;
+    }
+    if (value.type === 'range') {
+      // D-339 slice 16 — the owner's own normal for a reading: a low end, a high end or both, in its unit. The server
+      // keeps the unit and the day; the page sends only the ends.
+      const words = nameInSentence(assetFieldName(value.field)); const own = value.own; const unit = value.now.unit;
+      let low: HTMLInputElement | undefined; let high: HTMLInputElement | undefined;
+      const end = (input: HTMLInputElement): number | null => {
+        const typed = input.value.trim().replace(',', '.'); if (!typed) return null;
+        const number = Number(typed); if (!Number.isFinite(number)) throw new Error(`Enter each end you set as a number, in ${unit}.`);
+        return number;
+      };
+      const node = form(own ? `Change your ${words} range` : `Set your ${words} range`, async () => {
+        const lowEnd = end(low!); const highEnd = end(high!);
+        if (lowEnd === null && highEnd === null) throw new Error('Enter a low end, a high end, or both.');
+        await change({ action: 'range.set', asset_id: value.body_id, reading: value.field, low: lowEnd, high: highEnd });
+      });
+      el('p', `Your own normal for it: the page reads it against this. Now ${readingValueWords(value.now.value, unit)}.`, node).className = 'yours-muted';
+      low = label(node, `Low end (${unit}, optional)`, 'range-low', own?.low !== undefined ? String(own.low) : '', 'number');
+      low.step = 'any'; low.inputMode = 'decimal';
+      high = label(node, `High end (${unit}, optional)`, 'range-high', own?.high !== undefined ? String(own.high) : '', 'number');
+      high.step = 'any'; high.inputMode = 'decimal';
+      el('small', 'It is private, as the Body is: an AI sees it only when you send it.', node).className = 'yours-muted';
+      formActions(node, own ? 'Change range' : 'Set range');
+      if (own) button(node, 'Remove range', () => change({ action: 'range.set', asset_id: value.body_id, reading: value.field, low: null, high: null }), 'range-remove');
+      return;
+    }
     if (value.type === 'reading' || value.type === 'condition') {
       let fields: ReturnType<typeof mountAssetObservationEditor>;
+      // D-339 slice 18 — on a Body, a weight in kg or a height in cm is a measurement, saved in Records as typed
+      // by you, so a reading from a newer day replaces it. As the Body's own value it would outrank them.
+      const bodyMeasure = value.type === 'reading' && value.asset.class_id === 'body' ? options.bodyMeasure : undefined;
       const node = form(value.type === 'reading' ? 'Record an actual reading' : 'Record a condition', async () => {
-        await change({ action: 'asset.update', id: value.asset.id, patch: fields.read() });
+        const patch = fields.read();
+        const measured = bodyMeasure ? bodyMeasurementFromPatch(value.asset.id, patch) : undefined;
+        if (bodyMeasure && measured) {
+          await write(async (): Promise<YoursCommandResult> => { await bodyMeasure.record(measured); return { message: BODY_MEASURED_WORDS }; });
+          return;
+        }
+        await change({ action: 'asset.update', id: value.asset.id, patch });
       });
       if (editorReturnFocus) el('p', `For ${value.asset.name}`, node);
-      fields = mountAssetObservationEditor(node, value.asset, value.type, () => { dirty = true; }, value.field);
+      fields = mountAssetObservationEditor(node, value.asset, value.type, () => { dirty = true; }, value.field,
+        bodyMeasure ? { measured: { units: BODY_MEASUREMENT_UNITS, words: BODY_MEASUREMENT_PRIORITY_WORDS } } : {});
       formActions(node, value.type === 'reading' ? 'Save reading' : 'Save condition'); return;
     }
     if (value.type === 'rule') {
@@ -832,30 +1429,80 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (value.type === 'occasion') {
       const own = value.occasion;
       const node = form(own ? 'Edit occasion' : 'Create occasion', async node => {
-        const once = !own?.source && field(node, 'repeat') === 'once';
+        // D-407 slice 2 — "When the last one says" keeps its next one as a one-time occasion does, and asks again after it.
+        const repeatValue = own?.source ? 'yearly' : field(node, 'repeat');
+        const once = repeatValue === 'once' || repeatValue === 'after_each';
         const date = field(node, 'date');
-        if (once && !isAssetDate(date)) throw new Error('Choose a date for this one-time occasion');
-        const { source_next_on: _previousDate, ...base } = own ?? {};
+        if (once && !isAssetDate(date)) throw new Error(repeatValue === 'after_each' ? 'Choose the date of the next one' : 'Choose a date for this one-time occasion');
+        const { source_next_on: _previousDate, after_each: _afterEach, time: _time, time_zone: _zone, alert_minutes: _alert, in_calendar: _inCalendar, ...base } = own ?? {};
+        // D-407 slice 4 (Q4) — In my calendar, said only to a server that writes the event, when a calendar is chosen.
+        const offersCalendar = !own?.source && snapshot?.occasion_calendar_events === true && !!snapshot.settings.occasion_calendar;
+        // D-407 slice 2 (Q2) — its time of day, on the zone it was kept on, else this device's.
+        const time = !own?.source && snapshot?.occasion_next === true ? field(node, 'time') : '';
+        // D-407 — its alert before that time, sent by the occasion itself; it needs the time.
+        const alert = !own?.source && snapshot?.occasion_alert === true ? field(node, 'alert') : '';
+        if (alert !== '' && !time) throw new Error('An alert needs a time of day');
         const occasion = { ...base, ...(own?.source && own.source_next_on !== undefined ? { source_next_on: own.source_next_on } : {}),
           ...(own?.id ? { id: own.id } : {}), title: field(node, 'title'),
           month_day: once ? date.slice(-5) : field(node, 'month-day'), ...(once ? { source_next_on: date } : {}),
-          people: [...new Set([...(own?.people.slice(1) ?? []), ...(field(node, 'person') ? [field(node, 'person')] : [])])], muted: yes(node, 'muted'), rules: own?.rules ?? [] };
+          people: [...new Set([...(own?.people.slice(1) ?? []), ...(field(node, 'person') ? [field(node, 'person')] : [])])], muted: yes(node, 'muted'), rules: own?.rules ?? [],
+          // D-407 slice 3 — said only to a server that reads it (`occasion_privacy`); an older one would store it unread.
+          ...(snapshot?.occasion_privacy === true ? { private: yes(node, 'private') } : {}),
+          ...(repeatValue === 'after_each' ? { after_each: true as const } : {}),
+          // The server stamps the owner's zone on a new time (D-269); one kept on its own zone keeps it.
+          ...(time ? { time, ...(own?.time_zone ? { time_zone: own.time_zone } : {}) } : {}),
+          ...(time && alert !== '' ? { alert_minutes: Number(alert) } : {}),
+          ...(offersCalendar ? { in_calendar: yes(node, 'in_calendar') } : own?.in_calendar !== undefined ? { in_calendar: own.in_calendar } : {}) };
         const confirmFloor = !!own?.rules.some(rule => rule.consequence === 'floor' && rule.enabled && !rule.muted) && occasion.muted;
         if (confirmFloor && doc.defaultView?.confirm && !doc.defaultView.confirm('Confirm stopping this safety, legal or travel clock?')) return;
         await change(value.proposal ? { action: 'proposal.edit', id: value.proposal.id, payload: { ...value.proposal.payload, occasion } } : { action: 'occasion.save', occasion, confirm_floor_mute: confirmFloor }); });
       label(node, 'Name', 'title', own?.title ?? '');
-      const repeat = !own?.source ? select(node, 'Repeat', 'repeat', [['yearly', 'Every year'], ['once', 'One time']], own?.source_next_on !== undefined ? 'once' : 'yearly') : null;
+      const repeat = !own?.source ? select(node, 'Repeat', 'repeat', [['yearly', 'Every year'], ['once', 'One time'],
+        // D-407 slice 2 — offered only by a server that keeps it (`occasion_next`).
+        ...(snapshot?.occasion_next === true || own?.after_each === true ? [['after_each', 'When the last one says'] as [string, string]] : [])],
+        own?.after_each === true ? 'after_each' : own?.source_next_on !== undefined ? 'once' : 'yearly') : null;
       const annual = label(node, 'Annual date (MM-DD)', 'month-day', own?.month_day ?? '');
       const date = !own?.source ? label(node, 'Date', 'date', own?.source_next_on ?? '', 'date') : null;
+      // D-407 slice 2 (Q2) — a time beside the date, optional; with none it is a day.
+      if (!own?.source && snapshot?.occasion_next === true) label(node, 'Time (optional)', 'time', own?.time ?? '', 'time');
+      // D-407 — an alert before the time, from the occasion itself (never a separate reminder); a server that sends it.
+      if (!own?.source && snapshot?.occasion_alert === true) {
+        const kept = own?.alert_minutes;
+        const option = (minutes: number): [string, string] => { const words = occasionAlertWords(minutes); return [String(minutes), `${words[0]!.toUpperCase()}${words.slice(1)}`]; };
+        const choices: Array<[string, string]> = [['', 'No alert'], ...OCCASION_ALERT_CHOICES.map(option)];
+        if (kept !== undefined && !OCCASION_ALERT_CHOICES.includes(kept)) choices.push(option(kept));
+        select(node, 'Alert', 'alert', choices, kept !== undefined ? String(kept) : '');
+      }
       const showDate = () => {
-        const once = repeat?.value === 'once';
+        const once = repeat?.value === 'once' || repeat?.value === 'after_each';
         annual.parentElement!.hidden = once; annual.disabled = once;
         if (date) { date.parentElement!.hidden = !once; date.disabled = !once; }
       };
       repeat?.addEventListener('change', showDate); showDate();
       const choices = personChoices();
       if (own?.people[0] && !choices.some(([id]) => id === own.people[0])) choices.push([own.people[0], holderName(own.people[0])]);
-      select(node, 'Person', 'person', choices, own?.people[0]); checked(node, 'Muted', 'muted', own?.muted ?? false); formActions(node); return;
+      const person = select(node, 'Person', 'person', choices, own?.people[0]);
+      if (snapshot?.occasion_privacy === true) {
+        // D-407 slice 3 (Q4) — Private or Shown by name, each said under the box. It starts as the rule says (a
+        // person in it is private); on a new occasion it follows the person chosen until the owner sets it.
+        const box = checked(node, 'Private', 'private', occasionIsPrivate(own ?? { people: [] }));
+        const words = el('p', '', node); words.setAttribute(YOURS_OCCASION_PRIVACY_ATTR, '');
+        const say = () => { words.textContent = box.checked ? OCCASION_PRIVATE_WORDS : OCCASION_SHOWN_WORDS; };
+        let set = false; box.addEventListener('change', () => { set = true; say(); });
+        if (!own) person.addEventListener('change', () => { if (!set) { box.checked = occasionIsPrivate({ people: person.value ? [person.value] : [] }); say(); } });
+        say();
+      }
+      // D-407 slice 4 (Q4, U4) — In my calendar, beside Private as the owner paired them, ticked to start for a new occasion; each state says what it does.
+      const occasionCalendar = snapshot?.settings.occasion_calendar ?? null;
+      if (!own?.source && snapshot?.occasion_calendar_events === true && occasionCalendar) {
+        const box = checked(node, 'In my calendar', 'in_calendar', own ? own.in_calendar === true : true);
+        const words = el('p', '', node); words.setAttribute(YOURS_OCCASION_IN_CALENDAR_ATTR, '');
+        const say = () => { words.textContent = box.checked
+          ? `Its event goes in ${occasionCalendar.name}, private when this occasion is, with its alert.`
+          : 'Recued only: no entry in your phone\'s calendar. Reminders come from Recued.'; };
+        box.addEventListener('change', say); say();
+      }
+      checked(node, 'Muted', 'muted', own?.muted ?? false); formActions(node); return;
     }
     if (value.type === 'occasion_rule') {
       const own = value.rule;
@@ -960,6 +1607,17 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         await options.closeCommitment({ id: commitment.id, outcome }); return { message: outcome === 'fulfill' ? 'Completed.' : 'Cancelled.' };
       }), `${occurrence.id}-${outcome}`).className = outcome === 'fulfill' ? 'yours-primary' : '';
     }
+    // Its next reminder at any day and time (`occurrence.later`): a reminder's "Later" offers a day, a week or a month,
+    // and points here for the rest. Its deadline and schedule stay as they are.
+    if (occurrence.later_until !== null) {
+      el('p', `Next reminder ${new Date(occurrence.later_until).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`, item)
+        .setAttribute(YOURS_OCCURRENCE_LATER_ATTR, '');
+    }
+    const again = label(item, 'Remind me again on', `later-${occurrence.id}`, '', 'datetime-local');
+    const soon = new Date(Date.now() + 60_000);
+    again.min = `${soon.getFullYear()}-${String(soon.getMonth() + 1).padStart(2, '0')}-${String(soon.getDate()).padStart(2, '0')}T${
+      String(soon.getHours()).padStart(2, '0')}:${String(soon.getMinutes()).padStart(2, '0')}`;
+    button(item, 'Save reminder time', () => change({ action: 'occurrence.later', id: occurrence.id, until: Date.parse(again.value) }));
   };
   /** Opens a cited record where the app can; false when it cannot. */
   const sourceLink = (parent: HTMLElement, source: { collection: string; id: string }): boolean => {
@@ -972,12 +1630,29 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     } else return false;
     return true;
   };
-  /** §15.3 — what an observation rests on: each item says what it showed and opens where it can. */
-  const renderEvidence = (parent: HTMLElement, evidence: readonly AssetEvidence[]) => {
+  /** §15.3 — what an observation rests on: each item says what it showed and opens where it can. A
+   * Body signals row opens in Records, and the days before a state's newest fold away (D-339). */
+  const renderEvidence = (parent: HTMLElement, evidence: readonly AssetEvidence[],
+    of?: { key: string; unitOf: (metric: string) => string | undefined }) => {
     if (!evidence.length) return;
-    const list = el('ul', undefined, parent); list.setAttribute('aria-label', 'Evidence'); list.dataset.yoursEvidence = '';
-    for (const item of evidence) sourceLink(el('li', assetEvidenceText(item), list), item);
+    const { lines, earlier } = assetEvidenceLines(evidence, of?.unitOf ?? (() => undefined), new Date());
+    const draw = (into: HTMLElement, label: string, rows: readonly AssetEvidenceLine[]) => {
+      const list = el('ul', undefined, into); list.setAttribute('aria-label', label); list.dataset.yoursEvidence = '';
+      for (const line of rows) {
+        const item = el('li', line.text, list);
+        if (line.records) link(item, 'Open in Records', recordsRecordAddress(line.records));
+        else if (line.item) sourceLink(item, line.item);
+      }
+    };
+    draw(parent, 'Evidence', lines);
+    if (!earlier.length) return;
+    const more = yoursDisclosure(parent, `${earlier.length} earlier ${earlier.length === 1 ? 'record' : 'records'}`);
+    more.classList.add('yours-source', 'yours-evidence-earlier'); more.dataset.yoursDisclosure = JSON.stringify(['evidence-earlier', of?.key ?? '']);
+    draw(more, 'Earlier evidence', earlier);
   };
+  /** A reading's or condition's evidence, with its asset's units for the rows it cites. */
+  const fieldEvidence = (asset: Asset, path: string) => ({ key: `${asset.id}:${path}`,
+    unitOf: (metric: string) => (Object.hasOwn(asset.readings, metric) ? asset.readings[metric]?.unit : undefined) });
   /** P44 — an episode where it is cited (an occasion's history, a pursuit's), with Correct and Hide.
    * A hidden episode leaves every list and is named under Memory exclusions (P17). `here` is the
    * record whose page shows it, which its evidence does not link back to. */
@@ -1015,8 +1690,8 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     }
     const why = yoursDisclosure(item, 'Why suggested'); why.dataset.yoursDisclosure = `proposal:${proposal.id}:why`;
     el('p', proposal.explanation, why);
-    el('small', `${proposal.confidence} confidence · ${proposal.kind} · ${proposal.lane?.replaceAll('_', ' ') ?? proposal.origin}`, why);
-    for (const source of proposal.sources) if (!sourceLink(item, source)) el('small', `${source.collection}: ${source.id}`, item);
+    el('small', proposalWhyLine(proposal), why);
+    for (const source of proposal.sources) if (!sourceLink(item, source)) el('small', proposalSourceWords(source), item);
     if (proposal.kind === 'last_done') { const date = label(item, 'Actual last-done date', `proposal-${proposal.id}-date`, '', 'date');
       button(item, 'Save date', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: date.value }));
       button(item, 'I don’t know', () => change({ action: 'occurrence.last_done', id: String(proposal.payload.occurrence_id), on: null })); return;
@@ -1037,9 +1712,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (proposal.kind === 'trip') button(actions, 'Choose travellers', () => open({ type: 'trip', proposal })).className = 'yours-primary';
     else button(actions, proposal.kind === 'asset' ? 'Add asset' : proposal.kind === 'schedule' ? 'Apply reminder change'
       : proposal.kind === 'rule' ? proposal.payload.apply_class === true ? 'Apply template' : 'Switch on'
-        : 'Accept',
+        : proposal.kind === 'goal' ? 'Mark reached' : 'Accept',
     () => change({ action: 'proposal.accept', ids: [proposal.id] }), 'accept-proposal').className = 'yours-primary';
-    button(actions, 'Review change', loadEditor(async () => {
+    if (proposal.kind !== 'goal') button(actions, 'Review change', loadEditor(async () => {
       if (proposal.kind === 'asset') return { type: 'asset', proposal };
       if (proposal.kind === 'recall') return { type: 'recall', proposal };
       if (proposal.kind === 'ranking' || proposal.kind === 'relation') return { type: 'learning', proposal };
@@ -1065,11 +1740,11 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         return { type: 'rule', asset, rule, proposal };
       }
     }));
-    button(actions, 'Not now', () => change({ action: 'proposal.dismiss', id: proposal.id, code: 'not_now' }));
+    button(actions, proposal.kind === 'goal' ? 'Not yet' : 'Not now', () => change({ action: 'proposal.dismiss', id: proposal.id, code: 'not_now' }));
     const more = yoursMenu(actions, proposal.title, ['proposal', proposal.id]);
     button(more, proposal.kind === 'asset' ? 'Not an asset' : 'Not this one', () => change({ action: 'proposal.dismiss', id: proposal.id, code: proposal.kind === 'asset' ? 'not_an_asset' : 'not_this_one' }));
     button(more, 'Never this kind', () => change({ action: 'proposal.dismiss', id: proposal.id, code: 'never_this_kind' }));
-    if (proposal.subject?.collection === 'asset') button(more, 'That’s wrong', loadEditor(async () => { const asset = snapshot?.assets.find(asset => asset.id === proposal.subject!.id) ?? (await options.read({ asset_id: proposal.subject!.id })).assets[0];
+    if (proposal.subject?.collection === 'asset' && proposal.kind !== 'goal') button(more, 'That’s wrong', loadEditor(async () => { const asset = snapshot?.assets.find(asset => asset.id === proposal.subject!.id) ?? (await options.read({ asset_id: proposal.subject!.id })).assets[0];
       if (asset) return { type: 'asset', asset, correction: proposal }; else throw new Error('Asset not found. Refresh this proposal.'); }));
     if (proposal.kind === 'recall') button(more, 'That’s wrong', loadEditor(async () => { const episode = (await options.read({ episode_id: String(proposal.payload.episode_id), include_derived: true })).episodes[0];
       if (!episode) throw new Error('The precedent is unavailable'); return { type: 'episode', episode, correction: proposal }; }));
@@ -1143,6 +1818,10 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         occasions: 'Dates and traditions you want to remember.',
         episodes: 'Experiences you chose to keep, with the evidence behind them.',
       }[tab]) : undefined;
+    // D-405 slice 7 — back to the chat answer that asked for the mailbox, which now says one is connected.
+    if (proposalsReturnToChat && tab === 'proposals' && !classesView) {
+      const back = link(content, 'Back to chat', serializeChatAnswerAddress(proposalsReturnToChat)); back.dataset.yoursBackToChat = '';
+    }
     let filterToolbar: HTMLElement | undefined;
     if (!assetList && !selected && !selectedOccasion && !selectedEpisode && !classesView) {
       const toolbar = filterToolbar = yoursToolbar(content); toolbar.classList.add('yours-compact-filter');
@@ -1163,6 +1842,16 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         : button(assetHeader.actions, 'Edit asset', () => open({ type: 'asset', asset }), undefined, 'rename');
       setButtonLabel(editAsset, 'Edit'); editAsset.setAttribute('aria-label', pursuitPage ? 'Edit pursuit' : 'Edit asset');
       if (options.askAsset) { const ask = button(assetHeader.actions, 'Ask about this asset', () => options.askAsset!(assetChatContext(asset, files, filesAvailable))); ask.textContent = 'Ask'; ask.setAttribute('aria-label', 'Ask about this asset'); }
+      // D-339 slice 11 (§5.6) — on a Body, whose numbers the model reads only when the owner allows it:
+      // the owner hands over the days the page holds, after seeing them. Slice 18: on every Body, readings or
+      // none. The owner: the form is "for early adopt user that hasn't setup fullly or without a paired scale
+      // ... even just the weight/height/age/gender can make up some diet suggestions already".
+      if (options.bodyChat && asset.settings.values_on_request === true && !pursuitPage) {
+        const bodyChat = options.bodyChat;
+        const numbers = button(assetHeader.actions, 'Ask with the numbers',
+          loadEditor(async () => ({ type: 'ask_numbers', asset, sources: await bodyChat.sources() })), 'ask-numbers');
+        numbers.setAttribute('aria-label', 'Ask with the numbers: choose what goes to Chat');
+      }
       const assetMenu = yoursMenu(assetHeader.actions, asset.name, ['asset', asset.id]);
       if (pursuitPage && pursuitActive(asset)) {
         button(assetMenu, 'Reached', () => endPursuit(asset, 'reached', snapshot!.related_assets));
@@ -1185,7 +1874,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       // D-342 — the pursuit in its owner's words; its Facts list below leaves these out.
       if (pursuitPage) {
         const about = section(panels.overview, 'Pursuit'); about.dataset.yoursPursuitFacts = '';
-        const rows: Array<[string, string, string?]> = [...pursuitFacts(asset, 'page'), ...(pursuitActive(asset) ? [] : [['Ended', pursuitEndingWords(asset)] as [string, string]])];
+        // D-339 slice 15 — a goal on a Body: where it stands, from the Body's reading.
+        const goalProgress = snapshot.goal_progress?.find(row => row.pursuit_id === asset.id);
+        const rows: Array<[string, string, string?]> = [...pursuitFacts(asset, 'page', goalProgress), ...(pursuitActive(asset) ? [] : [['Ended', pursuitEndingWords(asset)] as [string, string]])];
         if (!rows.length) el('p', 'Edit it to add its horizon, why it matters and where you are with it.', about).className = 'yours-muted';
         else { const facts = el('dl', undefined, about); facts.className = 'yours-facts';
           for (const [name, value, path] of rows) {
@@ -1195,6 +1886,15 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
             if (path) detail.dataset.yoursFact = path;
             if (path && source) renderAssetSource(detail, source, `${asset.id}:${path}`);
           } }
+        const kept = readBodyGoal(asset.settings);
+        if (kept && pursuitActive(asset)) {
+          const goalActions = yoursActions(about);
+          const targetOn = typeof asset.dates.target_on === 'string' ? asset.dates.target_on : undefined;
+          button(goalActions, 'Change goal', () => open({ type: 'goal', body_id: kept.asset_id, body_name: '', field: kept.reading,
+            ...(goalProgress?.now ? { now: { value: goalProgress.now.value, unit: kept.unit } } : {}),
+            own: { pursuit_id: asset.id, target: kept.target, unit: kept.unit, ...(targetOn ? { target_on: targetOn } : {}) } }), 'change-goal').dataset.yoursGoalAction = kept.reading;
+          link(goalActions, 'Open its Body', `#yours/asset/${encodeURIComponent(kept.asset_id)}`).dataset.yoursGoalBody = kept.asset_id;
+        }
       }
       // D-343 slice 5 — its history: what the owner recorded doing or skipping on it in Close the day,
       // the latest first, each to correct or hide as an occasion's history is. A server older than
@@ -1251,8 +1951,72 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const comparisons = renderAssetComparisons(panels.overview, asset, snapshot.reading_comparisons, (field, origin) => open({ type: 'reading', asset, field }, focusTarget(origin)));
       const readings = section(panels.overview, 'Conditions and readings'); const readingActions = yoursActions(readings);
       if (comparisons) panels.overview.append(comparisons);
+      // D-339 slice 12a — on a Body's page, the owner's chats' switch for every Body's numbers.
+      if (snapshot.body_numbers && asset.class_id === 'body') {
+        const chats = snapshot.body_numbers.chats;
+        const numbers = section(panels.overview, BODY_NUMBERS_TITLE); numbers.dataset.yoursBodyNumbers = chats;
+        el('p', BODY_NUMBERS_INTRO, numbers).className = 'yours-muted';
+        const choices = el('fieldset', undefined, numbers); el('legend', 'Your chats and the numbers', choices);
+        for (const choice of BODY_NUMBERS_CHOICES) {
+          const host = el('label', undefined, choices); host.className = 'yours-radio';
+          const input = el('input', undefined, host); input.type = 'radio'; input.name = 'body-numbers'; input.value = choice.mode;
+          input.checked = choice.mode === chats; input.disabled = options.bodyNumbers === undefined;
+          input.dataset.yoursBodyNumbersChoice = choice.mode; input.dataset.yoursFocus = `body-numbers-${choice.mode}`;
+          el('span', `${choice.label}: ${choice.words}`, host);
+          input.addEventListener('change', () => { if (input.checked && choice.mode !== chats) void setBodyNumbers(choice.mode); });
+        }
+      }
+      // D-404 slice E — the installed recipes that work on things of its type, each opening its page.
+      if (snapshot.thing_recipes?.length) {
+        const used = section(panels.overview, 'Recipes for it'); used.dataset.yoursThingRecipes = '';
+        el('p', 'Installed recipes that work on things of its type.', used).className = 'yours-muted';
+        const list = el('ul', undefined, used);
+        for (const recipe of snapshot.thing_recipes) {
+          link(el('li', undefined, list), recipe.name, serializeShellRoute('recipes', recipe.id)).dataset.yoursThingRecipe = recipe.id;
+        }
+      }
       readings.hidden = !Object.keys(asset.readings).length && !Object.keys(asset.observations).length;
       button(readingActions, 'Record reading', () => open({ type: 'reading', asset })); button(readingActions, 'Record condition', () => open({ type: 'condition', asset }));
+      // D-339 slice 19 — a Body's summary sets itself up when the Body is added. One added before, or one whose
+      // summary was enrolled for an older version of the recipe, says so here, with the owner's one step to fix it.
+      if (asset.class_id === BODY_CLASS_ID) {
+        const summary = (snapshot.observation_bindings ?? []).filter(binding => binding.asset_id === asset.id && binding.enabled
+          && binding.actor_ref === `recipe:${BODY_SUMMARY_RECIPE_ID}`);
+        // Ready: the installed version, for every reading and condition the Body has (a type update can add some).
+        const bodyFields = [...Object.keys(asset.readings).map(name => `readings.${name}`), ...Object.keys(asset.observations).map(name => `observations.${name}`)];
+        const current = summary.filter(binding => binding.available !== false);
+        if (!current.some(binding => bodyFields.every(field => binding.fields.includes(field)))) {
+          const reason = !summary.length ? 'none' : !current.length ? 'older' : 'fields';
+          const why = el('p', reason === 'none' ? 'Its summary isn’t set up, so no reading reaches it from Records.'
+            : reason === 'older' ? 'Its summary was set up for an older version of it, so it can’t write the readings. Set it up again.'
+              : 'Its summary was set up before some of its readings were added, so it can’t write them. Set it up again.', readings);
+          why.className = 'yours-muted'; why.dataset.yoursBodySummary = reason;
+          button(readingActions, 'Set up the summary', () => change({ action: 'body.summary.setup', asset_id: asset.id }), 'body-summary-setup');
+        }
+      }
+      // D-339 slice 21 — Connect Apple Health, on every Body: its three steps, and where each stands.
+      if (options.appleHealth && asset.class_id === BODY_CLASS_ID) {
+        const appleHealth = options.appleHealth;
+        button(readingActions, 'Connect Apple Health', loadEditor(async () => ({ type: 'apple_health', asset, state: await appleHealth.state() })), 'apple-health');
+      }
+      // D-339 slice 20 — a Wearable's sync check sets itself up once it belongs to a Body. One under no Body says
+      // what to do; one whose check is not ready (none, or an older version's) offers the owner's one step.
+      if (asset.class_id === WEARABLE_CLASS_ID) {
+        const check = (snapshot.observation_bindings ?? []).filter(binding => binding.asset_id === asset.id && binding.enabled
+          && binding.actor_ref === `recipe:${WEARABLE_CHECK_RECIPE_ID}`);
+        const conditions = Object.keys(asset.observations).map(name => `observations.${name}`);
+        if (!check.some(binding => binding.available !== false && conditions.every(field => binding.fields.includes(field)))) {
+          // Its parent, when the page has it, says whether that is a Body; the server decides when it doesn't.
+          const parentRow = snapshot.related_assets.find(row => row.id === asset.belongs_to);
+          const underBody = parentRow ? parentRow.class_id === BODY_CLASS_ID : Boolean(asset.belongs_to);
+          const reason = !underBody ? 'no-body' : check.length ? 'older' : 'none';
+          const why = el('p', reason === 'no-body' ? `Its sync check starts once it belongs to a Body: pick its Body with ${asset.belongs_to ? 'Change parent' : 'Choose parent'}.`
+            : reason === 'older' ? 'Its sync check needs setting up again after an update.'
+              : 'Its sync check isn’t set up, so nothing notices if it stops syncing.', readings);
+          why.className = 'yours-muted'; why.dataset.yoursWearableCheck = reason;
+          if (reason !== 'no-body') button(readingActions, 'Set up the sync check', () => change({ action: 'wearable.check.setup', asset_id: asset.id }), 'wearable-check-setup');
+        }
+      }
       if (options.writerSetup && Object.keys(HOME_ASSISTANT_WRITER_SETUP.fields).some(path => {
         const [group, key] = path.split('.') as ['readings' | 'observations', string]; return Object.hasOwn(asset[group], key);
       })) button(readingActions, 'Automatic updates', () => open({ type: 'writer_setup', asset }), 'automatic-updates');
@@ -1262,7 +2026,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         const recipe = snapshot.observation_recipes?.find(recipe => binding.actor_ref === `recipe:${recipe.id}`);
         const item = card(writers, recipe?.name ?? 'Observation writer', undefined, ['writer', asset.id, binding.id]);
         el('p', !binding.enabled ? 'Disabled' : binding.available === false ? 'Needs enrollment or review' : 'Enabled for these fields', item);
-        el('p', binding.fields.map(path => { const [group, field] = path.split('.'); return `${factName(field ?? path)} ${group === 'readings' ? 'reading' : 'condition'}`; }).join(', '), item);
+        el('p', binding.fields.map(path => { const [group, field] = path.split('.'); return `${assetObservationFieldName(field ?? path)} ${group === 'readings' ? 'reading' : 'condition'}`; }).join(', '), item);
         el('small', 'Can report observations for these fields. Your manual entries keep their authority.', item);
         const identity = yoursDisclosure(item, 'Writer details');
         identity.dataset.yoursDisclosure = JSON.stringify(['writer-details', asset.id, binding.id]);
@@ -1291,14 +2055,63 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
             button(item, 'Allow automatic updates', () => change({ action: 'asset.automatic_updates', id: asset.id, path, expected: { value, source } }), `allow-automatic-${path}`);
         }
       };
+      // D-339 slice 14 — a Body keeps a reading for everything Apple Health can send. Those with no value yet
+      // fold under one heading after the rest, each still there to type a value into; any other asset
+      // lists them as before.
+      // Slice 15: a goal pursuit holds its values as its Body does, yet is not one.
+      const isBody = asset.settings.values_on_request === true && !isPursuit(asset);
+      const pursuitGoal = isPursuit(asset) ? readBodyGoal(asset.settings) : undefined;
+      const unknownReadings = Object.values(asset.readings).filter(reading => !reading).length;
+      const unset = isBody && unknownReadings > 0 ? el('details') : undefined;
+      if (unset) { unset.className = 'yours-readings-unset'; unset.dataset.yoursReadingsUnset = ''; el('summary', `No value yet (${String(unknownReadings)})`, unset); }
       for (const [name, reading] of Object.entries(asset.readings)) {
-        const item = card(readings, assetObservationFieldName(name), undefined, ['field', asset.id, 'readings', name]); item.dataset.yoursReading = name;
+        // A goal pursuit's progress is its Body's reading (D-339 slice 15), shown in its Pursuit section.
+        if (name === 'progress' && pursuitGoal) continue;
+        const item = card(!reading && unset ? unset : readings, assetObservationFieldName(name), undefined, ['field', asset.id, 'readings', name]); item.dataset.yoursReading = name;
         item.classList.add('yours-reading-row');
         item.tabIndex = -1; item.dataset.yoursFocus = JSON.stringify(['source', 'reading', name]);
-        el('p', reading ? `${reading.value} ${reading.unit}` : 'Unknown', item).className = 'yours-reading-value';
+        const valueLine = el('p', reading ? readingValueWords(reading.value, reading.unit) : 'Unknown', item); valueLine.className = 'yours-reading-value';
+        // D-339 slice 7a — where it came from and the day it describes, when its writer cites them.
+        const origin = reading ? readingOriginWords(name, reading.evidence, new Date()) : undefined;
+        if (origin) el('span', ` · ${origin}`, valueLine).className = 'yours-reading-origin';
         if (reading) el('small', `Observed ${yoursDateTime(reading.as_of)}`, item);
-        if (reading) renderEvidence(item, reading.evidence);
+        // D-339 slice 14 — why it has probably changed since it was measured, when it has.
+        const stale = snapshot?.reading_staleness?.asset_id === asset.id ? snapshot.reading_staleness.readings.find(row => row.field === name) : undefined;
+        if (reading && stale) { const note = el('p', staleWords(stale, new Date()), item); note.className = 'yours-reading-stale'; note.dataset.yoursReadingStale = stale.reason; }
+        // D-339 slice 15 — its goal, with where it stands, one click from the goal's own page.
+        const goalField = isBody && isBodyGoalField(name) ? name : undefined;
+        const goal = goalField ? snapshot?.goal_progress?.find(row => row.goal.asset_id === asset.id && row.goal.reading === goalField) : undefined;
+        if (goal) {
+          const line = el('p', `${goalLineWords(goal, new Date())} · `, item); line.className = 'yours-reading-goal'; line.dataset.yoursReadingGoal = name;
+          link(line, 'Open goal', `#yours/asset/${encodeURIComponent(goal.pursuit_id)}`).dataset.yoursGoalLink = goal.pursuit_id;
+        }
+        // D-339 slice 16 — the owner's own range for it: where it sits, how often it was in it, and, once set long
+        // enough ago, whether it is still right.
+        const range = goalField ? readBodyRanges(asset.settings)[goalField] : undefined;
+        if (range && goalField) {
+          const points = snapshot?.reading_trends?.asset_id === asset.id ? snapshot.reading_trends.readings.find(row => row.field === name)?.points ?? [] : [];
+          const now = new Date(); const today = `${String(now.getFullYear())}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+          const line = el('p', rangeLineWords(goalField, range, reading ? { value: reading.value, unit: reading.unit } : undefined, points, today), item);
+          line.className = 'yours-reading-range'; line.dataset.yoursReadingRange = name;
+          if (rangeDue(range, today)) {
+            const due = el('p', `Set on ${readingDayDate(range.set_on, now)}, over 6 months ago. Is it still right? `, item);
+            due.className = 'yours-reading-stale'; due.dataset.yoursRangeDue = name;
+            button(due, 'Still right', () => change({ action: 'range.set', asset_id: asset.id, reading: goalField, low: range.low ?? null, high: range.high ?? null }),
+              `range-still-${name}`);
+          }
+        }
+        // D-339 slice 7b — its last 30 days, when the server sent them for this asset.
+        const trends = snapshot?.reading_trends;
+        const trend = trends?.asset_id === asset.id ? trends.readings.find(row => row.field === name) : undefined;
+        if (reading && trend) renderReadingSparkline(item, assetObservationFieldName(name), trend);
+        if (reading) renderEvidence(item, reading.evidence, fieldEvidence(asset, `readings.${name}`));
         const actions = yoursActions(item); const update = button(actions, 'Update reading', () => open({ type: 'reading', asset, field: name }), `reading-${name}`); update.textContent = 'Update'; update.setAttribute('aria-label', 'Update reading');
+        if (goalField && reading) button(actions, goal ? 'Change goal' : 'Set a goal', () => open({ type: 'goal', body_id: asset.id, body_name: asset.name, field: goalField,
+          now: { value: reading.value, unit: reading.unit },
+          ...(goal ? { own: { pursuit_id: goal.pursuit_id, target: goal.goal.target, unit: goal.goal.unit, ...(goal.target_on ? { target_on: goal.target_on } : {}) } } : {}) }),
+        `goal-${name}`).dataset.yoursGoalAction = name;
+        if (goalField && reading) button(actions, range ? 'Change range' : 'Set your range', () => open({ type: 'range', body_id: asset.id, field: goalField,
+          now: { value: reading.value, unit: reading.unit }, ...(range ? { own: range } : {}) }), `range-${name}`).dataset.yoursRangeAction = name;
         const more = yoursMenu(actions, `${assetObservationFieldName(name)} reading`, ['field', asset.id, 'readings', name]);
         button(more, 'Use in a rule', () => open({ type: 'rule', asset, initialField: { group: 'readings', field: name } }), `use-reading-${name}`);
         button(more, 'Keep updated from a source', () => open({ type: writerEditor(`readings.${name}`), asset, field: `readings.${name}` }), `writer-reading-${name}`);
@@ -1306,6 +2119,19 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         if (options.context) button(more, 'Used by', () => open({ type: 'context', request: { root: { kind: 'field', asset_id: asset.id, group: 'readings', field: name } } }), `used-by-reading-${name}`);
         observationControls(item, `readings.${name}`, reading);
       }
+      // D-339 slice 14 — BMI, worked out from the latest height and weight, never stored. WHO's range is an
+      // adult's, so it shows for an adult, or when the Body has no birth date to say otherwise.
+      const bmi = isBody ? bodyMassIndex(asset.readings.height ?? null, asset.readings.weight ?? null) : undefined;
+      if (bmi !== undefined) {
+        const item = card(readings, 'BMI'); item.classList.add('yours-reading-row'); item.dataset.yoursReading = 'bmi';
+        el('p', trendNumber(bmi), item).className = 'yours-reading-value';
+        el('small', `Worked out from ${readingValueWords(asset.readings.height!.value, asset.readings.height!.unit)} and ${readingValueWords(asset.readings.weight!.value, asset.readings.weight!.unit)}`, item);
+        const birth = typeof asset.dates.birth_date === 'string' ? asset.dates.birth_date : '';
+        const now = new Date(); const today = `${String(now.getFullYear())}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const age = birth ? ageOn(birth, today) : undefined;
+        if (age === undefined || age >= WHO_ADULT_BMI.from_age) el('small', `WHO's healthy range for adults: ${String(WHO_ADULT_BMI.low)}–${String(WHO_ADULT_BMI.high)}`, item).dataset.yoursBmiRange = '';
+      }
+      if (unset) readings.append(unset);
       const expected = (asset.settings[ASSET_EXPECTED_PATTERNS] ?? {}) as Record<string, { active: boolean; at: number } | undefined>;
       for (const [name, observation] of Object.entries(asset.observations)) { const item = card(readings, assetObservationFieldName(name), undefined, ['field', asset.id, 'observations', name]); item.dataset.yoursCondition = name;
         item.classList.add('yours-reading-row');
@@ -1320,7 +2146,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         }
         if (source) renderAssetSource(item, source, `${asset.id}:observations.${name}`, source.kind === 'observation' ? writerName(source.ref) : undefined);
         else el('small', 'Source not recorded.', item);
-        if (observation) renderEvidence(item, observation.evidence);
+        if (observation) renderEvidence(item, observation.evidence, fieldEvidence(asset, `observations.${name}`));
         const actions = yoursActions(item); button(actions, 'Update condition', () => open({ type: 'condition', asset, field: name }), `condition-${name}`);
         const more = yoursMenu(actions, `${assetObservationFieldName(name)} condition`, ['field', asset.id, 'observations', name]);
         button(more, 'Use in a rule', () => open({ type: 'rule', asset, initialField: { group: 'observations', field: name } }), `use-condition-${name}`);
@@ -1347,7 +2173,9 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       const factRows: Array<[path: string, name: string, value: unknown]> = [
         ...Object.entries(asset.dates).map(([name, value]): [string, string, unknown] => [`dates.${name}`, name, value]),
         ...Object.entries(asset.attributes).filter(([key]) => key !== ASSET_DOCUMENT_DETAILS_ATTRIBUTE).map(([name, value]): [string, string, unknown] => [`attributes.${name}`, name, value]),
-        ...Object.entries(asset.settings).filter(([key]) => key !== ASSET_EXPECTED_PATTERNS).map(([name, value]): [string, string, unknown] => [`settings.${name}`, name, value]),
+        // The Body's conversation and its approvals are shown in "Ask with the numbers", not as a fact.
+        // Slice 16: and its own ranges, which show under their readings.
+        ...Object.entries(asset.settings).filter(([key]) => key !== ASSET_EXPECTED_PATTERNS && key !== ASSET_CHAT_CONVERSATION && key !== BODY_RANGES_SETTING).map(([name, value]): [string, string, unknown] => [`settings.${name}`, name, value]),
         ...(asset.holder_contact ? [['holder_contact', 'holder', holderName(asset.holder_contact)] as [string, string, unknown]] : []),
         ...(['document_number', 'serial_number', 'exact_address'] as const).flatMap((name): Array<[string, string, unknown]> => asset[name] === undefined ? [] : [[name, name, asset[name]]]),
       ].filter(([path]) => !pursuitPage || !PURSUIT_FACTS.has(path));
@@ -1559,7 +2387,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
           if (parent) { const part = el('p', `Part of ${parent.name}`); part.className = 'yours-muted'; part.dataset.yoursPursuitParent = parent.id; item.querySelector('h3')!.after(part); }
           // D-343 slice 5 (§7) — and when the owner last recorded working on it, in Close the day.
           const lastOn = snapshot.pursuit_activity?.[asset.id]?.last_on;
-          const facts: Array<readonly [string, string, string?]> = [...pursuitFacts(asset), ...(lastOn ? [['Last worked on', yoursCalendarDate(lastOn)] as const] : [])];
+          const facts: Array<readonly [string, string, string?]> = [...pursuitFacts(asset, 'line', snapshot.goal_progress?.find(row => row.pursuit_id === asset.id)), ...(lastOn ? [['Last worked on', yoursCalendarDate(lastOn)] as const] : [])];
           if (facts.length) { const terms = el('dl', undefined, item); terms.className = 'yours-pursuit-facts';
             for (const [name, value] of facts) { el('dt', name, terms); el('dd', value, terms); } }
           const actions = yoursActions(item);
@@ -1637,10 +2465,39 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
       if (!snapshot.occurrences.length) yoursEmpty(content, 'Nothing is due. Tasks and notices from your rules appear here when they come up.');
     } else if (tab === 'occasions') {
       button(pageHeader!.actions, 'Create occasion', () => open({ type: 'occasion' })).className = 'yours-primary';
+      // D-407 slice 4 (Q3) — the one calendar occasions put their events in, chosen here, never by the AI.
+      if (snapshot.occasion_calendar_events === true) occasionCalendarChoice(content, snapshot.settings.occasion_calendar ?? null);
       for (const occasion of snapshot.occasions) { const item = card(content, occasion.title, { collection: 'occasion', id: occasion.id });
         item.classList.add('yours-event');
-        const next = occasionNextDate(occasion, new Date().toISOString().slice(0, 10));
-        el('p', `${next ? `Next ${yoursCalendarDate(next)}` : 'No upcoming date'}${occasion.muted ? ' · muted' : ''}`, item).className = 'yours-event-date';
+        // This device's day, as Today's: a UTC day is tomorrow's for an evening west of Greenwich.
+        const day = localDay(new Date());
+        const next = occasionNextDate(occasion, day);
+        const waiting = snapshot.occasion_next === true ? occasionWaitingForNext(occasion, day) : undefined;
+        el('p', `${next ? `Next ${yoursCalendarDate(next)}` : waiting ? `Last ${yoursCalendarDate(waiting)}` : 'No upcoming date'}${
+          occasion.time && next ? ` at ${occasion.time}${occasion.time_zone ? ` ${zoneName(occasion.time_zone, next)}` : ''}` : ''}${
+          occasion.time && next && occasion.alert_minutes !== undefined && snapshot.occasion_alert === true ? ` · alert ${occasionAlertWords(occasion.alert_minutes)}` : ''}${
+          occasion.after_each === true ? ' · when the last one says' : ''}${occasion.muted ? ' · muted' : ''}${
+          snapshot.occasion_events?.[occasion.id] ? (snapshot.occasion_events[occasion.id]!.error
+            ? ` · not in ${snapshot.occasion_events[occasion.id]!.name} yet: ${snapshot.occasion_events[occasion.id]!.error}`
+            // D-407 slice 5 (U2) — an event it holds but did not write: where it came from, one appointment.
+            : snapshot.occasion_events[occasion.id]!.appointment
+              ? ` · ${occasionHeldFrom(snapshot.occasion_events[occasion.id]!)}`
+              : ` · in ${snapshot.occasion_events[occasion.id]!.name}`) : ''}${
+          snapshot.occasion_privacy === true && occasionIsPrivate(occasion) ? ' · private' : ''}`, item).className = 'yours-event-date';
+        // D-407 slice 2 — "When is the next one?", answered here as in Today: its date, or "No next one".
+        if (waiting && !occasion.muted) {
+          const ask = el('div', undefined, item); ask.setAttribute(YOURS_OCCASION_NEXT_ATTR, occasion.id);
+          el('p', 'When is the next one?', ask).className = 'yours-event-date';
+          const on = label(ask, 'Date of the next one', `occasion-next-${occasion.id}`, '', 'date', true);
+          on.min = day;
+          const at = label(ask, 'Time (optional)', `occasion-next-${occasion.id}-time`, occasion.time ?? '', 'time', true);
+          const answers = yoursActions(ask);
+          button(answers, 'Save', () => write(() => {
+            if (!on.value) throw new Error(`Choose the date of the next “${occasion.title}”, or No next one.`);
+            return options.change({ action: 'occasion.next', id: occasion.id, on: on.value, time: at.value || null });
+          }), `occasion-next-${occasion.id}-save`).className = 'yours-primary';
+          button(answers, 'No next one', () => write(() => options.change({ action: 'occasion.next', id: occasion.id, on: null })), `occasion-next-${occasion.id}-none`);
+        }
         if (occasion.people.length) el('p', occasion.people.map(id => holderName(id)).join(', '), item);
         if (occasion.source_active === false) el('p', 'Its source was removed or hidden. Reminders are suspended.', item);
         const actions = yoursActions(item); button(actions, 'Edit occasion', () => open({ type: 'occasion', occasion })); button(yoursMenu(actions, occasion.title, ['occasion', occasion.id]), 'Delete occasion', () => { const floor = occasion.rules.some(rule => rule.enabled && rule.consequence === 'floor');
@@ -1655,6 +2512,18 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         // it, and its history, where each episode can be corrected or hidden. The server
         // reads both for this occasion alone; the list's reads are not about it.
         if (occasion.id === selectedOccasion) {
+          // D-407 slice 5 (U2) — the event it holds and the booking the same invite made: one appointment, never three
+          // records to manage.
+          const held = snapshot.occasion_events?.[occasion.id];
+          if (held?.appointment) {
+            const appointment = section(item, 'Appointment'); appointment.setAttribute(YOURS_OCCASION_APPOINTMENT_ATTR, occasion.id);
+            const at = held.appointment.is_all_day
+              ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(held.appointment.start_at)
+              : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(held.appointment.start_at);
+            el('p', `${held.appointment.title}, ${at}`, appointment).className = 'yours-event-date';
+            el('p', `${occasionHeldFrom(held)[0]!.toUpperCase()}${occasionHeldFrom(held).slice(1)}, in ${held.name}. The occasion follows it, and it stays as it is in your calendar.`, appointment);
+            if (held.appointment.booking) el('p', `Its booking: ${held.appointment.booking}`, appointment);
+          }
           if (snapshot.proposals.length) { const suggestions = section(item, 'Suggestions'); snapshot.proposals.forEach(proposal => renderProposal(suggestions, proposal)); }
           const history = section(item, 'History'); snapshot.episodes.forEach(episode => renderCitedEpisode(history, episode));
           if (!snapshot.episodes.length) el('p', 'No episode of this occasion is recorded yet.', history);
@@ -1767,7 +2636,7 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
     if (!snapshot) render(); else paintStatus();
     pending = (async () => {
       try {
-        const result = await options.read({ ...(selected ? { asset_id: selected } : {}), ...(selectedOccasion ? { occasion_id: selectedOccasion } : {}),
+        const result = await options.read({ ...(selected ? { asset_id: selected, include_reading_trends: true } : {}), ...(selectedOccasion ? { occasion_id: selectedOccasion } : {}),
           // D-342 — the Assets tab leaves pursuits out, and the Pursuits tab reads all of them at once.
           ...(assetList ? { include_asset_summaries: true, pursuits: 'exclude' as const, ...(assetFilter ? { asset_filter: assetFilter } : {}), ...(assetSphere ? { asset_sphere: assetSphere } : {}) } : {}),
           ...(pursuitList ? { pursuits: 'only' as const } : {}),
@@ -1806,12 +2675,45 @@ export const bootstrapYoursRoute = (options: YoursRouteOptions) => {
         else {
           // This refresh may open its route's form; it must not replace a form
           // the owner opened while the read was pending, or reopen after Cancel.
-          if (snapshot && segments[0] === 'new' && !editor && !routeEditorOpened) { editor = { type: 'asset' }; routeEditorOpened = true; }
+          // D-404 slice A — `#yours/new/<type>` opens it with that type chosen, when the type is one
+          // this form offers (not a pursuit, which has its own tab); any other id opens it with none.
+          if (snapshot && segments[0] === 'new' && !editor && !routeEditorOpened) {
+            const routeClass = segments[1];
+            // D-404 slice B2 — `#yours/new/<type>/return/chat/<session>/<message>`: opened from a chat answer.
+            const back = segments[2] === 'return' && segments[3] === 'chat' && segments[4] && segments[5] && segments.length === 6
+              ? { sessionId: segments[4], messageId: segments[5] } : undefined;
+            editor = { type: 'asset', ...(routeClass && routeClass !== PURSUIT_CLASS_ID && snapshot.classes.some(row => row.id === routeClass) ? { class_id: routeClass } : {}),
+              ...(back ? { returnToChat: back } : {}) };
+            routeEditorOpened = true;
+          }
           // P44 — `#yours/episodes/episode/<id>/correct` is Correct where an episode is
           // cited outside Yours (a contact's page): it opens the correction once.
           const cited = selectedEpisode && segments[3] === 'correct'
             ? [...(snapshot?.episodes ?? []), ...(snapshot?.derived_episodes ?? [])].find(row => row.id === selectedEpisode) : undefined;
           if (cited && !editor && !routeEditorOpened) { editor = { type: 'episode', episode: cited }; routeEditorOpened = true; }
+          // D-339 slice 24 — `#yours/setup/body-signals-apple-health`, from the pack's install when no webhook fits: the
+          // owner's Bodies are read (every page of their things), then one Body opens its form, several are asked about,
+          // and none opens the form to add one. A replace, so Back skips this address.
+          if (segments[0] === 'setup' && segments[1] === APPLE_HEALTH_PACK && options.appleHealth && !editor && !routeEditorOpened) {
+            routeEditorOpened = true;
+            void appleHealthBodies().then(bodies => {
+              if (disposed || editor || !doc.defaultView) return;
+              if (bodies.length === 1) doc.defaultView.location.replace(serializeShellRoute('yours', 'asset', bodies[0]!.id, 'setup', APPLE_HEALTH_PACK));
+              else if (bodies.length === 0) doc.defaultView.location.replace(serializeShellRoute('yours', 'new', BODY_CLASS_ID));
+              else open({ type: 'apple_health_body', bodies });
+            }, value => { if (!disposed) showError(value); });
+          }
+          // D-339 slice 23 — `#yours/asset/<id>/setup/body-signals-apple-health[/return/chat/<session>/<message>]`, chat's
+          // step for a Body with no readings: its Connect Apple Health form, opened once, after reading where it stands.
+          const setupFor = selected && segments[2] === 'setup' && segments[3] === APPLE_HEALTH_PACK && options.appleHealth
+            ? snapshot?.assets.find(row => row.id === selected && row.class_id === BODY_CLASS_ID) : undefined;
+          if (setupFor && options.appleHealth && !editor && !routeEditorOpened) {
+            routeEditorOpened = true;
+            const back = segments[4] === 'return' && segments[5] === 'chat' && segments[6] && segments[7] && segments.length === 8
+              ? { sessionId: segments[6], messageId: segments[7] } : undefined;
+            void options.appleHealth.state().then(state => { if (!disposed && !editor) open({ type: 'apple_health', asset: setupFor, state, ...(back ? { returnToChat: back } : {}) }); },
+              value => { if (!disposed) showError(value); });
+          }
           render();
           if (!openedRecorded && selected && snapshot?.assets.some(asset => asset.id === selected)) { openedRecorded = true; options.recordOpened?.({ collection: 'asset', id: selected }); }
         }

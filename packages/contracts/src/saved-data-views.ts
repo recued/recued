@@ -7,6 +7,8 @@ import type { RecordsChangeCursor, RecordsPackRef } from './records.js';
 import { parseRecordsViewSettings, type RecordsViewSettings } from './records-view.js';
 import { parseTaskViewFilters, type TaskViewFilters } from './task-data-view.js';
 import { parseCommitmentViewFilters, type CommitmentViewFilters } from './commitment-data-view.js';
+import { isReminderState, type ReminderSearchStatus } from './reminder.js';
+import { parseReminderSearchDates, type ReminderSearchDates } from './reminder-search-dates.js';
 
 export const SAVED_DATA_VIEW_LIMIT = 100;
 export const SAVED_DATA_VIEW_NAME_LIMIT = 100;
@@ -23,8 +25,15 @@ export const SAVED_DATA_VIEW_QUERY_LIMIT = 2000;
  *  and so the refusal can name the pack that overran. */
 export const PACK_SAVED_VIEWS_PER_PACK_LIMIT = 20;
 
+export const UNIVERSAL_SEARCH_RESULT_TYPES = ['all', 'chat', 'mail', 'draft', 'file', 'contact',
+  'task', 'note', 'project', 'commitment', 'booking', 'calendar', 'reminder', 'scheduled_prompt', 'decision', 'asset', 'capability'] as const;
+export type UniversalSearchResultType = typeof UNIVERSAL_SEARCH_RESULT_TYPES[number];
+export const isUniversalSearchResultType = (value: unknown): value is UniversalSearchResultType =>
+  typeof value === 'string' && UNIVERSAL_SEARCH_RESULT_TYPES.some(type => type === value);
+
 export type SavedDataViewDefinition =
-  | { tab: 'search' | 'contact'; query: string }
+  | { tab: 'search'; query: string; result_type?: UniversalSearchResultType; reminder_state?: ReminderSearchStatus; reminder_dates?: ReminderSearchDates }
+  | { tab: 'contact'; query: string }
   | {
       tab: WorkEntityKind;
       query: string;
@@ -246,8 +255,21 @@ export const parseSavedDataViewDefinition = (value: unknown): SavedDataViewDefin
   if (!isObject(value)) return null;
   const { tab } = value;
   if (tab === 'search' || tab === 'contact') {
-    if (!keysAre(value, ['tab', 'query']) || !boundedString(value.query, SAVED_DATA_VIEW_QUERY_LIMIT)) return null;
-    return { tab, query: value.query };
+    const hasType = tab === 'search' && Object.hasOwn(value, 'result_type');
+    const hasReminderState = tab === 'search' && Object.hasOwn(value, 'reminder_state');
+    const hasReminderDates = tab === 'search' && Object.hasOwn(value, 'reminder_dates');
+    const reminderDates = hasReminderDates ? parseReminderSearchDates(value.reminder_dates) : undefined;
+    if (!keysAre(value, ['tab', 'query', ...(hasType ? ['result_type'] : []), ...(hasReminderState ? ['reminder_state'] : []), ...(hasReminderDates ? ['reminder_dates'] : [])])
+      || !boundedString(value.query, SAVED_DATA_VIEW_QUERY_LIMIT)
+      || hasType && !isUniversalSearchResultType(value.result_type)
+      || hasReminderState && value.reminder_state !== 'all' && !isReminderState(value.reminder_state)
+      || hasReminderDates && !reminderDates) return null;
+    if (tab === 'contact') return { tab, query: value.query };
+    // An absent filter and explicit All keep the same legacy stored shape.
+    return { tab, query: value.query, ...(hasType && value.result_type !== 'all'
+      ? { result_type: value.result_type as UniversalSearchResultType } : {}),
+      ...(hasReminderState && value.reminder_state !== 'all' ? { reminder_state: value.reminder_state as ReminderSearchStatus } : {}),
+      ...(reminderDates ? { reminder_dates: reminderDates } : {}) };
   }
   if (typeof tab === 'string' && WORK_ENTITY_KINDS.some((kind) => kind === tab)) {
     const keys = ['tab', 'query', 'source_id', 'booking_lifecycle'];

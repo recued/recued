@@ -259,6 +259,26 @@ const expectRpcCode = async (promise: Promise<unknown>, code: string): Promise<v
   }
 };
 
+describe('D-186 session_grant.list — what a pass lets through, by name', () => {
+  it('names each action as its manifest does, and leaves the names out when none is known', async () => {
+    defStore.mintSessionGrant(mintSessionInput({ display_name: 'Session grant — mail.send' }));
+    const named = makeContractHandlers({
+      store, listManifests, now: () => defNow, newContractId: makeSeqId,
+      getManifest: (slug) => slug === 'mail.send' ? { slug, name: 'Send mail' } as IngredientManifest : null,
+    })!.handlers;
+    const [view] = (await listGrants(named, {})).grants;
+    expect(view!.permit_names).toEqual(['Send mail']);
+    expect(view!.permits.operation_ids).toEqual(['mail.send']);
+    // Its title, minted with the id, reads by name; the stored row keeps what it was minted with.
+    expect(view!.display_name).toBe('Session grant — Send mail');
+    expect(rawDefinition(view!.contract_id).display_name).toBe('Session grant — mail.send');
+    // No manifest names it: no names, and the lists show the id as before.
+    const [bare] = (await listGrants(makeHandlers(), {})).grants;
+    expect(bare).not.toHaveProperty('permit_names');
+    expect(bare!.display_name).toBe('Session grant — mail.send');
+  });
+});
+
 describe('D-186 session_grant.list', () => {
   it('projects an active session grant to the compact render shape with no bearer secrets', async () => {
     const grant = defStore.mintSessionGrant(mintSessionInput());

@@ -31,13 +31,25 @@
 
 import { randomUUID } from 'node:crypto';
 import { parseMailWorkReadRequest } from './mail-work-fresh-read.js';
-import { parseBrief } from './chat-rolling-brief.js';
+import { parseStoredBrief } from './chat-rolling-brief.js';
 import { parseMailWorkEvidence } from './mail-work-evidence.js';
 import { parseChatSearchCursor, searchChatHistory } from './chat-history-search.js';
 import { parseSessionListRequest, readChatSessionPage } from './chat-session-list.js';
 import { parseChatDeliveryListRequest } from './chat-delivery-read.js';
 import { createListPager, readListPageRequest, type ListPager } from './list-pager.js';
+import type { ChatHintStore } from './storage/chat-hint-store.js';
 import {
+  CHAT_SETUP_FEATURES,
+  type ChatSetupFeature,
+  type ChatSetupFeatureState,
+  CHAT_HINT_LABEL_MAX,
+  CHAT_HINT_NOT_NOW_MS,
+  CHAT_HINTS_NOT_NOW_LIMIT,
+  isChatHintKey,
+  type ChatHintNotNow,
+  chatNextStepKey,
+  chatNextStepRefsOf,
+  type ChatNextStepRef,
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_MODEL_SOURCE_ID_SET,
   CHAT_SESSION_CHANGED_FIELD_SET,
@@ -98,6 +110,7 @@ import {
   type ToolCatalogEntryView,
   type ToolEntry,
 } from '@recued/contracts';
+import { chatCalendarRefInputsOf, chatMailRefInputsOf, type ChatCalendarRef, type ChatCalendarRefInput, type ChatMailRef, type ChatMailRefInput } from '@recued/contracts';
 import type {
   CaseRecipeDraftOutcome,
 } from './execution-case-recipe-draft.js';
@@ -124,9 +137,26 @@ import type {
 import type {
   ExecutionSpanAnchorStore,
 } from './storage/execution-span-anchor-store.js';
+import type { RunCarryOnResult, RunCarryOnSessions } from './run-carry-on.js';
 
 export interface ChatRpcDeps {
   store: ChatStore;
+  /** D-404 slice B1 — of these steps under chat answers, the ones that have landed (installed, or a
+   *  thing of the type in Yours). Absent: `chat.next_steps.state` answers `not_configured`. */
+  nextStepsLanded?: (steps: ReadonlyArray<ChatNextStepRef>) => ChatNextStepRef[];
+  /** D-405 slice 3 — the hints the owner said "Not now" to. Absent: `chat.hints.*` answer `not_configured`. */
+  hints?: ChatHintStore;
+  /** D-405 slice 4 — whether any mailbox, calendar or file source is connected (null: cannot be known),
+   *  the fact the chat's hints read. Absent: `chat.setup.features` answers `not_configured`. */
+  setupFeatures?: (feature: ChatSetupFeature) => boolean | null;
+  /** D-406 — an email the owner picked for a message, as the message keeps it: the sender, subject and date
+   *  read from the stored email, or null when its mailbox or the email is not there. Absent: `chat.send`
+   *  refuses a message that names one. */
+  pickedMail?: (ref: ChatMailRefInput) => ChatMailRef | null;
+  /** D-406 (Q4) — a calendar event the owner picked for a message, as the message keeps it: the title and start
+   *  read from the stored event, or null when its calendar or the event is not there. Absent: `chat.send` refuses
+   *  a message that names one. */
+  pickedCalendar?: (ref: ChatCalendarRefInput) => ChatCalendarRef | null;
   /** Late-bound to the actual receive supervisor; never inferred from sends. */
   messengerReceiveStatus?: (vendor: string) => ChatMessengerReceiveState;
   /** D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
@@ -159,13 +189,17 @@ export interface ChatRpcDeps {
    *  answered here. */
   answerHeldPlanAsk?: (
     run_id: string,
-    /** D-341 — `allow_trigger`: approve with the trigger's standing pre-approval the ask
-     *  offers (`hold.always_allow`); `ignored` when the open ask offers none. */
-    option: 'approve' | 'allow_trigger' | 'deny',
+    /** D-341 / D-177 N.15 — `allow_offered`: approve with the second answer the ask offers
+     *  (`hold.always_allow`): the trigger's standing pre-approval, or this chat's kind grant;
+     *  `ignored` when the open ask offers none. */
+    option: 'approve' | 'allow_offered' | 'deny',
     /** D-336 slice E — run once the ask is found open, just before it is answered with a yes
-     *  (`approve` or `allow_trigger`): the owner's change to the call, written where the
+     *  (`approve` or `allow_offered`): the owner's change to the call, written where the
      *  resume reads it. A throw answers nothing. */
     beforeApprove?: () => Promise<void>,
+    /** D-177 §N.15.9 (1c-b) — whether the yes carries a change, and who is told the holds a
+     *  round's one approval answered (`HeldPlanAnswerOptions`). */
+    opts?: import('./chat-held-writes.js').HeldPlanAnswerOptions,
   ) => Promise<'answered' | 'closed' | 'ignored' | 'no_ask' | 'expired'>;
   /** D-336 slice E — apply the owner's change to a held proposal (`chat.plan.approve`'s
    *  `edited_args`): onto its hold's checkpoint, which the resume runs, and into the
@@ -198,6 +232,9 @@ export interface ChatRpcDeps {
   /** D-214 privacy cascade. Session deletion removes every derived span/case
    * source before the authoritative chat rows disappear. */
   deleteSessionExecutionCases?: (session_id: string) => Promise<number>;
+  /** D-348 — the conversation's requests and the calls they held, kept for chains to learn from:
+   *  they go with it. */
+  deleteSessionChainEvidence?: (session_id: string) => void;
   /** D-214 owner-only aggregate diagnostics. The producer returns no raw
    * intervention or model-facing records. */
   executionCaseDiagnostics?: () => Promise<unknown>;
@@ -211,6 +248,16 @@ export interface ChatRpcDeps {
     forget(flow_id: string): Promise<boolean>;
     recipe(flow_id: string): Promise<{ ok: boolean; recipe?: RecipeDefinition; issues: string[]; reason?: string }>;
   };
+  /** D-402 slice A4 — "Make a recipe" on a request in the chat: its plan compiled into a draft kept
+   *  in Kitchen as Recued's. Absent ⇒ the rpc answers `not_configured`. */
+  executionRequestRecipe?: (input: { session_id: string; turn_id: string }) => Promise<
+    | { ok: true; draft_id: string; kitchen_path: string; recipe_id?: string; issues: string[] }
+    | { ok: false; reason: 'nothing_kept' | 'no_actions' | 'invalid_recipe' | 'changes_in_progress'; issues: string[] }
+  >;
+  /** D-402 slice E4b — "Carry on in Chat" from a run a hand-off stopped: the chat kept for the run
+   *  and the message its composer starts with (`run-carry-on.ts`). The handler supplies the chat
+   *  side, so a chat is opened the way `chat.session.create` opens one. Absent ⇒ `not_configured`. */
+  executionCarryOn?: (run_id: string, sessions: RunCarryOnSessions) => Promise<RunCarryOnResult>;
   /** D-219 item 2 — unlearn one case: its source reports and the owner verdicts
    *  recorded against their roots, then a rebuild. */
   executionCaseForget?: (
@@ -349,6 +396,14 @@ type ChatMethods =
   | 'chat.schedule.remove'
   | 'chat.schedule.run_now'
   | 'chat.schedule.preview'
+  | 'chat.schedule.skip_preview'
+  | 'chat.schedules.bulk.preview'
+  | 'chat.schedules.bulk.apply'
+  | 'chat.schedule.pause_preview'
+  | 'chat.schedule.pause_until'
+  | 'chat.schedule.runs.list'
+  | 'chat.schedule.skip_next'
+  | 'chat.schedule.undo_skip'
   | 'chat.turns.list'
   | 'chat.turn.withdraw'
   | 'chat.turn.cancel'
@@ -367,6 +422,8 @@ type ChatMethods =
   | 'chat.execution.authored'
   | 'chat.execution.browser_flow.forget'
   | 'chat.execution.browser_flow.recipe'
+  | 'chat.execution.request_recipe'
+  | 'chat.execution.carry_on'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   | 'chat.session.clear_model_pref'
@@ -376,6 +433,11 @@ type ChatMethods =
   | 'chat.rolling_brief.set'
   | 'chat.install_offers.get'
   | 'chat.install_offers.set'
+  | 'chat.next_steps.state'
+  | 'chat.hints.list'
+  | 'chat.hints.not_now'
+  | 'chat.hints.restore'
+  | 'chat.setup.features'
   | 'chat.session.brief.get'
   | 'chat.session.brief.clear'
   | 'chat.connection_mcp.list'
@@ -878,6 +940,7 @@ export const handleSessionDelete = async (
   const messageCount = (await deps.store.listMessages(session_id)).length;
   await deps.orchestrator.promptSchedules?.beforeDeleteSession(session_id);
   await deps.deleteSessionExecutionCases?.(session_id);
+  deps.deleteSessionChainEvidence?.(session_id);
   const deleted = deps.store.deleteSession(session_id);
   if (!deleted) {
     // Race: session vanished between ensureSession + delete; surface
@@ -962,6 +1025,10 @@ export const handleSend = async (
     /** The client asks for a turn that may only read. Narrowing only. */
     read_only?: boolean;
     mail_work?: import('@recued/contracts').MailWorkReadRequest;
+    /** D-406 — emails the owner picked for this message (`chat-mail-refs.ts`). */
+    mail_refs?: unknown;
+    /** D-406 (Q4) — calendar events the owner picked for this message (`chat-calendar-refs.ts`). */
+    calendar_refs?: unknown;
   },
 ): Promise<ChatTurnAcceptance & {
   turn_id: string;
@@ -1034,7 +1101,32 @@ export const handleSend = async (
     })
     : [];
 
-  const message = attachments.length > 0
+  // D-406 — the emails the owner picked: each a stored email, or the send is refused in words. Never dropped:
+  // the owner chose each one, as a guarded file selection is never dropped.
+  const picked = chatMailRefInputsOf(safe.mail_refs);
+  if ('error' in picked) throw new RpcError('bad_request', picked.error, 400);
+  if (picked.refs.length > 0 && deps.pickedMail === undefined) {
+    throw new RpcError('unavailable', 'This server cannot read a picked email. Paste its text into the message instead.', 503);
+  }
+  const mail_refs = picked.refs.map((ref) => {
+    const found = deps.pickedMail!(ref);
+    if (found === null) throw new RpcError('not_found', 'A picked email is no longer in its mailbox. Remove it and pick it again.', 404);
+    return found;
+  });
+
+  // D-406 (Q4) — the calendar events the owner picked, the same way.
+  const pickedEvents = chatCalendarRefInputsOf(safe.calendar_refs);
+  if ('error' in pickedEvents) throw new RpcError('bad_request', pickedEvents.error, 400);
+  if (pickedEvents.refs.length > 0 && deps.pickedCalendar === undefined) {
+    throw new RpcError('unavailable', 'This server cannot read a picked calendar event. Describe it in the message instead.', 503);
+  }
+  const calendar_refs = pickedEvents.refs.map((ref) => {
+    const found = deps.pickedCalendar!(ref);
+    if (found === null) throw new RpcError('not_found', 'A picked event is no longer in its calendar. Remove it and pick it again.', 404);
+    return found;
+  });
+
+  const message = attachments.length > 0 || mail_refs.length > 0 || calendar_refs.length > 0
     ? rawMessage
     : ensureNonEmptyString('chat.send', 'message', safe.message);
 
@@ -1309,6 +1401,8 @@ export const handleSend = async (
         session_id,
         message,
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(mail_refs.length > 0 ? { mail_refs } : {}),
+        ...(calendar_refs.length > 0 ? { calendar_refs } : {}),
         picker_state: {
           current: pickerCurrent as ChatPickerTarget,
         },
@@ -1501,8 +1595,10 @@ const heldPlan = async (
  *  D-336 slice E — `edit`, the owner's change made while approving, is written once the ask
  *  is found open and before it is answered, so the write runs it (`chat-plan-edits.ts`).
  *
- *  D-341 — `alwaysAllow` approves with the standing pre-approval the ask offers (`allow_trigger`,
- *  "Always allow for this scheduled prompt"): the resume grants it, then runs the write. */
+ *  D-341 — `alwaysAllow` approves with the second answer the ask offers (`hold.always_allow`): a
+ *  scheduled run's standing pre-approval ("Always allow for this scheduled prompt"), or (D-177
+ *  N.15) the owner's own chat's kind grant ("Allow in this chat"). The resume grants
+ *  it, then runs the write. */
 const resolveHeldPlanRpc = async (
   deps: ChatRpcDeps,
   method: 'chat.plan.approve' | 'chat.plan.cancel',
@@ -1528,15 +1624,20 @@ const resolveHeldPlanRpc = async (
     );
   }
   const always = alwaysAllow && next_status === 'approved';
+  // D-177 §N.15.9 (1c-b) — the holds a round's one approval answered with this one.
+  const together: string[] = [];
   const answer = await deps.answerHeldPlanAsk(
     plan.hold!.run_id,
-    next_status === 'approved' ? always ? 'allow_trigger' : 'approve' : 'deny',
+    next_status === 'approved' ? always ? 'allow_offered' : 'approve' : 'deny',
     // Every yes from the card, with a change or not: the hold must run what the card shows.
     editHeldPlan === undefined ? undefined : async () => { await editHeldPlan(plan, edit); },
+    { ...(edit !== undefined ? { edited: true } : {}), together: (runs) => { together.push(...runs); } },
   );
   if (answer === 'ignored') {
+    // The card's own label for its second answer: "Always allow for this scheduled prompt", or
+    // (D-177 N.15) "Allow in this chat".
     throw new RpcError('bad_request', always
-      ? `${method}: the approval for plan_id '${plan.plan_id}' does not offer to always allow it; say yes once instead`
+      ? `${method}: the approval for plan_id '${plan.plan_id}' no longer offers "${plan.hold?.always_allow ?? 'that answer'}"; say yes once instead`
       : `${method}: the approval for plan_id '${plan.plan_id}' refused this answer`, 400);
   }
   if (answer === 'expired') {
@@ -1593,6 +1694,28 @@ const resolveHeldPlanRpc = async (
       } catch {
         // Learning is advisory, as on a plain card's cancel.
       }
+    }
+  }
+  // D-177 §N.15.9 (1c-b) — a round's one approval answered every hold it kept: each one's plan is
+  // the owner's answer too, as if its own card had been answered.
+  for (const run_id of together) {
+    if (run_id === plan.hold!.run_id) continue;
+    const other = await store.findByHoldRun?.(run_id);
+    if (other === undefined || other.status !== 'proposed' || other.hold?.run_id !== run_id) continue;
+    const answeredWith = await store.resolve(other.plan_id, next_status, now());
+    if (answeredWith?.status !== next_status) continue;
+    void safeLogActivity(
+      deps.auditLog,
+      next_status === 'approved' ? 'chat_plan_approved' : 'chat_plan_cancelled',
+      `${answeredWith.session_id}:${answeredWith.turn_id}:${answeredWith.tool}`,
+      JSON.stringify({ plan_id: answeredWith.plan_id, tier: answeredWith.tier, classification: answeredWith.classification,
+        hold_run_id: run_id, answered_with: plan.plan_id, ...(always ? { always_allow: true } : {}) }),
+    );
+    try {
+      deps.broadcast?.emit({ kind: 'chat.plan_resolved', session_id: answeredWith.session_id,
+        turn_id: answeredWith.turn_id, plan: answeredWith });
+    } catch {
+      // Broadcast failures are observability-only.
     }
   }
   return { plan: resolved };
@@ -1911,6 +2034,49 @@ export const handleExecutionBrowserFlowRecipe = async (
   return deps.executionBrowserFlows.recipe(browserFlowId(method, args));
 };
 
+/** D-402 slice A4 — "Make a recipe" on a request in the owner's chat: the turn names the request, and
+ *  every turn of it is compiled (an action held for approval ran in a turn of its own). */
+export const handleExecutionRequestRecipe = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<
+  | { ok: true; draft_id: string; kitchen_path: string; recipe_id?: string; issues: string[] }
+  | { ok: false; reason: 'nothing_kept' | 'no_actions' | 'invalid_recipe' | 'changes_in_progress'; issues: string[] }
+> => {
+  const method = 'chat.execution.request_recipe';
+  if (!deps.executionRequestRecipe) {
+    throw new RpcError('not_configured', `${method}: making a recipe of a request is not wired`, 501);
+  }
+  const safe = ensureRecordArgs(method, args);
+  const { session_id, turn_id } = safe;
+  if (typeof session_id !== 'string' || session_id.trim().length === 0
+    || typeof turn_id !== 'string' || turn_id.trim().length === 0) {
+    throw new RpcError('bad_request', `${method}: session_id and turn_id are required`, 400);
+  }
+  return deps.executionRequestRecipe({ session_id, turn_id });
+};
+
+/** D-402 slice E4b — "Carry on in Chat" from a run a hand-off stopped. ⛔ Sends nothing: the answer
+ *  is a chat and the message its composer starts with, which the owner sends. */
+export const handleExecutionCarryOn = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<RunCarryOnResult> => {
+  const method = 'chat.execution.carry_on';
+  if (!deps.executionCarryOn) {
+    throw new RpcError('not_configured', `${method}: carrying on a run in the chat is not wired`, 501);
+  }
+  const safe = ensureRecordArgs(method, args);
+  const { run_id } = safe;
+  if (typeof run_id !== 'string' || run_id.trim().length === 0 || run_id.length > 200) {
+    throw new RpcError('bad_request', `${method}: run_id is required`, 400);
+  }
+  return deps.executionCarryOn(run_id, {
+    exists: (session_id) => Boolean(deps.store.getSession(session_id)),
+    create: async (title) => (await handleSessionCreate(deps, { title })).session_id,
+  });
+};
+
 export const handleExecutionCaseForget = async (
   deps: ChatRpcDeps,
   args: unknown,
@@ -2187,6 +2353,78 @@ export const handleGetInstallOffers = (
   deps: ChatRpcDeps,
 ): { enabled: boolean } => ({ enabled: deps.store.getInstallOffersEnabled?.() ?? true });
 
+/** D-404 slice B1 — which of the steps under chat answers have landed: a pack or a recipe installed,
+ *  a thing of a type in Yours. The row under the answer then offers "Ask again" (ruling P2). Each step
+ *  is checked with the shared reader; the answer names only steps that were asked about. */
+export const handleNextStepsState = (
+  deps: ChatRpcDeps,
+  args: unknown,
+): { landed: ChatNextStepRef[] } => {
+  const method = 'chat.next_steps.state';
+  if (!deps.nextStepsLanded) {
+    throw new RpcError('not_configured', `${method}: the steps under an answer are not wired`, 501);
+  }
+  const safe = ensureRecordArgs(method, args);
+  if (!Array.isArray(safe.steps)) throw new RpcError('bad_request', `${method}: steps must be a list`, 400);
+  const asked = chatNextStepRefsOf(safe.steps);
+  const keys = new Set(asked.map(chatNextStepKey));
+  return { landed: chatNextStepRefsOf(asked.length === 0 ? [] : deps.nextStepsLanded(asked)).filter((ref) => keys.has(chatNextStepKey(ref))) };
+};
+
+/** D-405 slice 3 — the hint store, or `not_configured` for a server not wired for it. */
+const hintStoreOf = (deps: ChatRpcDeps, method: string): ChatHintStore => {
+  if (!deps.hints) throw new RpcError('not_configured', `${method}: hints under an answer are not wired`, 501);
+  return deps.hints;
+};
+
+/** D-405 slice 3 — the hints the owner said "Not now" to that have not come back yet, the latest first. */
+export const handleHintsList = (deps: ChatRpcDeps): { not_now: ChatHintNotNow[] } =>
+  ({ not_now: hintStoreOf(deps, 'chat.hints.list').list((deps.now ?? Date.now)(), CHAT_HINTS_NOT_NOW_LIMIT) });
+
+/** D-405 slice 3 — "Not now" on a hint under an answer (ruling P3): the server stops offering it, in
+ *  the row and to the model, for `CHAT_HINT_NOT_NOW_DAYS`. `label` is what the owner saw, so a list of
+ *  hidden hints can name it. Again on one already set aside: it holds from now. */
+export const handleHintNotNow = (deps: ChatRpcDeps, args: unknown): ChatHintNotNow => {
+  const method = 'chat.hints.not_now';
+  const store = hintStoreOf(deps, method);
+  const safe = ensureRecordArgs(method, args);
+  if (!isChatHintKey(safe.key)) throw new RpcError('bad_request', `${method}: key is not a hint's`, 400);
+  const label = typeof safe.label === 'string' ? safe.label.trim().slice(0, CHAT_HINT_LABEL_MAX) : '';
+  if (label.length === 0) throw new RpcError('bad_request', `${method}: label must say what the owner saw`, 400);
+  const at = (deps.now ?? Date.now)();
+  const hidden: ChatHintNotNow = { key: safe.key, label, until: at + CHAT_HINT_NOT_NOW_MS };
+  store.notNow({ ...hidden, at });
+  void safeLogActivity(deps.auditLog, 'chat_hint_not_now', 'chat_hint', JSON.stringify({ key: hidden.key, until: hidden.until }));
+  return hidden;
+};
+
+/** D-405 slice 3 — bring a hint back now. */
+export const handleHintRestore = (deps: ChatRpcDeps, args: unknown): { restored: boolean } => {
+  const method = 'chat.hints.restore';
+  const store = hintStoreOf(deps, method);
+  const safe = ensureRecordArgs(method, args);
+  if (!isChatHintKey(safe.key)) throw new RpcError('bad_request', `${method}: key is not a hint's`, 400);
+  const restored = store.restore(safe.key);
+  if (restored) void safeLogActivity(deps.auditLog, 'chat_hint_restored', 'chat_hint', JSON.stringify({ key: safe.key }));
+  return { restored };
+};
+
+/** D-405 slice 4 — the Set up page's mail, calendar and files: each connected or not, as the chat's
+ *  "Connect your mail" reads it. One the server cannot read is null for that feature, never "none". */
+export const handleSetupFeatures = (deps: ChatRpcDeps): { features: ChatSetupFeatureState[] } => {
+  const connected = deps.setupFeatures;
+  if (connected === undefined) throw new RpcError('not_configured', 'chat.setup.features: the Set up page is not wired', 501);
+  return {
+    features: CHAT_SETUP_FEATURES.map((feature) => {
+      try {
+        return { feature, connected: connected(feature) };
+      } catch {
+        return { feature, connected: null };
+      }
+    }),
+  };
+};
+
 /** D-323 — turn chat's install offers on or off for this server. Read at each
  *  search, so it applies from the next one; off, no catalogue is downloaded. */
 export const handleSetInstallOffers = (
@@ -2240,14 +2478,16 @@ export const handleSetRollingBrief = (
       400,
     );
   }
+  // A `strategy` a client still sends is ignored: Consolidated was retired 2026-11-19 and there is one style.
   const enabled = deps.store.setRollingBriefEnabled(safe.enabled);
+  const next = handleGetRollingBrief(deps);
   void safeLogActivity(
     deps.auditLog,
     'chat_rolling_brief_set',
     'chat_rolling_brief',
     JSON.stringify({ enabled }),
   );
-  return { enabled };
+  return next;
 };
 
 /** Read what the assistant is CARRYING about one conversation.
@@ -2282,7 +2522,7 @@ export const handleGetSessionBrief = async (
   //   brief reads as ABSENT rather than shipping an unknown shape to a client
   //   that would have to guess at it.
   let brief = null;
-  try { brief = json === null ? null : parseBrief(JSON.parse(json)); } catch { /* unreadable AI note */ }
+  try { brief = json === null ? null : parseStoredBrief(JSON.parse(json)); } catch { /* unreadable AI note */ }
   const sourceJson = await deps.store.readMailWorkEvidence?.(safe.session_id);
   const sourceEvidence = sourceJson ? parseMailWorkEvidence(sourceJson) : null;
   // Display and Clear cover both kinds of carry, including turns with no fold.
@@ -3351,12 +3591,17 @@ export const handleChatQueue = async (
 
 
 export function handlePromptSchedule(deps: ChatRpcDeps, action: 'list', args: unknown): Promise<import('@recued/contracts').PromptSchedule[]>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'pause_preview', args: unknown): Promise<import('@recued/contracts').PromptSchedulePausePreview>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'pause_until', args: unknown): Promise<import('@recued/contracts').PromptSchedulePauseResult>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'runs', args: unknown): Promise<import('@recued/contracts').PromptScheduleRunsPage>;
 export function handlePromptSchedule(deps: ChatRpcDeps, action: 'run_now', args: unknown): Promise<import('@recued/contracts').ChatTurnAcceptance>;
 export function handlePromptSchedule(deps: ChatRpcDeps, action: 'preview', args: unknown): Promise<import('@recued/contracts').PromptSchedulePreview>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'skip_preview', args: unknown): Promise<import('@recued/contracts').PromptScheduleSkipPreview>;
+export function handlePromptSchedule(deps: ChatRpcDeps, action: 'skip_next' | 'undo_skip', args: unknown): Promise<import('@recued/contracts').PromptScheduleSkipResult>;
 export function handlePromptSchedule(deps: ChatRpcDeps, action: 'create' | 'update' | 'pause' | 'resume' | 'remove', args: unknown): Promise<import('@recued/contracts').PromptSchedule | null>;
 export async function handlePromptSchedule(deps: ChatRpcDeps,
-  action: 'list' | 'create' | 'update' | 'pause' | 'resume' | 'remove' | 'run_now' | 'preview', args: unknown,
-): Promise<import('@recued/contracts').PromptSchedule[] | import('@recued/contracts').PromptSchedule | import('@recued/contracts').ChatTurnAcceptance | import('@recued/contracts').PromptSchedulePreview | null> {
+  action: 'list' | 'create' | 'update' | 'pause' | 'resume' | 'remove' | 'run_now' | 'preview' | 'skip_preview' | 'skip_next' | 'undo_skip' | 'runs' | 'pause_preview' | 'pause_until', args: unknown,
+): Promise<import('@recued/contracts').PromptSchedule[] | import('@recued/contracts').PromptSchedule | import('@recued/contracts').ChatTurnAcceptance | import('@recued/contracts').PromptSchedulePreview | import('@recued/contracts').PromptScheduleSkipPreview | import('@recued/contracts').PromptScheduleSkipResult | import('@recued/contracts').PromptScheduleRunsPage | import('@recued/contracts').PromptSchedulePausePreview | import('@recued/contracts').PromptSchedulePauseResult | null> {
   const service = deps.orchestrator.promptSchedules;
   if (!service) throw new RpcError('not_configured', 'Scheduled prompts are unavailable.', 501);
   const safe = ensureRecordArgs('chat.schedule', args);
@@ -3365,9 +3610,14 @@ export async function handlePromptSchedule(deps: ChatRpcDeps,
     return service.list(session);
   }
   if (action === 'create') return service.create(safe, ensureNonEmptyString('chat.schedule.create', 'creation_id', safe.creation_id));
+  if (action === 'pause_preview') return service.previewPause(safe);
+  if (action === 'pause_until') return service.pauseUntil(safe);
+  if (action === 'runs') return service.runs(safe);
   if (action === 'update') return service.update(safe);
   if (action === 'run_now') return service.runNow(safe);
   if (action === 'preview') return service.preview(safe);
+  if (action === 'skip_preview') return service.previewSkip(safe);
+  if (action === 'skip_next' || action === 'undo_skip') return service.changeSkip(action, safe);
   return service.control(action, safe);
 }
 
@@ -3396,6 +3646,14 @@ export const makeChatHandlers = (
       'chat.schedule.remove',
       'chat.schedule.run_now',
       'chat.schedule.preview',
+      'chat.schedule.skip_preview',
+      'chat.schedules.bulk.preview',
+      'chat.schedules.bulk.apply',
+      'chat.schedule.pause_preview',
+      'chat.schedule.pause_until',
+      'chat.schedule.runs.list',
+      'chat.schedule.skip_next',
+      'chat.schedule.undo_skip',
       'chat.turns.list',
       'chat.turn.withdraw',
       'chat.turn.cancel',
@@ -3414,6 +3672,8 @@ export const makeChatHandlers = (
       'chat.execution.authored',
       'chat.execution.browser_flow.forget',
       'chat.execution.browser_flow.recipe',
+      'chat.execution.request_recipe',
+      'chat.execution.carry_on',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       'chat.session.clear_model_pref',
@@ -3423,6 +3683,11 @@ export const makeChatHandlers = (
       'chat.rolling_brief.set',
       'chat.install_offers.get',
       'chat.install_offers.set',
+      'chat.next_steps.state',
+      'chat.hints.list',
+      'chat.hints.not_now',
+      'chat.hints.restore',
+      'chat.setup.features',
       'chat.session.brief.get',
       'chat.session.brief.clear',
       'chat.connection_mcp.list',
@@ -3465,6 +3730,42 @@ export const makeChatHandlers = (
       'chat.schedule.run_now': async (args, client) => {
         if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
         return handlePromptSchedule(deps, 'run_now', args);
+      },
+      'chat.schedules.bulk.preview': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Bulk prompt controls require a paired client.', 401);
+        const service = deps.orchestrator.promptSchedules;
+        if (!service) throw new RpcError('not_configured', 'Scheduled prompts are unavailable.', 501);
+        return service.bulk.preview(args);
+      },
+      'chat.schedules.bulk.apply': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Bulk prompt controls require a paired client.', 401);
+        const service = deps.orchestrator.promptSchedules;
+        if (!service) throw new RpcError('not_configured', 'Scheduled prompts are unavailable.', 501);
+        return service.bulk.apply(args, client.instance_id);
+      },
+      'chat.schedule.pause_preview': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Timed pauses require a paired client.', 401);
+        return handlePromptSchedule(deps, 'pause_preview', args);
+      },
+      'chat.schedule.pause_until': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Timed pauses require a paired client.', 401);
+        return handlePromptSchedule(deps, 'pause_until', args);
+      },
+      'chat.schedule.runs.list': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompt history requires a paired client.', 401);
+        return handlePromptSchedule(deps, 'runs', args);
+      },
+      'chat.schedule.skip_preview': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'skip_preview', args);
+      },
+      'chat.schedule.skip_next': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'skip_next', args);
+      },
+      'chat.schedule.undo_skip': async (args, client) => {
+        if (!client?.instance_id) throw new RpcError('unauthorized', 'Scheduled prompts require a paired client.', 401);
+        return handlePromptSchedule(deps, 'undo_skip', args);
       },
       'chat.schedule.preview': async (args, client) => {
         if (!client?.instance_id) throw new RpcError('unauthorized', 'Schedule previews require a paired client.', 401);
@@ -3561,6 +3862,10 @@ export const makeChatHandlers = (
         handleExecutionBrowserFlowForget(deps, args),
       'chat.execution.browser_flow.recipe': async (args) =>
         handleExecutionBrowserFlowRecipe(deps, args),
+      'chat.execution.request_recipe': async (args) =>
+        handleExecutionRequestRecipe(deps, args),
+      'chat.execution.carry_on': async (args) =>
+        handleExecutionCarryOn(deps, args),
       'chat.session.set_picker': async (args) =>
         handleSetPicker(
           deps,
@@ -3581,6 +3886,11 @@ export const makeChatHandlers = (
       'chat.install_offers.get': async () => handleGetInstallOffers(deps),
       'chat.install_offers.set': async (args: unknown) =>
         handleSetInstallOffers(deps, args as { enabled: unknown }),
+      'chat.next_steps.state': async (args: unknown) => handleNextStepsState(deps, args),
+      'chat.hints.list': async () => handleHintsList(deps),
+      'chat.hints.not_now': async (args: unknown) => handleHintNotNow(deps, args),
+      'chat.hints.restore': async (args: unknown) => handleHintRestore(deps, args),
+      'chat.setup.features': async () => handleSetupFeatures(deps),
       'chat.session.brief.get': async (args: unknown) =>
         handleGetSessionBrief(deps, args as { session_id: string }),
       'chat.session.brief.clear': async (args: unknown) =>

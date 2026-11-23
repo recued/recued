@@ -27,8 +27,13 @@ import {
   systemRoleUnsupported,
   isContextOverflowRejection,
   learnedContextWindow,
+  knownContextWindow,
   maxProvenAcceptedInput,
+  minKnownContextWindow,
   minLearnedContextWindow,
+  noteTokenRatio,
+  estimateTokenRatio,
+  minEstimateTokenRatio,
   noteContextAccepted,
   noteContextRefused,
   provenAcceptedInput,
@@ -571,6 +576,19 @@ describe('picture input — a proof, moved only by a verdict', () => {
 describe('learned context window', () => {
   beforeEach(() => { resetEndpointCapabilities(); });
 
+  // 2026-11-20 (the owner: "on the slot that knows the limit (from the api or hit the limit before) we use that").
+  it('a slot knows the window its owner typed, or a refusal taught, whichever is smaller', () => {
+    expect(knownContextWindow(slot())).toBeUndefined();
+    expect(knownContextWindow(slot({ context_window_tokens: 128_000 }))).toBe(128_000);
+    noteContextRefused(slot(), 90_000);
+    expect(knownContextWindow(slot({ context_window_tokens: 128_000 }))).toBe(90_000);
+    expect(knownContextWindow(slot({ context_window_tokens: 64_000 }))).toBe(64_000);
+    expect(knownContextWindow(slot())).toBe(90_000);
+    expect(knownContextWindow(slot({ context_window_tokens: 0 }))).toBe(90_000);
+    expect(minKnownContextWindow([slot({ model: 'other' }), slot({ base_url: 'https://b.test', context_window_tokens: 50_000 })])).toBe(50_000);
+    expect(minKnownContextWindow([slot({ model: 'other' })])).toBeUndefined();
+  });
+
   it('⛔ nothing is learned until a REFUSAL — a floor alone is not a ceiling', () => {
     noteContextAccepted(slot(), 113_616);
     expect(provenAcceptedInput(slot())).toBe(113_616);
@@ -653,6 +671,59 @@ describe('learned context window', () => {
    *  with the REAL classifier producing the refusal, so it fails if the wiring
    *  is removed, if the classifier stops recognising an overflow, or if the
    *  guard rejects a legitimate bound. */
+  // 2026-11-20 (the owner: "go ahead", the estimate) — the estimate counted browser task P at about twice the provider.
+  it('learns the estimate-to-provider ratio after three calls, keeps the smallest, and holds it to its range', () => {
+    expect(estimateTokenRatio(slot())).toBeUndefined();
+    noteTokenRatio(slot(), 190, 100);
+    noteTokenRatio(slot(), 220, 100);
+    expect(estimateTokenRatio(slot())).toBeUndefined();
+    noteTokenRatio(slot(), 184, 100);
+    expect(estimateTokenRatio(slot())).toBeCloseTo(1.84);
+    // A provider that under-reports cannot raise it; nonsense is not a call.
+    noteTokenRatio(slot(), 900, 100);
+    for (const [estimated, provider] of [[0, 100], [100, 0], [100, undefined], [Number.NaN, 100], [100, Number.NaN]] as const) {
+      noteTokenRatio(slot(), estimated as number, provider as number | undefined);
+    }
+    expect(estimateTokenRatio(slot())).toBeCloseTo(1.84);
+    for (const _ of [1, 2, 3]) noteTokenRatio(slot({ model: 'loose' }), 1_000, 100);
+    expect(estimateTokenRatio(slot({ model: 'loose' }))).toBe(3);
+    for (const _ of [1, 2, 3]) noteTokenRatio(slot({ model: 'dense' }), 10, 100);
+    expect(estimateTokenRatio(slot({ model: 'dense' }))).toBe(0.5);
+    forgetEndpoint(slot());
+    expect(estimateTokenRatio(slot())).toBeUndefined();
+    resetEndpointCapabilities();
+    expect(estimateTokenRatio(slot({ model: 'loose' }))).toBeUndefined();
+  });
+
+  it('gives a ratio for a candidate set only once every candidate has one, and then the smallest', () => {
+    for (const _ of [1, 2, 3]) noteTokenRatio(slot(), 190, 100);
+    expect(minEstimateTokenRatio([slot()])).toBeCloseTo(1.9);
+    expect(minEstimateTokenRatio([slot(), slot({ model: 'other' })])).toBeUndefined();
+    for (const _ of [1, 2, 3]) noteTokenRatio(slot({ model: 'other' }), 150, 100);
+    expect(minEstimateTokenRatio([slot(), slot({ model: 'other' })])).toBeCloseTo(1.5);
+  });
+
+  it('turns a ceiling learned from our own estimate into the provider\'s tokens by the ratio, and leaves a stated one', async () => {
+    noteContextRefused(slot(), 190_000);
+    expect(knownContextWindow(slot())).toBe(190_000);
+    for (const _ of [1, 2, 3]) noteTokenRatio(slot(), 190, 100);
+    expect(knownContextWindow(slot())).toBe(100_000);
+    const stated = slot({ model: 'stated' });
+    const { adapter } = adapterThat(() => { throw rejection(JSON.stringify({ error: {
+      message: "This model's maximum context length is 128000 tokens, however you requested 130000 tokens.", code: 'context_length_exceeded' } })); });
+    await expect(completeWithFallbacks(adapter, stated, [{ role: 'user', content: 'x' }], OPTIONS)).rejects.toThrow();
+    for (const _ of [1, 2, 3]) noteTokenRatio(stated, 190, 100);
+    expect(knownContextWindow(stated)).toBe(128_000);
+  });
+
+  it('a successful call records the ratio from the provider\'s count of the same prompt', async () => {
+    const messages: LLMMessage[] = [{ role: 'user', content: 'x'.repeat(40_000) }];
+    const estimated = estimateConservativeMessagesTokens(messages);
+    const { adapter } = adapterThat(() => ({ ...OK, usage: { ...OK.usage, input_tokens: Math.round(estimated / 2) } }));
+    for (const _ of [1, 2, 3]) await completeWithFallbacks(adapter, slot(), messages, OPTIONS);
+    expect(estimateTokenRatio(slot())).toBeCloseTo(2, 2);
+  });
+
   describe('through completeWithFallbacks — the wiring, not the primitives', () => {
     const OVERFLOW_BODY = JSON.stringify({
       error: {

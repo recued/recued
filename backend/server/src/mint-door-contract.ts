@@ -264,11 +264,55 @@ export const mintDoorContract = (
  *  than opening it — the property §5.1's floor exists to guarantee. */
 export const retireDoorContract = (
   contractId: string,
-  reason: string,
+  reason: ServerDoorRetireReason,
   deps: Pick<MintDoorDeps, 'definitionStore'>,
 ): void => {
   deps.definitionStore.revoke(contractId, reason);
 };
+
+/** D-201 Slice 10AC (10AA finding 8) — every reason the server retires a door
+ *  for, closed and typed (`retireDoorContract` takes no other), so a new
+ *  retirement must be listed here. A door revoked for any other reason was
+ *  closed by its owner, through Contracts' `collection.contract.revokeContract`,
+ *  which refuses these. Only the owner's closing is kept closed by a later
+ *  update or start (D-295); a door the server retired is made again. Before,
+ *  any revoked door still stamped read as the owner's, so one the server
+ *  retired with no door made in its place, a start then put back, closed.
+ *  Every server before 10AC retired doors only for these. */
+export const SERVER_DOOR_RETIRE_REASONS = [
+  'pack_reinstalled',
+  'pack_uninstalled',
+  'pack_connections_changed',
+  'dish_settings_changed',
+  'resaved',
+  'webhook_declarations_removed',
+  'owner_reopened',
+  'boot_rederived',
+  'stamp_failed',
+  'rebound',
+  'unbound',
+  'pair_cleared',
+] as const;
+export type ServerDoorRetireReason = (typeof SERVER_DOOR_RETIRE_REASONS)[number];
+
+const SERVER_DOOR_RETIRE_REASON_SET: ReadonlySet<string> = new Set(SERVER_DOOR_RETIRE_REASONS);
+
+export const isServerDoorRetireReason = (reason: string): reason is ServerDoorRetireReason =>
+  SERVER_DOOR_RETIRE_REASON_SET.has(reason);
+
+/** D-201 Slice 10AF (10AE finding 14; the owner's ruling of 2026-11-20) —
+ *  the reason a door is revoked for when its owner closes it on its webhook's
+ *  card in Settings → Connections → Webhooks, or answers "closed" when a pack
+ *  update from another publisher raises its switch. Not one of the server's,
+ *  so the door stays closed through later updates (`closedByOwner`). */
+export const OWNER_DOOR_CLOSE_REASON = 'Closed on its webhook';
+
+/** D-201 Slice 10AC — whether its owner closed this door: revoked, for a
+ *  reason the server never retires one for. */
+export const closedByOwner = (
+  def: Pick<ContractDefinition, 'revoked_at' | 'revocation_reason'>,
+): boolean => def.revoked_at !== undefined && def.revoked_at !== null
+  && !isServerDoorRetireReason(def.revocation_reason ?? '');
 
 /** Carry the owner's revokes from the doors a re-mint replaces onto the new door.
  *

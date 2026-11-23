@@ -163,7 +163,7 @@ describe('D-149 § A.10 — mountTemplatesBrowser: render', () => {
       onUseTemplate: vi.fn(),
       onClose: vi.fn(),
     });
-    expect(getHtml()).toContain('Foundation pack may not be installed');
+    expect(getHtml()).toContain('No Reception templates are available');
     expect(getHtml()).not.toContain('data-action="reception-template-use"');
     mount.dispose();
   });

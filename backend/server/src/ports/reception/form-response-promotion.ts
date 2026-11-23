@@ -34,8 +34,9 @@
 
 import type { Checkpoint, FormResponse } from '@recued/contracts';
 import type { PreflightAskContext } from '@recued/gateway';
-import type { AuditLogStore } from '@recued/storage';
+import type { AuditEntry, AuditLogStore } from '@recued/storage';
 
+import type { GatedActionStore } from '../../gated-action-store.js';
 import type { FormResponseStore } from '../../storage/form-response-store.js';
 import type {
   FormSubmissionStore,
@@ -107,6 +108,9 @@ export interface FormResponsePromotionDeps {
   /** The paused-run anchor is the authority that this is the compiled intake
    * workflow, rather than an arbitrary recipe carrying look-alike metadata. */
   readonly auditLog: Pick<AuditLogStore, 'get'>;
+  /** The same durable receipts the resumer claims. A waiting run can outlive
+   * its dispatch claim, so its anchor alone cannot authorize promotion. */
+  readonly gatedActionStore?: Pick<GatedActionStore, 'getByCheckpoint' | 'getBySubject'>;
   readonly submissionStore?: Pick<FormSubmissionStore, 'findById'>;
   readonly formResponseStore?: Pick<
     FormResponseStore,
@@ -139,6 +143,21 @@ const invalid = (message: string): FormResponsePromotionError =>
 
 const hasOwn = (object: Readonly<Record<string, unknown>>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(object, key);
+
+/** Match the resumer's liveness boundary, including legacy anchors without a
+ * checkpoint pointer. Stale answers may retire their checkpoint, but must not
+ * need a vault key or repeat an acceptance effect. */
+const isCurrentApproval = (anchor: AuditEntry | null, checkpoint: Checkpoint): anchor is AuditEntry =>
+  anchor?.commit_status === 'awaiting_approval'
+  && (anchor.checkpoint_id === undefined || anchor.checkpoint_id === checkpoint.checkpoint_id);
+
+const hasIntakeOrigin = (anchor: AuditEntry, checkpoint: Checkpoint): boolean => {
+  const source = anchor.execution_source;
+  return anchor.run_id === checkpoint.run_id && anchor.recipe_id === checkpoint.recipe_id
+    && source?.channel === 'reactive' && source.actor === 'system'
+    && source.source_recipe === anchor.recipe_id
+    && source.event_kind.startsWith(RECEPTION_TRIGGER_EVENT_PREFIX);
+};
 
 /** Read the original materialize args. `arg_overrides` are deliberately not
  * consulted: provenance is substrate-authored at dispatch and cannot be
@@ -220,6 +239,35 @@ const responseMetadataFor = (row: FormSubmissionSummary): JsonObject => {
 export const createFormResponsePromotion = (
   deps: FormResponsePromotionDeps,
 ): ((checkpoint: Checkpoint, context: PreflightAskContext) => Promise<void>) => {
+  const receiptAllowsPromotion = async (checkpoint: Checkpoint): Promise<boolean> => {
+    const receiptRequired = checkpoint.preflight_context?.gated_action_settlement_mode !== undefined;
+    const store = deps.gatedActionStore;
+    if (store === undefined) {
+      if (receiptRequired) {
+        throw new FormResponsePromotionError('not_configured', 'form response promotion: approval receipt store is unavailable');
+      }
+      return true;
+    }
+    let action = await store.getByCheckpoint(checkpoint.checkpoint_id);
+    if (action === null && checkpoint.gated_step_id !== undefined) {
+      action = await store.getBySubject(checkpoint.run_id, checkpoint.gated_step_id);
+    }
+    if (action === null) {
+      if (receiptRequired) throw invalid('form response promotion: receipt-backed approval has no durable action');
+      return true; // Checkpoints created before durable receipts remain eligible.
+    }
+    if (action.origin === 'preapproval_member' || action.run_id !== checkpoint.run_id
+      || action.gated_step_id !== checkpoint.gated_step_id
+      || (action.recipe_id !== undefined && action.recipe_id !== checkpoint.recipe_id)) {
+      throw invalid('form response promotion: approval receipt does not match the held intake');
+    }
+    // A claimed, terminal, or superseded receipt belongs to reconciliation,
+    // even when the audit anchor still says awaiting_approval. Do not require
+    // credentials or repeat canonical acceptance before the resumer sees it.
+    return action.current_checkpoint_id === checkpoint.checkpoint_id
+      && action.status === 'awaiting_approval';
+  };
+
   return async (checkpoint, context): Promise<void> => {
     const args = readProjectionArgs(checkpoint);
     const provenance = asObject(args?.metadata);
@@ -232,7 +280,7 @@ export const createFormResponsePromotion = (
       typeof checkpoint.recipe_id === 'string'
       && COMPILED_INTAKE_RECIPE_ID.test(checkpoint.recipe_id);
     const anchor = await deps.auditLog.get(checkpoint.run_id);
-    const source = anchor?.execution_source;
+    if (!isCurrentApproval(anchor, checkpoint)) return;
     // The ORIGIN conjuncts are unchanged and still do the authorization work:
     // a server-internal reactive fire whose anchor, checkpoint and
     // `source_recipe` all name the same recipe. What changed is the last one —
@@ -251,13 +299,7 @@ export const createFormResponsePromotion = (
     // outcome). A provenance naming someone else's submission throws rather
     // than promoting it. ⇒ [[feedback_close_toctou_by_rederiving_at_act_site]]
     const isIntakeApproval =
-      anchor !== null
-      && anchor !== undefined
-      && anchor.recipe_id === checkpoint.recipe_id
-      && source?.channel === 'reactive'
-      && source.actor === 'system'
-      && source.source_recipe === anchor.recipe_id
-      && source.event_kind.startsWith(RECEPTION_TRIGGER_EVENT_PREFIX)
+      hasIntakeOrigin(anchor, checkpoint)
       && carriesIntakeProvenance;
     if (!isIntakeApproval) {
       if (carriesIntakeProvenance || looksLikeCompiledIntake) {
@@ -267,6 +309,8 @@ export const createFormResponsePromotion = (
       }
       return;
     }
+
+    if (!await receiptAllowsPromotion(checkpoint)) return;
 
     if (
       deps.submissionStore === undefined
@@ -413,6 +457,16 @@ export const createFormResponsePromotion = (
     // concurrent refund/ambiguity transition cannot inherit the earlier paid
     // observation.
     await requireDirectCheckoutAdmission();
+
+    // Key access/decryption and paid admission yield. Re-read the run at the
+    // synchronous insertion boundary: a completed or superseded approval must
+    // not publish a canonical response under its earlier liveness observation.
+    if (!await receiptAllowsPromotion(checkpoint)) return;
+    const currentAnchor = await deps.auditLog.get(checkpoint.run_id);
+    if (!isCurrentApproval(currentAnchor, checkpoint)) return;
+    if (!hasIntakeOrigin(currentAnchor, checkpoint)) {
+      throw invalid('form response promotion: intake approval origin changed before acceptance');
+    }
 
     const definitionSnapshot = definitionSnapshotFor(row);
     const acceptedAt = Math.max(approvedAt, row.submitted_at);

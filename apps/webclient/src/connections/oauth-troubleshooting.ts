@@ -250,15 +250,15 @@ export const createOAuthTroubleshooting = (deps: { copy?(text: string): Promise<
         + '<p>' + (context.route === 'broker' ? 'Using a Nango broker. Vendor app settings belong to its integration.' : isClientCredentials(context)
           ? 'Using Recued direct OAuth with app credentials, without browser sign-in.' : 'Using Recued direct OAuth with your vendor app.') + '</p>'
         + (context.pending ? '<p role="note">An authentication action or result is still pending. Resolve its existing status before starting another sign-in.</p>' : '')
-        + '<label for="' + id + '-issue">What happened?</label><select id="' + id + '-issue" data-oauth-help-issue>'
-        + oauthHelpIssues(context).map(value => '<option value="' + value + '"' + (issue === value ? ' selected' : '') + '>' + e(issueLabel(context!, value)) + '</option>').join('') + '</select>'
+        + '<div class="oauth-help-field"><label for="' + id + '-issue">What happened?</label><select id="' + id + '-issue" data-oauth-help-issue>'
+        + oauthHelpIssues(context).map(value => '<option value="' + value + '"' + (issue === value ? ' selected' : '') + '>' + e(issueLabel(context!, value)) + '</option>').join('') + '</select></div>'
         + '<p>' + e(plan.explanation) + '</p>'
         + (issue === 'redirect' && callback ? '<p>Expected registration callback for this flow:</p><code class="oauth-help-callback">' + e(callback) + '</code>' : '')
         + '<ol>' + plan.steps.map((step, i) => '<li><label><input type="checkbox" data-oauth-help-check="' + i + '"' + (checked.has(i) ? ' checked' : '') + '> ' + e(step) + '</label></li>').join('') + '</ol>'
         + '<p>' + checked.size + ' of ' + plan.steps.length + ' checks reviewed locally. This does not verify vendor access.</p>'
         + '<p>' + plan.links.map(link => '<a href="' + e(link.url) + '" target="_blank" rel="noopener noreferrer">' + e(link.label) + '</a>').join(' · ') + '</p>'
-        + '<button type="button" class="rx-btn rx-btn-outline rx-btn-sm" data-oauth-help-action="copy">Copy help summary</button> '
-        + '<button type="button" class="rx-btn rx-btn-outline rx-btn-sm" data-oauth-help-action="reset">Start over</button>'
+        + '<div class="oauth-help-actions"><button type="button" class="rx-btn rx-btn-outline rx-btn-sm" data-oauth-help-action="copy">Copy help summary</button> '
+        + '<button type="button" class="rx-btn rx-btn-outline rx-btn-sm" data-oauth-help-action="reset">Start over</button></div>'
         + '<p>The copied summary includes the selected symptom and local checklist. It omits account identifiers, credentials, raw errors and callback URLs.</p>'
         + (notice ? '<p role="status">' + e(notice) + '</p>' : '') + '</div>' : '') + '</section>';
     if (focusSelector) host.querySelector<HTMLElement>(focusSelector)?.focus({ preventScroll: true });

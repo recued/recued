@@ -37,6 +37,7 @@ import { renderField, renderForm } from '../form-renderer/render.js';
 import { renderTaskDueActions } from '../task-due.js';
 import { renderNoteReader, type WorkEntityNoteView } from './note-reader.js';
 import { renderCommitmentReader, type WorkEntityCommitmentView } from './commitment-reader.js';
+import { renderTaskReader, type WorkEntityTaskView } from './task-reader.js';
 
 export const WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR =
   'data-recued-data-work-entity-discard-guard';
@@ -60,7 +61,7 @@ export interface WorkEntityDialogProps {
    *  mode renders the Source label for `state.source_id` from this
    *  list as well; a missing entry surfaces the raw id. */
   sources: readonly SourceDropdownOption[];
-  /** Render `data.contact` ref fields as live name→id pickers (the host
+  /** Render contact refs and task/note project refs as name→id pickers (the host
    *  must ATTACH them after render via `wireRefPicker`). Default false
    *  — only the data route, which wires the pickers, opts in. */
   ref_picker?: boolean;
@@ -78,8 +79,10 @@ export interface WorkEntityDialogProps {
   /** Owner task lifecycle action, separate from saving the form's edits. */
   task_completion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string };
   task_details_open?: boolean;
+  task_view?: WorkEntityTaskView;
   note_details_open?: boolean;
   note_view?: WorkEntityNoteView;
+  duplicate?: { can_duplicate: boolean; busy?: boolean; from?: string };
   close_label?: string;
   commitment_lifecycle?: { state: string; can_change: boolean; can_fulfill?: boolean; can_cancel?: boolean };
   commitment_view?: WorkEntityCommitmentView;
@@ -88,6 +91,13 @@ export interface WorkEntityDialogProps {
 /** Render the dialog. The dialog body is wrapped in a backdrop +
  *  modal envelope; the host portals or appends as needed. */
 export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => {
+  if (props.kind === 'task' && props.state.mode === 'edit' && props.task_view?.mode === 'read') {
+    return renderTaskReader(props.task_view, {
+      source_label: props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable',
+      busy: props.state.submitting, error: props.state.submit_error, history_html: props.history_html,
+      close_label: props.close_label, completion: props.task_completion, duplicate: props.duplicate,
+    });
+  }
   if (props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view?.mode === 'read') {
     return renderCommitmentReader(props.commitment_view, {
       source_label: props.sources.find(source => source.id === props.state.source_id)?.label ?? 'Source unavailable',
@@ -218,14 +228,16 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
               : `<section class="work-entity-dialog-history" aria-label="What has happened to this ${e(spec.singular_label.toLowerCase())}">${props.history_html}</section>`
             : ''}
           ${props.kind === 'task' || props.kind === 'note' ? '</div>' : ''}
+          ${props.duplicate?.from ? `<p class="work-entity-note-meta" role="status">${props.state.mode === 'create' ? `New ${e(props.kind)} draft from ${e(props.duplicate.from)}. Review the Source and details before saving.` : `Copied from ${e(props.duplicate.from)}.`}</p>` : ''}
           <footer class="work-entity-dialog-actions">
+            ${props.kind === 'task' && props.state.mode === 'edit' && props.duplicate?.can_duplicate ? `<button type="button" class="work-entity-dialog-cancel" data-action="duplicate-work-entity"${props.state.submitting || props.duplicate.busy ? ' disabled' : ''}>${props.duplicate.busy ? 'Opening copy…' : 'Duplicate task'}</button>` : ''}
             <button
               type="button"
               class="work-entity-dialog-cancel"
-              data-action="${props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'return-note-reader'
+              data-action="${props.kind === 'task' && props.state.mode === 'edit' && props.task_view ? 'return-task-reader' : props.kind === 'note' && props.state.mode === 'edit' && props.note_view ? 'return-note-reader'
                 : props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view ? 'return-commitment-reader' : 'close-work-entity-dialog'}"
               ${closeStateAttr}
-            >${e((props.kind === 'note' && props.state.mode === 'edit' && props.note_view
+            >${e((props.kind === 'task' && props.state.mode === 'edit' && props.task_view || props.kind === 'note' && props.state.mode === 'edit' && props.note_view
                 || props.kind === 'commitment' && props.state.mode === 'edit' && props.commitment_view) ? 'Cancel' : props.close_label ?? 'Cancel')}</button>
             <button
               type="button"
@@ -249,7 +261,7 @@ const renderNoteForm = (props: WorkEntityDialogProps): string => {
     const value = props.state.values[field.name] ?? field.default;
     return !field.hidden && (props.state.errors[field.name] !== undefined || field.required && (value == null || value === ''));
   });
-  const options = { values: props.state.values, errors: props.state.errors, refPicker: props.ref_picker === true };
+  const options = { values: props.state.values, errors: props.state.errors, refPicker: props.ref_picker === true, projectRefPicker: props.ref_picker === true };
   return `<div class="form-renderer-form work-entity-note-form" data-form-kind="note" data-note-details-open="${open}">
     ${main.map(field => renderField(field.name === 'body' ? { ...field, label: 'Note text' } : field, options)).join('')}
     ${details.some(field => !field.hidden) ? `<button type="button" class="work-entity-task-details-toggle" data-action="toggle-note-details"
@@ -269,7 +281,8 @@ const renderTaskForm = (props: WorkEntityDialogProps): string => {
     return !field.hidden && (props.state.errors[field.name] !== undefined
       || (field.required && (value == null || value === '')));
   });
-  const options = { values: props.state.values, errors: props.state.errors, refPicker: props.ref_picker === true };
+  const options = { values: props.state.values, errors: props.state.errors, refPicker: props.ref_picker === true, projectRefPicker: props.ref_picker === true,
+    taskRefPicker: props.ref_picker === true };
   return `<div class="form-renderer-form work-entity-task-form" data-form-kind="task" data-task-details-open="${detailsOpen}">
     ${main.map(field => renderField(field.name === 'body' ? { ...field, label: 'Notes' }
       : field.name === 'due_at' ? { ...field, label: 'Due date' } : field, options)).join('')}
@@ -281,7 +294,7 @@ const renderTaskForm = (props: WorkEntityDialogProps): string => {
     </div>
     ${details.some(field => !field.hidden) ? `<button type="button" class="work-entity-task-details-toggle"
       data-action="toggle-work-entity-task-details" aria-expanded="${detailsOpen}"${props.state.submitting ? ' disabled' : ''}>${detailsOpen ? 'Fewer details' : 'More details'}</button>` : ''}
-    ${details.map(field => renderField(field, options)).join('')}
+    ${details.map(field => renderField(field.name === 'blocks_task' ? { ...field, label: 'Depends on' } : field, options)).join('')}
   </div>`;
 };
 

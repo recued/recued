@@ -9,8 +9,11 @@ import {
 import { canonicalJSONStringifyStrict } from '@recued/crypto';
 import type { PreparedFutureExecution, PreparedInvocation, PreapprovalOrigin } from './preapproval-model.js';
 
+const hashCanonicalJSON = (value: string): string =>
+  `sha256:${createHash('sha256').update(value).digest('hex')}`;
+
 export const preapprovalHash = (value: unknown): string =>
-  `sha256:${createHash('sha256').update(canonicalJSONStringifyStrict(value)).digest('hex')}`;
+  hashCanonicalJSON(canonicalJSONStringifyStrict(value));
 
 export const preapprovalPathKey = (path: PreapprovalInvocationPath): string => {
   if (path.length === 0 || path.length > 64) throw new RpcError('preapproval_unresolved', 'Invalid invocation path.', 400);
@@ -84,7 +87,21 @@ const invalidGraph = (): never => {
 
 /** Validate even host-produced plans at the persistence boundary. A broken
  * dependency resolver must never turn missing inventory into Complete. */
-export const validatePreparedFutureExecution = (plan: PreparedFutureExecution): void => {
+export const validatePreparedFutureExecution = (plan: PreparedFutureExecution): void =>
+  validatePreparedFutureExecutionBody(plan, () => Buffer.byteLength(canonicalJSONStringifyStrict(plan), 'utf8'));
+
+/** Verify one decoded snapshot and reuse its canonical form for the size check. */
+export const verifyPreparedFutureExecutionSnapshot = (value: unknown, snapshotHash: string): PreparedFutureExecution => {
+  const canonical = canonicalJSONStringifyStrict(value);
+  if (hashCanonicalJSON(canonical) !== snapshotHash) {
+    throw new RpcError('preapproval_stale', 'The prepared snapshot is corrupt.', 409);
+  }
+  const plan = value as PreparedFutureExecution;
+  validatePreparedFutureExecutionBody(plan, () => Buffer.byteLength(canonical, 'utf8'));
+  return plan;
+};
+
+function validatePreparedFutureExecutionBody(plan: PreparedFutureExecution, planByteLength: () => number): void {
   if (plan.schema_version !== 1) return invalidGraph();
   parsePreparePreapproval(plan.request);
   preapprovalOriginKey(plan.origin);
@@ -143,7 +160,7 @@ export const validatePreparedFutureExecution = (plan: PreparedFutureExecution): 
     dependencyKeys.add(key);
   }
   if (plan.members.length + plan.uncovered.length > PREAPPROVAL_LIMITS.candidate_calls
-    || Buffer.byteLength(canonicalJSONStringifyStrict(plan), 'utf8') > PREAPPROVAL_LIMITS.plan_bytes) {
+    || planByteLength() > PREAPPROVAL_LIMITS.plan_bytes) {
     throw new RpcError('preapproval_limit_exceeded', 'The execution exceeds the pre-approval review limit.', 400);
   }
   const members = new Map<string, PreparedInvocation>();
@@ -217,7 +234,7 @@ export const validatePreparedFutureExecution = (plan: PreparedFutureExecution): 
     visiting.delete(member.member_id); visited.add(member.member_id);
   };
   for (const member of plan.members) visitOrder(member);
-};
+}
 
 /** Default to all eligible compound calls. Explicit selections expand only
  * required children and are returned in reviewed engine order. */

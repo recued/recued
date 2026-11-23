@@ -44,7 +44,7 @@ import type {
 // ────────────────────────────────────────────────────────────────
 
 /** Visitor-typed fields that ride FINALIZE (sealed there, exactly as the
- *  single-POST path), read fresh from the form at finalize time. */
+ *  single-POST path), captured from the form at submit time. */
 export interface ReceptionVisitorFields {
   readonly visitor_name?: string;
   readonly visitor_email?: string;
@@ -59,7 +59,7 @@ export interface ReceptionUploadCallersOptions {
   readonly token: string;
   /** Single-use form-nonce — read fresh per `create` (the hidden field's current
    *  value), consumed server-side as the CSRF + admission gate. */
-  readonly getFormNonce: () => string;
+  readonly getFormNonce: () => string | Promise<string>;
   /** Visitor PII snapshot — read at `finalize` time. */
   readonly getVisitorFields: () => ReceptionVisitorFields;
   /** `fetch` impl. Default `globalThis.fetch`. */
@@ -91,6 +91,20 @@ const readJson = async (res: { json(): Promise<unknown> }): Promise<unknown> => 
   }
 };
 
+/** A link-level 410 may be the dispatcher's HTML gone page. A session-level
+ *  410 has the explicit `expired` code and can safely start a fresh session. */
+const linkUnavailable = (status: number, code: string): boolean =>
+  status === 401 || status === 403 || (status === 410 && code !== 'expired');
+
+const finalizeRejections: Readonly<Record<string, number>> = {
+  rejected_mime: 415,
+  rejected_size: 413,
+  rejected_filename: 400,
+  rejected_domain: 400,
+  failed: 422,
+  day_cap: 429,
+};
+
 /** The reception control plane as the engine's `UploadCallers`. Success +
  *  resumable outcomes map onto the engine's shapes; a TERMINAL reception
  *  rejection (bad nonce, magic-byte/MIME/size/filename/domain reject) THROWS —
@@ -106,6 +120,7 @@ export const createReceptionUploadCallers = (
 
   return {
     async create(req): Promise<UploadCreateRpcResponse> {
+      const form_nonce = await opts.getFormNonce();
       const res = await fetchImpl(`${opts.uploadsBase}?t=${t}`, {
         method: 'POST',
         headers: jsonHeaders,
@@ -113,7 +128,7 @@ export const createReceptionUploadCallers = (
           filename: req.filename,
           declared_size: req.declared_size,
           mime_reported: req.mime_reported,
-          form_nonce: opts.getFormNonce(),
+          form_nonce,
           ...(req.fingerprint != null ? { fingerprint: req.fingerprint } : {}),
         }),
       });
@@ -125,7 +140,8 @@ export const createReceptionUploadCallers = (
       }
       // invalid_nonce / daily_cap / size_cap_exceeded / too_many_sessions /
       // pending_bytes_exceeded / not_configured … — terminal, surface the code.
-      throw new Error(bodyErrorCode(body));
+      const code = bodyErrorCode(body);
+      throw new Error(linkUnavailable(res.status, code) ? 'link_unavailable' : code);
     },
 
     async probe(req): Promise<UploadProbeRpcResponse> {
@@ -143,6 +159,7 @@ export const createReceptionUploadCallers = (
         }
         throw new Error('bad_probe_response');
       }
+      if (linkUnavailable(res.status, bodyErrorCode(body))) throw new Error('link_unavailable');
       if (res.status === 410) return { resumable: false, reason: 'expired' };
       if (res.status === 409) return { resumable: false, reason: 'file_mismatch' };
       if (res.status === 404) return { resumable: false, reason: 'not_found' };
@@ -151,38 +168,55 @@ export const createReceptionUploadCallers = (
 
     async finalize(req): Promise<UploadFinalizeRpcResponse> {
       const visitor = opts.getVisitorFields();
-      const res = await fetchImpl(`${opts.uploadsBase}/${encodeURIComponent(req.upload_id)}/finalize?t=${t}`, {
-        method: 'POST',
-        headers: jsonHeaders,
-        body: JSON.stringify({
-          ...(visitor.visitor_name ? { visitor_name: visitor.visitor_name } : {}),
-          ...(visitor.visitor_email ? { visitor_email: visitor.visitor_email } : {}),
-          ...(visitor.visitor_description
-            ? { visitor_description: visitor.visitor_description }
-            : {}),
-        }),
-      });
+      let res;
+      try {
+        res = await fetchImpl(`${opts.uploadsBase}/${encodeURIComponent(req.upload_id)}/finalize?t=${t}`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            ...(visitor.visitor_name ? { visitor_name: visitor.visitor_name } : {}),
+            ...(visitor.visitor_email ? { visitor_email: visitor.visitor_email } : {}),
+            ...(visitor.visitor_description
+              ? { visitor_description: visitor.visitor_description }
+              : {}),
+          }),
+        });
+      } catch {
+        // The server may have accepted the file and reaped the session before
+        // the response was lost. Recreating it could deliver a second copy.
+        throw new Error('confirmation_unknown');
+      }
       const body = await readJson(res);
       if (res.ok) {
         // 200 { status:'accepted', blob_id } — map onto the engine's `finalized`.
-        const blob_id = (body as { blob_id?: unknown } | null)?.blob_id;
+        const accepted = body as { status?: unknown; blob_id?: unknown } | null;
+        const blob_id = accepted?.blob_id;
+        if (accepted?.status !== 'accepted' || typeof blob_id !== 'string' || blob_id.length === 0) {
+          throw new Error('confirmation_unknown');
+        }
         return {
           status: 'finalized',
-          record_id: typeof blob_id === 'string' ? blob_id : '',
+          record_id: blob_id,
           content_hash: '',
           size_bytes: 0,
         };
       }
-      if (res.status === 409) {
+      const code = bodyErrorCode(body);
+      if (res.status === 409 && code === 'incomplete') {
         // incomplete — the server's offset wins; the engine resumes.
         const off = (body as { offset?: unknown } | null)?.offset;
-        return { status: 'pending', reason: 'incomplete', offset: typeof off === 'number' ? off : 0 };
+        if (typeof off !== 'number' || !Number.isSafeInteger(off) || off < 0) throw new Error('confirmation_unknown');
+        return { status: 'pending', reason: 'incomplete', offset: off };
       }
+      if (linkUnavailable(res.status, code)) throw new Error('link_unavailable');
       if (res.status === 410) return { status: 'gone', reason: 'expired' };
-      if (res.status === 404) return { status: 'gone', reason: 'not_found' };
+      if (res.status === 404 && code === 'not_found') return { status: 'gone', reason: 'not_found' };
       // 415 rejected_mime / 413 rejected_size / 400 rejected_filename|domain /
       // 422 failed — terminal content rejection; surface the code.
-      throw new Error(bodyErrorCode(body));
+      if (finalizeRejections[code] === res.status || (res.status === 429 && code === 'rate_limited')) {
+        throw new Error(code);
+      }
+      throw new Error('confirmation_unknown');
     },
 
     async delete(req): Promise<UploadDeleteRpcResponse> {
@@ -209,6 +243,42 @@ export interface MountReceptionDropUploaderOptions {
 }
 
 const fmtMiB = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1);
+
+const failureMessage = (reason?: string): string => {
+  switch (reason) {
+    case 'confirmation_unknown':
+      return 'We could not confirm whether your upload was received. Contact the sender before uploading again to avoid sending a duplicate.';
+    case 'link_unavailable':
+      return 'This upload link is no longer available. Ask the sender for a new link.';
+    case 'daily_cap':
+    case 'day_cap':
+    case 'capacity_full':
+      return 'This link has reached its daily upload limit. Try again later or contact the sender.';
+    case 'rate_limited':
+    case 'too_many_sessions':
+    case 'pending_bytes_exceeded':
+      return 'Uploads are temporarily busy. Wait a while, then try again.';
+    case 'rejected_mime':
+      return 'That file type is not accepted. Choose one of the file types listed above and upload again.';
+    case 'size_cap_exceeded':
+    case 'rejected_size':
+      return 'That file is too large. Choose a smaller file within the limit listed above and upload again.';
+    case 'rejected_filename':
+      return 'That filename is not accepted. Rename the file, choose it again, and upload.';
+    case 'rejected_domain':
+      return 'That email domain is not accepted. Check your email address or contact the sender.';
+    case 'invalid_nonce':
+      return 'Your upload form has expired. Try again to refresh it without losing your details.';
+    case 'expired':
+    case 'not_found':
+    case 'scratch_missing':
+      return 'Your upload session has expired. Try again to start a new session with your details.';
+    case 'connection_lost':
+      return 'The connection was interrupted. Check your connection, then try again to resume your upload.';
+    default:
+      return 'The file could not be uploaded. Check your connection and try again, or contact the sender if it keeps failing.';
+  }
+};
 
 /** A CSP-safe progress region built with the DOM API (no innerHTML, no inline
  *  `style=` attributes — the bar width is set through the CSSOM). Styled by the
@@ -244,7 +314,7 @@ const buildProgressView = (doc: Document) => {
         return;
       }
       if (p.phase === 'error') {
-        status.textContent = `Upload failed${p.error ? `: ${p.error}` : ''}. Reload the page to try again.`;
+        status.textContent = failureMessage(p.error);
         wrap.setAttribute('data-state', 'error');
         return;
       }
@@ -307,11 +377,33 @@ export const mountReceptionDropUploader = (
   // form + clicked submit); finalize reads this snapshot, not live inputs (which
   // get disabled during the upload).
   let visitorSnapshot: ReceptionVisitorFields = {};
+  let nonceUsed = false;
+  let destroyed = false;
+  const fetchImpl = opts.fetchImpl ?? defaultFetch;
 
   const callers = createReceptionUploadCallers({
     uploadsBase,
     token,
-    getFormNonce: () => fieldValue(form, 'form_nonce') ?? '',
+    getFormNonce: async () => {
+      if (destroyed) throw new Error('destroyed');
+      if (!nonceUsed) {
+        nonceUsed = true;
+        return fieldValue(form, 'form_nonce') ?? '';
+      }
+      // A rejected create can also consume its nonce. Only fetch a fresh one
+      // when the engine actually needs a new session; a resume needs none.
+      const res = await fetchImpl(`${uploadsBase}?t=${encodeURIComponent(token)}`, { method: 'GET' });
+      const body = await readJson(res);
+      if (destroyed) throw new Error('destroyed');
+      const code = bodyErrorCode(body);
+      if (linkUnavailable(res.status, code)) throw new Error('link_unavailable');
+      if (!res.ok) throw new Error(code);
+      const nonce = (body as { form_nonce?: unknown } | null)?.form_nonce;
+      if (typeof nonce !== 'string' || nonce.length === 0) throw new Error('invalid_nonce');
+      const input = form.querySelector('[name="form_nonce"]') as HTMLInputElement | null;
+      if (input) input.value = nonce;
+      return nonce;
+    },
     getVisitorFields: () => visitorSnapshot,
     ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
   });
@@ -327,19 +419,52 @@ export const mountReceptionDropUploader = (
 
   const progress = buildProgressView(doc);
   let mounted = false;
-  let destroyed = false;
+  let state: 'ready' | 'uploading' | 'blocked' | 'done' = 'ready';
+  const controls = Array.from(form.elements) as Array<Element & { disabled?: boolean }>;
+  const originallyDisabled = new Map(controls.map(el => [el, el.disabled === true]));
+  const submit = form.querySelector('[type="submit"]') as HTMLButtonElement | HTMLInputElement | null;
+  const submitLabel = submit?.textContent ?? '';
+
+  const unlock = (canRetry: boolean): void => {
+    form.removeAttribute('data-uploading');
+    for (const el of controls) el.disabled = originallyDisabled.get(el) === true;
+    // Keep visitor details available to copy even when a new link or the
+    // sender's confirmation is needed. Guard submission independently below.
+    if (submit) {
+      submit.disabled = !canRetry || originallyDisabled.get(submit) === true;
+      if (canRetry) submit.textContent = 'Try again';
+    }
+  };
 
   const offProgress = engine.on('progress', (p) => {
-    progress.update(p);
+    // Chunk failures arrive through the shared transport rather than these
+    // reception callers. Give dispatcher authorization failures the same
+    // terminal recovery policy in either path (session `expired` stays retryable).
+    const error = ['gone', 'unauthorized', 'not_authorized', 'forbidden_origin'].includes(p.error ?? '')
+      ? 'link_unavailable' : p.error;
+    progress.update(error === 'link_unavailable' ? { ...p, error } : p);
+    if (p.phase === 'error') {
+      const canRetry = error !== 'confirmation_unknown' && error !== 'link_unavailable';
+      state = canRetry ? 'ready' : 'blocked';
+      unlock(canRetry);
+    } else if (p.phase === 'done') {
+      state = 'done';
+    }
   });
 
   const onSubmit = (event: Event): void => {
     if (destroyed) return;
+    if (state !== 'ready') {
+      event.preventDefault();
+      return;
+    }
     const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
     // No file → let native validation / the plain form handle it (the file
     // input is `required`, so this is belt-and-suspenders).
     if (file === null || file === undefined) return;
     event.preventDefault();
+    state = 'uploading';
+    if (submit) submit.textContent = submitLabel;
 
     visitorSnapshot = {
       ...(fieldValue(form, 'visitor_name') !== undefined
@@ -360,9 +485,7 @@ export const mountReceptionDropUploader = (
       mounted = true;
     }
     form.setAttribute('data-uploading', '');
-    for (const el of Array.from(form.elements)) {
-      (el as { disabled?: boolean }).disabled = true;
-    }
+    for (const el of controls) el.disabled = true;
 
     engine.start(file);
   };

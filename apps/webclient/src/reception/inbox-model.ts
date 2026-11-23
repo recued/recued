@@ -65,6 +65,7 @@ export const RECEPTION_INBOX_ERROR_COPY: Readonly<Record<ReceptionInboxRpcErrorC
     'Nobody has checked this file for viruses. Look at it, then say yes if you still want it.',
   attachment_flagged:
     'The virus check flagged this file. Look at it, then say yes if you still want it.',
+  decision_not_recorded: 'Your rejection was not recorded. Open the request again and try once more.',
   bad_request: 'Recued could not read that. Load the page again and try once more.',
 };
 

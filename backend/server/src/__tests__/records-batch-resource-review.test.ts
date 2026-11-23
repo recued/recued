@@ -88,7 +88,7 @@ describe('version-bound Records upsert and batch approvals', () => {
       after: { id: 'new', title: 'New', amount: '12.5000', details: { note: null } } }]);
     expect(f.snapshot()).toEqual(before);
     expect(f.changed).not.toHaveBeenCalled();
-    expect(renderResourceReview(review)).toContain('Before: Does not exist');
+    expect(renderResourceReview(review)).toContain('(new)\n  Title: New\n  Amount: 12.5000');
     f.restart();
     const recovered = JSON.parse(JSON.stringify(review));
     expect(f.hooks().capture(f.manifest.slug, input, recovered, true)).toEqual(review);
@@ -178,7 +178,7 @@ describe('version-bound Records upsert and batch approvals', () => {
     expect(review.resources).toHaveLength(1);
     expect(review.resources[0]!.changes?.map(change => change.action)).toEqual(['update', 'upsert', 'delete', 'create']);
     const rendered = renderResourceReview(review);
-    expect(rendered).toContain('Intermediate'); expect(rendered).toContain('3. delete'); expect(rendered).toContain('4. create');
+    expect(rendered).toContain('Intermediate'); expect(rendered).toContain('3. Delete'); expect(rendered).toContain('4. Add: Title: Recreated');
     f.hooks().run(review, () => f.run('batch', args));
     expect(f.row('same')).toMatchObject({ title: 'Recreated', _record: { revision: 0 } });
   });
@@ -242,9 +242,9 @@ describe('version-bound Records upsert and batch approvals', () => {
     expect(review.resources[0]).toMatchObject({ before: {}, after: null });
     expect(review.resources[0]!.changes?.map(change => change.action)).toEqual(['create', 'delete']);
     const text = renderResourceReview(review);
-    expect(text).toContain('After: Does not exist');
+    expect(text).toContain('Added, then deleted, in this same change');
     expect(text).toContain('Intermediate');
-    expect(text).not.toContain('Delete this resource');
+    expect(text).not.toMatch(/^  Deleted$/m);
     f.hooks().run(review, () => f.run('batch', args));
     expect(f.row('transient')).toBeNull();
     expect(f.changed).toHaveBeenCalledTimes(2);

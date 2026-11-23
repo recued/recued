@@ -87,6 +87,8 @@ import {
   MEMORY_SAVES_WAIT_MS,
   CONTACT_ADD_EMAIL_UPDATE,
   CONTACT_CHANGE_EMAIL_UPDATE,
+  CONTACT_NAME_ALONE_HINT,
+  CONTACT_NAME_ALONE_UPDATE,
   bootstrapDataRoute,
   type DataCollectionSearchAllCaller,
   type BootstrapDataRouteOptions,
@@ -178,6 +180,7 @@ interface FakeEl {
   listeners: Map<string, Array<(ev: Event) => void>>;
   readonly firstChild: FakeEl | null;
   querySelector(selector: string): FakeEl | null;
+  querySelectorAll(selector: string): FakeEl[];
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
@@ -212,6 +215,16 @@ const makeFakeEl = (tag: string): FakeEl => {
       return el.children[0] ?? null;
     },
     querySelector: () => null,
+    querySelectorAll(selector) {
+      // Rendered innerHTML stays opaque in this lightweight fixture. Query
+      // explicit child nodes; real rendered rows and focus are browser-tested.
+      const attribute = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(selector);
+      if (!attribute) return [];
+      return el.children.flatMap(child => [child, ...child.querySelectorAll(selector)])
+        .filter(child => attribute[2] === undefined
+          ? child.hasAttribute(attribute[1]!)
+          : child.getAttribute(attribute[1]!) === attribute[2]);
+    },
     setAttribute(k, v) {
       el.attrs.set(k, v);
     },
@@ -331,6 +344,9 @@ const emitClick = (
   const actionEl = {
     getAttribute: (k: string) =>
       k === 'data-recued-data-action' ? action : (extraAttrs[k] ?? null),
+    // This string-DOM rig models the click target's API; activeElement and
+    // focus restoration are checked by the real inbox browser tests.
+    focus() {},
   };
   const target = {
     closest: (sel: string) =>
@@ -1169,7 +1185,7 @@ describe('Task editor completion', () => {
       replace: (value: OwnerTask) => { current = value; },
       html: () => rig.root.children[0]!.innerHTML,
       click: (action: string) => emitClick(rig.root.children[0]!, action),
-      open: async () => { await rig.route.whenLoaded(); await rig.route.openEditWorkEntityDialog('task', current.id); } };
+      open: async (intent: 'read' | 'edit' = 'read') => { await rig.route.whenLoaded(); await rig.route.openEditWorkEntityDialog('task', current.id, intent); } };
   };
 
   it('completes and reopens an undated task through the lifecycle RPC without replaying its details', async () => {
@@ -1194,7 +1210,7 @@ describe('Task editor completion', () => {
   });
 
   it('keeps unsaved edits intact and refuses completion until they are saved or discarded', async () => {
-    const h = mountTask(); await h.open();
+    const h = mountTask(); await h.open('edit');
     const original = { ...h.route.workEntityState().dialog!.values };
     h.route.setWorkEntityDialogValues({ ...original, body: 'Unfinished draft' });
     h.click('complete-work-entity-task'); await h.route.whenLoaded();
@@ -1220,7 +1236,7 @@ describe('Task editor completion', () => {
     ['tombstoned', task({ sync_state: 'tombstoned' })],
     ['deleted', task({ deleted_at: 99 })],
   ] as const)('rereads and refuses a %s task before dispatching completion', async (_name, entity) => {
-    const h = mountTask(); await h.open();
+    const h = mountTask(); await h.open('edit');
     h.get.mockResolvedValueOnce({ entity });
     h.click('complete-work-entity-task'); await h.route.whenLoaded();
     expect(h.markDone).not.toHaveBeenCalled();
@@ -1236,7 +1252,7 @@ describe('Task editor completion', () => {
     ['read through', [{ ...sourceRegistration('task'), sync_posture: 'read_through' }]],
     ['wrong kind', [{ ...sourceRegistration('task'), top_tier_kind: 'note' }]],
   ] as const)('rereads and refuses a %s source before dispatching completion', async (_name, sources) => {
-    const h = mountTask(); await h.open();
+    const h = mountTask(); await h.open('edit');
     h.sourceListCaller.mockResolvedValueOnce({ sources });
     h.click('complete-work-entity-task'); await h.route.whenLoaded();
     expect(h.markDone).not.toHaveBeenCalled();
@@ -1574,7 +1590,8 @@ describe('saved Data view hydration', () => {
       collectionListInstancesCaller: async () => ({ instances }), collectionListCaller: list });
     await rig.route.whenLoaded();
     emitClick(rig.root.children[0]!, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: 'changed' });
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ platform: 'mail', slug: 'changed', limit: 100 }));
+    // Mail fetches 30 messages plus one lookahead row for the next-page check.
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ platform: 'mail', slug: 'changed', filters: {}, limit: 31 }));
     instances = [instance('original')];
     list.mockClear();
     for (let i = 0; i < 2; i++) {
@@ -1903,7 +1920,7 @@ describe('D-174 P5 Data route', () => {
     expect(listHtml).not.toContain('<span class="data-row-meta">mention-only-');
     await rig.route.openContactDetail(mia.email);
     const pageHtml = rig.root.children[0]?.innerHTML ?? '';
-    expect(pageHtml).toMatch(/<h2 class="data-section-title"[^>]*>Mia<\/h2>\s*<span class="data-row-meta">No email address<\/span>/u);
+    expect(pageHtml).toMatch(/<h2 class="data-section-title"[^>]*>Mia<\/h2>\s*<span class="data-contact-primary-email"><span class="data-row-meta">No email address<\/span>/u);
     rig.route.dispose();
     // The relationship's picker lists her by her name alone.
     const picker = await startLinkingDana({
@@ -1959,7 +1976,7 @@ describe('D-174 P5 Data route', () => {
     expect(m.contactUpsertCaller).not.toHaveBeenCalled();
     expect(m.html()).not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR);
     expect(m.html()).toContain(`${DATA_ROUTE_CONTACT_DETAIL_ATTR}="mia@example.test"`);
-    expect(m.html()).toMatch(/<h2 class="data-section-title"[^>]*>Mia<\/h2>\s*<span class="data-row-meta">mia@example\.test<\/span>/u);
+    expect(m.html()).toMatch(/<h2 class="data-section-title"[^>]*>Mia<\/h2>\s*<span class="data-contact-primary-email"><span class="data-row-meta">mia@example\.test<\/span>/u);
     // The address the page had is replaced, so Back does not return to it.
     expect(m.replaceState).toHaveBeenLastCalledWith(null, '', '#data/contact/mia%40example.test');
     expect(m.pushState.mock.calls.map((call) => call[2])).not.toContain('#data/contact/mia%40example.test');
@@ -2374,6 +2391,111 @@ describe('D-174 P5 Data route', () => {
     expect(unwired.emailInput()).toContain('readonly');
     expect(unwired.dialogHtml()).not.toContain(CHANGE_HINT);
     unwired.rig.route.dispose();
+  });
+
+  /** D-336 (the owner, 2026-11-17: *"it is okay to create a contact with just a name because it can
+   *  be beneficial to PII feature"*) — New contact takes a name alone, as the Memory form's picker
+   *  already could (slice H): a name in the address book is one the privacy shield masks before a
+   *  cloud model sees it. Before, New contact refused an empty email ("Email is required."). */
+  const mountNew = (overrides: Parameters<typeof mountRoute>[0] = {}) => {
+    const added = contactRecord({ email: 'mention-only-ct-ada@_recued.invalid', _id: 'mention-only-ct-ada@_recued.invalid',
+      name: 'Ada Okonkwo', contact_id: 'ct-ada', identity_status: 'mention_only' });
+    const contactCreateByNameCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['contactCreateByNameCaller']>>(
+      async ({ name }) => ({ contact: { ...added, name } }));
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({ contact: { ...added, ...args } as ContactRecord }));
+    const rig = mountRoute({ contactCreateByNameCaller, contactUpsertCaller, contactAddEmailCaller: vi.fn(), ...overrides });
+    const html = (): string => rig.root.children[0]?.innerHTML ?? '';
+    const dialogHtml = (): string => (html().includes(DATA_ROUTE_CONTACT_DIALOG_ATTR)
+      ? html().slice(html().indexOf(DATA_ROUTE_CONTACT_DIALOG_ATTR)) : '');
+    return { rig, added, contactCreateByNameCaller, contactUpsertCaller, html, dialogHtml };
+  };
+
+  it('D-336 — New contact takes a name alone: added from the name, and nothing more sent when nothing more was written', async () => {
+    const m = mountNew();
+    await m.rig.route.whenLoaded();
+    m.rig.route.openCreateContactDialog();
+    expect(m.dialogHtml()).toContain(CONTACT_NAME_ALONE_HINT);
+    m.rig.route.setContactDialogValues({ name: '  Ada Okonkwo ' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactCreateByNameCaller).toHaveBeenCalledTimes(1);
+    expect(m.contactCreateByNameCaller).toHaveBeenCalledWith({ name: 'Ada Okonkwo' });
+    expect(m.contactUpsertCaller).not.toHaveBeenCalled();
+    expect(m.dialogHtml()).toBe('');
+    m.rig.route.dispose();
+  });
+
+  it('D-336 — a name with more: the contact is added from the name first, the rest saved under it', async () => {
+    const m = mountNew();
+    await m.rig.route.whenLoaded();
+    m.rig.route.openCreateContactDialog();
+    m.rig.route.setContactDialogValues({ name: 'Ada Okonkwo', phone: '+15555550123', company: 'Northwind' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactCreateByNameCaller).toHaveBeenCalledWith({ name: 'Ada Okonkwo' });
+    expect(m.contactUpsertCaller).toHaveBeenCalledWith({ email: m.added.email, name: 'Ada Okonkwo', phone: '+15555550123',
+      company: 'Northwind' });
+    expect(m.contactCreateByNameCaller.mock.invocationCallOrder[0]!).toBeLessThan(m.contactUpsertCaller.mock.invocationCallOrder[0]!);
+    expect(m.dialogHtml()).toBe('');
+    m.rig.route.dispose();
+  });
+
+  it('D-336 — neither an email nor a name is stopped on the form; an email still makes the contact keyed on it', async () => {
+    const m = mountNew();
+    await m.rig.route.whenLoaded();
+    m.rig.route.openCreateContactDialog();
+    await m.rig.route.confirmContactDialog();
+    expect(m.dialogHtml()).toContain('Write an email address or a name.');
+    m.rig.route.setContactDialogValues({ email: 'ada@example.test', name: 'Ada Okonkwo' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactCreateByNameCaller).not.toHaveBeenCalled();
+    expect(m.contactUpsertCaller).toHaveBeenCalledWith({ email: 'ada@example.test', name: 'Ada Okonkwo' });
+    m.rig.route.dispose();
+  });
+
+  it('D-336 — when the rest fails after the add, Save again edits the contact added, and adds no second one', async () => {
+    let busy = true;
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => {
+      if (busy) { busy = false; throw new Error('The server is busy.'); }
+      return { contact: { ...args } as ContactRecord };
+    });
+    const m = mountNew({ contactUpsertCaller });
+    await m.rig.route.whenLoaded();
+    m.rig.route.openCreateContactDialog();
+    m.rig.route.setContactDialogValues({ name: 'Ada Okonkwo', phone: '+15555550123' });
+    await m.rig.route.confirmContactDialog();
+    expect(m.dialogHtml()).toContain('The server is busy.');
+    expect(m.dialogHtml()).toContain('Edit contact');
+    await m.rig.route.confirmContactDialog();
+    expect(m.contactCreateByNameCaller).toHaveBeenCalledTimes(1);
+    expect(contactUpsertCaller).toHaveBeenCalledTimes(2);
+    expect(contactUpsertCaller).toHaveBeenLastCalledWith({ email: m.added.email, name: 'Ada Okonkwo', phone: '+15555550123' });
+    expect(m.dialogHtml()).toBe('');
+    m.rig.route.dispose();
+  });
+
+  it('D-336 — an older server says so and asks for an email again; a host that cannot add one by name asks for it as before', async () => {
+    const older = mountNew({ contactCreateByNameCaller: vi.fn(async () => {
+      throw Object.assign(new Error('unknown method contact.create_by_name'), { code: 'unknown_method' });
+    }) });
+    await older.rig.route.whenLoaded();
+    older.rig.route.openCreateContactDialog();
+    older.rig.route.setContactDialogValues({ name: 'Ada Okonkwo' });
+    await older.rig.route.confirmContactDialog();
+    expect(older.dialogHtml()).toContain(CONTACT_NAME_ALONE_UPDATE);
+    expect(older.dialogHtml()).not.toContain(CONTACT_NAME_ALONE_HINT);
+    await older.rig.route.confirmContactDialog();
+    expect(older.dialogHtml()).toContain('Email is required.');
+    expect(older.contactUpsertCaller).not.toHaveBeenCalled();
+    older.rig.route.dispose();
+
+    const unwired = mountRoute({ contactUpsertCaller: vi.fn<DataContactUpsertCaller>() });
+    await unwired.route.whenLoaded();
+    unwired.route.openCreateContactDialog();
+    unwired.route.setContactDialogValues({ name: 'Ada Okonkwo' });
+    await unwired.route.confirmContactDialog();
+    const html = unwired.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Email is required.');
+    expect(html).not.toContain(CONTACT_NAME_ALONE_HINT);
+    unwired.route.dispose();
   });
 
   it('D-336 slice R — a page opened at the address a contact was changed from goes to the contact; a stranger\'s stays', async () => {
@@ -4561,7 +4683,7 @@ describe('D-174 P5 Data route', () => {
     expect(rig.root.children[0]?.innerHTML).toContain('work-entity-page');
     expect(rig.root.children[0]?.innerHTML).toContain('Call Sam');
 
-    await rig.route.openEditWorkEntityDialog('task', 'task-1');
+    await rig.route.openEditWorkEntityDialog('task', 'task-1', 'edit');
     expect(rig.workEntityGetCaller).toHaveBeenCalledWith({
       kind: 'task',
       id: 'task-1',
@@ -4585,6 +4707,26 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  it.each([true, false])('clears an assigned contact explicitly and requires its removal in the receipt (confirmed=%s)', async confirmed => {
+    const original = taskEntity({ assigned_contact_id: 'person@example.test', body: 'Keep these notes.\n\n' });
+    if (original._kind !== 'task') throw new Error('Expected task fixture');
+    const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(async () => ({ entity: original }));
+    const workEntityUpsertCaller = vi.fn<DataWorkEntityUpsertCaller>(async () => {
+      const { assigned_contact_id: _removed, ...cleared } = original;
+      return { entity: confirmed ? cleared : original };
+    });
+    const rig = mountRoute({ workEntityGetCaller, workEntityUpsertCaller });
+    await rig.route.whenLoaded(); await rig.route.selectTab('task');
+    await rig.route.openEditWorkEntityDialog('task', original.id, 'edit');
+    rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, assigned_contact: '' });
+    await rig.route.confirmWorkEntityDialog();
+    expect(workEntityUpsertCaller).toHaveBeenCalledExactlyOnceWith({ kind: 'task', id: original.id, clear_assigned_contact: true });
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    if (confirmed) expect(html).toContain('work-entity-task-reader');
+    else { expect(html).toContain('The source did not confirm your edits'); expect(rig.route.workEntityState().dialog).not.toBeNull(); }
+    rig.route.dispose();
+  });
+
   describe('the due date the dialog reads back (found live: it was dropped)', () => {
     // The dialog reads a date-time field back as an ISO STRING with this
     // browser's offset; the upsert took numbers only, so every save dropped
@@ -4598,7 +4740,7 @@ describe('D-174 P5 Data route', () => {
       const rig = mountRoute({ workEntityGetCaller });
       await rig.route.whenLoaded();
       await rig.route.selectTab('task');
-      await rig.route.openEditWorkEntityDialog('task', 'task-1');
+      await rig.route.openEditWorkEntityDialog('task', 'task-1', 'edit');
       return rig;
     };
     const savedDue = (rig: Awaited<ReturnType<typeof editTaskWithDue>>) =>
@@ -4623,7 +4765,7 @@ describe('D-174 P5 Data route', () => {
       });
       await rig.route.confirmWorkEntityDialog();
       expect(savedDue(rig)).toBeUndefined();
-      expect(rig.route.workEntityState().dialog).toBeNull();
+      expect(rig.root.children[0]?.innerHTML).toContain('work-entity-task-reader');
       rig.route.dispose();
     });
 
@@ -4635,7 +4777,7 @@ describe('D-174 P5 Data route', () => {
       rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, due_at: shownBack });
       await rig.route.confirmWorkEntityDialog();
       expect(rig.workEntityUpsertCaller).not.toHaveBeenCalled();
-      expect(rig.route.workEntityState().dialog).toBeNull();
+      expect(rig.root.children[0]?.innerHTML).toContain('work-entity-task-reader');
       rig.route.dispose();
     });
 
@@ -4647,7 +4789,7 @@ describe('D-174 P5 Data route', () => {
       await rig.route.confirmWorkEntityDialog();
       const expected = picked.getTime();
       expect(savedDue(rig)).toBe(kind === 'whole-day' ? Date.UTC(2026, 9, 6) : expected + (expected % 86_400_000 === 0 ? 1 : 0));
-      expect(rig.route.workEntityState().dialog).toBeNull();
+      expect(rig.root.children[0]?.innerHTML).toContain('work-entity-task-reader');
       rig.route.dispose();
     });
 
@@ -5145,7 +5287,7 @@ describe('D-174 P5 Data route', () => {
     await rig.route.whenLoaded();
 
     await rig.route.selectTab('task');
-    await rig.route.openEditWorkEntityDialog('task', 'task-hubspot');
+    await rig.route.openEditWorkEntityDialog('task', 'task-hubspot', 'edit');
     const dialog = rig.route.workEntityState().dialog;
     expect(dialog?.values.hubspot_owner_id).toBe('owner-existing');
     expect(dialog?.values.hubspot_priority).toBe('LOW');
@@ -5170,7 +5312,7 @@ describe('D-174 P5 Data route', () => {
       }),
     );
 
-    expect(rig.route.workEntityState().dialog).toBeNull();
+    expect(rig.root.children[0]?.innerHTML).toContain('work-entity-task-reader');
 
     rig.route.dispose();
   });
@@ -6308,7 +6450,7 @@ describe('D-174 P5 Data route', () => {
     await rig.route.whenLoaded();
     await rig.route.selectTab('mail');
     // One instance → auto-selected → its records fetched for (platform, slug).
-    expect(list).toHaveBeenCalledWith({ platform: 'mail', slug: 'gmail', limit: expect.any(Number) });
+    expect(list).toHaveBeenCalledWith({ platform: 'mail', slug: 'gmail', filters: {}, limit: 31 });
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('Renewal'); // primary_field (subject) title
     expect(html).toContain('sam@acme.com'); // summary field
@@ -7033,7 +7175,8 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     expect(list).toHaveBeenCalledWith({
       platform: 'mail',
       slug: 'work',
-      limit: expect.any(Number),
+      filters: {},
+      limit: 31,
     });
     expect(list).not.toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'personal' }),
@@ -7823,6 +7966,7 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
       history: { replaceState },
     };
     await rig.route.whenLoaded();
+    await rig.route.openEditWorkEntityDialog('task', 'task-1', 'edit');
     const dialog = rig.route.workEntityState().dialog;
     rig.route.setWorkEntityDialogValues({
       ...(dialog?.values ?? {}),
@@ -8295,7 +8439,7 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
     const rig = mountRoute({ workEntityUpsertCaller });
     await rig.route.whenLoaded();
     await rig.route.selectTab('task');
-    await rig.route.openEditWorkEntityDialog('task', 'task-1');
+    await rig.route.openEditWorkEntityDialog('task', 'task-1', 'edit');
 
     rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, title: 'Saved task' });
 
@@ -8318,7 +8462,7 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
 
     saved.resolve({ entity: taskEntity({ title: 'Saved task' }) });
     await Promise.all([first, duplicate]);
-    expect(rig.route.workEntityState().dialog).toBeNull();
+    expect(rig.root.children[0]?.innerHTML).toContain('work-entity-task-reader');
     expect(rig.route.hasInFlightWork()).toBe(false);
     expect(rig.route.inFlightWorkPrompt()).toBeNull();
     rig.route.dispose();
@@ -8328,7 +8472,7 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
     await rig.route.selectTab('task');
-    await rig.route.openEditWorkEntityDialog('task', 'task-1');
+    await rig.route.openEditWorkEntityDialog('task', 'task-1', 'edit');
     const dialog = rig.route.workEntityState().dialog;
     rig.route.setWorkEntityDialogValues({
       ...(dialog?.values ?? {}),
@@ -10384,4 +10528,39 @@ describe('D-336 slice L — the Memory form adds a thing you own from its name',
     expect(routeRoot.innerHTML).toContain('data-memory-claim-linked="object"');
     rig.route.dispose();
   });
+});
+
+// Recovery is optional (the webclient can disable it). A save reply must still
+// confirm the reviewed fields and destination before offering an Open shortcut.
+describe('contact task confirmation without draft recovery', () => {
+  for (const reply of ['confirmed', 'pending', 'wrong-source', 'wrong-fields'] as const) {
+    it(`checks a ${reply} reply independently of recovery storage`, async () => {
+      const person = contactRecord({ contact_id: 'contact-sam' });
+      const upsert = vi.fn<DataWorkEntityUpsertCaller>(async args => {
+        if (args.kind !== 'task' || !('source_id' in args)) throw new Error('Expected a new task with an explicit Source.');
+        const { kind: _kind, source_id, ...fields } = args;
+        return { entity: taskEntity({ ...fields, id: 'created-follow-up', source_id: source_id!,
+          ...(reply === 'pending' ? { pending_write: { staged_at: 3, operation: 'update', dirty_fields: ['title'], state: 'awaiting_verify' } } : {}),
+          ...(reply === 'wrong-source' ? { source_id: 'different.task' } : {}),
+          ...(reply === 'wrong-fields' ? { title: 'A different task' } : {}) }) };
+      });
+      const rig = mountRoute({ contactGetCaller: async () => ({ contact: person }), workEntityUpsertCaller: upsert });
+      Object.assign(rig.doc, { URL: 'https://app.test/' });
+      try {
+        await rig.route.whenLoaded(); await rig.route.openContactDetail(person.email);
+        emitClick(rig.root.children[0]!, 'contact-create-task');
+        await vi.waitFor(() => expect(rig.root.children[0]!.innerHTML).toContain('data-mode="create"'));
+        rig.route.setWorkEntityDialogValues({ title: 'Reviewed follow-up', body: 'Contact: https://app.test/#data/contact/contact-sam', done: false, due_at: null });
+        await rig.route.confirmWorkEntityDialog();
+        expect(upsert).toHaveBeenCalledTimes(1);
+        const html = rig.root.children[0]!.innerHTML;
+        if (reply === 'confirmed') {
+          expect(html).toContain('data-contact-work-created'); expect(html).toContain(DATA_ROUTE_CONTACT_DETAIL_ATTR);
+        } else {
+          expect(html).toContain('did not confirm'); expect(html).not.toContain('data-contact-work-created');
+          await rig.route.confirmWorkEntityDialog(); expect(upsert).toHaveBeenCalledTimes(1);
+        }
+      } finally { rig.route.dispose(); }
+    });
+  }
 });

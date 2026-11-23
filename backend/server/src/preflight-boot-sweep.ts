@@ -36,10 +36,11 @@
  *  Spec: D-157 § A.3.
  */
 
+import { raiseRunQuestionAsk } from './run-question.js';
 import type { AuditEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
 import { buildAuditEntry } from '@recued/storage';
 import type { PreflightAskContext, PreflightNotifier } from '@recued/gateway';
-import { PREFLIGHT_HANDLER_KIND, raisePreflightAsk } from '@recued/gateway';
+import { preflightAskHoldsCheckpoint, raisePreflightAsk } from '@recued/gateway';
 import { isReceptionOriginSource } from './reception-inbox-handler.js';
 import type {
   BatchAskRecord,
@@ -386,9 +387,9 @@ export const sweepAwaitingCheckpoints = async (
         continue;
       }
 
+      // A call's own ask, or a round's gathered one that lists it (D-177 §N.15.9).
       const existingAsk = unresolvedAsks.find(
-        (ask) => ask.handler_kind === PREFLIGHT_HANDLER_KIND
-          && ask.handler_payload.checkpoint_id === checkpoint.checkpoint_id,
+        (ask) => preflightAskHoldsCheckpoint(ask, checkpoint.checkpoint_id),
       );
       if (existingAsk !== undefined) {
         if (action !== null) {
@@ -717,9 +718,9 @@ export const sweepAwaitingCheckpoints = async (
           throw new Error('durable unresolved-ask reader is not wired');
         }
         const unresolvedAsks = await deps.listUnresolvedAsks();
+        // A call's own ask, or a round's gathered one that lists it (D-177 §N.15.9).
         existingAsk = unresolvedAsks.find(
-          (ask) => ask.handler_kind === PREFLIGHT_HANDLER_KIND
-            && ask.handler_payload.checkpoint_id === checkpoint.checkpoint_id,
+          (ask) => preflightAskHoldsCheckpoint(ask, checkpoint.checkpoint_id),
         );
       } catch (error) {
         console.warn(
@@ -786,10 +787,14 @@ export const sweepAwaitingCheckpoints = async (
       if (action !== null) {
         action = await requireReceiptLink(action, action.action_ref, null);
       }
-      const { ask_id } = await raisePreflightAsk(deps.notifier, {
-        checkpoint,
-        context,
-      });
+      // D-402 slice F3 — a run held before step 1 asks its question again, never an approval of the
+      // step it only names as where it begins.
+      const { ask_id } = checkpoint.run_question !== undefined
+        ? await raiseRunQuestionAsk(deps.notifier, checkpoint)
+        : await raisePreflightAsk(deps.notifier, {
+          checkpoint,
+          context,
+        });
       freshAskId = ask_id;
       if (action !== null) {
         try {

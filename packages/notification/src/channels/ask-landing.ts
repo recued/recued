@@ -47,8 +47,8 @@
  *  prefetch issues a GET only, so it can render but never answer — the
  *  D-149 reception GET-renders / POST-commits split.
  *
- *  Leaf posture (mirrors P0 / P1 / P2a / P2b-i): this ships two pure
- *  functions — `renderAskLandingHtml` (the page) and
+ *  Leaf posture (mirrors P0 / P1 / P2a / P2b-i): this ships pure
+ *  renderers for the decision and stale-form recovery pages, and
  *  `parseAskLandingSubmission` (the POST-body decoder) — plus
  *  `ASK_LANDING_RESPONSE_HEADERS`, the security headers the server
  *  response must carry (frame-blocking is header-only, never honoured
@@ -130,6 +130,9 @@ export const resolveAskLandingVia = (raw: string | null | undefined): ChannelNam
   return isChannelName(candidate) ? candidate : LANDING_REPLY_VIA_FALLBACK;
 };
 
+/** Survives when a browser omits every unchecked edit control. */
+const EDIT_FORM_KEY = 'edit_form';
+
 /** The closed list of form keys the POST decoder accepts — any other key
  *  rejects the submission (`unknown_field`). Defense-in-depth, mirroring
  *  the D-149 reception handlers' `ALLOWED_FORM_KEYS`. */
@@ -137,6 +140,7 @@ const ALLOWED_SUBMISSION_KEYS: ReadonlySet<string> = new Set([
   'form_nonce',
   'ask_id',
   'option',
+  EDIT_FORM_KEY,
   // D-238 — the originating channel (see `resolveAskLandingVia`). ⚠ ADDING THE
   // HIDDEN FIELD WITHOUT ADDING IT HERE REJECTS THE WHOLE SUBMISSION as
   // `unknown_field`: the allowlist is closed by design, so every landing answer
@@ -203,8 +207,9 @@ export const ASK_LANDING_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
 export interface AskLandingDetail {
   label: string;
   value: string;
-  /** D-210 A.8 3d-2c — present ⇒ render an editable control instead of
-   *  static text, and the submitted value rides `edit.<key>`.
+  /** D-210 A.8 3d-2c — a candidate edit control instead of static text.
+   *  The submitted value rides `edit.<key>` when the prefilled form fits
+   *  the body budget; otherwise the full value remains a read-only preview.
    *
    *  Fully resolved by the server: which control, what the value attribute
    *  reads, and (for a `datetime-local`) WHICH ZONE that wall clock is in.
@@ -275,6 +280,10 @@ export interface AskLandingRenderInput {
    *  request query and ridden through the form so the POST can attribute the
    *  answer to it. Absent ⇒ the `email` fallback (a legacy link). */
   via?: ChannelName;
+  /** The server's encoded POST-body limit. Prefills exceeding it remain
+   *  readable without being submitted, so the original request can still
+   *  receive a plain answer. Absent preserves the caller's editable form. */
+  max_body_bytes?: number;
 }
 
 /** A decoded landing-page POST. The `reply` is ready for
@@ -285,8 +294,9 @@ export interface AskLandingSubmission {
   reply: InboundReply;
   form_nonce: string;
   /** D-210 A.8 3d-2c — raw `edit.<key>` values, prefix stripped, as
-   *  SUBMITTED STRINGS. Undefined when the body carried none (the 3d-2b
-   *  page, and every non-editable ask).
+   *  SUBMITTED STRINGS. An editable form keeps an empty record when all its
+   *  checkboxes are omitted. Undefined when neither the edit-form marker nor
+   *  any edit fields were submitted (read-only and legacy plain-answer forms).
    *
    *  Deliberately un-coerced and un-validated here: the decoder knows the
    *  body's shape, not the operation's schema. `string` is what an
@@ -334,6 +344,8 @@ legend{padding:0;margin:0 0 10px;font-size:12px;font-weight:600;letter-spacing:.
 .option{display:flex;align-items:center;gap:12px;margin:0 0 8px;padding:14px;border:1px solid #e4e4e7;border-radius:9px;cursor:pointer}
 .option input{margin:0;flex:none}
 button{width:100%;padding:13px;background:#18181b;color:#fff;border:0;border-radius:9px;font-size:16px;font-weight:600;cursor:pointer}
+.option-submit+.option-submit{margin-top:8px}
+.option-deny{background:#fff;color:#18181b;border:1px solid #d4d4d8}
 .footer{margin:24px 0 0;font-size:12px;color:#a1a1aa;text-align:center}`;
 
 /** The page head — a strict `<meta>` CSP (no scripts, no remote
@@ -387,6 +399,23 @@ ${input.inner}
 </html>
 `;
 
+/** A rejected form never issues another nonce or echoes submitted edits.
+ *  The route supplies a canonical same-origin GET URL; reopening it reads
+ *  the current decision before the holder chooses a new response. */
+export const renderAskLandingRecoveryHtml = (input: {
+  reopen_url: string;
+  reason?: 'too_large';
+}): string =>
+  renderShell({
+    title: 'Reopen this decision',
+    heading: input.reason === 'too_large' ? 'This form is too large' : 'This form is no longer current',
+    phrase: undefined,
+    inner: `<p class="prompt">${input.reason === 'too_large'
+      ? 'This submission exceeds the form size limit. Reopen the decision to review its current details before responding.'
+      : 'This form may have expired or already been submitted. Reopen the decision to see its current status before responding.'}</p>
+<p class="notice"><a href="${htmlEscape(input.reopen_url)}">Reopen decision</a></p>`,
+  });
+
 // ── Open page — the option form ────────────────────────────────────
 
 /** One radio row per option. The `value` is the option `id` — the exact
@@ -402,6 +431,17 @@ const renderOptionInputs = (options: readonly AskOption[]): string =>
     )
     .join('\n');
 
+/** Editable forms choose the answer with the submit button itself. Deny
+ *  bypasses native edit-field validation because it never commits those
+ *  controls. Each submission carries exactly one option, without scripts. */
+const renderOptionButtons = (options: readonly AskOption[]): string =>
+  options.map(option => {
+    const deny = option.id === 'deny';
+    return `<button type="submit" name="option" value="${htmlEscape(option.id)}" class="option-submit${
+      deny ? ' option-deny' : ''
+    }"${deny ? ' formnovalidate' : ''}>${htmlEscape(option.label)}</button>`;
+  }).join('\n');
+
 const DEFAULT_DETAILS_HEADING = 'What this will do';
 
 /** The "what will happen" block — the held operation's concrete values,
@@ -416,26 +456,30 @@ const DEFAULT_DETAILS_HEADING = 'What this will do';
 const numAttr = (name: string, v: number | undefined): string =>
   v === undefined ? '' : ` ${name}="${htmlEscape(String(v))}"`;
 
-/** One editable arg control. Submits under `edit.<key>`.
+/** One arg control. Editable controls submit under `edit.<key>`;
+ *  read-only previews omit their names and cannot submit an edit.
  *
  *  A `checkbox` carries NO `value` attribute on purpose: an unchecked box
  *  submits nothing at all, so presence-means-true / absence-means-false is
  *  the browser's own semantics, and the server reads it the same way the
  *  webclient inbox and the projection already do. */
-const renderEditControl = (edit: AskLandingEditControl): string => {
-  const name = htmlEscape(`${EDIT_KEY_PREFIX}${edit.key}`);
-  const required = edit.required === true ? ' required' : '';
+const renderEditControl = (edit: AskLandingEditControl, readOnly = false): string => {
+  const name = readOnly ? '' : ` name="${htmlEscape(`${EDIT_KEY_PREFIX}${edit.key}`)}"`;
+  const required = !readOnly && edit.required === true ? ' required' : '';
+  const readonly = readOnly ? ' readonly' : '';
   if (edit.control === 'checkbox') {
-    return `<input type="checkbox" name="${name}" value="on"${
+    return `<input type="checkbox"${name} value="on"${readOnly ? ' disabled' : ''}${
       edit.checked === true ? ' checked' : ''
     }>`;
   }
   if (edit.control === 'textarea') {
-    return `<textarea name="${name}"${required} rows="3">${htmlEscape(edit.value)}</textarea>`;
+    // HTML consumes one LF immediately after the opening tag. Supply it
+    // explicitly so a leading blank line in the actual value survives.
+    return `<textarea${name}${required}${readonly} rows="3">\n${htmlEscape(edit.value)}</textarea>`;
   }
-  return `<input type="${htmlEscape(edit.control)}" name="${name}" value="${htmlEscape(
+  return `<input type="${htmlEscape(edit.control)}"${name} value="${htmlEscape(
     edit.value,
-  )}"${required}${numAttr('min', edit.min)}${numAttr('max', edit.max)}${
+  )}"${required}${readonly}${edit.control === 'number' ? ' step="any"' : ''}${numAttr('min', edit.min)}${numAttr('max', edit.max)}${
     edit.pattern !== undefined ? ` pattern="${htmlEscape(edit.pattern)}"` : ''
   }>`;
 };
@@ -449,13 +493,14 @@ const renderErrorBlock = (message: string | undefined): string =>
 const renderDetailsBlock = (
   details: readonly AskLandingDetail[] | undefined,
   heading: string | undefined,
+  readOnly = false,
 ): string => {
   if (details === undefined || details.length === 0) return '';
   const rows = details
     .map((d) => {
       const cell =
         d.edit !== undefined
-          ? renderEditControl(d.edit)
+          ? renderEditControl(d.edit, readOnly)
           : htmlEscape(d.value);
       return `<div class="detail${d.edit !== undefined ? ' detail--edit' : ''}">`
         + `<dt>${htmlEscape(d.label)}</dt><dd>${cell}</dd></div>`;
@@ -469,6 +514,33 @@ const renderDetailsBlock = (
 ${rows}
 </dl>
 </div>`;
+};
+
+/** Native URL-encoded forms submit CRLF line endings and percent-encode
+ *  UTF-8 bytes. Count the whole envelope and the largest offered option,
+ *  including checked boxes; character counts miss both sources of growth. */
+const prefilledBodyExceedsBudget = (input: AskLandingRenderInput): boolean => {
+  const cap = input.max_body_bytes;
+  if (cap === undefined) return false;
+  const params = new URLSearchParams();
+  // HTML parsing replaces NUL before a control joins the form entry list.
+  const normalize = (s: string): string => s.replace(/\0/g, '\uFFFD').replace(/\r\n|\r|\n/g, '\r\n');
+  const append = (name: string, value: string): void => {
+    params.append(normalize(name), normalize(value));
+  };
+  append('form_nonce', input.form_nonce);
+  append('ask_id', input.ask.ask_id);
+  append(ASK_LANDING_VIA_KEY, input.via ?? LANDING_REPLY_VIA_FALLBACK);
+  append(EDIT_FORM_KEY, '1');
+  for (const { edit } of input.details ?? []) {
+    if (edit === undefined || (edit.control === 'checkbox' && edit.checked !== true)) continue;
+    append(`${EDIT_KEY_PREFIX}${edit.key}`, edit.control === 'checkbox' ? 'on' : edit.value);
+  }
+  return input.ask.options.some(option => {
+    params.delete('option');
+    append('option', option.id);
+    return params.toString().length > cap;
+  });
 };
 
 /** The `open`-ask body — the prompt, the message's optional context
@@ -496,19 +568,23 @@ const renderOpenBody = (input: AskLandingRenderInput): string => {
   // approve, and the original value would be what lands. Read-only rows are
   // inert inside a form, so both shapes take the same position rather than
   // the position depending on a property of the rows.
-  const detailsBlock = renderDetailsBlock(input.details, input.details_heading);
+  const hasCandidates = input.details?.some(detail => detail.edit !== undefined) === true;
+  const readOnly = hasCandidates && prefilledBodyExceedsBudget(input);
+  const detailsBlock = renderDetailsBlock(input.details, input.details_heading, readOnly);
+  const hasEditControls = hasCandidates && !readOnly;
   return `<p class="prompt">${htmlEscape(ask.message.text)}</p>${linkLine}${renderErrorBlock(
     input.details_error,
-  )}
+  )}${readOnly ? '\n<p class="notice">This request is too large to edit here. You can approve the original request or deny it. Make changes in the app.</p>' : ''}
 <form method="POST" action="${htmlEscape(input.action)}">
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
 <input type="hidden" name="ask_id" value="${htmlEscape(ask.ask_id)}">
-<input type="hidden" name="${ASK_LANDING_VIA_KEY}" value="${htmlEscape(input.via ?? LANDING_REPLY_VIA_FALLBACK)}">${detailsBlock}
+<input type="hidden" name="${ASK_LANDING_VIA_KEY}" value="${htmlEscape(input.via ?? LANDING_REPLY_VIA_FALLBACK)}">${
+    hasEditControls ? `\n<input type="hidden" name="${EDIT_FORM_KEY}" value="1">` : ''
+  }${detailsBlock}
 <fieldset>
 <legend>Choose one</legend>
-${renderOptionInputs(ask.options)}
-</fieldset>
-<button type="submit">Submit response</button>
+${hasEditControls ? renderOptionButtons(ask.options) : renderOptionInputs(ask.options)}
+</fieldset>${hasEditControls ? '' : '\n<button type="submit">Submit response</button>'}
 </form>`;
 };
 
@@ -584,7 +660,13 @@ export const parseAskLandingSubmission = (
 ): AskLandingSubmission | { error: 'unknown_field' | 'malformed' } => {
   const params = new URLSearchParams(rawBody);
   const edits: Record<string, string> = {};
-  let sawEdit = false;
+  const editForm = params.getAll(EDIT_FORM_KEY);
+  if (editForm.length > 1 || (editForm.length === 1 && editForm[0] !== '1')) {
+    return { error: 'malformed' };
+  }
+  // An unchecked box contributes no field at all. Preserve the form's edit
+  // intent so an empty payload still reaches coercion and the edit deadline.
+  let hasEditIntent = editForm.length === 1;
   for (const [key, value] of params) {
     if (ALLOWED_SUBMISSION_KEYS.has(key)) continue;
     if (!key.startsWith(EDIT_KEY_PREFIX)) return { error: 'unknown_field' };
@@ -602,7 +684,7 @@ export const parseAskLandingSubmission = (
     // SAME arg is exactly the kind of quiet choice an approval must not make.
     if (Object.hasOwn(edits, argKey)) return { error: 'unknown_field' };
     edits[argKey] = value;
-    sawEdit = true;
+    hasEditIntent = true;
   }
   const ask_id = (params.get('ask_id') ?? '').trim();
   const option = (params.get('option') ?? '').trim();
@@ -617,6 +699,6 @@ export const parseAskLandingSubmission = (
   return {
     reply: { ask_id, option, via: resolveAskLandingVia(params.get(ASK_LANDING_VIA_KEY)) },
     form_nonce,
-    ...(sawEdit ? { edits } : {}),
+    ...(hasEditIntent ? { edits } : {}),
   };
 };

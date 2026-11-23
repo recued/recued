@@ -1580,16 +1580,20 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
     && state.error === null
     && !state.cloudFilesError && !state.localFilesError
     && state.rows.length === 0;
+  const retry = lane.id === 'file' && (state.localFilesError || state.cloudFilesError) ? '' : button({
+    label: lane.id === 'mail' ? 'Refresh mailboxes' : lane.id === 'calendar' ? 'Refresh calendars' : 'Refresh file sources',
+    action: 'accounts-retry-inventory', size: 'sm', ariaDisabled: state.loading, ariaBusy: state.loading,
+  });
   let body: string;
   if (state.loading) {
     body = hasSuccess || hasRecovery ? '' : `
       <div class="accounts-loading-state" role="status" aria-live="polite">
         <span class="accounts-loading-dot" aria-hidden="true"></span>
         <span>Loading ${e(lane.label.toLowerCase())}…</span>
-      </div>
+      </div>${retry}
     `;
   } else if (state.error !== null) {
-    body = inlineError(state.error);
+    body = inlineError(state.error) + retry;
   } else if (isEmpty) {
     body = renderEmptyState(lane);
   } else if (state.rows.length === 0) {

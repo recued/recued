@@ -196,6 +196,21 @@ describe('D-148 P3 — action executor (click + fill + wait + extract)', () => {
 // what the functions do on a real page is pinned in real Chrome by
 // `backend/server/src/__tests__/bridge-page-fields-browser.test.ts`.
 describe('read_dom + fill — the shared field answers', () => {
+  it('keeps validated click obstruction evidence and treats malformed acknowledgements as uncertain', async () => {
+    const obstruction = { operation: 'click', executed: false, reason: 'target_occluded', source: 'hit_test',
+      target: { tag: 'button' }, blocker: { tag: 'iframe', label: 'Advertisement' }, waited_ms: 0 };
+    const message = 'Something covers it, so it was not clicked.';
+    const runClick = (action: 'click' | 'fill', refusal: unknown) =>
+      buildActionExecutor(buildBrowser({ executeScript: async () => ({ not_applied: refusal }) })).execute({
+        action, cancel: { signalled: false }, command: buildCommand(action, { selector: '#save', value: 'value' }) });
+    expect(await runClick('click', { message, obstruction })).toMatchObject({ status: 'error', error: {
+      code: 'value_not_applied', message, obstruction } });
+    for (const [action, refusal] of [['click', { message, obstruction: { ...obstruction, executed: true } }],
+      ['click', { message, obstruction, private_value: 'SECRET' }], ['fill', { message, obstruction }]] as const) {
+      expect(await runClick(action, refusal)).toMatchObject({ status: 'error', error: { code: 'delivery_uncertain' } });
+    }
+  });
+
   const run = (action: 'read_dom' | 'fill', answer: unknown) =>
     buildActionExecutor(buildBrowser({ executeScript: async () => answer })).execute({
       action, cancel: { signalled: false },
@@ -266,11 +281,24 @@ describe('inspect — one document, and only a well-formed answer', () => {
   const run = (args: Record<string, unknown>, executeInDocument: BridgeBrowserApi['executeInDocument'],
     findTabByUrlPattern?: BridgeBrowserApi['findTabByUrlPattern']) =>
     buildActionExecutor(buildBrowser({ executeInDocument, ...(findTabByUrlPattern ? { findTabByUrlPattern } : {}) }))
-      .execute({ action: 'inspect', cancel: { signalled: false }, command: buildCommand('inspect', args, keys) });
+      .execute({ action: 'inspect', cancel: { signalled: false }, command: buildCommand('inspect', args,
+        args.dom_ready === true ? [...keys, 'loading'] : keys) });
 
   it('answers the handle of the document Chrome read', async () => {
     expect(await run({}, async () => ({ document_id: 'DOC9', result: { outputs: read } })))
       .toEqual({ status: 'ok', outputs: { page: '1:DOC9', ...read } });
+  });
+
+  it('requests immediate snapshots only in DOM-ready mode and validates the loading marker', async () => {
+    for (const enabled of [false, true]) {
+      const executeInDocument = vi.fn<NonNullable<BridgeBrowserApi['executeInDocument']>>(async () =>
+        ({ document_id: 'DOC7', result: { outputs: { ...read, ...(enabled ? { loading: true } : {}) } } }));
+      const out = await run({ page: '7:DOC7', ...(enabled ? { dom_ready: true } : {}) }, executeInDocument);
+      expect(out).toMatchObject({ status: 'ok', outputs: { page: '7:DOC7', ...(enabled ? { loading: true } : {}) } });
+      expect(executeInDocument.mock.calls[0]![3]).toEqual(enabled ? { immediate: true } : undefined);
+    }
+    expect(await run({ dom_ready: true }, async () => ({ document_id: 'DOC7', result: { outputs: { ...read, loading: 'yes' } } })))
+      .toMatchObject({ status: 'error' });
   });
 
   it('reads the document a page handle names, without looking a tab up', async () => {
@@ -342,6 +370,40 @@ describe('inspect — one document, and only a well-formed answer', () => {
 // these pin what this executor concludes when Chrome loses the answer.
 describe('fill and click by page — what a lost answer means', () => {
   const read = { url: 'https://app.hubspot.com/deals', title: 'Deals', role: 'button', label: 'Send', protected: false };
+  it('only forwards a readiness check that was false before the click; malformed checks cannot mutate', async () => {
+    const ready = { selector: '#results', until: 'shown' };
+    for (const before of [false, true, 'invalid']) {
+      const clicked = vi.fn();
+      const pageAfterClick = vi.fn<NonNullable<BridgeBrowserApi['pageAfterClick']>>(async () => ({ moved: false, page: '7:DOC7' }));
+      const api = buildBrowser({ pageAfterClick, executeInDocument: async (_target, func) => {
+        if (func.name === 'clickPageElement') clicked();
+        return { document_id: 'DOC7', result: func.name === 'describePageElement' ? { outputs: read }
+          : func.name === 'checkPageElement' ? { outputs: { url: read.url, title: read.title, met: before } }
+          : { outputs: { clicked: true } } };
+      } });
+      const out = await buildActionExecutor(api).execute({ action: 'click', cancel: { signalled: false },
+        command: buildCommand('click', { page: '7:DOC7', selector: '#send', ready_check: before === 'invalid' ? {} : ready },
+          ['clicked', 'page']) });
+      expect(clicked).toHaveBeenCalledTimes(before === 'invalid' ? 0 : 1);
+      if (before === 'invalid') expect(out.status).toBe('error');
+      else expect(pageAfterClick.mock.calls[0]![5]?.ready).toEqual(before ? undefined : ready);
+    }
+  });
+  it('does not click if cancellation arrives while probing readiness', async () => {
+    const cancel = { signalled: false };
+    const calls: string[] = [];
+    const api = buildBrowser({ executeInDocument: async (_target, func) => {
+      calls.push(func.name);
+      if (func.name === 'checkPageElement') cancel.signalled = true;
+      return { document_id: 'DOC7', result: func.name === 'describePageElement' ? { outputs: read }
+        : { outputs: { url: read.url, title: read.title, met: false } } };
+    } });
+    const out = await buildActionExecutor(api).execute({ action: 'click', cancel,
+      command: buildCommand('click', { page: '7:DOC7', selector: '#send',
+        ready_check: { selector: '#results', until: 'shown' } }, ['clicked', 'page']) });
+    expect(out.status).toBe('cancelled');
+    expect(calls).not.toContain('clickPageElement');
+  });
   const run = (action: 'fill' | 'click', write: NonNullable<BridgeBrowserApi['executeInDocument']>) =>
     buildActionExecutor(buildBrowser({
       async executeInDocument(target, func, args) {
@@ -366,8 +428,9 @@ describe('fill and click by page — what a lost answer means', () => {
     const written = vi.fn();
     const out = await buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func) {
-        // Looking for the ref again, and reading the element, touch nothing.
-        if (func.name === 'describePageElement' || func.name === 'rebindPageRef') return null;
+        // The guard acknowledged the ref; the page is gone when the element is read.
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
+        if (func.name === 'describePageElement') return null;
         written();
         return null;
       },
@@ -492,6 +555,7 @@ describe('2026-11-04 — a click by page answers the page its tab then shows, wh
     const asked: unknown[][] = [];
     const executor = buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func) {
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
         return func.name === 'describePageElement' ? { document_id: 'DOC7', result: { outputs: read } }
           : { document_id: 'DOC7', result: { outputs: { clicked: true } } };
       },
@@ -539,13 +603,12 @@ describe('D-335 slice J — sending a form, and a CAPTCHA the page shows', () =>
     const waits: unknown[][] = [];
     const executor = buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func, given) {
-        if (func.name === 'describePageElement') return { document_id: 'DOC7', result: { outputs: read } };
-        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
-        // Slice K — the messages noted before a click or a send, and whether it sends a form.
-        if (func.name === 'prepareStepChecks') {
-          prepared.push([...given]);
-          return { document_id: 'DOC7', result: { sends: answers.sends ?? false } };
+        if (func.name === 'describePageElement') {
+          if (given[3] !== undefined) prepared.push([...given]);
+          return { document_id: 'DOC7', result: { outputs: { ...read,
+            ...(given[3] !== undefined ? { prepared_sends: answers.sends ?? false } : {}) } } };
         }
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
         calls.push({ func: func.name, args: [...given] });
         return { document_id: 'DOC7', result: func.name === 'pageChallenge' ? answers.challenge ?? null : answers.write };
       },
@@ -583,18 +646,29 @@ describe('D-335 slice J — sending a form, and a CAPTCHA the page shows', () =>
   });
 
   it('watches for the page to move on as long as the server asks, inside the command\'s budget', async () => {
-    const watch = async (watch_ms: unknown, timeout_ms = 30_000) => {
-      const t = run('submit', watch_ms === undefined ? {} : { watch_ms }, preW(BRIDGE_SUBMIT_OUTPUT_KEYS),
-        { write: sent, after: landed }, timeout_ms);
-      await t.out;
-      return t.waits[0]![3];
-    };
-    expect(await watch(undefined)).toEqual({ settleMs: BRIDGE_CLICK_SETTLE_MS, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
-    expect(await watch(5_000)).toEqual({ settleMs: 5_000, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
-    expect(await watch(60_000)).toEqual({ settleMs: BRIDGE_WATCH_MAX_MS, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
-    expect(await watch('5000')).toEqual({ settleMs: BRIDGE_CLICK_SETTLE_MS, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
-    // A command with 8 seconds has 5 to spend after its script: all of it on the watch.
-    expect(await watch(10_000, 8_000)).toEqual({ settleMs: 5_000, loadMs: 0 });
+    // These scripts answer immediately. Freeze their clock so scheduling cannot
+    // consume a millisecond of the exact remaining-budget assertion.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const watch = async (watch_ms: unknown, timeout_ms = 30_000) => {
+        const t = run('submit', watch_ms === undefined ? {} : { watch_ms }, preW(BRIDGE_SUBMIT_OUTPUT_KEYS),
+          { write: sent, after: landed }, timeout_ms);
+        await t.out;
+        return t.waits[0]![3];
+      };
+      expect(await watch(undefined)).toEqual({ settleMs: BRIDGE_CLICK_SETTLE_MS, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
+      expect(await watch(5_000)).toEqual({ settleMs: 5_000, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
+      // 2026-11-21 (D-402, task H) — the longest watch, 30 s, in a command long enough for it, as the server sends one for
+      // a long watch; in the default 30 s command, the watch takes what the command leaves after its script.
+      expect(await watch(60_000, 50_000)).toEqual({ settleMs: BRIDGE_WATCH_MAX_MS, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
+      expect(BRIDGE_WATCH_MAX_MS).toBe(30_000);
+      expect(await watch(60_000)).toEqual({ settleMs: 27_000, loadMs: 0 });
+      expect(await watch('5000')).toEqual({ settleMs: BRIDGE_CLICK_SETTLE_MS, loadMs: BRIDGE_CLICK_LOAD_MAX_MS });
+      // A command with 8 seconds has 5 to spend after its script: all of it on the watch.
+      expect(await watch(10_000, 8_000)).toEqual({ settleMs: 5_000, loadMs: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('asks the page for a CAPTCHA, and passes on what it learns, only when the server lists them', async () => {
@@ -632,10 +706,12 @@ describe('D-335 slice K — a click or a send watched for its failure', () => {
     const waits: unknown[][] = [];
     const executor = buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func, given) {
-        if (func.name === 'describePageElement') return { document_id: 'DOC7', result: { outputs: read } };
-        if (func.name === 'prepareStepChecks') {
-          prepared.push([...given]);
-          return { document_id: 'DOC7', result: typeof sends === 'boolean' ? { sends } : { sends: false, ...sends } };
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
+        if (func.name === 'describePageElement') {
+          if (given[3] !== undefined) prepared.push([...given]);
+          return { document_id: 'DOC7', result: { outputs: { ...read, ...(given[3] !== undefined
+            ? { prepared_sends: typeof sends === 'boolean' ? sends : false,
+              ...(typeof sends !== 'boolean' ? { prepared_unsent: sends.unsent } : {}) } : {}) } } };
         }
         return { document_id: 'DOC7', result: { outputs: { clicked: true } } };
       },
@@ -651,7 +727,7 @@ describe('D-335 slice K — a click or a send watched for its failure', () => {
   it('notes the page\'s messages before the click, only for a server that asks for problems', async () => {
     const asked = click({}, preW(BRIDGE_CLICK_OUTPUT_KEYS), false);
     await asked.out;
-    expect(asked.prepared).toEqual([['', 'e4', PAGE_MESSAGE_RULES]]);
+    expect(asked.prepared).toEqual([[{ ref: 'e4' }, null, null, PAGE_MESSAGE_RULES]]);
     const older = click({}, ['clicked', 'page', 'url', 'title', 'moved', 'challenge'], false);
     await older.out;
     expect(older.prepared).toEqual([]);
@@ -723,7 +799,7 @@ describe('D-335 slice L — typing into a field that suggests, then picking a su
           switch (func.name) {
             case 'rebindPageRef': return answer({ kept: true });
             case 'describePageElement': return answer({ outputs: read });
-            case 'notePickLists': return answer({ noted: true });
+            case 'notePickLists': return answer({ noted: true, ref: 'e2' });
             case 'fillPageField': return answer({ outputs: { filled: true } });
             case 'findPickOption':
               return script.movedWhileWaiting === true ? { document_id: 'DOC8', result: null } : answer(next(script.finds, finds++));
@@ -763,7 +839,7 @@ describe('D-335 slice L — typing into a field that suggests, then picking a su
     expect(t.out).toMatchObject({ status: 'ok', outputs: { picked: 'Acme Corp' } });
     const keys = t.named('typeWithKeys');
     expect(keys).toHaveLength(1);
-    expect(keys[0]!.args).toEqual(['', 'e2', 'Acme']);
+    expect(keys[0]!.args).toEqual(['', 'e2', 'Acme', read.url]);
     expect(keys[0]!.at).toBeGreaterThanOrEqual(1_000);
   });
 
@@ -1057,6 +1133,21 @@ describe('the owner\'s list of blocked sites', () => {
     executor.execute({ action, cancel: { signalled: false }, command: { ...buildCommand(action, args, expects), ...extra } });
   const listed = async () => ['hubspot.com'];
 
+  it('returns selection evidence only to servers that request the new output keys', async () => {
+    const { executor } = browser(async () => [], {
+      async executeInDocument() { return { document_id: 'DOC7', result: { outputs: {
+        url: 'https://app.hubspot.com/deals/7', title: 'Deals', html: '<article>One</article>', truncated: false,
+        selector_matches: 3, selected_index: 1,
+      } } }; },
+    });
+    const legacy = ['page', 'url', 'title', 'html', 'truncated'];
+    const old = await run(executor, 'inspect', { page: '7:DOC7', selector: 'article' }, legacy);
+    expect(old.status).toBe('ok');
+    expect(old.outputs).not.toHaveProperty('selector_matches');
+    const current = await run(executor, 'inspect', { page: '7:DOC7', selector: 'article' }, [...legacy, 'selector_matches', 'selected_index']);
+    expect(current).toMatchObject({ status: 'ok', outputs: { selector_matches: 3, selected_index: 1 } });
+  });
+
   it.each([
     ['read_dom', { selector: '#title' }],
     ['click', { selector: '#send' }],
@@ -1221,6 +1312,7 @@ describe('frames from another site, named as pages of their own', () => {
     const watched: Array<{ url: string; page?: string; frame_id?: number }> = [];
     const clickIn = (frame_id: number) => buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func) {
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC8', frame_id, result: { kept: true } };
         return func.name === 'describePageElement'
           ? { document_id: 'DOC8', frame_id, result: { outputs: { url: 'https://forms.example/f', title: 'Form', role: 'button',
             label: 'Send', protected: false } } }
@@ -1247,6 +1339,7 @@ describe('frames from another site, named as pages of their own', () => {
       async tabUrl() { return 'https://app.hubspot.com/deals/7'; },
       async executeInDocument(_target, func) {
         touched.push(func.name);
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC8', result: { kept: true } };
         return func.name === 'describePageElement'
           ? { document_id: 'DOC8', result: { outputs: { url: 'https://blocked.example/form', title: 'Form', role: 'button', label: 'Send', protected: false } } }
           : { document_id: 'DOC8', result: { outputs: { url: 'https://blocked.example/form', title: 'Form', html: '<p>secret</p>', truncated: false } } };
@@ -1297,6 +1390,7 @@ describe('press: a key in an element, as a click is sent', () => {
     const executor = buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func, args) {
         seen.push([func.name, [...args]]);
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
         return func.name === 'describePageElement' ? { document_id: 'DOC7', result: { outputs: read } }
           : { document_id: 'DOC7', result: answer };
       },
@@ -1338,6 +1432,7 @@ describe('acted_on: the element an action was on, for a server that asks', () =>
     const executor = buildActionExecutor(buildBrowser({
       async executeInDocument(_target, func, args) {
         seen.push([func.name, [...args]]);
+        if (func.name === 'rebindPageRef') return { document_id: 'DOC7', result: { kept: true } };
         if (func.name === 'describePageElement') {
           // The probe works the selector out only when it is handed the rules.
           const rules = args[2];

@@ -4,8 +4,30 @@ import {
   askAfterWaiting, conversationCarriesOn, noteAnsweredInTurn, noteWaitingInTurn, notAskedYetMessage,
   OWNER_CHAT_HELD_WAIT_MS,
 } from './chat-carries-on.js';
+import {
+  beginRoundGather,
+  closeRoundGather,
+  deferToRound,
+  gatherCallKey,
+  gathersInRound,
+  heldOnceAsked,
+  heldRunOf,
+  raiseRoundGather,
+  readsOnceAsked,
+  roundAccepts,
+  roundGroupKey,
+  takeRoundGather,
+  tier1GatherOpKey,
+  withHeldRun,
+  type DeferredHold,
+  type RoundMember,
+} from './chat-gather.js';
+import { CHAIN_REQUEST_STATE_KEY, noteChainHeldRun, noteChainUnheld, openChainRequest, useChainRuleForTier1 } from './chain-evidence.js';
+import { calledRecipeTitle } from './recipe-tool-name.js';
 import { withResourceReview } from './resource-review.js';
-import { assetDateAt, captureResourceReview, contractUnavailableSentence, mergeValueLabels, type ApprovalValueLabels } from '@recued/contracts';
+import { reviewedLocalMutationKind } from './storage/ordinary-local-mutation-receipts.js';
+import { assetDateAt, captureResourceReview, contractUnavailableSentence, mergeValueLabels, type ApprovalValueLabels,
+  type ResourceReview } from '@recued/contracts';
 import { heldPeopleValueLabels } from './held-people-labels.js';
 /** D-137 / D-164 P6.3 — Server-side chat orchestrator: single AI main
  *  turn + tool dispatch loop.
@@ -84,7 +106,10 @@ import { heldPeopleValueLabels } from './held-people-labels.js';
  */
 
 import { dateFormatIssue } from './date-argument-format.js';
-import type { ChatAnswerSource, ChatFix, InstallOffer } from '@recued/contracts';
+import { chatFixesOf, chatHintKeyOfFix, installOffersOf, type ChatAnswerSource, type ChatCalendarRef, type ChatFix, type ChatMailRef, type ChatSetupFeature, type InstallOffer } from '@recued/contracts';
+import { setupStepKeysOf, type PromptSetupStep } from './next-steps/prompt-steps.js';
+import { featuresSearchedWithNone, isConversationFileSearch, type SearchedFeatureStep } from './next-steps/searched-features.js';
+import { HINT_HISTORY_MESSAGES } from './next-steps/carried-hints.js';
 import { answerSourceCitations } from './chat-source-citations.js';
 import { chatFixesFromToolResults, installOffersFromToolResults } from './install-offers/turn-offers.js';
 import { bindMailWorkChatTools } from './mail-work-chat-plan.js';
@@ -175,6 +200,7 @@ import type { AuditLogStore } from '@recued/storage';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
   deriveChatMessageRecallEligibility,
+  recallCandidatesFor,
   ChatVaultLockedError,
   type ChatStore,
   type RetainedAliasCandidate,
@@ -204,8 +230,8 @@ import {
   type RunChatTurnResult,
   type ChatPriorToolPointers,
 } from './chat-turn-executor.js';
-import { CHAT_TURN_TIME_ZONE_STATE_KEY, withTurnZone } from './chat-clock.js';
-import { closingDayLine, isEveningNotice, type ClosingItem, type ClosingQuote } from './chat-closing-day.js';
+import { CHAT_TURN_TIME_ZONE_STATE_KEY, dueValueLabels, withTurnDates, withTurnZone } from './chat-clock.js';
+import { createOpenClosings, isEveningNotice, withRecorded, type ClosingItem, type ClosingQuote } from './chat-closing-day.js';
 import { createChatPiiSlotOrderingSeeder } from './chat-pii-slot-ordering.js';
 import { markChatToolCallSaved, rememberChatToolCallFailure, withChatToolCallContext } from './chat-tool-call-context.js';
 import { withToolProgress } from './execution/tool-progress.js';
@@ -239,6 +265,7 @@ import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 import { fitCatalogModeToBudget } from './chat-context-budget.js';
 import { SITUATION_PREFETCH_MIDDLEWARE_ID } from './situations/prefetch.js';
 import { NAMED_PAGES_NOTE, namedPageAddresses } from './chat-named-pages.js';
+import { pickedCalendarNote, pickedCalendarReads, pickedMailNote, pickedMailReads, type PickedCalendarRead, type PickedMailRead } from './chat-picked-mail.js';
 import { chatModelChoiceOf, withChatModelChoice } from './chat-model-choice.js';
 import { registerSituationPrefetchSourceCapture } from './situations/prefetch-source-citations.js';
 import { PROMPT_CACHE_MIDDLEWARE_ID } from '@recued/middleware-prompt-cache';
@@ -282,7 +309,10 @@ import type {
 import type {
   ExecutionCaseProposalCritic,
 } from './execution-case-critic.js';
-import { parseBrief } from './chat-rolling-brief.js';
+import { parseStoredBrief, type RollingBrief } from './chat-rolling-brief.js';
+import { boundRequestEvidence, requestExecutionEvidence, resolveRequestActionOutcomes,
+  type ResolveActionOutcomes, pendingApprovalState, approvedActionState, type PendingApprovalRows, cancelledApprovalState,
+  type CancelledApprovalRows, completedHeldActionState, type CompletedHeldActionRows, unconfirmedHeldActionState } from './chat-request-evidence.js';
 import { noticeQuoteText } from './chat-notices.js';
 import { parseStoredCarry } from './chat-turn-carry.js';
 import { gateAnswerOf, recordAnswerInBrief } from './chat-no-model-answers.js';
@@ -853,11 +883,15 @@ export interface ChatAiCallResult {
  *  answer they asked for. Only a caller whose result is genuinely optional
  *  should pass this. See `packages/llm/src/timeout.ts`. */
 export interface ChatAiCallOptions {
+  /** Host-selected browser-control phase; never serialized into evidence or tool arguments. */
+  readonly browser_action_mode?: boolean;
   /** Per-call timeout, forwarded to `executeLLM`'s `timeout_ms` dep. */
   readonly timeout_ms?: number;
   /** Host-only authority recheck after privacy preparation, immediately before
    * the private background call reaches its provider. Never serialized. */
   readonly before_provider_call?: () => void;
+  /** D-343 — the caller's cancel, forwarded to `executeLLM`: a newer turn took the brief over. */
+  readonly signal?: AbortSignal;
 }
 
 export type ExecuteChatAiCall = (
@@ -909,7 +943,24 @@ export const broadcastEmitterFromBus = (bus: EventBus): ChatBroadcastEmitter => 
   },
 });
 
+/** D-405 slice 1 — how long a setup hint may take before the turn goes on without it. */
+const SETUP_HINT_BUDGET_MS = 1_500;
+/** D-405 slice 1 — how far back an earlier answer's step means none now (ruling P3): the window every
+ *  place that makes a hint reads (`next-steps/carried-hints.ts`). */
+const SETUP_HINT_HISTORY_MESSAGES = HINT_HISTORY_MESSAGES;
+/** A setup hint, or null once the budget is spent. */
+const setupHintWithin = async <Hint,>(hint: Promise<Hint | null>, ms: number): Promise<Hint | null> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([hint, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); })]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
 export interface ChatOrchestratorDeps {
+  /** Optional, host-registered read of exact operation receipts. No permission or assignment verdict. */
+  resolveActionOutcomes?: ResolveActionOutcomes;
   /** Current canonical attachment membership; no authority to read its bytes. */
   currentAssetAttachment?: CurrentAssetAttachment;
   /** Authorized local version probe; returns no new source values to Chat. */
@@ -918,6 +969,13 @@ export interface ChatOrchestratorDeps {
   revalidateProjectionRead?: (source: Extract<ChatSourceCitation, { kind: 'asset_projection' }>, ctx: ChatDispatchContext) => Promise<boolean>;
   /** Per-pair chat session/message store. */
   chatStore: ChatStore;
+  /** An installed recipe's name, by the name Chat calls it (`<publisher>/<recipe_id>`, or the bare
+   *  id): a call that runs one names it on its line (`ChatToolCall.recipe_name`). Absent ⇒ the line
+   *  keeps the tool's name, as before. */
+  recipeTitle?: (recipe_ref: string) => string | undefined;
+  /** D-402 slice A4 — whether an installed recipe acts in a web page: a call of the owner's chat
+   *  that ran one is marked (`ChatToolCall.browser`), so its answer offers "Make a recipe". */
+  recipeActsInBrowser?: (recipe_ref: string) => boolean;
   /** D-269 step 1 — the server's own resolved IANA zone for the `current_date`
    *  anchor, used only when the calling surface supplied none (Slack, Telegram,
    *  anything sweep-initiated). A thunk because `follows_host` re-reads the host
@@ -953,6 +1011,13 @@ export interface ChatOrchestratorDeps {
    *  stamping audit (5.f). The gateway reads it via the slice-D seam.
    *  Optional — absent means scoped grants simply never match. */
   forwardedSenderIndex?: SessionForwardedSenderIndex;
+  /** D-348 — the evidence chains are learned from: each request of the owner's chats and the
+   *  calls it held. Read per turn (the store is composed with the storage). Absent ⇒ nothing is
+   *  learned, the behaviour before. */
+  chainEvidence?: () => import('./storage/chain-evidence-store.js').ChainEvidenceStore | undefined;
+  /** D-348 slice 4 — the rules the owner accepted for a request they repeat: a chat write the
+   *  turn's request has a live rule for runs without asking. Absent ⇒ none does. */
+  chainRules?: () => import('./storage/chain-rule-store.js').ChainRuleStore | undefined;
   /** D-337 — told each run held in a conversation that keeps no tool-call rows (the owner's
    *  messenger and email chats), so its settlement carries that conversation on as a held call's
    *  row does in the app's chat (`watchHeldRunsIn`, which keeps only the owner's own). */
@@ -994,6 +1059,14 @@ export interface ChatOrchestratorDeps {
     ctx: ChatDispatchContext,
     visibleItemIds: readonly string[],
   ) => Promise<string | undefined>;
+  /** D-405 slice 1 — a setup hint from the owner's message itself (`next-steps/prompt-steps.ts`): the
+   *  step joins the answer's row, and the model reads one line of it. Absent ⇒ none: D-404's steps come
+   *  from the turn's own calls only, as before. */
+  buildSetupHint?: (message: string, ctx: ChatDispatchContext) => Promise<PromptSetupStep | null>;
+  /** D-405 slice 6 — the step for the first of these features the turn's own searches found none of the
+   *  owner's in (`next-steps/searched-features.ts`): null when one is connected, the owner set it aside,
+   *  or their switches keep it quiet. A row only; the model read the search. Absent ⇒ none. */
+  buildSearchedFeatureHint?: (features: readonly ChatSetupFeature[], ctx: ChatDispatchContext) => Promise<SearchedFeatureStep | null>;
   /** D-259 §7.4.2 — bounded declaration-only state for work already live in
    * this turn's own channel session. It is dynamic tail context, never a tool
    * catalog or queue-management capability. */
@@ -1205,6 +1278,18 @@ export interface ChatOrchestratorDeps {
    *  dbless harness path); the orchestrator dispatches every tool
    *  through the registry as before. */
   planApprovalStore?: planApprovalModule.PlanApprovalStore;
+  /** Experimental read-only native snapshot. Not an approval or dispatch hook. */
+  readPendingApprovalRows?: (session_id: string) => Promise<PendingApprovalRows>;
+  /** D-343 (the owner's day, 2026-11-14) — a work row's id in its qualified form when the row is a
+   *  local one on Recued's own Source, else undefined. A task changed by its bare id read "changes data
+   *  outside Recued" on its approval: a bare id does not say which Source a row is on, so the call is
+   *  given the qualified id where it begins, and its approval says what is true. */
+  localWorkId?: (kind: string, id: string) => string | undefined;
+  /** D-343 (the owner's day audit, 2026-11-15) — a task's due date before a held change, `null` for
+   *  none, `undefined` when unknown (the id names no task here), so its approval reads "before → after". */
+  taskDueBefore?: (id: string) => number | null | undefined;
+  readCancelledApprovalRows?: (session_id: string) => Promise<CancelledApprovalRows>;
+  readCompletedHeldActionRows?: (session_id: string) => Promise<CompletedHeldActionRows>;
   /** D-329 — hold a fresh Tier-1 write proposal behind the approval ask every channel
    *  shows (`holdTier1Call`), under the `run_id` its proposal was stored with. The card then
    *  answers that ask, and approving it anywhere runs the call at once, with no re-issue.
@@ -1230,12 +1315,16 @@ export interface ChatOrchestratorDeps {
     /** D-336 slice Q — the turn the call was asked in, which a messenger's source does not name:
      *  the hold keeps it, so the resumed call pairs with what its turn added. */
     readonly turn_id?: string;
+    /** D-177 §N.15.9 (1c-b) — keep the hold's ask for its round's one approval (`deferToRound`). */
+    readonly defer_ask?: (hold: import('./chat-gather.js').DeferredHold) => boolean;
   }) => Promise<
     | {
         readonly held: true;
         /** The channels its ask went to, once raised, so the model can say where else the
          *  owner answers it (`approvalElsewhereMessage`). */
         readonly approval_channels?: readonly string[];
+        /** D-177 §N.15.9 (1c-b) — kept for its round's one approval: no ask is out yet. */
+        readonly gathered?: true;
       }
     | { readonly held: false; readonly reason: string }
   >;
@@ -1278,6 +1367,9 @@ export interface ChatOrchestratorDeps {
    *  call regardless), exactly as before. */
   middlewareRegistry?: MiddlewareRegistry;
   getSituationAccess?: () => import('./situations/access.js').SituationAccess | undefined;
+  /** D-343 (2026-11-15) — the day's records already kept, from any conversation, so a closing marks
+   *  them. Absent ⇒ a closing note lists the day's items alone. */
+  getClosingRecords?: () => Pick<import('./situations/closing-records.js').ClosingRecords, 'recorded'> | undefined;
   /** D-160 Stage 3 — per-pair correction-event store: the source the
    *  `correction-learning` `before-turn` hook seeds from. Absent → that
    *  adapter no-ops. */
@@ -1383,6 +1475,11 @@ export interface ChatTurnInput {
    *  model's copy of this turn, because `buildChatTail` runs before the append
    *  so the current message is never in the tail. */
   attachments?: readonly ChatMessageAttachment[];
+  /** D-406 — the emails the owner picked for this message, checked by `chat.send` (each a stored email, with the
+   *  sender, subject and date it read). Kept on the user row, and read before the turn's first round. */
+  mail_refs?: readonly ChatMailRef[];
+  /** D-406 (Q4) — the calendar events the owner picked, checked by `chat.send` the same way, read the same way. */
+  calendar_refs?: readonly ChatCalendarRef[];
   picker_state: { current: ChatPickerTarget };
   /** Explicit same-session conversational lineage. The RPC shell validates
    * this prior turn and the D-214 middleware resolves it to a durable root;
@@ -1595,6 +1692,27 @@ export const HELD_RESULTS_TURN_NOTE =
   + 'them: take the next steps they need, or tell the owner how they went, in one answer, if '
   + 'nothing is left. The owner sent no new message.]';
 
+/** Added to the continuation's note when a held call it carries returned an error (2026-11-19, the owner's "do the
+ *  still open items"). After a rename whose dispatch errored, the continuation read the event, saw the new title and
+ *  called the rename a success in 2 of 16 runs, with the record of it in front of it. Model-facing. */
+export const HELD_RESULT_UNCONFIRMED_SENTENCE =
+  ' If the call returned an error, its effect is unconfirmed: a read shows the current state, not that this call took'
+  + ' effect, so never say it succeeded.';
+export const HELD_RESULTS_UNCONFIRMED_SENTENCE =
+  ' If a call returned an error, its effect is unconfirmed: a read shows the current state, not that the call took'
+  + ' effect, so never say it succeeded.';
+const HELD_NOTE_TAIL = ' The owner sent no new message.]';
+/** The continuation's note, with the sentence above when a held call it carries ended in an execution error: the
+ *  case whose effect is not known, as the host's own "did not confirm completion" notice reads it. A refusal, an
+ *  expiry or a call refused before it ran did not take effect, and gets the plain note. */
+export const heldResultsTurnNote = (held: ReadonlyArray<ChatPriorToolCall>): string => {
+  const note = held.length > 1 ? HELD_RESULTS_TURN_NOTE : HELD_RESULT_TURN_NOTE;
+  const errored = held.some(call => call.status === 'error' && call.reason === 'execution_error');
+  return errored
+    ? note.replace(HELD_NOTE_TAIL, (held.length > 1 ? HELD_RESULTS_UNCONFIRMED_SENTENCE : HELD_RESULT_UNCONFIRMED_SENTENCE) + HELD_NOTE_TAIL)
+    : note;
+};
+
 /** D-337 §7.10 — the note of a turn that carries calls no model was told of: their continuation's
  *  model did not answer (it failed, or the server stopped in it). They open the turn's
  *  prior_tool_calls, with their outcomes. Rides `in_flight_context`. Model-facing: see
@@ -1619,10 +1737,10 @@ const CARRY_SCAN_MESSAGES = 80;
 /** D-335 slice X — the Browser Toolkit recipes a turn lists in full while a Browser Bridge is
  *  connected, so a request about a web page or a tab needs no `tools.search` round first (slice E
  *  measured it at 13 to 35 s a request): the one call that reads and acts across tabs, opening a
- *  page, reading one, its text, a question about it, and the tabs. About 8,000 characters a turn,
- *  and only from the turn's own grant-decided catalog, so an uninstalled toolkit lists nothing. */
+ *  page, reading one, its text, a question about it, and the tabs. Measure the actual provider
+ *  packet for its size. Only the turn's grant-decided catalog participates, so an uninstalled toolkit lists nothing. */
 export const BROWSER_TOOLKIT_LISTED = ['act-on-web-page', 'open-web-page', 'inspect-web-page', 'read-web-text',
-  'ask-web-page', 'list-browser-tabs'] as const;
+  'read-web-table', 'read-web-element', 'ask-web-page', 'list-browser-tabs', 'list-browser-bridges'] as const;
 /** Whose toolkit recipes are listed: the pack's, and the owner's own copies saved in Kitchen. */
 const BROWSER_TOOLKIT_PUBLISHERS = ['recued-core', 'kitchen'] as const;
 /** D-335 slice X — what a turn that lists the toolkit is told. Slice AO (2026-11-07): and to end a batch with the
@@ -1637,8 +1755,12 @@ export const BROWSER_TOOLKIT_LISTED_NOTE =
   + 'on web pages, Inspect, Read the text of and Ask a web page take a page\'s address in place of its handle, using '
   + 'the tab showing it or opening the page when none does: for a page the user gives the address of, in their browser '
   + 'or not, call the one for the task with that address first, not List browser tabs or Open a web page. One Act on '
-  + 'web pages call can read and act on several tabs, each step naming its tab by its address. End it with a read or '
-  + 'an ask of the page its steps lead to, such as a search and then its results, so the answer comes in that same call.';
+  + 'web pages call can read and act on several tabs, each step naming its tab by its address. For tables use Read a table '
+  + 'or Act table steps; they return structured rows without parsing page text. Table/click/check/table can share one batch '
+  + 'on a known repeated layout, including Next at the same URL. Read part accepts an observed element ref. End it with a read or '
+  + 'an ask of the page its steps lead to, such as a search and then its results, so the answer comes in that same call. '
+  + 'With several browsers, use a page handle from List browser tabs or choose bridge_id from List browser bridges; '
+  + 'handles keep all following actions in their owning browser. Ask the user which browser when their intent is unclear.';
 
 /** D-345 slice D — the HTTP Toolkit recipes a turn lists in full when the request names a web address:
  *  the server reads a public address faster than a tab, and needs no Bridge. Only from the turn's own
@@ -2458,6 +2580,8 @@ interface BuiltChatTail {
   readonly messages: ReadonlyArray<ChatTailMessage>;
   /** Exact durable rows represented by `messages`, kept server-private. */
   readonly item_ids: readonly string[];
+  /** 2026-11-21 — the newest row is an answer marked `reached_round_limit` (its turn stopped at its round limit). */
+  readonly last_reached_round_limit?: true;
 }
 
 /** D-172 P2 — resolve attached `data.file` ids to their CURRENT filenames.
@@ -2493,6 +2617,10 @@ export const renderAttachmentMarker = (
   const list = named.map((a) => `${a.name} (${a.id})`).join(', ');
   return `\n[files attached to this message: ${list}]\nAttachment references are complete stored file_ref values. Copy the entire value inside parentheses, including file:. These files are already stored.`;
 };
+
+const resolvedAttachmentRefs = (attachments: readonly { file_id: string }[], names: ReadonlyMap<string, string>) =>
+  attachments.flatMap(file => /^file:[0-9a-f]{32}$/.test(file.file_id) && names.has(file.file_id)
+    ? [{ file_ref: file.file_id, filename: names.get(file.file_id)! }] : []);
 
 /** D-338 — how much of a quoted message rides with the row that quoted it. */
 export const TAIL_QUOTE_MAX_CHARS = 2_000;
@@ -2602,6 +2730,8 @@ export const buildChatTail = async (
         };
       }),
       item_ids: selected.map((m) => m.id),
+      ...(selected.at(-1)?.role === 'assistant' && selected.at(-1)?.reached_round_limit === true
+        ? { last_reached_round_limit: true as const } : {}),
     };
   } catch (e) {
     if (e instanceof ChatVaultLockedError) {
@@ -2632,6 +2762,44 @@ export const createChatOrchestrator = (
   const selfDisplayName = deps.selfDisplayName ?? 'Self';
   /** D-343 slice 3 — the items of the days a quoted Agenda is about, with their refs, read as the
    *  turn's own situation.query reads them. A private one is named as the Agenda names it. */
+  /** D-343 — a `work.update`'s bare id as its qualified id when the row is Recued's own. */
+  /** A held `work.update` of a task's due date: the date it had, for its approval. */
+  const dueBeforeOf = (tool: string, args: unknown): number | null | undefined => {
+    const call = args !== null && typeof args === 'object' ? args as { kind?: unknown; id?: unknown; due_at?: unknown } : undefined;
+    if (tool !== 'work.update' || call?.kind !== 'task' || typeof call.id !== 'string' || call.due_at === undefined) return undefined;
+    try { return deps.taskDueBefore?.(call.id); } catch { return undefined; }
+  };
+  const withLocalWorkId = (tool: string, args: unknown, qualify: ChatOrchestratorDeps['localWorkId']): unknown => {
+    if (tool !== 'work.update' || qualify === undefined || args === null || typeof args !== 'object' || Array.isArray(args)) return args;
+    const { kind, id } = args as { kind?: unknown; id?: unknown };
+    if (typeof kind !== 'string' || typeof id !== 'string' || id.startsWith('we1:')) return args;
+    let qualified: string | undefined;
+    try { qualified = qualify(kind, id); } catch { qualified = undefined; }
+    return qualified !== undefined ? { ...(args as Record<string, unknown>), id: qualified } : args;
+  };
+  /** D-343 (2026-11-14) — the closings each conversation is in the middle of. */
+  const openClosings = createOpenClosings(now, async (session_id, quote) =>
+    (await deps.planApprovalStore?.listPending(session_id) ?? []).some((plan) => plan.tool === 'episode.record'
+      && plan.status === 'proposed' && plan.args !== null && typeof plan.args === 'object'
+      && (plan.args as { day?: unknown }).day === quote.from));
+  /** D-343 (the owner, 2026-11-14) — each conversation's closing brief still being written after its
+   *  reply went out (`after_reply`). The reply is sent first; the conversation's next turn, which
+   *  reads that brief, waits for it, though the queue already counts the turn done. */
+  const foldsInFlight = new Map<string, { readonly done: Promise<void>; readonly supersede: () => Promise<void> }>();
+  const afterReply = (session_id: string, result: Pick<RunChatTurnResult, 'after_reply' | 'supersede_after_reply'>): void => {
+    if (result.after_reply === undefined) return;
+    const supersede = result.supersede_after_reply;
+    const running: Promise<void> = result.after_reply().catch(() => { /* it never rejects; nothing to tell */ })
+      .finally(() => { if (foldsInFlight.get(session_id)?.done === running) foldsInFlight.delete(session_id); });
+    foldsInFlight.set(session_id, { done: running, supersede: supersede ?? (() => running) });
+  };
+  /** D-343 (the owner, 2026-11-14: "stop the quick follow-ups from waiting") — a turn starting while
+   *  the last one's brief is written takes it over: the last turn's results ride in raw and this turn
+   *  folds them with its own, so it does not wait ~30 s for the brief's model call. */
+  const takeOverFold = async (session_id: string): Promise<void> => {
+    const inflight = foldsInFlight.get(session_id);
+    if (inflight !== undefined) await inflight.supersede().catch(() => inflight.done);
+  };
   const closingItemsFor = (source: ExecutionSource, zone: string) => async (quote: ClosingQuote): Promise<ClosingItem[] | undefined> => {
     const access = deps.getSituationAccess?.();
     if (access === undefined) return undefined;
@@ -2653,7 +2821,12 @@ export const createChatOrchestrator = (
       seen.add(key);
       items.push({ title: pursuit.private && !names ? 'Pursuit in Yours' : pursuit.title, ref: pursuit.ref });
     }
-    return items;
+    // D-343 (2026-11-15) — what is already recorded for the day, from whichever conversation recorded
+    // it, so a second close (Telegram, then the app) asks about none of it again. One day only.
+    if (quote.from !== quote.to) return items;
+    let recorded: ReturnType<NonNullable<ReturnType<NonNullable<ChatOrchestratorDeps['getClosingRecords']>>>['recorded']> = [];
+    try { recorded = deps.getClosingRecords?.()?.recorded(quote.from, zone) ?? []; } catch { recorded = []; }
+    return recorded.length > 0 ? withRecorded(items, recorded) as ClosingItem[] : items;
   };
 
   // D-160 — the framework substrate the chat turn runs THROUGH.
@@ -2939,7 +3112,9 @@ export const createChatOrchestrator = (
     return title !== undefined && title !== '' ? { change_in_chat: title } : {};
   };
 
-  const dispatchTool: OrchestratorDispatch['dispatchTool'] = async ({
+  // Undefined leaves legacy callers unchanged. Null means native assignment
+  // binding is active but unavailable, so an old approval cannot supply it.
+  const dispatchTool = async ({
     session_id,
     turn_id,
     retry_of_plan_id,
@@ -2955,10 +3130,11 @@ export const createChatOrchestrator = (
     turn_state,
     time_zone,
     get_retained_candidates,
-  }) => {
+  }: Parameters<OrchestratorDispatch['dispatchTool']>[0]): Promise<ChatDispatchResult> => {
     // D-338 §13 — a zone the model left out is the turn's, before anything below reads the
     // call: its check, card, hash, hold and run all see one set of arguments.
-    const arg_values = withTurnZone(tool_name, model_arg_values, time_zone);
+    const zoned = withTurnDates(tool_name, withTurnZone(tool_name, model_arg_values, time_zone), time_zone);
+    const arg_values = withLocalWorkId(tool_name, zoned, deps.localWorkId);
     // D-219 — ONE builder for every `chat_tool_call` detail on this path.
     //
     // ⛔ There are three write sites (mcp-wire, peer, internal) and they were
@@ -3094,8 +3270,12 @@ export const createChatOrchestrator = (
     // Set when a standing write rule the owner accepted stands in for the ask, or (D-341 B3) the
     // scheduled prompt's own pre-approval does.
     let ruledWrite = false;
+    // D-348 §7.8 — the request's rule that stood in, by id, for an undo of the write to end.
+    let chainedRuleId: string | undefined;
     // D-329 — the channels a hold raised in this dispatch went to (`holdProposal`).
     let heldApprovalChannels: readonly string[] | undefined;
+    // D-177 §N.15.9 (1c-b) — the hold was kept for its round's one approval (`holdProposal`).
+    let heldKept = false;
     let confirmedLocalExecution: Extract<ChatPlanExecutionReceipt, { status: 'completed' }> | undefined;
     const savePlanExecution = async (execution: ChatPlanExecutionReceipt) => {
       const saved = await persistPlanExecution(consumedPlanId, execution);
@@ -3108,6 +3288,8 @@ export const createChatOrchestrator = (
     const holdProposal = async (
       proposal: ChatPlanProposal,
       run_id: string,
+      /** D-177 §N.15.9 (1c-b) — keep its ask for the round's one approval of its kind. */
+      keep?: (hold: DeferredHold) => boolean,
     ): Promise<ChatPlanProposal> => {
       let outcome: Awaited<ReturnType<NonNullable<ChatOrchestratorDeps['holdTier1Write']>>>;
       try {
@@ -3127,6 +3309,7 @@ export const createChatOrchestrator = (
           // D-336 slice N's open item — a call its card can change says where, in every
           // channel's ask: its chat, by name.
           ...(proposal.editable_args !== undefined ? changeInChatOf(session_id) : {}),
+          ...(keep !== undefined ? { defer_ask: keep } : {}),
         });
       } catch (error) {
         console.error(
@@ -3137,6 +3320,7 @@ export const createChatOrchestrator = (
       }
       if (outcome.held) {
         heldApprovalChannels = outcome.approval_channels;
+        heldKept = outcome.gathered === true;
         return proposal;
       }
       console.warn(
@@ -3283,6 +3467,14 @@ export const createChatOrchestrator = (
         && retry_of_plan_id === undefined
         ? await deps.planApprovalStore.findPendingHeld?.(session_id, tool_name, argsHash)
         : undefined;
+      // D-177 §N.15.9 (1c-b) — a held write its round repeats is kept with the round's others of
+      // its kind (its "Allow in this chat" kind, `tier1GatherOpKey`) and asked once when the round
+      // ends (Q7): while the round takes it, they do not hold it back (slice K).
+      const tier1CallKey = gatherCallKey(tool_name, arg_values);
+      const tier1Gather = approved === undefined && holdsTier1 && !sameTurnPending && pendingHeld === undefined
+        && retry_of_plan_id === undefined
+        && gathersInRound(turn_state, holdSource, tool_name, arg_values)
+        && roundAccepts(turn_state, tier1CallKey, tier1GatherOpKey(tool_name, arg_values));
       // D-329 §3.4 — a standing write rule the owner accepted stands in for the ask and
       // spends one use. Never while an ask for this very call is out: approving that one
       // later would run it a second time.
@@ -3296,6 +3488,13 @@ export const createChatOrchestrator = (
       const preapprovedBy = ruledBy === undefined && approved === undefined && !sameTurnPending
         && pendingHeld === undefined && holdsTier1 && retry_of_plan_id === undefined
         ? deps.useTriggerPreapproval?.(holdSource!, tool_name, arg_values)
+        : undefined;
+      // D-348 slice 4 — the rule the owner accepted for this turn's request, when the write is on
+      // it: under the same conditions, after the rules above. Only a turn of the owner's own chats
+      // has a request (a scheduled prompt's and an AI app's have none).
+      const chainedBy = ruledBy === undefined && preapprovedBy === undefined && approved === undefined
+        && !sameTurnPending && pendingHeld === undefined && holdsTier1 && retry_of_plan_id === undefined
+        ? useChainRuleForTier1(deps.chainRules?.(), turn_state, tool_name, arg_values, now())
         : undefined;
       if (approved) {
         // Spend the approval AT the dispatch decision — before the
@@ -3360,12 +3559,22 @@ export const createChatOrchestrator = (
       } else if (preapprovedBy !== undefined) {
         // The owner's pre-approval for this scheduled prompt is the yes, as a rule is.
         ruledWrite = true;
+      } else if (chainedBy !== undefined) {
+        // The rule the owner accepted for this request is the yes.
+        ruledWrite = true;
+        chainedRuleId = chainedBy.rule_id;
+        void safeLogActivity(
+          deps.auditLog,
+          'chain_rule_used',
+          `${session_id}:${turn_id}:${tool_name}`,
+          JSON.stringify({ rule_id: chainedBy.rule_id, uses_remaining: chainedBy.uses_remaining, tier }),
+        );
       } else {
         // D-337 slice K — not asked while a call of this turn waits for the owner's answer: the
         // conversation carries on with that call's outcome, and the model makes this call then,
         // if it should still happen. A repeat of a call already asked (this turn's, or one still
         // out from an earlier turn) is that ask, and goes on below.
-        const waitingFor = !sameTurnPending && pendingHeld === undefined
+        const waitingFor = !sameTurnPending && pendingHeld === undefined && !tier1Gather
           ? askAfterWaiting(internalDispatchCtx.execution_source, turn_state)
           : undefined;
         if (waitingFor !== undefined) {
@@ -3374,6 +3583,9 @@ export const createChatOrchestrator = (
             reason: 'not_asked_yet',
             detail: notAskedYetMessage(waitingFor),
           };
+          // D-177 §N.15.9 — and its round gathers nothing more: a later call of the round must not
+          // be asked ahead of this one.
+          closeRoundGather(turn_state);
           safeBroadcast(deps.broadcast, {
             kind: 'chat.tool_call_completed',
             session_id,
@@ -3444,7 +3656,9 @@ export const createChatOrchestrator = (
             console.warn(`[chat] the names for ${tool_name}'s approval were not read`, error);
           }
           // D-336 (spec §41) — and the people it carries, by the contacts they are.
-          const valueLabels = mergeValueLabels(recordLabels, heldPeopleValueLabels([arg_values], deps.getContactStore?.()));
+          const valueLabels = mergeValueLabels(mergeValueLabels(recordLabels, heldPeopleValueLabels([arg_values], deps.getContactStore?.())),
+            // D-343 — a due date on the owner's clock, so a wrong day reads as one.
+            dueValueLabels(tool_name, arg_values, time_zone, dueBeforeOf(tool_name, arg_values)));
           if (valueLabels !== undefined) proposal = { ...proposal, value_labels: valueLabels };
           // D-336 slice G — what it meets (a save's contradictions), for its card, its ask and
           // the model. Told, never a gate: a lookup that fails tells nothing.
@@ -3494,7 +3708,17 @@ export const createChatOrchestrator = (
             }),
           );
           if (proposal.hold !== undefined) {
-            proposal = await holdProposal(proposal, proposal.hold.run_id);
+            const run_id = proposal.hold.run_id;
+            proposal = await holdProposal(proposal, run_id, tier1Gather
+              ? (hold) => deferToRound(turn_state, { ...hold, tool_name, call_key: tier1CallKey })
+              : undefined);
+            // D-177 §N.15.9 (1c-b) — kept for its round's one approval: its card joins the round's
+            // group, so the round's cards are one card (`hold.group`).
+            const round = heldKept ? roundGroupKey(turn_state) : undefined;
+            if (round !== undefined && proposal.hold !== undefined) {
+              proposal = (await deps.planApprovalStore.setHoldGroup?.(proposal.plan_id, run_id, `${turn_id}:${round}`))
+                ?? proposal;
+            }
           }
         }
         safeBroadcast(deps.broadcast, {
@@ -3521,26 +3745,40 @@ export const createChatOrchestrator = (
           ...(proposal.memory_conflicts !== undefined ? { memory_conflicts: proposal.memory_conflicts } : {}),
           ...(proposal.hold?.always_allow !== undefined ? { always_allow: proposal.hold.always_allow } : {}),
           ...(proposal.hold?.always_allow_note !== undefined ? { always_allow_note: proposal.hold.always_allow_note } : {}),
+          ...(proposal.hold?.group !== undefined ? { group: proposal.hold.group } : {}),
         });
         // D-336 slice G — what the write meets, told beside "it was sent to the owner".
         const told = heldNotices?.agent !== undefined ? ` ${heldNotices.agent}` : '';
         // D-329 — where else the owner answers it, as a held run says: "the app" is a guess
         // in a Telegram chat whose approval came with buttons (live, 2026-11-01). The
         // conversation's own channel first, when the request goes there.
-        const elsewhere = proposal.hold !== undefined
-          ? approvalElsewhereMessage(heldApprovalChannels ?? [], approvalChannelOf(internalDispatchCtx.execution_source))
-          : undefined;
-        const where = elsewhere !== undefined ? ` ${elsewhere}` : '';
+        const heldDetail = (channels: readonly string[]): string => {
+          const elsewhere = approvalElsewhereMessage(channels, approvalChannelOf(internalDispatchCtx.execution_source));
+          const where = elsewhere !== undefined ? ` ${elsewhere}` : '';
+          return `plan_id=${proposal.plan_id}. ${conversationCarriesOn(internalDispatchCtx.execution_source)
+            ? HELD_WRITE_CARRIES_ON_DETAIL : HELD_WRITE_AWAITING_DETAIL}${where}${told}`;
+        };
         const result: ChatDispatchResult = {
           ok: false,
           reason: 'awaiting_approval',
           detail: proposal.hold !== undefined
-            ? `plan_id=${proposal.plan_id}. ${conversationCarriesOn(internalDispatchCtx.execution_source)
-              ? HELD_WRITE_CARRIES_ON_DETAIL : HELD_WRITE_AWAITING_DETAIL}${where}${told}`
+            ? heldDetail(heldApprovalChannels ?? [])
             : `plan_id=${proposal.plan_id}${told}`,
+          // Its line follows the card (`ChatToolCall.awaiting_plan_id`); the model reads `detail`.
+          awaiting_plan_id: proposal.plan_id,
         };
         // D-337 slice K — held, it waits for the owner's answer, and the turn's further asks wait on it.
-        if (proposal.hold !== undefined) noteWaitingInTurn(turn_state, tool_name);
+        // D-177 §N.15.9 (1c-b) — one kept for its round's approval waits with it, from the round's end,
+        // and is told then where that went (D-329), as a write asked on its own is told now.
+        // D-348 — a call of the turn's request, held: learned with the owner's answer to it.
+        if (proposal.hold !== undefined) noteChainHeldRun(deps.chainEvidence?.(), turn_state, proposal.hold.run_id, now());
+        if (proposal.hold !== undefined && heldKept) {
+          const run_id = proposal.hold.run_id;
+          withHeldRun(result, run_id);
+          readsOnceAsked(turn_state, run_id, (channels) => withHeldRun({ ...result, detail: heldDetail(channels) }, run_id));
+        } else if (proposal.hold !== undefined) {
+          noteWaitingInTurn(turn_state, tool_name, proposal.hold.run_id);
+        }
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -3655,11 +3893,14 @@ export const createChatOrchestrator = (
       && deps.chatStore.getSession(session_id) !== null
       ? deps.chatStore.toolCalls : undefined;
     const candidates = () => durableOwnerConversation ? get_retained_candidates?.() ?? [] : [];
+    // The installed recipe the call names, on its line while it runs and on its record (Live control).
+    const recipe_name = calledRecipeTitle(deps.recipeTitle, { tool_name, tier, args: arg_values });
     const callStartedAt = now();
     let callMessageId: string | undefined;
     try {
       callMessageId = durableCalls ? await durableCalls.start({
         id: `tool:${mintId()}`, session_id, turn_id, tool_name, role: 'tool',
+        ...(recipe_name !== undefined ? { recipe_name } : {}),
         content: renderToolRow(tool_name, arg_values, undefined),
         target_server: picker_target, picker_at_send: buildPickerAtSend(picker_target),
         model_used: { provider: 'recued', model_id: 'tool-call' },
@@ -3671,6 +3912,23 @@ export const createChatOrchestrator = (
       await savePlanExecution({ status: 'failed', turn_id,
         reason: 'execution_error' });
       throw error;
+    }
+    // D-348 §7.8 — a write a standing permission lets through (a write rule, "Allow in this chat", a
+    // pre-approval, a request's rule) runs under a review of its change, as a card's does, and keeps
+    // its receipt on its call's row, so its line offers Undo. Only a change Recued can undo has one;
+    // a review that cannot be taken leaves the write as it ran before.
+    let ruledReview: ResourceReview | undefined;
+    if (ruledWrite && consumedPlanId === undefined && rawOpEntry === null && callMessageId !== undefined) {
+      try {
+        const review = deps.getResourceReview?.()?.capture(tool_name, arg_values as Record<string, unknown>);
+        if (review !== undefined && reviewedLocalMutationKind(review) !== null) ruledReview = review;
+      } catch { ruledReview = undefined; }
+      // And the request's rule that let it through, so an undo of its change ends that rule.
+      if (ruledReview !== undefined && chainedRuleId !== undefined) {
+        try { deps.chainRules?.()?.noteRuleCall(callMessageId, chainedRuleId, now()); } catch { /* the undo ends no rule */ }
+      }
+      // And the request it was made for, whichever permission let it through: its undo resets that.
+      if (ruledReview !== undefined) noteChainUnheld(deps.chainEvidence?.(), turn_state, { ref: callMessageId, session_id, at: now() });
     }
     const saveOutcome = async (outcome: ChatDispatchResult): Promise<void> => {
       if (!durableCalls || !callMessageId) return;
@@ -3713,6 +3971,7 @@ export const createChatOrchestrator = (
       tool_name,
       tier,
       args: arg_values,
+      ...(recipe_name !== undefined ? { recipe_name } : {}),
       ...(callMessageId ? { call_id: callMessageId } : {}),
       ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
     });
@@ -3743,7 +4002,7 @@ export const createChatOrchestrator = (
                 reason: 'execution_error' as const,
                 detail: 'raw op dispatch unavailable',
               })
-          : withResourceReview(consumedResourceReview, () => {
+          : withResourceReview(consumedResourceReview ?? ruledReview, () => {
               if (consumedPlanId) captureResourceReview(deps.getResourceReview?.(), tool_name,
                 arg_values as Record<string, unknown>, consumedResourceReview, true);
               // D-325 — the owner's own yes, never a household member's under a contract:
@@ -3757,7 +4016,9 @@ export const createChatOrchestrator = (
                       if (deps.validateLocalMutation) deps.validateLocalMutation(source, tool_name);
                       else if (executionSourceContractId(source) !== undefined) throw new Error('The original Chat write authority is unavailable.');
                     }, dispatch)
-                : dispatch();
+                : ruledReview !== undefined && callMessageId !== undefined && durableCalls !== undefined
+                  ? durableCalls.runLocalMutation(callMessageId, source, ruledReview, dispatch)
+                  : dispatch();
             }))),
       );
     } catch (e) {
@@ -3809,7 +4070,17 @@ export const createChatOrchestrator = (
     registerVisibleRecallToolResult(turn_state, tool_name, result);
     // D-337 slice K — a run or pack action held for the owner's approval: the turn's further asks
     // wait on it.
-    if (result.ok && result.run_held?.kind === 'approval') noteWaitingInTurn(turn_state, tool_name);
+    // D-177 §N.15.9 — a run kept for its round's gathered approval waits with that, from the round's
+    // end. A call not asked closes its round's gather: nothing held after it joins.
+    if (result.ok && result.run_held?.kind === 'approval' && result.run_held.gathered !== true) {
+      noteWaitingInTurn(turn_state, tool_name, result.run_id);
+    }
+    // D-348 — a call of the turn's request, held (a gathered one too): learned with the owner's answer.
+    if (result.ok && result.run_held?.kind === 'approval') noteChainHeldRun(deps.chainEvidence?.(), turn_state, result.run_id, now());
+    // §7.8 — one that held nothing: a change a permission let it make without asking, undone, resets
+    // the request all the same.
+    else if (result.run_id !== undefined) noteChainUnheld(deps.chainEvidence?.(), turn_state, { ref: result.run_id, session_id, at: now() });
+    if (!result.ok && result.reason === 'not_asked_yet') closeRoundGather(turn_state);
     // Only a SELF dispatch can deep-link into this client's Logs host. Peer
     // results may carry a run id from the remote executor, but that id is not
     // addressable through the local Logs route and is deliberately ignored in
@@ -3952,10 +4223,19 @@ export const createChatOrchestrator = (
     readonly session_id: string;
     readonly turn_id: string;
     readonly continuation_of_turn_id?: string;
+    /** D-348 — the owner's own words, for a turn they opened (not a continuation, not a scheduled
+     *  prompt): the request the turn's held calls are learned under. */
+    readonly owner_words?: string;
+    /** 2026-11-21 — the answer before this turn's message stopped at its round limit (`BuiltChatTail`). */
+    readonly previous_turn_reached_round_limit?: true;
     readonly retry_of_plan_id?: string;
     /** Explanation-only policy enforced again at dispatch. */
     readonly read_only?: boolean;
     readonly mail_work?: import('@recued/contracts').MailWorkReadRequest;
+    /** D-406 — the emails the owner picked for the turn's message, read before its first round. */
+    readonly mail_refs?: readonly ChatMailRef[];
+    /** D-406 (Q4) — the calendar events the owner picked for the turn's message, read before its first round. */
+    readonly calendar_refs?: readonly ChatCalendarRef[];
     /** D-337 — the answered calls the turn opens holding. */
     readonly held_results?: ReadonlyArray<ChatPriorToolCall>;
     /** D-337 — told once, before the turn's first tool call (`ChatTurnInput.held_acted`). */
@@ -3981,6 +4261,7 @@ export const createChatOrchestrator = (
      *  their true dispatch-tree depth into the Gateway ceiling. */
     readonly dispatch_depth: number;
     readonly content_parts: readonly ContentPromptPart[];
+    readonly attachment_refs?: readonly { file_ref: string; filename: string }[];
     /** D-213 — exact source rows already represented in the live prompt. */
     readonly visible_recall_item_ids?: readonly string[];
     readonly model_layer: ChatModelRoutingLayer;
@@ -4011,9 +4292,12 @@ export const createChatOrchestrator = (
     const entriesOfTurn = (): ReadonlyArray<ToolEntry> => (turnEntries ??= catalogEntriesFor(params.execution_source));
     const turnCatalogEntries: ChatCatalogEntries = (source) =>
       (source === params.execution_source ? entriesOfTurn() : undefined);
-    // Resolved ONCE per turn, before any round composes a prompt, so every
-    // round of the turn is fitted against the same ceiling. Absent dep or an
-    // unlearned endpoint yields `undefined` — today's behaviour exactly.
+    // Resolved before the turn's first prompt, and passed to the turn as its
+    // reader: the turn reads it again before each later prompt and fold
+    // (`refreshInputTokenBudget`), so what an endpoint teaches while the turn
+    // runs — the provider's count of its calls, an input it accepted — applies
+    // within it (2026-11-20). Absent dep or an unknown window yields
+    // `undefined` — today's behaviour exactly.
     const resolveTurnInputTokenBudget = (): number | undefined =>
       deps.resolveInputTokenBudget?.({
         layer: params.model_layer,
@@ -4027,15 +4311,30 @@ export const createChatOrchestrator = (
     // D-338 — the turn's clock for the before-turn hooks, from the inputs `runChatTurn`
     // resolves its own from: the situation lookup writes an item's time on it.
     streamState.set(CHAT_TURN_TIME_ZONE_STATE_KEY, resolveChatTimeZone(params.time_zone, deps.serverTimeZone?.()));
-    const prefetchSourceCapture = params.execution_source.channel === 'chat' && params.execution_source.actor === 'user_self'
+    // The owner's ordinary turn: their own chat, no contract, their own model, not a read-only,
+    // mail-work, retried or continued turn. The Yours prefetch's capture and D-405's setup hint both
+    // take exactly this turn, from this one definition.
+    const ownerOrdinaryTurn = params.execution_source.channel === 'chat' && params.execution_source.actor === 'user_self'
       && !executionSourceHasContract(params.execution_source) && picker_target === 'self' && !params.read_only
-      && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
-      ? registerSituationPrefetchSourceCapture(streamState) : undefined;
+      && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id;
+    const prefetchSourceCapture = ownerOrdinaryTurn ? registerSituationPrefetchSourceCapture(streamState) : undefined;
     if (params.continuation_of_turn_id !== undefined) {
       streamState.set(SPAN_ANCHOR_EXPLICIT_CONTINUATION_STATE_KEY, {
         origin_turn_id: params.continuation_of_turn_id,
       });
     }
+    // D-348 — the request this turn is part of, for the calls it holds to be learned with: the
+    // owner's words open one, a turn that continues another joins that one's.
+    const chainRequest = openChainRequest(deps.chainEvidence?.(), {
+      session_id,
+      turn_id,
+      source: params.execution_source,
+      ...(params.continuation_of_turn_id !== undefined
+        ? { continuation_of_turn_id: params.continuation_of_turn_id }
+        : params.owner_words !== undefined ? { words: params.owner_words } : {}),
+      at: now(),
+    });
+    if (chainRequest !== undefined) streamState.set(CHAIN_REQUEST_STATE_KEY, chainRequest);
     // D-213 — the interaction lane admits on THIS source, not on the dispatch
     // ctx's (which defaults an absent source to the owner). Registered by the
     // two turn surfaces only: chat passes its own, messenger passes its
@@ -4170,6 +4469,28 @@ export const createChatOrchestrator = (
             params.visible_recall_item_ids ?? [],
           ).catch(() => undefined)
         : undefined;
+      // D-405 slice 1 — a setup hint from the owner's message itself (ruling P1), on their ordinary turn
+      // only: its step joins the answer's row, and the model reads one line of it (P5). Never a step an
+      // earlier answer of this conversation carried (P3), and within SETUP_HINT_BUDGET_MS: a hint is an
+      // extra, and anything that fails or runs long leaves the turn as it was.
+      // ⛔ The owner's own words, not the message the model is sent: that one ends with the attached
+      // files' names ("passport-scan.pdf") and their note, which name a type or a feature the owner did not.
+      const carriedBefore = async (key: string): Promise<boolean> => {
+        const { messages } = await deps.chatStore.listMessagePage(session_id, SETUP_HINT_HISTORY_MESSAGES);
+        return messages.some((message) => setupStepKeysOf(message).includes(key));
+      };
+      const setupHint = ownerOrdinaryTurn && deps.buildSetupHint !== undefined && params.owner_words !== undefined
+        ? await setupHintWithin(deps.buildSetupHint(
+          params.owner_words,
+          buildInternalDispatchCtx(
+            params.session_id,
+            params.turn_id,
+            params.execution_source,
+            params.contract_snapshot,
+            params.dispatch_depth,
+          ),
+        ), SETUP_HINT_BUDGET_MS).then(async (hint) => (hint === null || await carriedBefore(hint.key) ? null : hint)).catch(() => null)
+        : null;
       // D-337 §7.10 — calls no model was told of (their continuation's model did not answer): this
       // turn carries them, first among its opening calls, and its note says why they are there.
       const carried = await deps.carriedHeldResults?.(session_id).catch(() => undefined);
@@ -4190,10 +4511,17 @@ export const createChatOrchestrator = (
           }
         }
       }
+      // D-406 — the emails the owner picked for this message, read with mail.read before the first round as
+      // calls of the turn's own (`chat-picked-mail.ts`), on the owner's own chat turn that opened with them.
+      const pickedMail: PickedMailRead[] = pickedMailReads({ ...params, picker_target });
+      // D-406 (Q4) — and the calendar events, each with calendar.search by its record id.
+      const pickedEvents: PickedCalendarRead[] = pickedCalendarReads({ ...params, picker_target });
       const inFlightContext = [
         deps.buildInFlightContext?.(params.execution_source, carried?.run_ids),
         carried !== undefined ? CARRIED_HELD_RESULTS_NOTE : undefined,
         namedPages.length > 0 ? NAMED_PAGES_NOTE : undefined,
+        pickedMail.length > 0 ? pickedMailNote(pickedMail.length) : undefined,
+        pickedEvents.length > 0 ? pickedCalendarNote(pickedEvents.length) : undefined,
       ].filter((part): part is string => part !== undefined && part.length > 0).join('\n') || undefined;
       const openingHeld = [...(params.held_results ?? []), ...(carried?.calls ?? [])];
       const priorToolPointers = await deps.buildPriorToolPointers?.(
@@ -4249,11 +4577,12 @@ export const createChatOrchestrator = (
         : catalogTools.filter(
             (tool) => tool.recipe_slug !== RECALL_SEARCH_TOOL_NAME,
           );
+      const initialReadOnlyToolNames = readOnlyToolNames;
       const listedTools =
-        readOnlyToolNames === null
+        initialReadOnlyToolNames === null
           ? surfaceCatalogTools
           : surfaceCatalogTools.filter(
-              (tool) => readOnlyToolNames.has(tool.recipe_slug),
+              (tool) => initialReadOnlyToolNames.has(tool.recipe_slug),
             );
       // ⛔ D-337 slice W — A CONVERSATION CARRYING ON AFTER AN APPROVAL STARTS WITH THE RECIPE TOOLS
       //   ITS REQUEST WAS USING. Lean-core lists no recipe, and a model may call only one a search of
@@ -4358,6 +4687,19 @@ export const createChatOrchestrator = (
             )
           : trackedExecuteAiCall;
 
+      // The reader runs this turn under one running-note mode: a Settings change during the
+      // turn takes effect on the next turn.
+      const rollingBriefEnabledForTurn = deps.chatStore.getRollingBriefEnabled();
+      // ⛔ The brief (the running note) only summarises, in its own call with no tools, at its fold
+      //   points: the closing fold near 80% of the input budget (D-347), the mid-turn fold near
+      //   overflow. The owner, 2026-11-18: "the brief is an independent session running on its own
+      //   without owner's interaction, and it should only produce a summary without making any tool
+      //   calls, and it should start at context bloated or almost … so that extra wait time only
+      //   happens at that stage". So nothing reads the owner's request before a turn: Consolidated
+      //   used to, with model calls before every turn whose reading could also make the turn
+      //   read-only. A read-only turn is one its caller asked for.
+      const turnReadOnly = params.read_only === true;
+
       // The OWNER surfaces (chat + messenger — `buildTurnDriver`'s only two
       // callers) resolve the `chat` prompt. Absent dep → the built-in default.
       // The gateway does NOT come through here; it resolves its own surface in
@@ -4376,6 +4718,49 @@ export const createChatOrchestrator = (
       const ownerHeldWait = picker_target === 'self' && params.execution_source.channel === 'chat'
         && deps.settleHeldCall !== undefined;
       let ownerHeldWaitedMs = 0;
+      // D-177 §N.15.9 — ask a round's kept holds (one approval per op), note them waiting, and, in the
+      // owner's app chat, wait for them within the turn's minute, as a single held call waits (3a): each
+      // answered in time reads on as it settled. Returns the round's results to read on with: each still
+      // held told where its ask went, as a single held call's result is (D-329).
+      const settleKept = async (
+        members: ReadonlyArray<RoundMember>,
+        dispatched: ReadonlyArray<ChatDispatchResult | undefined>,
+      ): Promise<ReadonlyArray<ChatDispatchResult | undefined>> => {
+        if (members.length === 0) return dispatched;
+        const raised = await raiseRoundGather(members);
+        for (const member of members) noteWaitingInTurn(streamState, member.tool_name, member.run_id);
+        const results = dispatched.map((result) => {
+          const run = heldRunOf(result);
+          const member = run === undefined ? undefined : raised.find((kept) => kept.run_id === run);
+          return member !== undefined && result !== undefined ? heldOnceAsked(member, result) : result;
+        });
+        if (!ownerHeldWait || raised.length === 0 || ownerHeldWaitedMs >= OWNER_CHAT_HELD_WAIT_MS) return results;
+        const waitStarted = now();
+        const until = waitStarted + (OWNER_CHAT_HELD_WAIT_MS - ownerHeldWaitedMs);
+        const stopped = new AbortController();
+        const watch = setInterval(() => {
+          try { params.assert_active?.(); } catch { stopped.abort(); }
+        }, 500);
+        const settledByRun = new Map<string, ChatDispatchResult>();
+        try {
+          await Promise.all(raised.map(async (member) => {
+            const held = results.find((result) => result?.ok === true && result.run_id === member.run_id);
+            if (held === undefined) return;
+            const settled = await deps.settleHeldCall!({
+              run_id: member.run_id, held, until, signal: stopped.signal,
+            }).catch(() => undefined);
+            if (settled === undefined) return;
+            settledByRun.set(member.run_id, settled);
+            noteAnsweredInTurn(streamState, member.tool_name, member.run_id);
+          }));
+        } finally {
+          clearInterval(watch);
+          ownerHeldWaitedMs += Math.max(0, now() - waitStarted);
+        }
+        params.assert_active?.();
+        return results.map((result) => (result?.ok === true && result.run_id !== undefined
+          ? settledByRun.get(result.run_id) ?? result : result));
+      };
       // D-340 slice 4 — a managed run's own tool rounds (the streams' AI suggestions, ruling 9).
       const toolRoundCap = deps.getSituationAccess?.()?.toolRoundCap(params.execution_source);
       // D-344 slice C — the turn's model reaches the model calls of the recipes it runs, preferred.
@@ -4388,11 +4773,20 @@ export const createChatOrchestrator = (
             : {}),
           picker_target,
           dispatch_peer_name: params.dispatch_peer_name,
+          // D-343 (the owner, 2026-11-14) — the reply goes out before the turn's closing brief.
+          defer_closing_fold: true,
           ...(params.mail_work ? { mail_work: params.mail_work } : {}),
           ...(openingHeld.length > 0 ? { held_results: openingHeld } : {}),
           ...(params.held_results !== undefined ? { host_message: true as const } : {}),
           ...(namedPages.length > 0 ? { named_pages: namedPages } : {}),
+          ...(pickedMail.length > 0 ? { picked_mail: pickedMail } : {}),
+          ...(pickedEvents.length > 0 ? { picked_events: pickedEvents } : {}),
+          ...(picker_target === 'self' && params.mail_work === undefined
+            && params.execution_source.channel === 'chat' && params.execution_source.actor === 'user_self'
+            && process.env.RECUED_BROWSER_TASK_COMPLETION === '1'
+            && !executionSourceHasContract(params.execution_source) ? { browser_task_completion: true as const } : {}),
           ...(toolRoundCap !== undefined ? { tool_round_cap: toolRoundCap } : {}),
+          ...(params.previous_turn_reached_round_limit ? { previous_turn_reached_round_limit: true as const } : {}),
           ...(directOwnerRecallSurface && picker_target === 'self' && !params.read_only
             && !params.mail_work && !params.retry_of_plan_id && !params.continuation_of_turn_id
             ? { prefetch_selected_asset: true as const } : {}),
@@ -4414,16 +4808,21 @@ export const createChatOrchestrator = (
           dispatch_depth: params.dispatch_depth,
           available_tools: availableTools,
           content,
+          ...(picker_target === 'self' && params.execution_source.actor === 'user_self'
+            && !executionSourceHasContract(params.execution_source) && params.attachment_refs?.length
+            ? { attachment_refs: params.attachment_refs } : {}),
           ...(picker_target === 'self' ? { source_citations: streamSessionStore.sourceCitations(session_id) } : {}),
           correction_context: correctionContext,
           ...(indexContext ? { index_context: indexContext } : {}),
           ...(priorToolPointers
             ? { prior_tool_pointers: priorToolPointers }
             : {}),
-          ...(inFlightContext !== undefined || carriedTools > 0 || toolkitListed > 0 || httpToolkitListed > 0
+          ...(inFlightContext !== undefined || carriedTools > 0 || toolkitListed > 0 || httpToolkitListed > 0 || setupHint !== null
             ? { in_flight_context: [inFlightContext, carriedTools > 0 ? CARRIED_TOOLS_NOTE : undefined,
               toolkitListed > 0 ? BROWSER_TOOLKIT_LISTED_NOTE : undefined,
-              httpToolkitListed > 0 ? HTTP_TOOLKIT_LISTED_NOTE : undefined]
+              httpToolkitListed > 0 ? HTTP_TOOLKIT_LISTED_NOTE : undefined,
+              // D-405 slice 1 — the setup hint's one line (ruling P5).
+              setupHint?.line]
               .filter((part): part is string => part !== undefined).join('\n') }
             : {}),
           ...(executionCaseContext
@@ -4454,6 +4853,8 @@ export const createChatOrchestrator = (
         {
           ...(executeAiCallForTurn ? { executeAiCall: executeAiCallForTurn } : {}),
           registry: deps.registry,
+          ...(deps.recipeTitle ? { recipeTitle: deps.recipeTitle } : {}),
+          ...(deps.recipeActsInBrowser ? { recipeActsInBrowser: deps.recipeActsInBrowser } : {}),
           ...(params.assert_active ? { assertActive: params.assert_active } : {}),
           ...(directOwnerRecallSurface && deps.currentAssetAttachment ? { currentAssetAttachment: deps.currentAssetAttachment } : {}),
           ...(prefetchSourceCapture ? { currentProjectionSources: () => prefetchSourceCapture.sources() } : {}),
@@ -4482,10 +4883,66 @@ export const createChatOrchestrator = (
           // scratch, so the brief's skip and the egress's refusal cannot
           // disagree about whether this turn is recall-bearing.
           hasRegisteredRecall: () => hasRegisteredRecallResult(streamState),
-          // The server-scoped rolling-brief enable. Read PER TURN rather than
-          // captured once at wire time, so flipping it in Settings takes effect
-          // on the next turn instead of at the next restart.
-          rollingBriefEnabled: () => deps.chatStore.getRollingBriefEnabled(),
+          // The server setting is captured once per turn.
+          rollingBriefEnabled: () => rollingBriefEnabledForTurn,
+          // 2026-11-19 — the held writes whose outcome is not known, for the check before an identical one.
+          ...(deps.readCompletedHeldActionRows ? {
+            readUncertainHeldWrites: async (sid: string) => ((await deps.readCompletedHeldActionRows!(sid)).unconfirmed ?? [])
+              .filter(({ execution }) => execution.status === 'unknown'
+                || (execution.status === 'failed' && execution.reason === 'execution_error'))
+              .map(({ plan }) => ({ tool: plan.tool, args: plan.args })),
+          } : {}),
+          ...(directOwnerRecallSurface && picker_target === 'self' && deps.chatStore.readRequestEvidenceWindow ? {
+            readRequestEvidence: async (sid: string, tid: string, earlierUserMessages: readonly string[]) => {
+              if (sid !== params.session_id || tid !== params.turn_id) return undefined;
+              const observedAt = now();
+              let pendingRows: PendingApprovalRows | undefined;
+              if (deps.readPendingApprovalRows) {
+                try { pendingRows = await deps.readPendingApprovalRows(sid); } catch { /* unavailable, never an empty success */ }
+              }
+              let cancelledRows: CancelledApprovalRows | undefined;
+              if (deps.readCancelledApprovalRows) {
+                try { cancelledRows = await deps.readCancelledApprovalRows(sid); } catch { /* unavailable, never an empty success */ }
+              }
+              let completedRows: CompletedHeldActionRows | undefined;
+              if (deps.readCompletedHeldActionRows) {
+                try { completedRows = await deps.readCompletedHeldActionRows(sid); } catch { /* unavailable, never an empty success */ }
+              }
+              const origin = params.continuation_of_turn_id;
+              const anchors = [
+                ...(completedRows?.records ?? []).map(record => record.plan.turn_id),
+                ...(completedRows?.unconfirmed ?? []).map(record => record.plan.turn_id),
+                ...(pendingRows?.plans ?? []).map(plan => plan.turn_id),
+                ...(pendingRows?.approved_plans ?? []).map(plan => plan.turn_id),
+                ...(cancelledRows?.plans ?? []).map(plan => plan.turn_id),
+                ...(origin !== undefined ? [origin] : [])];
+              let window = await deps.chatStore.readRequestEvidenceWindow!(sid, tid, anchors);
+              let evidence = requestExecutionEvidence(window.messages, sid, tid, deps.registry,
+                earlierUserMessages, window.excluded_reply_turn_ids);
+              // A continuation has no owner message of its own, so its window was empty (2026-11-19). It reads the
+              // records of the request it continues, as of that request: the turn that reports a held write's outcome
+              // has the host's record of the outcome. It had none, and that turn was where the model first called an
+              // unconfirmed rename a success.
+              if (!evidence && origin !== undefined) {
+                window = await deps.chatStore.readRequestEvidenceWindow!(sid, origin, anchors);
+                evidence = requestExecutionEvidence(window.messages, sid, origin, deps.registry,
+                  earlierUserMessages, window.excluded_reply_turn_ids);
+              }
+              if (!evidence) return undefined;
+              const resolved = await resolveRequestActionOutcomes(evidence, sid, deps.resolveActionOutcomes);
+              const current = { ...resolved,
+                ...(deps.readCompletedHeldActionRows ? {
+                  completed_held_actions: completedHeldActionState(completedRows, sid, window.messages, deps.registry, observedAt),
+                  unconfirmed_held_actions: unconfirmedHeldActionState(completedRows, sid, window.messages, deps.registry, observedAt) } : {}),
+                ...(deps.readPendingApprovalRows ? {
+                  pending_approvals: pendingApprovalState(pendingRows, sid, window.messages, deps.registry, observedAt),
+                  approved_actions: approvedActionState(pendingRows, sid, window.messages, deps.registry, observedAt) } : {}),
+                ...(deps.readCancelledApprovalRows ? {
+                  cancelled_approvals: cancelledApprovalState(cancelledRows, sid, window.messages, deps.registry, observedAt) } : {}),
+              };
+              return boundRequestEvidence(current, window.incomplete || resolved.coverage?.incomplete === true);
+            },
+          } : {}),
           // D-269 — likewise read PER TURN, not captured: under `follows_host`
           // the answer is the host clock, which moves with the machine.
           ...(deps.serverTimeZone ? { serverTimeZone: deps.serverTimeZone } : {}),
@@ -4503,7 +4960,7 @@ export const createChatOrchestrator = (
             read: async (sid) => {
               const json = await deps.chatStore.readSessionBrief(sid);
               if (json === null) return null;
-              try { return parseBrief(JSON.parse(json)); } catch { return null; }
+              try { return parseStoredBrief(JSON.parse(json)); } catch { return null; }
             },
             write: async (sid, brief) => {
               await deps.chatStore.writeSessionBrief(sid, JSON.stringify(brief));
@@ -4556,7 +5013,7 @@ export const createChatOrchestrator = (
             await params.before_dispatch?.();
             let result = await dispatchTool({
               ...call,
-              ...(params.read_only === true ? { read_only: true } : {}),
+              ...(turnReadOnly ? { read_only: true } : {}),
               turn_state: streamState,
               get_retained_candidates: () => [...retainedCandidates.values()],
             });
@@ -4566,8 +5023,10 @@ export const createChatOrchestrator = (
             // answered in time, it returns what it would have returned, the model takes the next step
             // in this round, and no continuation turn tells it again. Otherwise it stays held, as before.
             // A turn stopped while it waits stops waiting.
-            if (ownerHeldWait && result.ok && result.run_held?.kind === 'approval' && result.run_id !== undefined
-              && ownerHeldWaitedMs < OWNER_CHAT_HELD_WAIT_MS) {
+            // D-177 §N.15.9 — a call kept for its round's gathered approval waits with it, at the round's end.
+            if (ownerHeldWait && result.ok && result.run_held?.kind === 'approval' && result.run_held.gathered !== true
+              && result.run_id !== undefined && ownerHeldWaitedMs < OWNER_CHAT_HELD_WAIT_MS) {
+              const heldRunId = result.run_id;
               const waitStarted = now();
               const stopped = new AbortController();
               const watch = setInterval(() => {
@@ -4580,7 +5039,7 @@ export const createChatOrchestrator = (
                 }).catch(() => undefined);
                 if (settled !== undefined) {
                   result = settled;
-                  noteAnsweredInTurn(streamState, call.tool_name);
+                  noteAnsweredInTurn(streamState, call.tool_name, heldRunId);
                 }
               } finally {
                 clearInterval(watch);
@@ -4590,6 +5049,13 @@ export const createChatOrchestrator = (
             }
             return result;
           },
+          // D-177 §N.15.9 — Q7, "After each round": a round that repeats a call keeps its held calls
+          // of one op, and asks once for them when it ends. What an earlier round left is asked first.
+          beforeRound: async ({ round_index, calls }) => {
+            const left = beginRoundGather(streamState, round_index, calls);
+            if (left.length > 0) await settleKept(left, []);
+          },
+          afterRound: async ({ results }) => settleKept(takeRoundGather(streamState), results),
           ...((params.execution_source.channel === 'chat' || (params.execution_source.channel === 'schedule' && params.execution_source.prompt_schedule !== undefined)) ? {
             onAnswerReady: async (text: string) => {
               params.assert_active?.();
@@ -4636,9 +5102,34 @@ export const createChatOrchestrator = (
           emit,
           now,
         },
-      ));
+      // D-177 §N.15.9 — a turn stopped mid-round leaves no kept hold unasked.
+      )).finally(() => raiseRoundGather(takeRoundGather(streamState)).catch(() => undefined));
+      // D-405 slice 6 — none from the owner's words: the model's own search of mail, a calendar or files
+      // that found none of the owner's (`searched-features.ts`). The same rules as slice 1's (P3): never a
+      // step an earlier answer carried, and one per answer, so not beside a step the turn's own calls
+      // carry. Within the same budget; a hint is an extra.
+      const searchedOpen = setupHint === null && ownerOrdinaryTurn && deps.buildSearchedFeatureHint !== undefined
+        && !chatFixesFromToolResults(result.tool_results).some((fix) => chatHintKeyOfFix(fix) !== null);
+      // A search of the conversation's own files counts while it holds no file the owner sent (slice 2's
+      // rule), read only when the turn made one; unread, it does not count.
+      const conversationHoldsFiles = searchedOpen && (result.tool_results ?? []).some(isConversationFileSearch)
+        ? await deps.chatStore.listMessagePage(session_id, SETUP_HINT_HISTORY_MESSAGES)
+          .then(({ messages }) => messages.some((message) => (message.attachments?.length ?? 0) > 0), () => true)
+        : true;
+      const searchedFeatures = searchedOpen ? featuresSearchedWithNone(result.tool_results, { conversationHoldsFiles }) : [];
+      const searchedHint = searchedFeatures.length > 0
+        ? await setupHintWithin(deps.buildSearchedFeatureHint!(searchedFeatures, buildInternalDispatchCtx(
+          params.session_id,
+          params.turn_id,
+          params.execution_source,
+          params.contract_snapshot,
+          params.dispatch_depth,
+        )), SETUP_HINT_BUDGET_MS).then(async (hint) => (hint === null || await carriedBefore(hint.key) ? null : hint)).catch(() => null)
+        : null;
+      const answerStep = setupHint ?? (searchedHint !== null ? { fixes: searchedHint.fixes, offers: [] } : null);
       capturedTurnResult = { ...result, ...(prefetchSourceCapture?.sources().length
-        ? { prefetch_source_citations: prefetchSourceCapture.sources() } : {}) };
+        ? { prefetch_source_citations: prefetchSourceCapture.sources() } : {}),
+        ...(answerStep !== null ? { setup_hint: { fixes: answerStep.fixes, offers: answerStep.offers } } : {}) };
       // The model read the calls this turn carried, and answered.
       if (carried !== undefined && result.final_ai_output !== undefined && result.tool_loop_failure === undefined) {
         carried.told();
@@ -4808,6 +5299,8 @@ export const createChatOrchestrator = (
         ...(input.attachments && input.attachments.length > 0
           ? { attachments: [...input.attachments] }
           : {}),
+        ...(input.mail_refs !== undefined && input.mail_refs.length > 0 ? { mail_refs: [...input.mail_refs] } : {}),
+        ...(input.calendar_refs !== undefined && input.calendar_refs.length > 0 ? { calendar_refs: [...input.calendar_refs] } : {}),
       });
       safeBroadcast(deps.broadcast, { kind: 'chat.session_changed', session_id: input.session_id,
         field: 'message', value: committed });
@@ -4973,7 +5466,8 @@ export const createChatOrchestrator = (
     }
     // D-343 slice 3 — a reply to the owner's Agenda or evening notice carries how to close its day.
     const closingZone = resolveChatTimeZone(input.time_zone, deps.serverTimeZone?.());
-    const closingLine = await closingDayLine(modelMessage, assetDateAt(now(), closingZone), closingItemsFor(executionSource, closingZone));
+    const { line: closingLine, closing: openClosing } = await openClosings.begin(input.session_id, modelMessage, assetDateAt(now(), closingZone),
+      closingItemsFor(executionSource, closingZone));
     const assistantMessageId = mintId();
     let turnDriver: ReturnType<typeof buildTurnDriver>;
     try {
@@ -4984,6 +5478,11 @@ export const createChatOrchestrator = (
         ...(input.continuation_of_turn_id !== undefined
           ? { continuation_of_turn_id: input.continuation_of_turn_id }
           : {}),
+        // D-348 — the owner's words, when the owner opened this turn.
+        ...(input.held_results === undefined && input.scheduled_prompt === undefined
+          ? { owner_words: input.message }
+          : {}),
+        ...(builtChatTail.last_reached_round_limit ? { previous_turn_reached_round_limit: true as const } : {}),
         ...(input.retry_of_plan_id !== undefined
           ? { retry_of_plan_id: input.retry_of_plan_id }
           : {}),
@@ -4991,6 +5490,8 @@ export const createChatOrchestrator = (
           ? { read_only: true }
           : {}),
         ...(input.mail_work ? { mail_work: input.mail_work } : {}),
+        ...(input.mail_refs !== undefined && input.mail_refs.length > 0 ? { mail_refs: input.mail_refs } : {}),
+        ...(input.calendar_refs !== undefined && input.calendar_refs.length > 0 ? { calendar_refs: input.calendar_refs } : {}),
         ...(input.held_results ? { held_results: input.held_results } : {}),
         ...(input.held_results !== undefined && input.held_acted !== undefined ? { on_first_dispatch: input.held_acted } : {}),
         ...(quietUntilAnswered ? { before_dispatch: async () => { await appendUserRow(); } } : {}),
@@ -5003,6 +5504,8 @@ export const createChatOrchestrator = (
         // channel has no egress→ingress re-trigger path) — depth 0, matching
         // the stream inbound below.
         dispatch_depth: 0,
+        ...(input.attachments?.length ? { attachment_refs: resolvedAttachmentRefs(input.attachments,
+          deps.resolveFileNames?.(input.attachments.map(file => file.file_id)) ?? new Map<string, string>()) } : {}),
         content_parts: buildChatContentPromptParts({
           // D-172 P2 — same reason as the messenger path: the tail is built
           // BEFORE this message is appended, so a file attached to THIS turn
@@ -5016,7 +5519,7 @@ export const createChatOrchestrator = (
             : input.scheduled_prompt
               ? `[Scheduled request: ${input.scheduled_prompt.schedule_id}, occurrence ${input.scheduled_prompt.occurrence_id}, saved revision ${input.scheduled_prompt.revision}. Execute the saved request below. This is an unattended turn; use normal approvals for writes.]\n${modelMessage}`
               : input.held_results
-                ? `${input.held_results.length > 1 ? HELD_RESULTS_TURN_NOTE : HELD_RESULT_TURN_NOTE}\n${modelMessage}`
+                ? `${heldResultsTurnNote(input.held_results)}\n${modelMessage}`
                 : `${modelMessage}${closingLine}`,
           chat_tail: builtChatTail.messages,
         }),
@@ -5040,8 +5543,14 @@ export const createChatOrchestrator = (
       getCapturedResult,
       getEgressPrompts,
       getPlannerRounds,
-      getRetainedCandidates,
+      getRetainedCandidates: retainedThisTurn,
     } = turnDriver;
+    // ⛔ Only a row the owner's recall can read carries the aliases kept from the turn: the store
+    // refuses them on any other ("recall-ineligible source cannot carry candidates"). The tool rows
+    // already asked (`durableOwnerConversation`); the answer did not, so a Telegram turn that kept
+    // any lost its answer: found live 2026-11-15, a day closed late over Telegram, whose continuation
+    // after the owner's approval failed twice and never replied.
+    const getRetainedCandidates = (): readonly RetainedAliasCandidate[] => recallCandidatesFor(executionSource, retainedThisTurn());
     const finalizeUserSource = async (
       ctx: TurnContext,
       outcome: 'complete' | 'prompt_error',
@@ -5158,6 +5667,8 @@ export const createChatOrchestrator = (
     // `streamSummary.final_text`. On every normal turn `getCapturedResult()`
     // is defined and this is behaviour-preserving.
     const capturedResult = getCapturedResult();
+    // D-343 (2026-11-14) — a closing that asked about what was left out carries on into the answer.
+    openClosings.end(input.session_id, openClosing, (capturedResult?.tool_calls ?? []).map((call) => call.tool_name));
     deps.getExecutionCaseLifecycle?.()?.recordPlannerRounds({
       session_id: input.session_id,
       turn_id,
@@ -5326,6 +5837,14 @@ export const createChatOrchestrator = (
       if (!answered && userRow === undefined) return { turn_id };
       await appendUserRow();
     }
+    // D-338 — a gate answer goes into the brief BEFORE the reply row: that row's commit completes the turn
+    // (`on_committed`), and the conversation's next turn can start then. Written after it (2026-11-19), the next turn
+    // could read the brief without the answer and its closing fold save over it; d-338-notices went red on it under
+    // load, reading the brief the moment the turn completed.
+    if (gateAnswer !== undefined) {
+      try { await recordAnswerInBrief(deps.chatStore, input.session_id, assistantContent, turnMessage); }
+      catch (error) { console.error('[chat] could not add an answer given without a model to the brief', error); }
+    }
     const assistantMessage = await deps.chatStore.appendMessage({
       assert_active: input.assert_active,
       id: assistantMessageId,
@@ -5350,22 +5869,26 @@ export const createChatOrchestrator = (
       // D-323 — the marketplace offers the turn's last `tools.search` made,
       // shown under the answer as links to their install pages (ruling P3).
       ...((): { install_offers?: InstallOffer[] } => {
-        const offers = installOffersFromToolResults(turnResult.tool_results);
+        // D-405 slice 1 — the setup hint's offer first, then the turn's own, once each.
+        const offers = installOffersOf([...new Map([...(turnResult.setup_hint?.offers ?? []),
+          ...installOffersFromToolResults(turnResult.tool_results)].map((offer) => [`${offer.kind}:${offer.slug}`, offer])).values()]);
         return offers.length > 0 ? { install_offers: offers } : {};
       })(),
       // D-346 follow-up (2026-11-08) — what the turn's calls could not do and how the owner
       // fixes it (a run's need, a switch of theirs), shown under the answer with a link or
       // "Turn it on". Only the owner's own calls carry any.
       ...((): { fixes?: ChatFix[] } => {
-        const fixes = chatFixesFromToolResults(turnResult.tool_results);
+        // D-405 slice 1 — the setup hint's step first; `chatFixesOf` keeps each once.
+        const fixes = chatFixesOf([...(turnResult.setup_hint?.fixes ?? []), ...chatFixesFromToolResults(turnResult.tool_results)]);
         return fixes.length > 0 ? { fixes } : {};
       })(),
       ...(gateAnswer !== undefined ? { answered_without_model: gateAnswer } : {}),
+      // 2026-11-21 (the owner: "recued sees the limit, stop the model, show a continue") — Chat offers Continue under it.
+      ...(turnResult.reached_round_limit === true ? { reached_round_limit: true as const } : {}),
     });
-    if (gateAnswer !== undefined) {
-      try { await recordAnswerInBrief(deps.chatStore, input.session_id, assistantContent, turnMessage); }
-      catch (error) { console.error('[chat] could not add an answer given without a model to the brief', error); }
-    }
+    // D-343 (the owner, 2026-11-14) — the reply is saved, and with it sent to a linked messenger:
+    // now the turn's closing brief, which the conversation's next turn waits for.
+    afterReply(input.session_id, turnResult);
     // Anchor any plan proposed by this turn to the durable assistant row before
     // broadcasting completion. Recovery may fail to link, but it must never
     // fail an otherwise-committed assistant message.
@@ -5463,7 +5986,14 @@ export const createChatOrchestrator = (
 
   const runTurn = async (input: ChatTurnInput): Promise<ChatTurnAck> => {
     const turn_id = input.queue_turn_id ?? mintId();
-    try { return await runTurnWithId(input, turn_id); }
+    // The last turn's closing brief, if it is still being written: this turn takes it over.
+    await takeOverFold(input.session_id);
+    try {
+      const ack = await runTurnWithId(input, turn_id);
+      // The reply is saved and sent; the call returns once the turn's closing brief is written.
+      await foldsInFlight.get(input.session_id)?.done;
+      return ack;
+    }
     finally {
       // Any early result whose candidate pass never finished remains owner-
       // readable, but cannot enter recall or retain a dead finalizer claim.
@@ -5493,6 +6023,7 @@ export const createChatOrchestrator = (
     const { inbound } = input;
     const session_id = inbound.session_id;
     const turn_id = input.queue_turn_id ?? mintId();
+    await takeOverFold(session_id);
     // A messenger turn is always a Self turn — the user is messaging their
     // own server over an external app; there is no peer-server picker. The
     // catalog hook builds the Self Tier 1/2/3 union.
@@ -5641,7 +6172,8 @@ export const createChatOrchestrator = (
     }) : userText;
     // D-343 slice 3 — a reply to the owner's Agenda or evening notice carries how to close its day.
     const closingZone = resolveChatTimeZone(undefined, deps.serverTimeZone?.());
-    const closingLine = await closingDayLine(modelMessage, assetDateAt(now(), closingZone), closingItemsFor(inbound.source, closingZone));
+    const { line: closingLine, closing: openClosing } = await openClosings.begin(session_id, modelMessage, assetDateAt(now(), closingZone),
+      closingItemsFor(inbound.source, closingZone));
     // Native surfaces receive completed text; paired webclients also receive
     // the live tool/provenance events from this same executor.
     const {
@@ -5653,6 +6185,9 @@ export const createChatOrchestrator = (
       assert_active: input.assert_active,
       session_id,
       turn_id,
+      // D-348 — what the owner wrote (or said, transcribed): the request this turn's held calls are
+      // learned under.
+      owner_words: userText,
       picker_target,
       dispatch_peer_name: null,
       // The channel-minted `(messenger × user_self)` source — the turn's
@@ -5665,6 +6200,8 @@ export const createChatOrchestrator = (
       // THROUGH tool dispatches (codex fold).
       execution_source: inbound.source,
       dispatch_depth: inbound.dispatch_depth,
+      ...(userAttachments?.length ? { attachment_refs: resolvedAttachmentRefs(userAttachments,
+        deps.resolveFileNames?.(userAttachments.map(file => file.file_id)) ?? new Map<string, string>()) } : {}),
       content_parts: buildChatContentPromptParts({
         // ⛔⛔ THE MARKER MUST BE ON THE CURRENT TURN TOO, NOT ONLY THE TAIL.
         // `buildChatTail` runs BEFORE the user row is appended (deliberately —
@@ -5737,16 +6274,20 @@ export const createChatOrchestrator = (
       rounds: getPlannerRounds(),
     });
     const captured = getCapturedResult();
+    openClosings.end(session_id, openClosing, (captured?.tool_calls ?? []).map((call) => call.tool_name));
     const turnResult = captured ?? { assistant_content: '' };
     // D-338 — as the app's turn does: a gate answer is labelled and goes into the brief.
     const gateAnswer = captured === undefined ? gateAnswerOf(streamState) : undefined;
-    await persistAssistant(finalText ?? turnResult.assistant_content, turnResult, gateAnswer);
+    // Into the brief before the reply row, whose commit completes the turn (see the app's turn above).
     if (gateAnswer !== undefined) {
       try { await recordAnswerInBrief(deps.chatStore, session_id, finalText ?? turnResult.assistant_content, userText); }
       catch (error) { console.error('[chat] could not add an answer given without a model to the brief', error); }
     }
+    await persistAssistant(finalText ?? turnResult.assistant_content, turnResult, gateAnswer);
     await input.channel.deliver({ kind: 'message', session_id, turn_id,
       text: finalText ?? turnResult.assistant_content });
+    // D-343 — the reply is out: now the turn's closing brief, which the next turn waits for.
+    afterReply(session_id, turnResult);
     const totalUsage = turnResult.usage;
     // A minimal audit row keeps the messenger turn traceable (surface-tagged
     // so Memory / the benchmark tell the surfaces apart). Counts only; never
@@ -5765,7 +6306,8 @@ export const createChatOrchestrator = (
         ...(turnResult.decoder_failure !== undefined ? { model_call_failed: turnResult.decoder_failure } : {}),
       }),
     );
-
+    // The reply went out above; the call returns once the turn's closing brief is written.
+    await foldsInFlight.get(session_id)?.done;
     return {
       turn_id,
       ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
@@ -5957,6 +6499,7 @@ export const createChatOrchestrator = (
         {
           executeAiCall: executeGatewayAiCall,
           registry: deps.registry,
+          ...(deps.recipeTitle ? { recipeTitle: deps.recipeTitle } : {}),
           // ⛔⛔ THE GATEWAY DELIBERATELY DOES NOT PASS `rollingBriefEnabled`,
           //   AND THAT IS A SAFETY GATE, NOT AN OVERSIGHT. Folding requires the
           //   AUTHORITATIVE per-turn recall signal (`hasRegisteredRecall`), and

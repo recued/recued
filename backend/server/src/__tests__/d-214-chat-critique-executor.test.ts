@@ -65,7 +65,7 @@ const proposed: AIOutput = {
 };
 
 describe('D-214 proposal critique in the real cooperative executor', () => {
-  it.each(['provider', 'invalid_output'] as const)('retains partial planning with a saved %s failure before dispatch', async (cause) => {
+  it.each(['provider', 'invalid_output'] as const)('saves only the %s failure notice before dispatch', async (cause) => {
     let calls = 0;
     const partial = 'I will prepare the report.';
     const executeAiCall = vi.fn(async () => {
@@ -84,7 +84,7 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
     });
     const note = cause === 'provider' ? 'The AI provider failed before answering.'
       : 'The AI model returned a reply that could not be read. Please try again.';
-    expect(result.assistant_content).toBe(`${partial}\n\n${note}`);
+    expect(result.assistant_content).toBe(note);
     expect(result.assistant_content).not.toContain('PRIVATE-FAILURE-731');
     expect(result.assistant_content).not.toContain('tools had already run');
     expect(executeAiCall).toHaveBeenCalledTimes(2);
@@ -208,7 +208,7 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
       expect.objectContaining({ termination_reason: 'output_unreadable' }),
     ]);
     expect(result.assistant_content).not.toBe('');
-    expect(result.assistant_content.startsWith('I will prepare the report.\n\n')).toBe(true);
+    expect(result.assistant_content).not.toContain('I will prepare the report.');
     expect(result.assistant_content).toContain('returned an empty reply twice');
   });
 

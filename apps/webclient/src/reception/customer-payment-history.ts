@@ -1,6 +1,7 @@
+import { mountCustomerFinancialWorkspaceStyles } from './customer-financial-workspace-styles.js';
 import { customerInvoiceRecordAddress } from '../data/records-navigation.js';
 import { paymentReceiptDocument,customerFinancialDocumentHtml,renderCustomerFinancialDocument,CUSTOMER_FINANCIAL_DOCUMENT_STYLES } from './customer-financial-document.js';
-import { focusCustomerWorkspace } from './customer-workspace-focus.js';
+import { focusCustomerWorkspace,trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { mountCustomerRefunds } from './customer-refunds.js';
 import { customerRefundBalanceLines } from '@recued/contracts';
 import { mountCustomerInvoiceCredits } from './customer-invoice-credits.js';
@@ -35,8 +36,10 @@ export const mountCustomerPaymentHistory = (opts: {
   mail?: MailComposeDeps;canReviewEmail?: () => boolean;payment?: QuoteSignoffPaymentOptions;onCorrected?: () => void;
 }) => {
   const { document: doc,conn } = opts;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const root = doc.createElement('section');root.hidden = true;root.tabIndex = -1;
   root.setAttribute('data-customer-payment-history','');root.setAttribute('aria-label','Customer payment history');opts.host.appendChild(root);
+  mountCustomerFinancialWorkspaceStyles(doc,root);
   const add = (tag: string,text: string,host: HTMLElement = root) => { const node = doc.createElement(tag);node.textContent = text;host.appendChild(node);return node; };
   const button = (text: string,host: HTMLElement,click: () => void) => {
     const node = doc.createElement('button');node.type = 'button';node.textContent = text;host.appendChild(node);node.addEventListener('click',click);return node;
@@ -163,7 +166,7 @@ export const mountCustomerPaymentHistory = (opts: {
   };
   const viewReceipt = async (payment_id: string,source?: HTMLButtonElement) => {
     if (disposed || busy || !history?.snapshot_hash || !canReplace()) return;
-    receiptSource=source;const expected = history;const current = ++generation;busy = true;receipt = null;clearPrint();controls();
+    const ownsFocus = focusOwner.capture();receiptSource=source;const expected = history;const current = ++generation;busy = true;receipt = null;clearPrint();controls();
     paintSection('documents');receiptRegion.hidden = false;copy.replaceChildren();emailForm.hidden = true;status.textContent = 'Loading payment receipt…';
     try {
       const result = await conn('reception.signoff.payment.receipt',{ signoff_id: selected,payment_id,expected_snapshot_hash: expected.snapshot_hash! });
@@ -178,7 +181,7 @@ export const mountCustomerPaymentHistory = (opts: {
       mailStatus.textContent = 'Connect Mail to review a receipt email.';
       void loadMailAccounts(current);
     } catch (error) { if (!disposed && current === generation) { receipt = null;status.textContent = message(error); } }
-    finally { if (!disposed && current === generation) { busy = false;controls();if(receipt)focusCustomerWorkspace(receiptRegion); } }
+    finally { if (!disposed && current === generation) { busy = false;controls();if(receipt && ownsFocus())focusCustomerWorkspace(receiptRegion); } }
   };
   const load = async (requestedCursor?: string,requestedPrevious: Array<string | undefined> = []) => {
     if (disposed || busy || !selected || !canReplace()) return;
@@ -239,7 +242,7 @@ export const mountCustomerPaymentHistory = (opts: {
   });
   const open = async (id: string,onClosed?: () => void,section: CustomerInvoiceSection='payments',issueCredit=false) => {
     if (disposed || busy || !canReplace()) return;
-    selected = id;returnFocus = onClosed;entries.replaceChildren();receiptRegion.hidden = true;heading.textContent = 'Customer payment history';history = null;receipt = null;cursor = undefined;previous = [];root.hidden = false;paintSection(section);await load();if (!disposed) {focusCustomerWorkspace(root);if(section==='refunds')refunds?.showHistory();if(issueCredit)credits?.open();}
+    const ownsFocus = focusOwner.capture();selected = id;returnFocus = onClosed;entries.replaceChildren();receiptRegion.hidden = true;heading.textContent = 'Customer payment history';history = null;receipt = null;cursor = undefined;previous = [];root.hidden = false;paintSection(section);await load();if (!disposed) {const shouldFocus = ownsFocus();if(shouldFocus)focusCustomerWorkspace(root);if(section==='refunds')refunds?.showHistory();if(issueCredit)credits?.open(shouldFocus);}
   };
   const corrections = opts.payment ? mountCustomerPaymentCorrections({ document: doc,host: sectionHosts.payments,conn,payment: opts.payment,
     canReview: (): boolean => !refunds?.isOpen() && !credits?.isOpen() && !dirty && !hasOpenEmail() && !compose?.hasInFlightWork() && opts.canReviewEmail?.() !== false,
@@ -260,5 +263,5 @@ export const mountCustomerPaymentHistory = (opts: {
   paintSection(activeSection);controls();
   return { open,openSection:(id: string,section: CustomerInvoiceSection,onClosed?:()=>void)=>open(id,onClosed,section,section==='credits'),isOpen:()=>!root.hidden,hasOpenEmail: () => refunds?.isOpen() === true || hasOpenEmail() || corrections?.isOpen() === true || credits?.isOpen() === true,hasUnsavedChanges: () => refunds?.hasUnsavedChanges() === true || dirty || corrections?.hasUnsavedChanges() === true || credits?.hasUnsavedChanges() === true || compose?.hasUnsavedChanges() === true,
     hasInFlightWork: () => refunds?.hasInFlightWork() === true || busy || corrections?.hasInFlightWork() === true || credits?.hasInFlightWork() === true || compose?.hasInFlightWork() === true,
-    dispose: () => { disposed = true;generation++;clearPrint();refunds?.dispose();credits?.dispose();corrections?.dispose();compose?.destroy();root.remove(); } };
+    dispose: () => { disposed = true;generation++;focusOwner.dispose();clearPrint();refunds?.dispose();credits?.dispose();corrections?.dispose();compose?.destroy();root.remove(); } };
 };

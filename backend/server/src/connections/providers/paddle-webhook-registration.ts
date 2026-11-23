@@ -11,6 +11,7 @@ import {
   createWebhookAddressableCollectionRegistrationDriver,
 } from '../../webhook-addressable-collection-registration-driver.js';
 import {
+  assertDesiredEventTypesAdmitted,
   WebhookRegistrationAdapterError,
   type ManagedWebhookEndpointCreateResult,
   type ManagedWebhookEndpointMatch,
@@ -159,9 +160,10 @@ const desiredTrafficSource = (
   ? 'all'
   : 'platform';
 
+/** Everything but the event names, which are checked where they are sent
+ *  (create, update): cleanup never depends on them (D-201 Slice 10G). */
 const validateContext = (
   context: ManagedWebhookRegistrationContext,
-  eventTypeParser: WebhookDotSegmentEventTypeParser,
   destinationParser: WebhookHttpOrOpaqueDestinationParser,
 ): void => {
   const { desired } = context;
@@ -171,12 +173,6 @@ const validateContext = (
     || (desired.environment !== 'test' && desired.environment !== 'live')
     || desired.registration_target !== null
     || canonicalDesiredEndpoint(desired.endpoint_url, destinationParser) === null
-    || desired.event_types.length < 1
-    || desired.event_types.length > 64
-    || new Set(desired.event_types).size !== desired.event_types.length
-    || desired.event_types.some(
-      (eventType) => eventTypeParser.parse(eventType) === null,
-    )
     || desiredDescription(context).length > 500) {
     throw new WebhookRegistrationAdapterError(
       'registration_input_invalid',
@@ -488,7 +484,6 @@ export const createPaddleWebhookRegistrationAdapter = (
     context: ManagedWebhookRegistrationContext,
   ): void => validateContext(
     context,
-    deps.eventTypeParser,
     deps.destinationParser,
   );
   const parseEntityForProfile = (
@@ -885,6 +880,18 @@ export const createPaddleWebhookRegistrationAdapter = (
               deps.destinationParser.preset.http_url_discriminator
           ) {
             correlation = 'owned';
+          } else if (
+            // D-201 Slice 10Z (10V findings 8 and 9) — a second destination at
+            // this address carrying this ingress's description, beside the
+            // committed one: a create of this ingress that landed late, holding
+            // a secret Recued never stored. It is this ingress's by the same
+            // proof an uncommitted one is, so the sweep may remove it.
+            session.ownership !== null &&
+            !ownerIdMatch &&
+            descriptionMatch &&
+            desiredUrlMatch
+          ) {
+            correlation = 'owned';
           } else if (descriptionMatch || ownerIdMatch) {
             correlation = 'metadata_conflict';
           } else if (desiredUrlMatch) {
@@ -927,6 +934,7 @@ export const createPaddleWebhookRegistrationAdapter = (
       ): Promise<ManagedWebhookEndpointCreateResult> {
         validateIdempotencyKey(idempotencyKey, deps.idempotencyKeyParser);
         validateRegistrationContext(context);
+        assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'Paddle');
         if (pendingOwnershipByContext.has(context)) {
           throw new WebhookRegistrationAdapterError(
             'registration_input_invalid',
@@ -982,6 +990,7 @@ export const createPaddleWebhookRegistrationAdapter = (
         validateRemoteId(remoteEndpointId, deps.remoteIdParser);
         validateIdempotencyKey(idempotencyKey, deps.idempotencyKeyParser);
         validateRegistrationContext(context);
+        assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'Paddle');
         const ownership = await effectiveOwnershipFor(context);
         const current = await readParsed(context, remoteEndpointId);
         if (
@@ -1040,7 +1049,16 @@ export const createPaddleWebhookRegistrationAdapter = (
           current.type ===
             deps.destinationParser.preset.http_url_discriminator &&
           current.snapshot.endpoint_url === context.desired.endpoint_url;
-        if (!committedAuthority && !orphanAuthority) {
+        // D-201 Slice 10Z — a late create of this ingress beside the committed
+        // one, by the orphan's proof (`find` calls it owned).
+        const duplicateAuthority =
+          ownership !== null &&
+          ownership.remote_endpoint_id !== remoteEndpointId &&
+          current.description === desiredDescription(context) &&
+          current.type ===
+            deps.destinationParser.preset.http_url_discriminator &&
+          current.snapshot.endpoint_url === context.desired.endpoint_url;
+        if (!committedAuthority && !orphanAuthority && !duplicateAuthority) {
           throw new WebhookRegistrationAdapterError(
             'upstream_rejected',
             'Paddle notification destination ownership could not be confirmed; no endpoint was deleted',

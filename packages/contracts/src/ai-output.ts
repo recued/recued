@@ -93,6 +93,9 @@ export interface AIOutput {
   readonly mail_work_recap?: unknown;
   /** Native relationship fact selectors, independently validated by the host. */
   readonly source_answer?: unknown;
+  /** Browser-only, turn-local model assessments. The host validates request
+   * quotes, successful source excerpts and retained requirement coverage. */
+  readonly browser_task_progress?: unknown;
   /** Follow this work source plan. Host-owned rendering validates source
    * references, quotes, bounds and permission declarations after restoration. */
   readonly mail_work_plan?: unknown;

@@ -241,6 +241,12 @@ export interface ResolveOpts {
   deferVault?: boolean;
 }
 
+/** D-402 slice B4 — a ref into `item`: `item.name`, and a key by brackets (`item["Last Name"]`, which
+ *  `parseRef` reads as one namespace, having no dot), which a browser sequence's data step writes for
+ *  a table's column. Only `deferItem` asks: a deferred ref must be every item ref, or one in brackets
+ *  resolves to nothing before the transform that binds `item` sees it. */
+const isItemRef = (ns: string): boolean => ns === 'item' || /^item\s*\[/u.test(ns);
+
 /** Resolve a single {{ns.path}} reference to its value from namespace stores. */
 export const resolveRef = (
   ref: string,
@@ -251,7 +257,7 @@ export const resolveRef = (
   const { ns, path } = parseRef(inner);
   // Defer `{{item.*}}` to the consuming transform (see ResolveOpts). Return the
   // raw ref so it survives to that transform's per-element resolver.
-  if (opts?.deferItem && ns === 'item') return ref;
+  if (opts?.deferItem && isItemRef(ns)) return ref;
   // Defer `{{vault.*}}` — the intact ref is the secret-free placeholder the
   // D-177 hash basis pins on (see ResolveOpts).
   if (opts?.deferVault && ns === 'vault') return ref;
@@ -373,7 +379,7 @@ export const resolveValue = (
   return str.replace(/\{\{([^}]+)\}\}/g, (_match, inner: string) => {
     const { ns, path, hint } = parseRef(inner.trim());
     // Deferred `{{item.*}}` stays raw for the consuming transform.
-    if (opts?.deferItem && ns === 'item') return _match;
+    if (opts?.deferItem && isItemRef(ns)) return _match;
     // Deferred `{{vault.*}}` stays raw — the secret-free placeholder.
     if (opts?.deferVault && ns === 'vault') return _match;
     if (!NS.has(ns as Namespace)) return _match;

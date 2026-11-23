@@ -2,12 +2,32 @@ export * from './customer-refunds.js';
 export { isLlmRetryTime, formatLlmRetryTime } from './llm-retry-time.js';
 // D-329 §3.4 — the write rules an AI's approvals teach.
 export * from './write-approval-rule.js';
+// D-348 — L3 learns chains: a request and the calls it led to.
+export * from './chain-rule.js';
 export * from './trigger-preapproval.js';
+export * from './kind-session-grant.js';
 // D-335 slice F — passes for Browser Toolkit writes, and what their approvals teach.
 export * from './browser-pass.js';
 // D-335 slice J — a sequence of steps on one web page, approved once (`core.dom.act`).
 export * from './browser-act.js';
+export * from './browser-collect.js';
+export * from './browser-data.js';
+export * from './browser-item-path.js';
+export * from './browser-numeric.js';
+export * from './browser-source-issue.js';
+export * from './browser-data-failure.js';
+export * from './browser-retained-data.js';
+export * from './browser-extraction.js';
+export * from './browser-act-authoring.js';
+export * from './browser-failure.js';
+export * from './browser-file-receipts.js';
+export * from './browser-post-action.js';
+export * from './browser-read-state.js';
+export * from './browser-controls.js';
+export * from './browser-interactions.js';
 export * from './browser-secret.js';
+export * from './browser-trial.js';
+export * from './run-question.js';
 export type { LocalUpdateUndoReview, LocalUpdateUndoDecision, LocalUpdateUndoResult } from './local-update-undo.js';
 export { hasLocalUpdateResources, LOCAL_CHANGE_SET_LIMITS } from './local-change-sets.js';
 export type { LocalChangeSetPrepare, LocalChangeSetUndoPrepare, LocalChangeSetDecision, LocalChangeSetReview, LocalChangeSetInspection } from './local-change-sets.js';
@@ -317,6 +337,10 @@ export type {
 export {
   WEBHOOK_MECHANISM_KINDS,
   WEBHOOK_REGISTRATION_MODES,
+  // D-201 Slice 10AW (10AS finding 8) — the kind of connection a webhook pairs with.
+  WEBHOOK_PAIRED_CONNECTION_KINDS,
+  webhookPairedConnectionKind,
+  type WebhookPairedConnectionKind,
   WEBHOOK_TRANSPORT_ASSURANCES,
   WEBHOOK_SOURCE_TRUTH_POLICIES,
   WEBHOOK_DECODER_KINDS,
@@ -344,6 +368,13 @@ export {
   MAX_WEBHOOK_CREDENTIAL_TOTAL_BYTES,
   MAX_ACTIVE_WEBHOOK_CREDENTIAL_VERSIONS,
   MAX_WEBHOOK_DELIVERY_PAGE_SIZE,
+  MAX_WEBHOOK_EVENT_TYPE_GRAMMAR_CHARACTERS,
+  sameWebhookEventTypeGrammar,
+  validateWebhookEventTypeGrammar,
+  webhookEventTypeGrammarAccepts,
+  WEBHOOK_DEAD_LETTER_REVIEW_LIMIT,
+  MAX_WEBHOOK_DEAD_LETTER_REASON_LENGTH,
+  WEBHOOK_DEAD_LETTER_SERVER_REASONS,
   WEBHOOK_REJECTED_DELIVERY_REASON_CODES,
   isWebhookProfileId,
   webhookProfile,
@@ -389,6 +420,8 @@ export type {
   WebhookIngressHealthStatus,
   WebhookIngressHealthView,
   WebhookIngressView,
+  WebhookIngressRecipeView,
+  WebhookStrayEndpointView,
   WebhookProfileRuntimeCapabilityView,
   WebhookIngressListResponse,
   WebhookIngressCreateRequest,
@@ -399,6 +432,10 @@ export type {
   WebhookIngressManualConfirmRequest,
   WebhookIngressRegistrationReconcileRequest,
   WebhookIngressEnableRequest,
+  WebhookIngressDoorSetRequest,
+  WebhookIngressStraysDismissRequest,
+  PackWebhookPublisherChange,
+  PackWebhookDoorChoice,
   WebhookIngressDisableRequest,
   WebhookIngressTestDeliveryRequest,
   WebhookIngressTestDeliveryResponse,
@@ -420,10 +457,24 @@ export type {
   WebhookDeliveryRetentionPruneRequest,
   WebhookDeliveryRetentionPruneResult,
   WebhookDeliveryRetentionPruneResponse,
+  WebhookEventTypeGrammar,
+  WebhookDeadLetterKind,
+  WebhookDeadLetterRef,
+  WebhookDeadLetterView,
+  WebhookDeadLetterClosure,
+  WebhookDeadLetterServerReason,
+  WebhookIngressRetireResponse,
+  WebhookDeadLetterListCursor,
+  WebhookDeadLetterListRequest,
+  WebhookDeadLetterListResponse,
+  WebhookDeadLetterReviewSummary,
+  WebhookDeadLetterActionRequest,
+  WebhookDeadLetterActionResponse,
   WebhookConsumerBindingRecord,
   WebhookIngressBindingSelection,
   LocalRecipeWebhookStatus,
   LocalRecipeWebhookDoorStatus,
+  LocalRecipeWebhookDoorPreview,
   AcceptedWebhookDeliveryRecord,
   AcceptedWebhookEventRecord,
   WebhookTriggerContext,
@@ -806,6 +857,7 @@ export type {
   // D-145 PA10 follow-on — `packs.list` rpc surface
   PackListEntry,
   PackMissingPack,
+  PackMissingThing,
   PacksListResult,
   // D-259 — `packs.unrunnable` rpc surface
   UnrunnablePackRow,
@@ -904,7 +956,11 @@ export {
   grantSwitchText,
   tier1CallDetails,
   episodeRecordChecklist,
+  episodeRecordTickOffs,
   tier1CallTitle,
+  tier1CallsTitle,
+  tier1KindsPhrase,
+  isTier1RecordLabel,
   memorySaveConflictRows,
   toolsNeedingSwitch,
 } from './grant-switch-guide.js';
@@ -2138,18 +2194,21 @@ export type {
   ToolUnderEvaluation,
 } from './policy-enforcement.js';
 // D-187 policy-matrix retirement (slice 4) — the op-risk × stage-trust APPROVAL bridge
-// the four matrix chokepoints call instead of admitWithPolicyMatrix. Also the new home
-// of the outbound-send slug set + lift (relocated from policy-matrix-dispatch.ts's
-// now-deleted escalateOutboundSend — the send-approval promise survives the matrix).
+// the four matrix chokepoints call instead of admitWithPolicyMatrix. The outbound-send
+// lift is gone (D-177 §N.15.6): its slug sets now only name Recued's sends and browser ops.
 export {
   admitByOpRisk,
   // D-202 task 4a — the authorization conjunct: op-risk under the ceiling with the
-  // quality-review (outbound-send / commitment-proposal) lifts stripped.
+  // quality-review (commitment-proposal) lift stripped.
   admitByOpRiskWithoutQualityLifts,
   admitContractToolAccess,
   resolveTrustCeiling,
   CONTRACT_LESS_TRUST_CEILING,
   CONTRACTED_DEFAULT_TRUST_CEILING,
+  // D-177 §N.15.6 — the owner's chat follows each op's approval, as automation does.
+  OWNER_CHAT_TRUST_CEILING,
+  // D-177 §N.15.7 — and runs an op its author set to never, as authored.
+  honorsAuthoredNever,
   OUTBOUND_SEND_INGREDIENT_SLUGS,
   isOutboundSendSlug,
   isBrowserActionSlug,
@@ -3380,6 +3439,7 @@ export type {
   Reminder,
   ReminderOrigin,
   ReminderState,
+  ReminderSearchStatus,
   ReminderView,
   ReminderChangeReason,
   ReminderListResult,
@@ -3388,9 +3448,16 @@ export type {
   ReminderListPageInput,
   ReminderListCursor,
   ReminderCreateResult,
+  ReminderCreateRequest,
+  ReminderRecordReference,
   ReminderUpdateResult,
   ReminderCancelResult,
 } from './reminder.js';
+
+
+// Reviewed, owner-only bulk reminder changes.
+export { REMINDER_TRIAGE_MAX } from './reminder-triage.js';
+export type { ReminderTriageAction, ReminderTriagePreviewRequest, ReminderTriageReviewItem, ReminderTriagePreview, ReminderTriageApplyRequest, ReminderTriageOutcome, ReminderTriageResult } from './reminder-triage.js';
 
 // D-269 step 3 follow-on — zoned wall clock, shared by the server sweep and the
 // client's quiet-hours preview (which cannot import from `backend/`).
@@ -3416,6 +3483,27 @@ export {
   isAllDaySpanNormal,
   normalizeAllDaySpan,
 } from './calendar-days.js';
+
+// D-403 — what takes space on the server, by kind, and a purge the owner runs.
+export {
+  STORAGE_KIND_GROUPS,
+  STORAGE_PURGE_MIN_AGE_MS,
+  STORAGE_PURGE_PREVIEW_TTL_MS,
+  parseRecordsStorageKind,
+  recordsStorageKind,
+  storageKeyWords,
+} from './owner-storage.js';
+export type {
+  StorageDatabaseInfo,
+  StorageKindGroup,
+  StorageKindHold,
+  StorageKindRow,
+  StorageKindsResponse,
+  StoragePurgePreview,
+  StoragePurgePreviewRequest,
+  StoragePurgeRunRequest,
+  StoragePurgeRunResult,
+} from './owner-storage.js';
 
 // Phase B — pressure details (heartbeat + server.getStatus shared shape).
 export {
@@ -3501,8 +3589,10 @@ export {
   CALENDAR_QUOTA_BYTES_DEFAULT,
   CalendarAdapterError,
 } from './calendar.js';
-export { CALENDAR_EVENT_EDIT_LIMITS, CALENDAR_EVENT_GUEST_LIMITS, normalizeCalendarEventGuests } from './calendar-event-rpc.js';
+export { CALENDAR_EVENT_ALERT_MINUTES_MAX, CALENDAR_EVENT_EDIT_LIMITS, CALENDAR_EVENT_GUEST_LIMITS, isCalendarEventAlertMinutes, normalizeCalendarEventGuests } from './calendar-event-rpc.js';
 export type { CalendarEventGuest } from './calendar-event-rpc.js';
+// D-407 slice 5 — the event's Occasion tick.
+export type { CalendarEventOccasion } from './calendar-event-rpc.js';
 export type { CalendarEventDeleteRequest, CalendarEventDeleteResult, CalendarEventDeletionCheckRequest, CalendarEventDeletionState } from './calendar-event-rpc.js';
 export type { DocumentContentMatch, DocumentContentCoverage, DocumentContentSearchResult, OwnerDocumentSearchRequest, OwnerDocumentSearchReply } from './document-content-search.js';
 export type { CalendarOverlapRequest, CalendarOverlapResult, CalendarEventRef, CalendarEventDetails, CalendarEventSnapshot, CalendarEventPatch, CalendarEventUpdateRequest, CalendarEventRespondRequest, CalendarEventRespondResult, CalendarInvitationResponse, CalendarEventDestination, CalendarEventDestinations, CalendarEventCreateRequest, CalendarEventCreateResult } from './calendar-event-rpc.js';
@@ -4766,6 +4856,7 @@ export {
   TIER1_TOOL_NAME_SET,
   isTier1ToolName,
   TIER1_TOPIC_TAGS,
+  WHAT_GOES_WHERE,
   TIER1_CLASSIFICATIONS,
   TIER1_CONCURRENCY_SAFE,
   TIER1_TOOL_DESCRIPTORS,
@@ -4830,6 +4921,7 @@ export {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
   CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP,
+  CHAT_TOOL_BUDGET_EXHAUSTED_MESSAGE,
   modelTierToModelHint,
   // D-167 (recall path) — recall-tool classification + prior-tool-call partition
   NON_RETAINABLE_RECALL_TOOL_NAMES,
@@ -5067,10 +5159,16 @@ export {
   // D-335 slice W — the element acted on, found again another day.
   BRIDGE_ACTED_ON_KEY,
   readBridgeActedOn,
+  BRIDGE_ROW_CHANGED_DETAIL,
   type BridgeActedOn,
+  type BridgeProtectedKind,
   BRIDGE_CLICK_SETTLE_MS,
+  BRIDGE_READ_QUIET_MS,
+  BRIDGE_READ_SETTLE_MAX_MS,
+  BRIDGE_WAIT_CHANGE_MAX_MS,
   BRIDGE_CLICK_LOAD_MAX_MS,
   BRIDGE_WATCH_MAX_MS,
+  BRIDGE_SHORT_WAIT_MAX_MS,
   BRIDGE_CLICK_WAIT_MS,
   BRIDGE_PAGE_CHANGED_MESSAGE,
   BRIDGE_PAGE_GONE_MESSAGE,
@@ -5114,6 +5212,7 @@ export type {
   BridgeCapacityRemediationAction,
   BridgeCapacityRemediation,
   BridgeCapabilityProfile,
+  BridgeReadinessCheck,
 } from './bridge.js';
 
 // D-145 PB8 / PC1 — Bridge platform classification (publishing-vs-
@@ -5431,6 +5530,7 @@ export type {
   ServerLlmProbeDiagnosis,
   ServerLlmUsageResponse,
   ServerLlmUsageSource,
+  ServerLlmSourceLastCall,
   ServerLlmProbeResult,
   ServerLlmPromptSurface,
   ServerLlmMessageRole,
@@ -5635,9 +5735,14 @@ export type {
   WorkEntitySearchKind,
   WorkEntitySearchMatch,
   WorkEntitySearchGroup,
+  WorkEntityLinkedFromRpcRequest,
+  WorkEntityLinkedFromRpcResponse,
+  WorkEntityLinkedFromItem,
+  LinkedCalendarEvent,
+  LinkedCalendarPage,
   WorkEntitySearchRpcRequest,
   WorkEntitySearchRpcResponse,
-  ProjectWorkKind,
+  ProjectWorkKind, ProjectAttentionScope, ProjectAttentionIssue, WorkEntityProjectAttentionRpcRequest, WorkEntityProjectAttentionRpcResponse,
   WorkEntityProjectItem,
   WorkEntityProjectItemsRpcRequest,
   WorkEntityProjectItemsRpcResponse,
@@ -5675,6 +5780,7 @@ export type {
   RunGatewayCallTraceEntry,
   RunGatewaySummary,
   RunDetail,
+  RunPreapprovedWrite,
   ExecutionGetResponse,
 } from './execution-rpc.js';
 
@@ -7097,6 +7203,7 @@ export type {
 export * from './date-compute.js';
 export * from './searchable-score.js';
 export * from './saved-data-views.js';
+export * from './reminder-search-dates.js';
 export * from './records-view.js';
 export * from './task-data-view.js';
 export * from './commitment-data-view.js';
@@ -7107,6 +7214,8 @@ export * from './chat-turn-queue.js';
 export * from './file-lifecycle.js';
 export * from './chat-delivery.js';
 export { CHAT_SESSION_BATCH, CHAT_SESSION_REFRESH_LIMIT } from './chat.js';
+// D-402 slice A4 — the hour "Make a recipe" is offered for.
+export { CHAT_BROWSER_PLAN_HOLD_MS } from './chat.js';
 export * from './chat-history-filters.js';
 
 export { csvCell, type CsvCellOptions } from './csv.js';
@@ -7158,6 +7267,9 @@ export type { RequiredConnection } from './required-connections.js';
  *  the steps; projected onto `recipe.list` rows for the same reason. */
 export { MAILBOX_ARGUMENT_OPS, recipeMailboxSettings } from './mailbox-settings.js';
 export type { MailboxCollection, MailboxSetting } from './mailbox-settings.js';
+// D-402 slice H2 — the settings that name one of the owner's browsers.
+export { recipeBrowserSettings, recipeBrowserSteps } from './browser-settings.js';
+export type { BrowserSetting, BrowserSettingStep } from './browser-settings.js';
 /** D-323 — what chat offers to install when nothing installed can do the job. */
 export { INSTALL_OFFER_LIMIT, INSTALL_OFFER_RECIPE_NAMES_LIMIT, installOffersOf } from './install-offers.js';
 export type { InstallOffer } from './install-offers.js';
@@ -7217,9 +7329,13 @@ export * from './authentication-access-summary.js';
 export * from './pack-access.js';
 export type { ConnectionNotSetUpDetails, PackConnectionChange, PackConnectionsView } from './pack-connections.js';
 export { CONNECTION_NOT_SET_UP } from './pack-connections.js';
-export type { ProgramSwitchDetail, RunConnectionNeed, RunNeed, RunProgramNeed, RunSwitchNeed } from './run-needs.js';
+export type { ProgramSwitchDetail, RunBrowserNeed, RunConnectionNeed, RunNeed, RunProgramNeed, RunSwitchNeed } from './run-needs.js';
 export { RUN_PROGRAM_NEED_PROBLEMS, isProgramSwitchDetail } from './run-needs.js';
-export { CHAT_FIX_LIMIT, chatFixesOf, type ChatFix } from './chat-fixes.js';
+export { CHAT_FIX_LIMIT, CHAT_SETUP_FEATURES, chatFixesOf, chatSetupFeaturesOf, featureStepWords, isChatSetupFeature, sourceStepWords, THING_PAGE_SETUPS, thingPageSetupOf, thingStepWords, type ChatFix, type ChatSetupFeature, type ChatSetupFeatureState } from './chat-fixes.js';
+export { CHAT_MAIL_REFS_MAX, chatMailRefInputsOf, chatMailRefsOf, type ChatMailRef, type ChatMailRefInput } from './chat-mail-refs.js';
+export { CHAT_CALENDAR_REFS_MAX, chatCalendarRefInputsOf, chatCalendarRefsOf, type ChatCalendarRef, type ChatCalendarRefInput } from './chat-calendar-refs.js';
+export { CHAT_HINT_LABEL_MAX, CHAT_HINT_NOT_NOW_DAYS, CHAT_HINT_NOT_NOW_MS, CHAT_HINTS_NOT_NOW_LIMIT, chatHintKeyOfFix, chatHintKeyOfOffer, chatHintsNotNowOf, isChatHintKey, type ChatHintNotNow } from './chat-hints.js';
+export { CHAT_NEXT_STEPS_LIMIT, chatNextStepKey, chatNextStepRefsOf, chatNextStepsOfMessage, type ChatNextStepRef } from './chat-next-steps.js';
 
 export { savedOAuthAppIssuerForEndpoints,savedOAuthAppRequestedScopes,withSavedOAuthAppProvider } from './oauth-app-reuse.js';
 export * from './pack-vendor-permissions.js';
@@ -7272,6 +7388,17 @@ export {
   ASSET_EXPECTED_PATTERNS, assetConditionExpected,
 } from './asset-rule-clock.js';
 export type { AssetRuleClock, AssetReminderPoint } from './asset-rule-clock.js';
+// D-339 slice 13 — a Body's own conversation, and what the owner approved sending to it.
+export {
+  ASSET_CHAT_CONVERSATION, BODY_CHAT_ABOUT, BODY_CHAT_REQUESTS, BODY_CHAT_SENT_KEPT, BODY_MEASURE_FIELDS, readAssetChatConversation,
+} from './body-chat.js';
+export type { AssetChatConversation, BodyChatAbout, BodyChatRequest, BodyChatSent, BodyMeasureField } from './body-chat.js';
+export { BODY_CLASS_ID, BODY_SUMMARY_RECIPE_ID, WEARABLE_CHECK_RECIPE_ID, WEARABLE_CLASS_ID, BODY_GOAL_FIELDS, BODY_GOAL_SETTING, BODY_RANGE_REVIEW_DAYS, BODY_RANGES_SETTING, bodyGoalWay, bodyRangePlace, isBodyGoalField,
+  readBodyGoal, readBodyRange, readBodyRanges } from './body-goals.js';
+export type { BodyGoal, BodyGoalField, BodyGoalProgress, BodyRange } from './body-goals.js';
+export { BODY_NUMBERS_DEFAULT_MODE, BODY_NUMBERS_MODES, BODY_NUMBERS_OPERATION_ID, BODY_NUMBERS_RECIPE, BODY_NUMBERS_TURN_ON_UNDER,
+  isBodyNumbersMode } from './body-numbers.js';
+export type { BodyNumbersMode, HeldReadHooks } from './body-numbers.js';
 export * from './yours.js';
 export * from './asset-writer-setup.js';
 export * from './asset-fact-context.js';
@@ -7280,10 +7407,11 @@ export * from './asset-search-terms.js';
 export * from './proactive-history.js';
 export type {
   SituationBasis, SituationVerdict, SituationReason, SituationRef, SituationPlace,
-  SituationDimension, SituationWindow, TripDetails, SituationAssetDetails, SituationRecordedDays, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
+  SituationDimension, SituationWindow, TripDetails, SituationAssetDetails, SituationGoalDetails, SituationRecordedDays, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
   SituationCluster, SituationResult, SituationState, SituationDismissal,
   SituationSnapshot, SituationRevision, SituationDigestLookAhead, SituationDeliverySettings, SituationDeliveryStatus, ProactiveToday,
-  SituationAgendaSettings, SituationAgendaStatus, SituationCloseDaySettings, SituationCloseDayStatus,
+  SituationAgendaSettings, SituationAgendaStatus, SituationCloseDaySettings, SituationCloseDayStatus, EmailClosingReplyStatus,
+  SituationRunTiming, SituationSuggestionsOutcome,
   SituationStreamKind, SituationStreamSettings, SituationStreamStatus, SituationStreamsStatus, SituationStreamPreview,
 } from './situation.js';
 export { SITUATION_QUERY_SCHEMA, SITUATION_CONTEXT_MAX_BYTES, SITUATION_TOOL_MAX_ITEMS, parseSituationQueryInput } from './situation.js';
@@ -7320,3 +7448,11 @@ export type { ContactSearchLocalRequest, ContactSearchLocalResponse } from './co
 export * from './csv-toolkit-authoring.js';
 export { typedKernelArguments, type KernelArgumentSchema } from './kernel-argument-schema.js';
 export * from './file-content-read.js';
+export * from './search-passage.js';
+
+export { savedTextUrls, savedWorkAddress, savedWorkLinks, savedWorkLinkMatches, savedWorkLinkIndexId } from './saved-work-links.js';
+export type { SavedTextUrl, SavedWorkAddress, SavedWorkLink } from './saved-work-links.js';
+
+export { readReminderRecordReference, sameReminderRecordReference } from './reminder.js';
+export { readReminderMailReference, sameReminderMailReference, reminderMailReference } from './reminder.js';
+export type { ReminderMailReference } from './reminder.js';

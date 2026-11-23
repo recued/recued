@@ -48,6 +48,7 @@ import {
   type WebhookDoorEnrollDeps,
 } from './webhook-door-enroll.js';
 import { hasNonEmptyWebhookDeclarations } from './webhook-declaration-gate.js';
+import { recipeRemainsStored } from './webhook-replacement-finish.js';
 
 /** Wrap a `RecipeStore` so the engine can read/write through the
  *  bulk-pack-registry shape. The server's `RecipeStore.save()` is
@@ -200,6 +201,10 @@ export interface InstallBulkPackOnServerDeps {
    *  gesture) and stamps it on the recipe's trigger rows. Absent ⇒ rows stay
    *  NULL-stamped and every dispatch denies at the contract floor. */
   webhookDoor?: WebhookDoorEnrollDeps;
+  /** D-201 Slice 10AF (10AE finding 17; the owner's ruling of 2026-11-20) —
+   *  the owner's answer, by recipe, for each recipe this update brings from
+   *  another publisher (`packs.install` `webhook_door_choices`). */
+  webhookDoorChoices?: ReadonlyMap<string, 'open' | 'closed'>;
   /** D-139 P6.B — optional per-pair MCP body-content visibility grant
    *  store. When present, packs that ship `mcp_body_visibility_grants[]`
    *  persist their closed-list grant keys on install; uninstall +
@@ -336,6 +341,15 @@ export const installBulkPackOnServer = async (
   const webhookConsumerStore = deps.webhookConsumerStore;
   let appliedWebhookSnapshot: WebhookConsumerSnapshot | null = null;
   let appliedWebhookRecipes: readonly WebhookConsumerRecipeDeclaration[] = [];
+  // D-201 Slice 10Y (10V finding 7) — whether a prior version left this pack
+  // webhook bindings, so an update declaring none replaces them with none.
+  const hasWebhookBindings: BulkPackInstallContext['hasWebhookBindings'] =
+    webhookConsumerStore
+      ? (packSlug) => webhookConsumerStore.listBindings({
+          consumer_kind: 'pack_install',
+          consumer_id: packSlug,
+        }).length > 0
+      : undefined;
   const applyWebhookBindings: BulkPackInstallContext['applyWebhookBindings'] =
     webhookConsumerStore
       ? async (input) => {
@@ -345,6 +359,34 @@ export const installBulkPackOnServer = async (
             requirements: input.requirements,
             selections: input.selections,
             recipes: input.recipes,
+            // D-201 Slice 10AD (10AA finding 21) — a replacement an earlier
+            // update left standing closes as the start would close it.
+            recipeRemains: (recipeId, publisherId) => recipeRemainsStored(deps.recipeStore, recipeId, publisherId),
+            // D-201 Slice 10AJ (10AI finding 1) — the owner's answers to the
+            // door switches this update raised, kept with it: the door step
+            // below applies them, and so does any later one should it not
+            // finish (the start's finish, a settings change, the next update).
+            // D-201 Slice 10AO (10AM finding 1) — only for a recipe it brings
+            // from another publisher, as the door step judges it (the newest
+            // door the recipe had is another publisher's): the door step reads
+            // a kept answer for any recipe whose rows carry no door, so one
+            // kept for any other recipe would act as the owner's switch.
+            ...(deps.webhookDoorChoices !== undefined && deps.webhookDoorChoices.size > 0
+              ? {
+                  door_answers: input.recipes.flatMap((declaration) => {
+                    const door = deps.webhookDoorChoices!.get(declaration.recipe_id);
+                    if (door === undefined) return [];
+                    const newest = webhookConsumerStore.newestRecipeDoor(
+                      'pack_install',
+                      input.pack_slug,
+                      declaration.recipe_id,
+                    );
+                    if (newest === null || newest.publisher_id === declaration.publisher_id) return [];
+                    if (deps.webhookDoor !== undefined && deps.webhookDoor.definitionStore.get(newest.contract_id) === null) return [];
+                    return [{ recipe_id: declaration.recipe_id, publisher_id: declaration.publisher_id, door }];
+                  }),
+                }
+              : {}),
           });
           appliedWebhookSnapshot = snapshot;
           appliedWebhookRecipes = input.recipes;
@@ -361,14 +403,36 @@ export const installBulkPackOnServer = async (
             // An upgrade rollback must not leave the just-attempted trigger set
             // attached to the restored prior recipe rows. If exact restoration
             // fails, revoke the whole consumer as the fail-closed fallback.
+            // D-201 Slice 10BE (10AY finding 3) — the owner's answers kept before
+            // this update stand, as the restore would have put them back; only
+            // the update's own go.
             try {
               webhookConsumerStore.removeConsumer(
                 snapshot.consumer_kind,
                 snapshot.consumer_id,
+                { door_answers: snapshot.door_answers ?? [] },
               );
-            } catch {
+            } catch (removeError) {
               // Preserve the original restore failure for the engine's rollback
               // accounting; a second storage fault cannot be repaired here.
+              // D-201 Slice 10BL (10BF finding 15) — the answers alone go back:
+              // an operation-bound binding is never removed here (its remote
+              // clean-up needs it), and with the removal refused the undone
+              // update's own answers stood.
+              try {
+                webhookConsumerStore.restoreDoorAnswers(
+                  snapshot.consumer_kind,
+                  snapshot.consumer_id,
+                  snapshot.door_answers ?? [],
+                );
+              } catch (answersError) {
+                console.warn(
+                  `[webhook] pack ${snapshot.consumer_id}: the undone update's door answers stand, for neither the `
+                    + `consumer's removal (${removeError instanceof Error ? removeError.message : String(removeError)}) `
+                    + 'nor its answers alone could be written back: '
+                    + (answersError instanceof Error ? answersError.message : String(answersError)),
+                );
+              }
             }
             throw error;
           }
@@ -384,15 +448,11 @@ export const installBulkPackOnServer = async (
     ...(revokeBodyVisibility ? { revokeBodyVisibility } : {}),
     ...(applyWebhookBindings ? { applyWebhookBindings } : {}),
     ...(restoreWebhookBindings ? { restoreWebhookBindings } : {}),
+    ...(hasWebhookBindings ? { hasWebhookBindings } : {}),
   };
 
   const result = await installBulkPack(input, ctx);
   if (result.ok && webhookConsumerStore && appliedWebhookSnapshot) {
-    // A committed replacement no longer needs its rollback window. Revoke
-    // detached claims belonging to the superseded trigger ids and release
-    // their payload pins only after every later install phase has succeeded.
-    webhookConsumerStore.finalizeConsumerReplacement(appliedWebhookSnapshot);
-
     // D-209 #1 W2b — mint the pack's webhook DOORS, one per webhook-declaring
     // recipe, strictly after the install transaction committed (a mint inside
     // the transaction would leak an orphan live door on rollback — the same
@@ -407,7 +467,12 @@ export const installBulkPackOnServer = async (
             consumer_kind: 'pack_install',
             consumer_id: input.pack_slug,
             prior: appliedWebhookSnapshot,
+            // D-201 Slice 10Y (10V finding 7) — a door is for a recipe with a
+            // webhook trigger: one with none has no row to carry it. An update
+            // that drops every declaration so enrolls none, and the prior doors
+            // retire.
             recipes: appliedWebhookRecipes.flatMap((declaration) => {
+              if (declaration.webhook_triggers.length === 0) return [];
               const recipe = deps.recipeStore.get(declaration.recipe_id);
               return recipe === null
                 ? []
@@ -424,6 +489,9 @@ export const installBulkPackOnServer = async (
             retireReason: 'pack_reinstalled',
             // D-295 — an update never re-opens a door the owner revoked.
             keepOwnerRevoked: true,
+            // D-201 Slice 10AF — the owner's answers to the switches a
+            // publisher change raised; without one, the state they left it in.
+            ...(deps.webhookDoorChoices !== undefined ? { doorChoices: deps.webhookDoorChoices } : {}),
           },
           deps.webhookDoor,
         );
@@ -449,6 +517,23 @@ export const installBulkPackOnServer = async (
         );
       }
     }
+
+    // A committed replacement no longer needs its rollback window. Revoke
+    // detached claims belonging to the superseded trigger ids and release
+    // their payload pins only after every later install phase has succeeded.
+    // D-201 Slice 10S (10Q finding 4) — a recipe the pack still ships was not
+    // removed: what it no longer takes closes as saved with a different setup.
+    // D-201 Slice 10U (10Q finding 9) — after the doors, so the record this
+    // clears stands until they do: an install that dies first leaves the next
+    // start a record to make them from.
+    // D-201 Slice 10Y (10V finding 17) — "remains" as the start's finish of
+    // the same update asks it: still stored. It asked whether the update still
+    // ships the recipe, so one it stops shipping but leaves installed closed as
+    // removed here and as saved differently there.
+    webhookConsumerStore.finalizeConsumerReplacement(appliedWebhookSnapshot, {
+      recipeRemains: (recipeId, publisherId) =>
+        recipeRemainsStored(deps.recipeStore, recipeId, publisherId),
+    });
   }
   // D-299 — keep each Reception pair these recipes back alive where its parameters and its
   // door's authority are unchanged. After the commit, like the doors above: the pair is

@@ -1,4 +1,5 @@
-import { focusCustomerWorkspace } from './customer-workspace-focus.js';
+import { mountCustomerFinancialWorkspaceStyles } from './customer-financial-workspace-styles.js';
+import { focusCustomerWorkspace,trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { renderCustomerFinancialDocument,customerFinancialDocumentHtml,CUSTOMER_FINANCIAL_DOCUMENT_STYLES,type CustomerFinancialDocument } from './customer-financial-document.js';
 import { composeDialog,type CustomerJobPaymentStatementDraftResult,type CustomerAccountContactDefaultsRecord } from '@recued/contracts';
 import { FORM_RENDERER_STYLES,MAIL_COMPOSE_STYLES } from '@recued/ui-shared';
@@ -27,6 +28,7 @@ export const mountCustomerStatementView = <T extends { statement_hash: string }>
   validate(statement: T,id: string): boolean;lines(statement: T): string[];heading(statement: T): string;
 }) => {
   const { document: doc } = opts;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const label = opts.kind === 'job-payment' ? 'job payment statement' : opts.kind === 'account-payment' ? 'account payment receipt' : 'account statement';
   const title = `Customer ${label}`;
   const attribute = `data-customer-${opts.kind}-statement`;
@@ -35,6 +37,7 @@ export const mountCustomerStatementView = <T extends { statement_hash: string }>
   const html = (statement: T) => customerStatementHtml(title,opts.lines(statement),opts.documentModel?.(statement));
   const root = doc.createElement('section');root.hidden = true;root.tabIndex = -1;
   root.setAttribute(attribute,'');root.setAttribute('aria-label',title);opts.host.appendChild(root);
+  mountCustomerFinancialWorkspaceStyles(doc,root);
   const add = (tag: string,text: string,host: HTMLElement = root) => { const node = doc.createElement(tag);node.textContent = text;host.appendChild(node);return node; };
   const button = (text: string,host: HTMLElement,click: () => void) => {
     const node = doc.createElement('button');node.type = 'button';node.textContent = text;host.appendChild(node);node.addEventListener('click',click);return node;
@@ -186,7 +189,7 @@ export const mountCustomerStatementView = <T extends { statement_hash: string }>
   });
   const open = async (id: string,onClosed?: () => void) => {
     if (disposed || busy || !canReplace()) return;
-    selected = id;returnFocus = onClosed;heading.textContent = title;root.hidden = false;await load();if (!disposed) focusCustomerWorkspace(root);
+    const ownsFocus = focusOwner.capture();selected = id;returnFocus = onClosed;heading.textContent = title;root.hidden = false;await load();if (!disposed && ownsFocus()) focusCustomerWorkspace(root);
   };
   if (opts.mail) {
     add('style',`${FORM_RENDERER_STYLES}\n${MAIL_COMPOSE_STYLES}`,composeHost);
@@ -201,5 +204,5 @@ export const mountCustomerStatementView = <T extends { statement_hash: string }>
     },
     hasUnsavedChanges: () => dirty || compose?.hasUnsavedChanges() === true,
     hasInFlightWork: () => busy || compose?.hasInFlightWork() === true,
-    dispose: () => { disposed = true;generation++;clearPrint();compose?.destroy();root.remove(); } };
+    dispose: () => { disposed = true;generation++;focusOwner.dispose();clearPrint();compose?.destroy();root.remove(); } };
 };

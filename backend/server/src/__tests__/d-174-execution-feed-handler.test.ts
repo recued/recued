@@ -436,6 +436,33 @@ describe('D-174 execution.get', () => {
     delete deps.triggerPreapprovals;
     expect((await handleExecutionGet(deps, { run_id: 'preapproved-records-run' })).run).not.toHaveProperty('preapproved');
   });
+  it('D-402 slice F5 — a caller\'s pre-approval is named as one: whose, by name, its recipe, and whether it was this run\'s own', async () => {
+    await append('caller-run', 700);
+    deps.triggerPreapprovals = {
+      runWrites: () => [
+        { preapproval_id: 'cpa_once', op: 'notes.create', uses: 1 },
+        { preapproval_id: 'cpa_always', op: 'notes.create', uses: 2 },
+        { preapproval_id: 'tpa_1', op: 'notes.create', uses: 1 },
+      ],
+      get: (id: string) => (id === 'tpa_1' ? { trigger: { kind: 'schedule', schedule_id: 'sch_1' } } : undefined) as never,
+      getCaller: (id: string) => ({
+        cpa_once: { id, caller: { kind: 'owner_chat' }, recipe_id: 'add-note', run_id: 'caller-run' },
+        cpa_always: { id, caller: { kind: 'ai_app', contract_id: 'k-claude' }, recipe_id: 'add-note' },
+      } as Record<string, unknown>)[id] as never,
+    };
+    deps.aiAppNameOf = (contract_id: string) => (contract_id === 'k-claude' ? 'Claude Desktop' : undefined);
+    const out = await handleExecutionGet(deps, { run_id: 'caller-run' });
+    expect(out.run.preapproved).toEqual([
+      { preapproval_id: 'cpa_once', trigger_kind: 'caller', op: 'notes.create', writes: 1,
+        caller: { kind: 'owner_chat' }, caller_name: 'your chats', recipe_id: 'add-note', this_run: true },
+      { preapproval_id: 'cpa_always', trigger_kind: 'caller', op: 'notes.create', writes: 2,
+        caller: { kind: 'ai_app', contract_id: 'k-claude' }, caller_name: 'Claude Desktop', recipe_id: 'add-note' },
+      { preapproval_id: 'tpa_1', trigger_kind: 'schedule', op: 'notes.create', writes: 1 },
+    ]);
+    delete deps.triggerPreapprovals;
+    delete deps.aiAppNameOf;
+  });
+
   it('joins audit summary, redacted checkpoint approvals, errors, links, real gateway trace, stored verdict, and degraded markers', async () => {
     const errors: RecipeError[] = [
       {

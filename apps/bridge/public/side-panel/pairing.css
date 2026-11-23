@@ -133,6 +133,14 @@
   line-height: 1.45;
 }
 
+/* D-402 slice H1b — a hint under a field (the browser's name). */
+.form-row > .field-hint {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .rx-recovery-words {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

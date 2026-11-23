@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import type { AIOutput, InternalToolRegistry, RecuedServerSignature, ToolEntry } from '@recued/contracts';
 
-import { createChatOrchestrator, type ExecuteChatAiCall } from '../chat-orchestrator.js';
+import { createChatOrchestrator, type ChatAiCallOptions, type ExecuteChatAiCall } from '../chat-orchestrator.js';
 import { wrapRegistryWithToolsSearch } from '../chat-tools-search.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 
@@ -27,9 +27,11 @@ const conversation = (all: ToolEntry[]) => {
   const store = createChatStore(db);
   store.createSession({ id: 's1', now: NOW - 10_000 });
   const packets: Packet[] = [];
+  const callOptions: Array<ChatAiCallOptions | undefined> = [];
   const reply: AIOutput = { response: 'Done.', events: [], tool_calls: [] };
-  const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_manifest, aiInput) => {
+  const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_manifest, aiInput, opts) => {
     packets.push(JSON.parse(aiInput['llm.prompt'] as string) as Packet);
+    callOptions.push(opts);
     return { body: reply };
   });
   const inner: InternalToolRegistry = {
@@ -40,12 +42,13 @@ const conversation = (all: ToolEntry[]) => {
   let reads = 0;
   const orchestrator = createChatOrchestrator({ chatStore: store, registry: wrapRegistryWithToolsSearch(inner, { enabled: true }),
     selfSignature: signature, executeAiCall, now: () => NOW, catalogProjection: { mode: 'lean-core' },
+    namedPagesReadable: async (_session: string, addresses: readonly string[]) => addresses,
     browserBridgeConnected: () => true, tier2OwnerCatalog: () => { reads += 1; return null; } } as never);
   return {
     turn: async (message: string) => {
       reads = 0;
       await orchestrator.runTurn({ session_id: 's1', picker_state: { current: 'self' }, message } as never);
-      return { packet: packets.at(-1)!, reads };
+      return { packet: packets.at(-1)!, reads, callOptions: callOptions.at(-1) };
     },
     close: () => db.close(),
   };
@@ -57,10 +60,11 @@ describe('a turn reads its catalog\'s entries once', () => {
     const http = ['read-web-address', 'get-web-address', 'download-web-file'].map(recipe);
     const c = conversation([...http, recipe('inspect-web-page')]);
     try {
-      const { packet, reads } = await c.turn('What does https://example.com/plans say about the Pro plan?');
+      const { packet, reads, callOptions } = await c.turn('What does https://example.com/plans say about the Pro plan?');
       // The shared entries reached every reader: the HTTP Toolkit is listed in full.
       for (const tool of http) expect(listed(packet, tool.name), tool.name).toHaveProperty('args_schema', tool.arg_schema);
       expect(reads).toBe(1);
+      expect(callOptions?.browser_action_mode).toBe(true);
     } finally { c.close(); }
   });
 
@@ -69,6 +73,7 @@ describe('a turn reads its catalog\'s entries once', () => {
     const c = conversation(all);
     try {
       const first = await c.turn('What does https://example.com/plans say?');
+      expect(first.callOptions?.browser_action_mode).toBeUndefined();
       expect(listed(first.packet, 'recued-core/download-web-file')).toBeUndefined();
       all.push(recipe('download-web-file'));
       const second = await c.turn('And https://example.com/pricing?');

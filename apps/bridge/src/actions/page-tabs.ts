@@ -24,7 +24,7 @@ import type { DocumentScripting } from './reviewed-document.js';
 export interface PageTabsChrome {
   query(opts: { url?: string | string[] }): Promise<Array<{ id?: number; url?: string }>>;
   create(opts: { url: string; active?: boolean }): Promise<{ id?: number }>;
-  get(tabId: number): Promise<{ id?: number; status?: string; url?: string }>;
+  get(tabId: number): Promise<{ id?: number; status?: string; url?: string; pendingUrl?: string }>;
   remove(tabId: number): Promise<void>;
   /** D-335 slice X — an address loaded in a tab, and its reload. Back is the page's own
    *  `history.back()` (`pageGoBack`): Chrome's back skips an entry nobody clicked to, as its back
@@ -42,6 +42,14 @@ export const pageGoBack = (): { going: true } | { nowhere: true } => {
   return { going: true };
 };
 
+const isBackAnswer = (value: unknown): value is ReturnType<typeof pageGoBack> => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const answer = value as Record<string, unknown>;
+  const keys = Object.keys(answer);
+  return keys.length === 1 && (keys[0] === 'going' && answer.going === true
+    || keys[0] === 'nowhere' && answer.nowhere === true);
+};
+
 /** D-335 slice X — how a step moves a tab: to an address, back, or a reload. */
 export type PageMove = { to: 'address'; url: string } | { to: 'back' } | { to: 'reload' };
 
@@ -54,14 +62,29 @@ export interface OpenPage {
   page: string;
   url: string;
   title: string;
+  loading?: boolean;
 }
+
+export interface PageReadiness { domReady?: boolean; previousPage?: string }
 
 /** A page's address and title, unless it is the owner client. Injected, so
  *  self-contained. */
-export const pageIdentity = (): { url: string; title: string } | { blocked: true } =>
-  document.documentElement.hasAttribute('data-recued-owner-surface')
-    ? { blocked: true }
-    : { url: location.href, title: document.title.length > 200 ? `${document.title.slice(0, 200)}…` : document.title };
+export const pageIdentity = (domReady = false, metadata = false): { url: string; title: string; loading?: boolean } | { blocked: true } | { not_ready: true } => {
+  if (metadata && !document.documentElement) return { not_ready: true };
+  if (document.documentElement?.hasAttribute('data-recued-owner-surface')) return { blocked: true };
+  if (domReady && (document.readyState === 'loading' || !document.body)) return { not_ready: true };
+  // interactive precedes deferred/module script completion. The navigation
+  // timing entry establishes DOMContentLoaded without waiting for images or
+  // background network traffic. Existing callers own polling and deadlines.
+  if (domReady && document.readyState !== 'complete') {
+    let parsed = false;
+    try { parsed = performance.getEntriesByType('navigation').some(entry =>
+      (entry as PerformanceNavigationTiming).domContentLoadedEventEnd > 0); } catch { /* Unavailable timing is not readiness evidence. */ }
+    if (!parsed) return { not_ready: true };
+  }
+  return { url: location.href, title: document.title.length > 200 ? `${document.title.slice(0, 200)}…` : document.title,
+    ...((domReady || metadata) && document.readyState !== 'complete' ? { loading: true } : {}) };
+};
 
 /** What `pageIdentity` answered for one tab, or (slice R) one frame of it: its page, or why it has
  *  none. */
@@ -69,23 +92,30 @@ const identify = async (
   scripting: DocumentScripting,
   tab_id: number,
   frame_id?: number,
+  domReady = false,
+  metadata = false,
 ): Promise<OpenPage | 'owner' | 'unreadable'> => {
   let first: { documentId?: string; result: unknown } | undefined;
   try {
     [first] = await scripting.executeScript({ target: { tabId: tab_id, ...(frame_id !== undefined ? { frameIds: [frame_id] } : {}) },
-      func: pageIdentity, args: [] });
+      func: pageIdentity, args: metadata ? [false, true] : domReady ? [true] : [],
+      ...(domReady || metadata ? { injectImmediately: true } : {}) });
   } catch {
     return 'unreadable';
   }
-  const result = first?.result as { blocked?: unknown; url?: unknown; title?: unknown } | undefined;
+  const result = first?.result as { blocked?: unknown; url?: unknown; title?: unknown; loading?: unknown } | undefined;
   if (result?.blocked === true) return 'owner';
   if (typeof first?.documentId !== 'string' || typeof result?.url !== 'string' || typeof result.title !== 'string') {
     return 'unreadable';
   }
-  return { page: formatPageHandle({ tab_id, document_id: first.documentId }), url: result.url, title: result.title };
+  return { page: formatPageHandle({ tab_id, document_id: first.documentId }), url: result.url, title: result.title,
+    ...(result.loading === true ? { loading: true } : {}) };
 };
 
 const error = (code: BridgeErrorCode, message: string): ActionExecutorOutcome => ({ status: 'error', error: { code, message } });
+
+const cancelled = (): ActionExecutorOutcome => ({ status: 'cancelled',
+  error: { code: 'unknown', message: 'bridge: cooperative cancel observed mid-execution' } });
 
 /** D-335 slice R — a frame's address, and whether its page has loaded. Injected, so self-contained. */
 export const documentState = (): { url: string; loaded: boolean } =>
@@ -94,6 +124,8 @@ export const documentState = (): { url: string; loaded: boolean } =>
 /** D-335 slice K — what a step's watch looks for besides the page moving: an unsolved CAPTCHA, the
  *  step's own failure (`fail_when` on the page), and an error message the step led to. */
 export interface StepChecks {
+  domReady?: boolean;
+  ready?: PageWaitCheck;
   challenge?: boolean;
   problems?: PageMessageRules;
   fail?: PageWaitCheck;
@@ -114,7 +146,7 @@ export const troubleOn = async (scripting: DocumentScripting, handle: string, ch
   const run = executeInChromeDocument(scripting);
   const ask = async (func: (...args: any[]) => unknown, args: readonly unknown[]): Promise<unknown> => {
     try {
-      const ran = await run(document, func, args);
+      const ran = await run(document, func, args, ...(checks.domReady || checks.ready ? [{ immediate: true }] : []));
       return ran !== null && ran.document_id === document.document_id ? ran.result : undefined;
     } catch {
       return undefined;
@@ -125,14 +157,22 @@ export const troubleOn = async (scripting: DocumentScripting, handle: string, ch
     const challenge = await ask(pageChallenge, []);
     if (typeof challenge === 'string') found.challenge = challenge;
   }
-  if (checks.fail !== undefined) {
+  const failing = async (): Promise<boolean> => {
     const read = waitCheckOutcome(await ask(checkPageElement, [checks.fail]));
-    if (!('error' in read) && read.met) found.failed = true;
-  }
+    return !('error' in read) && read.met;
+  };
+  if (checks.fail !== undefined && await failing()) found.failed = true;
   if (checks.problems !== undefined) {
     const problem = await ask(pageProblem, [checks.problems]);
     if (typeof problem === 'string') found.problem = problem;
   }
+  // ⛔ The two are asked one after the other, so what the page shows between them is seen by the second
+  // alone: a sign-in's "Wrong password. Try again." is both the step's own `fail_when` and the page's
+  // message, and appearing between the asks it was reported as the message only, the step's own check
+  // lost (a real-Chrome test, red in sweeps now and then). A message found without the step's failure
+  // has the failure asked once more, so the step's own check wins as it does when both show at once
+  // (the wait's loop in the executor does the same).
+  if (found.problem !== undefined && checks.fail !== undefined && found.failed !== true && await failing()) found.failed = true;
   return found;
 };
 
@@ -152,21 +192,19 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
    *  pages themselves, each still on `pattern` when read. A tab that cannot be
    *  read (closed, restricted) or is the owner client is left out, and so is
    *  one on a site the owner listed (`blocked`, slice G): that one is never
-   *  read at all. */
+   *  read at all. Failure to enumerate tabs rejects, rather than claiming an empty list. */
   async listPages(pattern: string, blocked: (url: string) => boolean = () => false):
     Promise<{ tabs: OpenPage[]; truncated: boolean }> {
-    let open: Array<{ id?: number; url?: string }>;
-    try {
-      open = await tabs.query({ url: pattern });
-    } catch {
-      return { tabs: [], truncated: false };
-    }
+    const open = await tabs.query({ url: pattern });
     const pages: OpenPage[] = [];
     for (const tab of open) {
       if (!Number.isSafeInteger(tab.id)) continue;
       if (typeof tab.url === 'string' && blocked(tab.url)) continue;
       if (pages.length === BRIDGE_TABS_MAX) return { tabs: pages, truncated: true };
-      const page = await identify(scripting, tab.id!);
+      // Listing only needs the committed document's identity, even before it
+      // has a body. Do not wait for document_idle (slow subresources can hold
+      // that for seconds), or claim this is an actionable DOM-ready read.
+      const page = await identify(scripting, tab.id!, undefined, false, true);
       if (typeof page === 'object' && isPatternWithinGrantedOrigins(page.url, [pattern]) && !blocked(page.url)) pages.push(page);
     }
     return { tabs: pages, truncated: false };
@@ -176,8 +214,9 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
    *  or replaces a tab they have open, waits up to `waitMs` for it to load,
    *  and answers its page. Only an `http:` or `https:` address on `pattern`;
    *  a page that ends up anywhere else (a redirect), or on a site the owner
-   *  listed (`blocked`, slice G), has its tab closed. */
-  async openPage(url: string, pattern: string, waitMs: number, blocked: (url: string) => boolean = () => false):
+   *  listed (`blocked`, slice G), has its tab closed. Unconfirmed cleanup is uncertain. */
+  async openPage(url: string, pattern: string, waitMs: number, blocked: (url: string) => boolean = () => false,
+    readiness: PageReadiness = {}):
     Promise<ActionExecutorOutcome> {
     let address: URL;
     try {
@@ -195,20 +234,36 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
     try {
       tab_id = (await tabs.create({ url: address.href, active: false })).id;
     } catch {
-      return error('unknown', 'bridge: the browser did not open the tab');
+      return error('delivery_uncertain', 'The browser could not confirm whether the tab opened. List the tabs before opening it again.');
     }
     // From here the address has been asked for.
     const uncertain = (message: string) => error('delivery_uncertain', message);
     if (!Number.isSafeInteger(tab_id)) {
       return uncertain('The browser may have opened the tab without saying which. List the tabs before opening it again.');
     }
+    const close = async (message: string) => {
+      try {
+        await tabs.remove(tab_id!);
+      } catch {
+        return uncertain('The opened page cannot be used by this step, and the browser could not confirm whether its tab closed. '
+          + 'Check the tabs before opening it again.');
+      }
+      return error('tab_navigation_blocked', message);
+    };
     const deadline = Date.now() + waitMs;
     let landed: string | undefined;
     let loaded = false;
+    let readyPage: OpenPage | undefined;
     for (;;) {
       const tab = await tabs.get(tab_id!).catch(() => null);
       if (!tab) return uncertain('The tab closed before its page could be read.');
       landed = tab.url;
+      if (readiness.domReady && typeof landed === 'string' && /^https?:/i.test(landed)
+        && isPatternWithinGrantedOrigins(landed, [pattern]) && !blocked(landed)) {
+        const candidate = await identify(scripting, tab_id!, undefined, true);
+        if (candidate === 'owner') return close('The owner client cannot be automated, so its tab was closed.');
+        if (typeof candidate === 'object' && candidate.url === landed) { readyPage = candidate; loaded = true; break; }
+      }
       if (tab.status === 'complete') {
         loaded = true;
         break;
@@ -216,10 +271,6 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
       if (Date.now() >= deadline) break;
       await sleep(100);
     }
-    const close = async (message: string) => {
-      await tabs.remove(tab_id!).catch(() => undefined);
-      return error('tab_navigation_blocked', message);
-    };
     // A redirect to a site the step may not read: chrome.tabs still names the
     // address the tab landed on, though the page cannot be scripted there. (A
     // tab that has not committed a page yet names `about:blank` or nothing.)
@@ -231,7 +282,7 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
     if (!loaded) {
       return uncertain('The tab opened, but its page had not finished loading. List the tabs, or inspect it, before opening it again.');
     }
-    const page = await identify(scripting, tab_id!);
+    const page = readyPage ?? await identify(scripting, tab_id!, undefined, readiness.domReady);
     if (page === 'owner') return close('The owner client cannot be automated, so its tab was closed.');
     if (page === 'unreadable') {
       return uncertain('The tab opened, but its page could not be read yet. List the tabs, or inspect it, before opening it again.');
@@ -288,6 +339,7 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
     const watching = checks.challenge === true || checks.fail !== undefined || checks.problems !== undefined;
     let started = false;
     let trouble: StepTrouble = {};
+    let readyPage: OpenPage | undefined;
     let askedAt = Date.now();
     for (;;) {
       const tab = await tabs.get(tab_id).catch(() => null);
@@ -299,6 +351,16 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
         break;
       }
       if (Date.now() >= settleBy) break;
+      if (checks.ready && before.page !== undefined) {
+        trouble = await troubleOn(scripting, before.page, checks);
+        if (Object.keys(trouble).length > 0) break;
+        const document = parsePageHandle(before.page);
+        const read = document ? await executeInChromeDocument(scripting)(document, checkPageElement, [checks.ready], { immediate: true }).catch(() => null) : null;
+        if (read?.document_id === document?.document_id) {
+          const state = waitCheckOutcome(read!.result);
+          if (!('error' in state) && state.met && state.url === before.url) break;
+        }
+      }
       if (watching && before.page !== undefined && Date.now() - askedAt >= CHECK_POLL_MS) {
         trouble = await troubleOn(scripting, before.page, checks);
         askedAt = Date.now();
@@ -312,6 +374,18 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
         const tab = await tabs.get(tab_id).catch(() => null);
         if (!tab) return undefined;
         const frame = frame_id === undefined ? null : await inFrame();
+        if (checks.domReady && frame_id === undefined && typeof tab.url === 'string' && /^https?:/i.test(tab.url)
+          && !blocked(tab.url) && isPatternWithinGrantedOrigins(tab.url, [pattern])) {
+          const candidate = await identify(scripting, tab_id, undefined, true);
+          // A SPA may finish its login by changing the URL in the same
+          // document while an unrelated resource keeps the tab loading. Its
+          // committed URL and DOM-ready identity suffice; a pending navigation
+          // must still commit. No form or click is sent again.
+          if (typeof candidate === 'object' && candidate.url === tab.url
+            && (candidate.page !== before.page || candidate.url !== before.url && !tab.pendingUrl)) {
+            readyPage = candidate; break;
+          }
+        }
         // A frame whose page has loaded; else, as a frame that has gone, the tab once it has.
         if (frame !== null ? frame.loaded : tab.status === 'complete') break;
         if (Date.now() >= loadBy) return { moved: true };
@@ -332,7 +406,7 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
       if (!now) return undefined;
       if (typeof now.url === 'string' && /^https?:/i.test(now.url)
         && (blocked(now.url) || !isPatternWithinGrantedOrigins(now.url, [pattern]))) return moved;
-      page = await identify(scripting, tab_id);
+      page = readyPage ?? await identify(scripting, tab_id, undefined, checks.domReady);
     }
     if (typeof page !== 'object' || blocked(page.url) || !isPatternWithinGrantedOrigins(page.url, [pattern])) return moved;
     if (!watching) return { ...moved, ...page };
@@ -346,9 +420,12 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
    *  or reloaded; then answers the page it shows once loaded, as `openPage` does. The tab is the
    *  owner's, so it is never closed here: a page that went on where the step may not read (off
    *  `pattern`, on a site the owner listed, the owner client) is left there, and the answer says
-   *  so. Once the move is asked for, a failure is uncertain, never "not moved". */
+   *  so. Before asking for a move, verify that its current page is not the owner client.
+   *  Once the move is asked for, a failure is uncertain, never "not moved". */
   async movePage(tab_id: number, move: PageMove, pattern: string, waitMs: number,
-    blocked: (url: string) => boolean = () => false): Promise<ActionExecutorOutcome> {
+    blocked: (url: string) => boolean = () => false, readiness: PageReadiness = {},
+    cancel?: { readonly signalled: boolean }): Promise<ActionExecutorOutcome> {
+    if (cancel?.signalled) return cancelled();
     if (move.to === 'address') {
       let address: URL;
       try {
@@ -365,22 +442,33 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
       if (blocked(address.href)) return error('tab_navigation_blocked', 'The owner listed this site as one Recued must never use.');
     }
     const start = await tabs.get(tab_id).catch(() => null);
+    if (cancel?.signalled) return cancelled();
     if (!start) return error('selector_not_found', 'The tab has closed.');
     if ((move.to === 'address' && tabs.update === undefined) || (move.to === 'reload' && tabs.reload === undefined)) {
       return error('unknown', 'bridge: this browser cannot move a tab');
     }
+    const current = await identify(scripting, tab_id);
+    if (cancel?.signalled) return cancelled();
+    if (current === 'owner') return error('tab_navigation_blocked', 'The owner client cannot be automated.');
+    if (current === 'unreadable') return error('tab_navigation_blocked',
+      'The browser could not verify this tab\'s current page. List the tabs before trying again.');
+    const unconfirmed = error('delivery_uncertain',
+      'The browser could not confirm whether the tab moved. List the tabs, or inspect it, before moving it again.');
     try {
       if (move.to === 'address') await tabs.update!(tab_id, { url: move.url });
       else if (move.to === 'reload') await tabs.reload!(tab_id);
       else {
         const [ran] = await scripting.executeScript({ target: { tabId: tab_id }, func: pageGoBack, args: [] });
-        if ((ran?.result as { nowhere?: unknown } | undefined)?.nowhere === true) {
+        if (typeof ran?.documentId !== 'string'
+          || formatPageHandle({ tab_id, document_id: ran.documentId }) !== current.page || !isBackAnswer(ran.result)) {
+          return unconfirmed;
+        }
+        if ('nowhere' in ran.result) {
           return error('unknown', 'The tab has no page to go back to.');
         }
       }
     } catch {
-      return move.to === 'back' ? error('unknown', 'The tab\'s page could not be asked to go back.')
-        : error('unknown', 'bridge: the browser did not move the tab');
+      return unconfirmed;
     }
     // From here the tab may be moving.
     const uncertain = (message: string) => error('delivery_uncertain', message);
@@ -388,11 +476,25 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
     const startBy = Date.now() + MOVE_START_MS;
     let started = false;
     let landed: string | undefined;
+    let readyPage: OpenPage | undefined;
     for (;;) {
       const tab = await tabs.get(tab_id).catch(() => null);
       if (!tab) return uncertain('The tab closed while its page loaded.');
       landed = tab.url;
       if (tab.status === 'loading' || tab.url !== start.url) started = true;
+      if (started && readiness.domReady && typeof landed === 'string' && /^https?:/i.test(landed)
+        && isPatternWithinGrantedOrigins(landed, [pattern]) && !blocked(landed)) {
+        const candidate = await identify(scripting, tab_id, undefined, true);
+        // A reload can still expose its outgoing document while Chrome says loading.
+        // Preflight verified the departure page; the caller's handle can name an older document.
+        // Only the committed replacement, or a genuine same-document URL move, is ready.
+        const sameDocumentMove = move.to !== 'reload' && typeof candidate === 'object'
+          && candidate.url !== start.url && candidate.url.split('#')[0] === start.url?.split('#')[0];
+        if (typeof candidate === 'object' && candidate.url === landed
+          && (candidate.page !== current.page || sameDocumentMove)) {
+          readyPage = candidate; break;
+        }
+      }
       if (started && tab.status === 'complete') break;
       if (!started && Date.now() >= startBy) break;
       if (Date.now() >= deadline) {
@@ -408,10 +510,10 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
     }
     // A page Chrome restores from its back-forward cache says it has loaded a moment before a script
     // can run in it: read again until it can, within the move's own time.
-    let page = await identify(scripting, tab_id);
+    let page = readyPage ?? await identify(scripting, tab_id, undefined, readiness.domReady);
     while (page === 'unreadable' && Date.now() < deadline) {
       await sleep(100);
-      page = await identify(scripting, tab_id);
+      page = await identify(scripting, tab_id, undefined, readiness.domReady);
     }
     if (page === 'owner') return away('the owner client');
     if (page === 'unreadable') return uncertain('The tab moved, but its page could not be read yet. List the tabs, or inspect it.');
@@ -420,14 +522,19 @@ export const chromePageTabs = (tabs: PageTabsChrome, scripting: DocumentScriptin
     return { status: 'ok', outputs: { ...page } };
   },
 
-  /** D-335 slice X — closes the tab `tab_id` names, never the owner client's. */
-  async closePage(tab_id: number): Promise<ActionExecutorOutcome> {
+  /** D-335 slice X — closes the tab `tab_id` names, never the owner client's.
+   *  Refuse when its current page cannot be verified. */
+  async closePage(tab_id: number, cancel?: { readonly signalled: boolean }): Promise<ActionExecutorOutcome> {
+    if (cancel?.signalled) return cancelled();
     const page = await identify(scripting, tab_id);
+    if (cancel?.signalled) return cancelled();
     if (page === 'owner') return error('tab_navigation_blocked', 'The owner client cannot be automated.');
+    if (page === 'unreadable') return error('tab_navigation_blocked',
+      'The browser could not verify this tab\'s current page. List the tabs before trying again.');
     try {
       await tabs.remove(tab_id);
     } catch {
-      return error('selector_not_found', 'The tab had already closed.');
+      return error('delivery_uncertain', 'The browser could not confirm whether the tab closed. List the tabs before trying again.');
     }
     return { status: 'ok', outputs: { closed: true } };
   },

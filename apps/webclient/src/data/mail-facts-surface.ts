@@ -705,9 +705,9 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
   return {
     render: () => `
       <section class="mail-facts" ${MAIL_FACTS_HOST_ATTR}="${view}">
-        <div class="data-contact-toolbar">
+        <header class="mail-facts-header">
           <h2 class="data-section-title">Mail facts</h2>
-        </div>
+        </header>
         ${renderViews()}
         ${view === 'facts'
           ? `<p class="mail-facts-intro">What Recued read from your mail: each fact, the email it came from, and the recipes it started.</p>
@@ -859,12 +859,14 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
 /** The tab's styles, scoped to its host; injected with the Data route's. */
 export const MAIL_FACTS_STYLES = `
 [${MAIL_FACTS_HOST_ATTR}] { min-width: 0; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-header { margin:0 0 12px; min-width:0; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-header > .data-section-title { margin:0; font-size:20px; font-weight:600; line-height:1.2; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-intro { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-filters {
-  display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px;
+  display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; min-width:0; margin:0 0 16px;
 }
-[${MAIL_FACTS_HOST_ATTR}] .mail-facts-filter { display: grid; gap: 2px; font-size: 12px; color: var(--muted); min-width: 0; }
-[${MAIL_FACTS_HOST_ATTR}] .mail-facts-filter select { max-width: 100%; font: inherit; font-size: 13px; color: var(--fg); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-filter { display:grid; gap:6px; min-width:0; font-size:12px; font-weight:600; line-height:1.4; color:var(--muted); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-filter select { box-sizing:border-box; width:100%; min-width:0; max-width:100%; min-height:var(--wc-control-h,44px); padding:0 10px; border:1px solid var(--border-strong); border-radius:var(--wc-radius,9px); font:inherit; font-size:13px; font-weight:400; color:var(--fg); background:var(--surface); }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-email-filter {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; font-size: 13px;
 }
@@ -929,17 +931,22 @@ export const MAIL_FACTS_STYLES = `
 /* A recipe's template, shown and not edited: its rules update with the recipe. */
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-readonly { margin: 0; padding: 0; border: 0; min-width: 0; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-empty { color: var(--muted); max-width: 60ch; }
-[${MAIL_FACTS_HOST_ATTR}] .mail-facts-views { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-views { display:flex; flex-wrap:wrap; gap:6px; min-width:0; margin:0 0 16px; }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-views > .data-button { min-width:0; max-width:100%; min-height:var(--wc-control-h,44px); padding:0 10px; border-radius:var(--wc-radius,9px); font-weight:600; overflow-wrap:anywhere; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-views .data-button[aria-pressed="true"] {
   border-color: var(--accent); color: var(--accent); background: var(--accent-weak);
 }
 ${MAIL_FACT_TEMPLATES_STYLES(MAIL_FACTS_HOST_ATTR)}
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-subjects { margin: 0; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
-  [${MAIL_FACTS_HOST_ATTR}] .mail-facts-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  [${MAIL_FACTS_HOST_ATTR}] .mail-facts-filter select { width: 100%; }
   [${MAIL_FACTS_HOST_ATTR}] .mail-facts-columns { display: none; }
   [${MAIL_FACTS_HOST_ATTR}] .mail-facts-row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   [${MAIL_FACTS_HOST_ATTR}] .mail-facts-cell-label { display: block; }
+}
+@media (max-width:1100px) {
+  [${MAIL_FACTS_HOST_ATTR}] .mail-facts-filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:380px) {
+  [${MAIL_FACTS_HOST_ATTR}] .mail-facts-filters { grid-template-columns:minmax(0,1fr); }
 }
 `;

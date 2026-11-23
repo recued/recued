@@ -10,8 +10,9 @@ describe('TRANSFORMS registry', () => {
   // The count is a deliberate ratchet: an addition must be a decision, not a
   // drift, and this is where it gets noticed.
   // D-325 P39 adds held, transitions, window_change and within_distance; D-339 adds
-  // baseline (a value against its own usual, `series.ts`).
-  it('has 101 transforms', () => expect(TRANSFORMS.size).toBe(101));
+  // baseline (a value against its own usual, `series.ts`) and trend (which way a window goes).
+  // D-402 slice D3 adds url_encode: a setting put into a web address's query.
+  it('has 103 transforms', () => expect(TRANSFORMS.size).toBe(103));
 
   it('all values are functions', () => {
     for (const [name, fn] of TRANSFORMS) {

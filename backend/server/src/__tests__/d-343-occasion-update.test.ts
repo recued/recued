@@ -1,14 +1,15 @@
 /** D-343 slice 1 (ruling 14) — the chat changes an occasion made in Yours through `work.update`:
  *  its title, its date (`on`: a yearly one keeps that month and day, a one-time one moves) or
  *  whether it reminds (`muted`), saved as Yours saves it. Before this, nothing on the chat's side
- *  could change an occasion. A safety, legal or travel clock is not stopped from the chat, and no
- *  contract can grant the change yet, so an AI app is refused.
+ *  could change an occasion. A safety, legal or travel clock is not stopped from the chat. An AI
+ *  app is refused until the owner grants `core.situation.occasion-update` on its contract (D-343
+ *  §355: the grant exists since 2026-11-14).
  *
  *  ⛔ DRIVEN ON THE REAL HISTORY STORE AND HANDLERS; Yours' own save is composed in
  *  `d-325-rule-situations.test.ts`. */
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { tier1CallTitle, type AssetRule, type ExecutionSource, type OccasionInput } from '@recued/contracts';
+import { KERNEL_OP_REGISTRY, grantSwitchText, opGrantEntry, tier1CallTitle, type AssetRule, type ExecutionSource, type OccasionInput } from '@recued/contracts';
 import { buildChatTier1Handlers, checkWorkUpdate, OCCASION_UPDATE_OP_ID, type ChatOccasions, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
@@ -29,6 +30,7 @@ let db: Database.Database;
 beforeEach(() => { db = new Database(':memory:'); });
 afterEach(() => db.close());
 
+let doorGrants: ReadonlySet<string> = new Set();
 const harness = () => {
   const history = createProactiveHistoryStore(db, createProactiveProposalStore(db));
   const saved: ExecutionSource[] = [];
@@ -39,9 +41,9 @@ const harness = () => {
   const deps = {
     getOccasions: () => occasions,
     getWorkEntityCrudDeps: () => ({ store, resolver, dispatchers }),
-    // The owner is unrestricted; a contract grants only what it names, and none names this.
+    // The owner is unrestricted; a contract grants only what it names.
     getOpAdmissionGate: () => ({ isFrozenByPause: () => false,
-      isOpGranted: (source: ExecutionSource, op?: string) => source.channel !== 'mcp' || op !== OCCASION_UPDATE_OP_ID }),
+      isOpGranted: (source: ExecutionSource, op?: string) => source.channel !== 'mcp' || op === undefined || doorGrants.has(op) }),
     now: () => NOW,
   } as unknown as ChatToolHandlerDeps;
   const make = (input: Partial<OccasionInput>) => history.saveOccasion({ title: 'Summer party', month_day: '06-20', people: [], muted: false, rules: [], ...input } as OccasionInput, NOW - 1000);
@@ -80,14 +82,14 @@ describe('D-343 slice 1 — the chat changes an occasion made in Yours', () => {
       when: { kind: 'expiry', field: 'next_on' }, reaction: { notify: true, occurrence: 'notice', emit: false }, schedule: { before: [], on_day: true } };
     const visa = f.make({ title: 'Visa run', rules: [floor] });
     for (const [call, words] of [
-      [{ id: party.id, done: true }, 'an occasion takes `title`, `on` and `muted`, not `done`'],
+      [{ id: party.id, done: true }, 'an occasion takes `title`, `on`, `time`, `alert_minutes_before`, `in_calendar`, `muted`, `private`, `where`, `add_steps` and `no_next`, not `done`'],
       [{ id: party.id, on: '20 June' }, '`on` is a date as YYYY-MM-DD'],
       [{ id: once.id, on: '2026-11-01' }, '“Gran’s visit” happens once, so `on` is today or later'],
       [{ id: party.id, muted: 'yes' }, '`muted` is `true` or `false`'],
       [{ id: visa.id, muted: true }, '“Visa run” keeps a safety, legal or travel reminder, which only the user stops, in Yours'],
       [{ id: party.id, title: ' ' }, "an occasion's `title` is its name, at most 500 characters"],
       [{ id: party.id, on: '2030-06-20' }, '“Summer party” already says that, so nothing would change'],
-      [{ id: party.id }, "send an occasion's new `title`, `on` or `muted`"],
+      [{ id: party.id }, "send an occasion's new `title`, `on`, `muted`, `private`, `where` or `add_steps`"],
       [{ id: 'occasion-none', title: 'x' }, 'there is no occasion `occasion-none`'],
     ] as const) {
       const refused = await checkWorkUpdate(f.deps, { kind: 'occasion', ...call }, inChat) as Refused;
@@ -98,10 +100,21 @@ describe('D-343 slice 1 — the chat changes an occasion made in Yours', () => {
       .toBe('work.update: `on` applies to an occasion only');
     expect(f.saved).toEqual([]);
   });
-  it('is the owner’s own chat’s: no contract grants it yet, so an AI app is refused', async () => {
+  it('an AI app is refused until its contract grants the change, then may make it', async () => {
     const f = harness();
     const party = f.make({});
+    doorGrants = new Set();
     expect(await f.update({ kind: 'occasion', id: party.id, title: 'Summer barbecue' }, overMcp)).toMatchObject({ ok: false, reason: 'classification_blocked' });
     expect(f.history.occasion(party.id)!.title).toBe('Summer party');
+    doorGrants = new Set([OCCASION_UPDATE_OP_ID]);
+    try {
+      expect(await f.update({ kind: 'occasion', id: party.id, title: 'Summer barbecue' }, overMcp)).toMatchObject({ ok: true });
+      expect(f.history.occasion(party.id)!.title).toBe('Summer barbecue');
+    } finally { doorGrants = new Set(); }
+  });
+  it('is a grant the owner can give: a registered write with its switch, off for a door until granted', () => {
+    expect(OCCASION_UPDATE_OP_ID).toBe('core.situation.occasion-update');
+    expect(KERNEL_OP_REGISTRY.find((entry) => entry.op === OCCASION_UPDATE_OP_ID)).toMatchObject({ domain: 'situation', risk: 'write' });
+    expect(grantSwitchText(opGrantEntry(OCCASION_UPDATE_OP_ID))?.title).toBe('Change an occasion');
   });
 });

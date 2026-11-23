@@ -105,6 +105,10 @@ export interface BridgeRpcConn<R extends RpcRegistry = ServerRpcRegistry> {
    *  silently — the pending map's `delete` already cleared the timer,
    *  so no leak. */
   dispatchInbound(message: unknown): void;
+  /** Reject calls awaiting replies from a closed socket with
+   *  'connection_lost': their outcomes are unknown. Clears their timers
+   *  and abort listeners without disposing the conn or replaying calls. */
+  transportDisconnected(): void;
   /** Reject every in-flight caller. Idempotent. Bootstrap calls this
    *  from `stop()` so a teardown doesn't strand callers waiting on
    *  replies that will never arrive. */
@@ -312,6 +316,17 @@ export const createBridgeRpcConn = <R extends RpcRegistry = ServerRpcRegistry>(
     call,
     dispatchInbound,
     pendingCount: () => pending.size(),
+    transportDisconnected: () => {
+      for (const entry of [...pending.values()]) {
+        pending.delete(entry.request_id);
+        entry.reject(new RpcError(
+          'connection_lost',
+          `bridge rpc: connection lost while '${entry.method}' was awaiting a reply; its outcome is unknown`,
+          undefined,
+          entry.method,
+        ));
+      }
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true;

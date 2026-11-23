@@ -1,3 +1,4 @@
+import { NoteEditConflictError, noteEditRevision } from './note-edit-revision.js';
 /** D-145 PA3 — Kernel CRUD ingredient dispatcher composition.
  *
  *  Server-side handler factory for the 14 work-entity write
@@ -1638,9 +1639,19 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     /** Remove the due date. `due_at: null` cannot say it — for a task, `null`
      *  means "not given" (see the patch-or-preserve note below). */
     clear_due_at?: boolean;
+    clear_parent_project?: boolean;
+    clear_assigned_contact?: boolean;
   }): Promise<{ task: Task }> => {
     input = withDateInputs(input, ['due_at', 'completed_at']);
     const clearDue = input.clear_due_at === true;
+    const clearProject = input.clear_parent_project === true;
+    const clearContact = input.clear_assigned_contact === true;
+    if (clearContact && input.assigned_contact_id != null) {
+      throw new WorkEntityValidationError('send assigned_contact_id or clear_assigned_contact, not both', 'clear_assigned_contact');
+    }
+    if (clearProject && input.parent_project_id != null) {
+      throw new WorkEntityValidationError('send parent_project_id or clear_parent_project, not both', 'clear_parent_project');
+    }
     if (clearDue && input.due_at != null) {
       throw new WorkEntityValidationError('send due_at or clear_due_at, not both', 'clear_due_at');
     }
@@ -1649,6 +1660,12 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     // one: a recipe's unset input would remove a partner's deadline.
     const dueForSource = clearDue ? null : (input.due_at ?? undefined);
     const readThrough = resolveReadThroughWriteTarget(deps, 'task', input.id);
+    if (readThrough !== null && clearContact) {
+      throw new WorkEntityValidationError('An assigned contact cannot be removed from a read-through task.', 'clear_assigned_contact');
+    }
+    if (readThrough !== null && clearProject) {
+      throw new WorkEntityValidationError('A project link cannot be removed from a read-through task.', 'clear_parent_project');
+    }
     if (readThrough !== null) {
       const projected = await dispatchReadThroughVendorWrite(
         deps,
@@ -1741,19 +1758,21 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     else if (existing.progress !== undefined) writeInput.progress = existing.progress;
     writeInput.done = existing.done;
     if (existing.completed_at !== undefined) writeInput.completed_at = existing.completed_at;
-    if (input.assigned_contact_id != null) writeInput.assigned_contact_id = input.assigned_contact_id;
-    else if (existing.assigned_contact_id !== undefined) writeInput.assigned_contact_id = existing.assigned_contact_id;
+    if (!clearContact) {
+      if (input.assigned_contact_id != null) writeInput.assigned_contact_id = input.assigned_contact_id;
+      else if (existing.assigned_contact_id !== undefined) writeInput.assigned_contact_id = existing.assigned_contact_id;
+    }
     if (input.parent_calendar_event_id != null) writeInput.parent_calendar_event_id = input.parent_calendar_event_id;
     else if (existing.parent_calendar_event_id !== undefined) writeInput.parent_calendar_event_id = existing.parent_calendar_event_id;
     if (input.linked_mail_thread_id != null) writeInput.linked_mail_thread_id = input.linked_mail_thread_id;
     else if (existing.linked_mail_thread_id !== undefined) writeInput.linked_mail_thread_id = existing.linked_mail_thread_id;
-    if (input.parent_project_id != null) {
+    if (!clearProject && input.parent_project_id != null) {
       writeInput.parent_project_id = resolveWorkEntityInputId(
         deps,
         'project',
         input.parent_project_id,
       );
-    } else if (existing.parent_project_id !== undefined) {
+    } else if (!clearProject && existing.parent_project_id !== undefined) {
       writeInput.parent_project_id = existing.parent_project_id;
     }
     writeInput.blocks_task_ids = input.blocks_task_ids?.map((id) =>
@@ -2114,6 +2133,7 @@ const noteCreate = (deps: WorkEntityIngredientDeps) =>
 const noteUpdate = (deps: WorkEntityIngredientDeps) =>
   async (input: {
     id: string;
+    expected_revision?: string;
     body?: string;
     title?: string;
     related_contact_ids?: readonly string[];
@@ -2127,7 +2147,9 @@ const noteUpdate = (deps: WorkEntityIngredientDeps) =>
     if (input.body !== undefined && (typeof input.body !== 'string' || input.body.length === 0)) {
       throw new WorkEntityValidationError('body is required', 'body');
     }
+    if (input.expected_revision !== undefined && (typeof input.expected_revision !== 'string' || !/^[a-f0-9]{64}$/u.test(input.expected_revision))) throw new WorkEntityValidationError('Invalid note edit revision.', 'expected_revision');
     const readThrough = resolveReadThroughWriteTarget(deps, 'note', input.id);
+    if (readThrough !== null && input.expected_revision !== undefined) throw new WorkEntityValidationError('This note source cannot apply a conditional edit.', 'expected_revision');
     if (readThrough !== null) {
       const projected = await dispatchReadThroughVendorWrite(
         deps,
@@ -2164,6 +2186,7 @@ const noteUpdate = (deps: WorkEntityIngredientDeps) =>
     const localId = resolveWorkEntityInputId(deps, 'note', input.id);
     const existing = deps.store.readNote(localId);
     if (!existing) throw new WorkEntityNotFoundError('note', input.id);
+    if (input.expected_revision !== undefined && noteEditRevision(existing) !== input.expected_revision) throw new NoteEditConflictError();
     const sourceReg = deps.store.getSource(existing.source_id);
     // Phase 1 BEFORE the local write — a structurally-unpushable
     // Source refuses here (no silent local edit); a vendor-relevant
@@ -2178,6 +2201,7 @@ const noteUpdate = (deps: WorkEntityIngredientDeps) =>
     // Note `last_user_action_at` advances on explicit edits per § A.1.2.
     const writeInput: NoteWriteInput = {
       id: existing.id,
+      ...(input.expected_revision !== undefined ? { expected_revision: input.expected_revision } : {}),
       body: input.body ?? existing.body,
       source_id: existing.source_id,
       created_at: existing.created_at,

@@ -160,6 +160,7 @@ const fakeSessionGrantResolver = (): FakeSessionGrantResolver => ({
   claimBatchMember: vi.fn<SessionGrantResolver['claimBatchMember']>(() => false),
   mintBatch: vi.fn<SessionGrantResolver['mintBatch']>(() => 'batch-grant-1'),
   mintRawOp: vi.fn<SessionGrantResolver['mintRawOp']>(() => undefined),
+  mintKind: vi.fn<SessionGrantResolver['mintKind']>(() => undefined),
   mint: vi.fn<SessionGrantResolver['mint']>(() => undefined),
 });
 

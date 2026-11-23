@@ -21,6 +21,7 @@ import {
   isCatalogForm,
   isCliFailureDetail,
   isProgramSwitchDetail,
+  readBrowserFailure,
   isContainerPickDetail,
   isCreatePlanDetail,
   isPeerAnswerRequiredSignal,
@@ -91,8 +92,68 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     );
   }
 
+  // D-201 Slice 10N — the gated step's value from the run a restart stopped
+  // after the step had already returned. It replaces the step's call below.
+  const resumingPhase = (ctx.executionPhase ?? 'sequential') === (ctx.resumeFrom?.execution_phase ?? 'sequential');
+  const gatedHere = resumingPhase && ctx.resumeFrom?.gated_step_id === id;
+  // D-201 Slice 10R — and each step after it that had finished before the same
+  // stop comes out as it did then, so nothing the stopped run sent is sent
+  // again. Its `skip_when` was answered then and is not asked again: a step
+  // that ran stands in with its value, a skipped one stays skipped.
+  const replayedLater = resumingPhase && !gatedHere
+    ? ctx.resumeFrom?.replayed_steps?.find((entry) => entry.step_id === id)
+    : undefined;
+  if (replayedLater?.skipped === true) {
+    setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
+    return {
+      id, type, skipped: true,
+      skip_reason: 'skipped before the server restarted',
+      result: null, error: null, duration_ms: Date.now() - start,
+    };
+  }
+  // D-201 Slice 10BU (10BS finding 2) — and the approved step, skipped before
+  // the same stop (at the answer), stays skipped: a loop was replayed as one
+  // that ran, its `stop_when` read over the null the skip left, and a plain
+  // step's filter was read again over what had changed since.
+  if (gatedHere && ctx.resumeFrom?.replayed_result?.skipped === true) {
+    setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
+    return {
+      id, type, skipped: true,
+      skip_reason: 'skipped before the server restarted',
+      result: null, error: null, duration_ms: Date.now() - start,
+    };
+  }
+  const replayed = gatedHere
+    ? ctx.resumeFrom!.replayed_result
+    : replayedLater !== undefined ? { value: replayedLater.value } : undefined;
+
   const foreachRef = (step as unknown as { foreach?: unknown }).foreach;
-  if (foreachRef !== undefined && foreachRef !== null) {
+  // D-201 Slice 10BH (the owner's call, 2026-11-21) — an approved loop that
+  // finished stands in as it came out, as a later loop that finished does: its
+  // value holds each item's result, which its receipt was settled from, so the
+  // try again goes on past it and only the step in doubt runs twice. A loop
+  // resumed mid-way, or bound to an egress budget or a resource review, is
+  // still refused: its value would claim items the host does not hold.
+  // D-201 Slice 10BN (10BM finding 3) — one whose filter skipped the items
+  // before its ask was asked for from its first item that ran.
+  const resumedMidLoop = ctx.resumeFrom?.foreach_progress !== undefined
+    && !loopAskedBeforeAnyItemRan(ctx.resumeFrom.foreach_progress);
+  if (gatedHere && replayed !== undefined && foreachRef !== undefined && foreachRef !== null
+    && (resumedMidLoop || ctx.resumeFrom?.egress_bound !== undefined
+      || ctx.resumeFrom?.resource_review !== undefined)) {
+    throw new Error(
+      `step '${id}' is a foreach: a recorded value cannot stand in for its items`,
+    );
+  }
+  // D-201 Slice 10BN (10BM finding 1) — a loop that finished stands in as
+  // `runForeach` returned it, the approved loop and a later one alike. Down a
+  // plain step's path its items' `skip_when` and `fail_on` were read once with
+  // no item: a filter on its items read it as skipped, its value null, so the
+  // steps that read it failed, and a per-item `fail_on` failed the run.
+  if (foreachRef !== undefined && foreachRef !== null && replayed !== undefined) {
+    return replayedLoop(step, ctx, type, start, replayed.value);
+  }
+  if (foreachRef !== undefined && foreachRef !== null && replayed === undefined) {
     // ⛔⛔ A `skip_when` ON A FOREACH STEP MEANS ONE OF TWO THINGS, and which one
     // is decided by whether it mentions `{{item.*}}`.
     //
@@ -139,8 +200,11 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     } catch { /* best-effort pre-fetch */ }
   }
 
-  // skip_when check
-  if (step.skip_when && evaluateCondition(step.skip_when, ctx.stores)) {
+  // skip_when check. A replayed step's was answered before the stop, a later
+  // step's and the approved step's alike. D-201 Slice 10BZ (10BX finding 6) —
+  // read again over what had changed since, it skipped a plain approved step
+  // that ran, and the steps after it read null in place of the value it kept.
+  if (step.skip_when && replayed === undefined && evaluateCondition(step.skip_when, ctx.stores)) {
     setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
     return {
       id, type, skipped: true,
@@ -152,7 +216,9 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
   try {
     // `await` tolerates non-Promise values, so sync transforms pass
     // through unchanged. D-116 `wait` is the first async transform.
-    const result = type === 'transform' ? await runTransform(step, ctx)
+    // A replayed value is what the step already returned: nothing is sent.
+    const result = replayed !== undefined ? replayed.value
+      : type === 'transform' ? await runTransform(step, ctx)
       : type === 'ingredient' ? await runIngredient(step, ctx)
       : type === 'guard' ? runGuard(step, ctx)
       : null;
@@ -355,13 +421,15 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     // code only with its bounded diagnostic attached, and a generic passthrough
     // would silently promote a bare `code` that failed that validation.
     //
-    // ⛔ THE CODE ONLY — `details` stays dropped, deliberately. Adapter details
+    // ⛔ THE CODE ONLY — arbitrary `details` stays dropped. Adapter details
     // carry values: `MAIL_SEND_SELF_LOOP_TO` attaches `{ account_email,
     // offending }`, both real addresses. The four carriers above are bounded,
     // reviewed shapes; `IngredientError.details` is `Record<string, unknown>`
     // from 41 throw sites, so admitting it wholesale would push unreviewed PII
     // into audit rows and onto model-bound cards. A code is a closed vocabulary
-    // and safe to render; its details are not.
+    // and safe to render; its details are not. Browser corrections and the
+    // bounded post-action read use a separate, validated `browser_failure`
+    // carrier below; this does not admit the adapter's other details.
     //
     // A server handler behind a kernel op refuses with an rpc code and, most
     // often, an HTTP-like status, and a Records store refuses with a `records_*`
@@ -371,6 +439,7 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     // cannot drift from this one again.
     const adapterCode: RecipeErrorCode | undefined =
       type !== 'transform' ? adapterErrorCode(e) : undefined;
+    const browserFailure = type === 'ingredient' ? readBrowserFailure(e) : undefined;
     const code: RecipeErrorCode = cliFailure
       ? cliFailureErrorCode(cliFailure.reason)
       : containerPick
@@ -383,6 +452,7 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
               ? 'TRANSFORM_ERROR'
               : adapterCode ?? 'NETWORK_ERROR';
     const details: Record<string, unknown> = {
+      ...browserFailure?.details,
       ...(heavyOp !== undefined ? { heavy_op: heavyOp } : {}),
       ...(slotCancelled ? { slot_cancelled: true } : {}),
       ...(cliFailure ? { cli_failure: cliFailure } : {}),
@@ -402,12 +472,63 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       ctx, id, code, msg,
       Object.keys(details).length > 0 ? details : undefined,
       cliFailure?.slug
+        ?? browserFailure?.slug
         ?? (modelRefused ? modelRefusalSlug : undefined)
         ?? null,
     );
     setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
     return { id, type, skipped: false, result: null, error, duration_ms: Date.now() - start };
   }
+};
+
+/** D-201 Slice 10BN (10BM finding 3) — a gate raised in a loop before any of
+ *  its items ran: none reached, or each one before the ask skipped by the
+ *  loop's own filter, which crosses no boundary (`ForeachCheckpointResult.skipped`).
+ *  Such a loop was asked for from its first item that ran, so once it finished
+ *  its value is the whole loop and can stand in for it. One an earlier item of
+ *  which ran was resumed mid-way: its value holds what an earlier segment did.
+ *  The server's stop reads a loop's progress the same way. */
+export const loopAskedBeforeAnyItemRan = (progress: ForeachCheckpointProgress): boolean => {
+  const results: readonly unknown[] = Array.isArray(progress.results) ? progress.results : [];
+  return progress.next_index === results.length
+    && results.every((entry) => entry !== null && typeof entry === 'object'
+      && (entry as { ok?: unknown }).ok === true && (entry as { skipped?: unknown }).skipped === true);
+};
+
+/** D-201 Slice 10BN (10BM finding 1) — a loop that finished, standing in as
+ *  `runForeach` returned it: its value, the tally its receipt reads, and its
+ *  `stop_when`, read once over the whole value as after the loop. Its items'
+ *  `skip_when` and `fail_on` were read item by item before the stop and are
+ *  not read again. A loop emits no links, so none here either. */
+const replayedLoop = (
+  step: RecipeStep,
+  ctx: ExecutionContext,
+  type: StepLog['type'],
+  start: number,
+  value: unknown,
+): StepLog => {
+  throwIfRunKilled(ctx);
+  setNamespaceValue(ctx.stores.step as Record<string, unknown>, step.id, value);
+  trackContextSize(ctx, value);
+  const entries: readonly unknown[] | undefined = Array.isArray(value) ? value : undefined;
+  const log: StepLog = {
+    id: step.id,
+    type,
+    skipped: false,
+    result: value,
+    error: null,
+    duration_ms: Date.now() - start,
+    ...(entries !== undefined
+      ? {
+        foreach: {
+          items: entries.length,
+          failed: entries.filter((entry) => !(entry !== null && typeof entry === 'object'
+            && (entry as { ok?: unknown }).ok === true)).length,
+        },
+      }
+      : {}),
+  };
+  return stopsRun(step, ctx) ? { ...log, stopped: true } : log;
 };
 
 /** Iterate the step body over the resolved `foreach` array, collecting
@@ -532,6 +653,8 @@ const runForeach = async (
       const previousAddressing = ctx.preapprovalAddressing;
       if (previousAddressing) ctx.preapprovalAddressing = { ...previousAddressing,
         iteration_indices: [...previousAddressing.iteration_indices, index] };
+      const previousTurns = ctx.foreachIndices;
+      ctx.foreachIndices = [...(previousTurns ?? []), index];
       try {
         const log = await runStep(innerStep, ctx);
         if (log.error) {
@@ -568,6 +691,8 @@ const runForeach = async (
         });
       } finally {
         if (previousAddressing) ctx.preapprovalAddressing = previousAddressing;
+        if (previousTurns === undefined) delete ctx.foreachIndices;
+        else ctx.foreachIndices = previousTurns;
       }
       // An ordinary foreach gate approves the remaining same-target aggregate,
       // so its resume marker remains available to later iterations. A chunked
@@ -578,9 +703,10 @@ const runForeach = async (
       // whole marker is intentional: edits/grants/claims were approved for the
       // same item and must not leak forward either. Engine phase selection was
       // already fixed before this loop, and PII ledgers were hydrated at entry.
+      // D-402 slice C — and a trial of a draft asks before every change, each item's included.
       if (
         resumingThisStep && ctx.resumeFrom?.gated_step_id === id
-        && (ctx.resumeFrom.egress_bound !== undefined || ctx.resumeFrom.resource_review !== undefined)
+        && (ctx.resumeFrom.egress_bound !== undefined || ctx.resumeFrom.resource_review !== undefined || ctx.trial === true)
       ) {
         ctx.resumeFrom = undefined;
       }
@@ -994,6 +1120,8 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   if (ctx.preapprovalAddressing) stepMeta.invocation_path = preapprovalStepPath(
     ctx.preapprovalAddressing.recipe_path, ctx.preapprovalAddressing.phase,
     stepMeta.step_id, ctx.preapprovalAddressing.iteration_indices);
+  // D-402 slice D5b — which turn of each loop this is, so its Bridge commands are its own.
+  if (ctx.foreachIndices !== undefined && ctx.foreachIndices.length > 0) stepMeta.iteration_indices = [...ctx.foreachIndices];
 
   // D-165 P0 — catalog-form routing. When the resolved manifest carries a
   // non-empty `operations` map, the call dispatches through the D-157
@@ -1309,7 +1437,9 @@ const failReasonOf = (step: RecipeStep): string | undefined => {
 const runGuard = (step: RecipeStep, ctx: ExecutionContext): null => {
   const s = step as Record<string, unknown>;
   if (evaluateCondition(s.guard as string, ctx.stores)) {
-    throw Object.assign(new Error(failReasonOf(step) ?? 'Guard triggered'), { code: 'RECIPE_GUARD_TRIGGERED' });
+    // D-402 slice E4 — a hand-off's own code: a failure the owner of an unattended run hears of.
+    throw Object.assign(new Error(failReasonOf(step) ?? 'Guard triggered'),
+      { code: s.hand_off === true ? 'RECIPE_HAND_OFF' : 'RECIPE_GUARD_TRIGGERED' });
   }
   return null;
 };

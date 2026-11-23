@@ -84,7 +84,9 @@ export const createOrdinaryLocalMutations = (db: Database.Database, now: () => n
           commit_id: 'c-' + randomUUID(), kind: 'action', ingredient: call.slug, tool: call.operation,
           // Records does not traverse the ingredient Commit gateway. Its exact
           // private values remain in the existing review, not this audit log.
-          args: {}, idempotency_key: randomUUID(), dispatched_at: now() });
+          args: {}, idempotency_key: randomUUID(), dispatched_at: now(),
+          // D-348 — the request's rule that let it through, for an undo of it to end.
+          ...(call.chain_rule_id !== undefined ? { chain_rule: { id: call.chain_rule_id } } : {}) });
         if (pending.preapproval || pending.request_id !== options.identity.request_id
           || pending.ingredient !== call.slug || localMutationHash(pending.source) !== localMutationHash(options.identity.source)) {
           throw new Error('The local Commit does not preserve its original execution source.');

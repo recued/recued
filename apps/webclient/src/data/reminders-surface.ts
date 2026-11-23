@@ -32,12 +32,20 @@ import {
   type ReminderUpdateResult,
   type ReminderView,
   type ReminderListRequest, type ReminderListPageInput, type ReminderListCursor, type ReminderCreateResult,
+  type ReminderSearchStatus, isReminderState, type ReminderCreateRequest, type ReminderRecordReference, type WorkEntityGetRpcResponse,
+  type ReminderMailReference, type MailMessageSnapshot, sameReminderMailReference,
+  readReminderRecordReference, sameReminderRecordReference,
 } from '@recued/contracts';
 import { e, stampZone } from '@recued/ui-shared';
 
-import { reminderWallClockValue } from '../reminders/reminder-time.js';
+import { reminderWallClockValue, reminderTimePreset, formatReminderTimePreview, REMINDER_TIME_PRESETS, type ReminderTimePreset } from '../reminders/reminder-time.js';
 import { mountReminderCreateForm } from '../reminders/reminder-create-form.js';
+import { renderReminderRecoveries } from '../reminders/reminder-recovery-view.js';
+import type { ReminderDraftEntry, ReminderRecoveryStore } from '../reminders/reminder-draft-recovery.js';
+import { createReminderTriage, type ReminderTriageCallers } from '../reminders/reminder-triage.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { REMINDER_STATUS_LABELS, validateReminderSearchPage } from '../reminders/reminder-search.js';
+import { matchesReminderRecord } from './work-reminder.js';
 
 export const REMINDERS_HOST_ATTR = 'data-recued-reminders';
 export const REMINDERS_FOCUS_ATTR = 'data-recued-reminders-focus';
@@ -47,18 +55,22 @@ export const REMINDERS_FIELD_ATTR = 'data-recued-reminders-field';
 export const REMINDERS_ACTION_PREFIX = 'reminders-';
 
 /** Every reminder rpc the tab calls; an absent one hides what needs it. */
-export interface ReminderCallers {
+export interface ReminderCallers extends ReminderTriageCallers {
   readonly get?: (args: { reminder_id: string }) => Promise<ReminderGetResult>;
   readonly list?: (args: ReminderListRequest) => Promise<ReminderListResult>;
-  readonly create?: (args: { text: string; at: number; creation_id: string }) => Promise<ReminderCreateResult>;
+  readonly create?: (args: ReminderCreateRequest) => Promise<ReminderCreateResult>;
   readonly update?: (args: { reminder_id: string; at?: number; text?: string }) => Promise<ReminderUpdateResult>;
   readonly cancel?: (args: { reminder_id: string }) => Promise<ReminderCancelResult>;
 }
 
 export interface RemindersSurfaceDeps {
   readonly callers: ReminderCallers;
+  readonly recovery?: ReminderRecoveryStore;
+  readonly recoveryList?: boolean;
   readonly initialId?: string;
   readonly onAddressChange?: () => void;
+  readonly onBack?: () => boolean;
+  readonly backLabel?: () => string;
   /** The Data route's action attribute: clicks are dispatched by it. */
   readonly actionAttr: string;
   /** Repaint the route. */
@@ -67,10 +79,17 @@ export interface RemindersSurfaceDeps {
   readonly browserZone?: () => string;
   readonly timeZone?: () => string | undefined;
   readonly now?: () => number;
+  readonly readRecord?: (ref: ReminderRecordReference) => Promise<WorkEntityGetRpcResponse>;
+  readonly openRecord?: (response: WorkEntityGetRpcResponse) => void;
+  readonly readMail?: (ref: ReminderMailReference) => Promise<MailMessageSnapshot>;
+  readonly openMail?: (message: MailMessageSnapshot, ref: ReminderMailReference) => void | Promise<void>;
+  readonly isActive?: () => boolean;
 }
 
 export interface RemindersSurface {
   render(): string;
+  resumeDraft(id: string, target: HTMLElement, expected?: ReminderDraftEntry): boolean;
+  showRecoveryNotice(message: string): void;
   /** Keep the list state beneath the addressed reminder. False when a draft or write blocks navigation. */
   open(id: string | null, syncAddress?: boolean): boolean;
   detailId(): string | undefined;
@@ -91,7 +110,8 @@ export interface RemindersSurface {
   beforeLeave(): boolean;
   whenLoaded(): Promise<void>;
   captureFocus(active: Element | null | undefined): string | null;
-  restoreFocus(root: ParentNode, key: string | null): void;
+  /** True when the action moved focus and its target should be revealed after scroll restoration. */
+  restoreFocus(root: ParentNode, key: string | null): boolean | void;
   dispose(): void;
 }
 
@@ -110,7 +130,8 @@ interface State {
   loading: boolean;
   error: string | null;
   /** The original values keep a wording edit from re-rounding its instant. */
-  editing: { id: string; value: string; text: string; initialValue: string; initialText: string; zone: string;
+  editing: { id: string; value: string; text: string; initialValue: string; initialAt: number; initialText: string; zone: string;
+    choice?: { preset: ReminderTimePreset; at: number };
     error: string | null; errorField?: 'at' | 'text' } | null;
   /** The reminder whose cancel waits for "Cancel it". */
   confirming: string | null;
@@ -130,7 +151,7 @@ interface State {
   creating: boolean;
 }
 
-interface ReminderFilters { query: string; range: 'all' | 'today' | 'week' | 'custom'; from: string; through: string }
+interface ReminderFilters { query: string; status: ReminderSearchStatus; range: 'all' | 'today' | 'week' | 'custom'; from: string; through: string }
 const PAGE_SIZE = 50;
 
 export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSurface => {
@@ -151,7 +172,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   };
   const initialFilters = (): ReminderFilters => {
     const today = day(now(), filterZone());
-    return { query: '', range: 'all', from: today, through: nextDay(today, 6) };
+    return { query: '', status: 'pending', range: 'all', from: today, through: nextDay(today, 6) };
   };
   let state: State = {
     detail: deps.initialId ? { id: deps.initialId, reminder: null, loaded: false, loading: false, error: null } : null,
@@ -163,18 +184,26 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   let pending: Promise<void> = Promise.resolve();
   let detailPending: Promise<void> = Promise.resolve();
   let detailSeq = 0;
+  let linkedRecordRead = 0;
+  let linkedRecordBusy = false;
+  let linkedRecordError: string | undefined;
   let listNeedsRefresh = false;
+  let loadedGoal = PAGE_SIZE;
   let pageQuery: ReminderListPageInput = {};
   let createHost: HTMLElement | null = null;
   let createForm: ReturnType<typeof mountReminderCreateForm> | undefined;
+  let recoveryDiscard: string | undefined, recoveryError = '';
   let createFocus: HTMLElement | null = null;
+  let createReturnFocus = 'create';
+  let again: { id: string; detail: string | null; notice: NonNullable<State['notice']> } | null = null;
+  let againPending = Promise.resolve();
   let seq = 0;
   let disposed = false;
   let pendingFocus: {
     key: string;
     /** An asynchronous reply may redirect only the focus its action owns. */
     from?: readonly string[];
-    fallback?: string;
+    fallback?: string | readonly string[];
   } | null = null;
 
   const filterQuery = (): ReminderListPageInput => {
@@ -189,11 +218,13 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       before = zonedWallClockToEpochMs(nextDay(last, 1), zone) ?? undefined;
       if (from === undefined || before === undefined || from >= before) throw new Error('Choose valid dates with the last day on or after the first.');
     }
-    return { ...(query ? { query } : {}), ...(from !== undefined ? { from } : {}), ...(before !== undefined ? { before } : {}) };
+    return { ...(query ? { query } : {}), ...(filters.status !== 'pending' ? { state: filters.status } : {}),
+      ...(from !== undefined ? { from } : {}), ...(before !== undefined ? { before } : {}) };
   };
   const matches = (row: ReminderView): boolean => {
     const q = pageQuery;
-    return (!q.query || row.text.normalize('NFKC').toLowerCase().includes(q.query.normalize('NFKC').toLowerCase()))
+    return ((q.state ?? 'pending') === 'all' || row.state === (q.state ?? 'pending'))
+      && (!q.query || row.text.normalize('NFKC').toLowerCase().includes(q.query.normalize('NFKC').toLowerCase()))
       && (q.from === undefined || row.at >= q.from) && (q.before === undefined || row.at < q.before);
   };
   const read = async (silent: boolean, append = false): Promise<void> => {
@@ -205,7 +236,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     const mine = ++seq;
     const existing = state.reminders;
     const rows = new Map((append ? existing : []).map(row => [row.reminder_id, row]));
-    const goal = append ? existing.length + PAGE_SIZE : Math.max(PAGE_SIZE, existing.length);
+    const goal = append ? Math.max(loadedGoal, existing.length) + PAGE_SIZE : Math.max(loadedGoal, existing.length);
     let cursor = append ? state.nextCursor : undefined;
     let latest: ReminderListResult | undefined, delivered = state.delivered;
     state = { ...state, loading: !append, moreLoading: append, moreError: null, filterError: null,
@@ -217,6 +248,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         const out = await callers.list({ include_delivered: includeHistory, limit: Math.min(PAGE_SIZE, goal - rows.size),
           page: { ...query, ...(cursor ? { cursor } : {}) } });
         if (disposed || mine !== seq) return;
+        if (query.state) validateReminderSearchPage(out, { ...query, state: query.state, ...(cursor ? { cursor } : {}) });
         if (!Array.isArray(out.reminders) || !Number.isSafeInteger(out.count) || out.count < 0) throw new Error('The reminder list could not be confirmed. Try again.');
         if (!out.page && (query.query || query.from !== undefined || query.before !== undefined || cursor))
           throw new Error('This server cannot search or page reminders yet. Update the server, then retry.');
@@ -240,7 +272,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       const canEdit = editing !== null && reminders.some(row => row.reminder_id === editing.id && row.state === 'pending' && row.managed_by !== 'clock');
       const retired = editing !== null && !canEdit;
       const finished = retired ? delivered.find(row => row.reminder_id === editing.id) : undefined;
-      pageQuery = query;
+      pageQuery = query; loadedGoal = goal;
       listNeedsRefresh = false;
       state = { ...state, reminders, delivered, count: latest.count, matchedCount: latest.page?.matched_count ?? latest.count,
         nextCursor: latest.page?.next_cursor ?? null, paging: latest.page !== undefined,
@@ -286,7 +318,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       const listed = state.reminders.find(item => item.reminder_id === detail.id);
       // A notification can reveal a row that rang while this list was retained.
       // Keep the pages beneath it, then reconcile them on return.
-      if (listed && (!row || row.state !== 'pending' || row.text !== listed.text || row.at !== listed.at
+      if (listed && (!row || row.state !== listed.state || row.text !== listed.text || row.at !== listed.at
         || row.managed_by !== listed.managed_by)) listNeedsRefresh = true;
       const retired = state.editing !== null && (row === null || row.state !== 'pending' || row.managed_by === 'clock');
       state = { ...state, detail: { id: detail.id, reminder: row, loaded: true, loading: false, error: null },
@@ -310,20 +342,25 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   const confirmedState = (id: string, reminder: ReminderView | undefined, retired: boolean): Pick<State, 'detail' | 'reminders' | 'delivered' | 'count' | 'matchedCount'> => ({
     detail: state.detail?.id === id ? { ...state.detail, reminder: reminder ?? (retired ? null : state.detail.reminder),
       loaded: true, loading: false, error: null } : state.detail,
-    reminders: [...(retired || reminder && !matches(reminder) ? state.reminders.filter(row => row.reminder_id !== id)
+    reminders: [...(retired && !reminder || reminder && !matches(reminder) ? state.reminders.filter(row => row.reminder_id !== id)
       : reminder ? state.reminders.map(row => row.reminder_id === id ? reminder : row) : state.reminders)]
       .sort((a, b) => a.at - b.at || a.reminder_id.localeCompare(b.reminder_id)),
     delivered: reminder && reminder.state !== 'pending'
       ? [reminder, ...state.delivered.filter(row => row.reminder_id !== id)] : state.delivered,
     count: Math.max(0, state.count - (retired && state.reminders.some(row => row.reminder_id === id) ? 1 : 0)),
-    matchedCount: Math.max(0, state.matchedCount - ((retired || reminder && !matches(reminder)) && state.reminders.some(row => row.reminder_id === id) ? 1 : 0)),
+    matchedCount: Math.max(0, state.matchedCount - ((retired && !reminder || reminder && !matches(reminder)) && state.reminders.some(row => row.reminder_id === id) ? 1 : 0)),
   });
 
   const dirtyEdit = (): boolean => state.editing !== null
-    && (state.editing.value !== state.editing.initialValue || state.editing.text !== state.editing.initialText);
+    && (state.editing.value !== state.editing.initialValue || state.editing.text !== state.editing.initialText
+      || state.editing.choice !== undefined && state.editing.choice.at !== state.editing.initialAt);
+  const retireAgain = (): void => {
+    if (again && state.notice === again.notice) state = { ...state, notice: null };
+    again = null;
+  };
   const beforeLeave = (): boolean => {
-    if (state.working !== null || createForm?.pending() || createForm?.hasDraft() || dirtyEdit()) {
-      state = { ...state, notice: { tone: 'bad', text: state.working !== null || createForm?.pending()
+    if (state.working !== null || triage.writing() || createForm?.pending() || createForm?.hasDraft() || dirtyEdit()) {
+      state = { ...state, notice: { tone: 'bad', text: state.working !== null || triage.writing() || createForm?.pending()
         ? 'Your reminder is still being saved. Wait for the result before leaving or changing the list.'
         : 'Save or discard your reminder changes before leaving or changing the list.' } };
       if (!createForm?.hasDraft() || createForm.pending()) pendingFocus = { key: state.editing && state.working === null ? `text:${state.editing.id}` : 'notice' };
@@ -331,12 +368,15 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       if (createForm?.hasDraft() && !createForm.pending()) createForm.open();
       return false;
     }
+    retireAgain();
+    linkedRecordRead++; linkedRecordBusy = false;
     return true;
   };
   const open = (id: string | null, syncAddress = true): boolean => {
     if (disposed) return false;
     if ((state.detail?.id ?? null) === id) return true;
     if (!beforeLeave()) return false;
+    triage.reset();
     const oldId = state.detail?.id;
     seq++; detailSeq++;
     state = { ...state, detail: id === null ? null : { id, reminder: null, loaded: false, loading: false, error: null },
@@ -362,48 +402,105 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     state = { ...state, applied: draft };
     try { filterQuery(); }
     catch (error) { state = { ...state, applied: previous, filterError: humanizeRpcError(error) }; deps.render(); return; }
+    triage.reset();
+    loadedGoal = PAGE_SIZE;
     state = { ...state, draft, reminders: [], loaded: false, nextCursor: null, matchedCount: 0,
       editing: null, confirming: null, notice: null, filterError: null };
     pendingFocus = { key: 'query' };
     void load(false);
   };
-  const openCreate = (target: HTMLElement): void => {
-    if (!callers.create) return;
-    if (state.creating) { createForm?.open(); return; }
-    if (!beforeLeave()) return;
+  const openCreate = (target: HTMLElement, initial?: { text: string; focus: boolean; returnFocus: string; record_ref?: ReminderRecordReference; mail_ref?: ReminderMailReference }, restored?: ReminderDraftEntry): boolean => {
+    if (!callers.create) return false;
+    if (state.creating) { createForm?.open(); return false; }
+    if (!beforeLeave()) return false;
+    triage.reset();
     const doc = target.ownerDocument;
     if (!createHost) {
       createHost = doc.createElement('div');
       createForm = mountReminderCreateForm({ host: createHost, create: callers.create, now,
+        ...(deps.recovery ? { recovery: deps.recovery } : {}),
         ...(deps.timeZone ? { timeZone: deps.timeZone } : {}),
-        onClose: result => {
+        onClose: (result, keptId) => {
           if (disposed) return;
           const active = createHost?.ownerDocument.activeElement;
-          const ownsFocus = active == null || active === createHost?.ownerDocument.body || createHost?.contains(active);
+          // Cancel is a direct action; a creation reply may arrive after focus
+          // has moved elsewhere and must respect that newer owner.
+          const ownsFocus = !result || active == null || active === createHost?.ownerDocument.body || createHost?.contains(active);
           state = { ...state, creating: false };
+          if (keptId) { recoveryError = ''; createReturnFocus = `recovery-resume:${keptId}`; }
           if (result) {
             const row = result.reminder;
             const known = state.reminders.some(item => item.reminder_id === row.reminder_id);
             const terminal = row.state !== 'pending';
-            const visible = row.state === 'pending' && matches(row)
+            const visible = matches(row)
               && (!state.nextCursor || row.at <= (state.reminders.at(-1)?.at ?? Infinity));
             state = { ...state,
-              reminders: terminal ? state.reminders.filter(item => item.reminder_id !== row.reminder_id)
-                : visible ? [...state.reminders.filter(item => item.reminder_id !== row.reminder_id), row].sort((a, b) => a.at - b.at || a.reminder_id.localeCompare(b.reminder_id)) : state.reminders,
+              reminders: visible ? [...state.reminders.filter(item => item.reminder_id !== row.reminder_id), row].sort((a, b) => a.at - b.at || a.reminder_id.localeCompare(b.reminder_id))
+                : state.reminders.filter(item => item.reminder_id !== row.reminder_id),
               delivered: terminal ? [row, ...state.delivered.filter(item => item.reminder_id !== row.reminder_id)] : state.delivered,
               count: Math.max(0, state.count + (!known && !terminal ? 1 : known && terminal ? -1 : 0)),
-              matchedCount: Math.max(0, state.matchedCount + (!known && !terminal && matches(row) ? 1 : known && terminal ? -1 : 0)),
+              matchedCount: Math.max(0, state.matchedCount + (!known && matches(row) ? 1 : known && !matches(row) ? -1 : 0)),
               notice: { tone: 'ok', text: `${terminal ? 'Reminder history' : 'Reminder set'}: ${row.text}. ${result.confirmation}` } };
           }
-          pendingFocus = ownsFocus ? { key: result ? 'notice' : 'create' } : null;
+          const returnFocus = createReturnFocus.startsWith('again:') && !state.detail && !state.historyOpen && state.applied.status === 'pending' ? 'history' : createReturnFocus;
+          pendingFocus = ownsFocus ? { key: result ? 'notice' : returnFocus, fallback: ['create', 'detail', 'history', 'query'] } : null;
           deps.render();
           if (result) void load(true);
         },
       });
     }
+    createReturnFocus = initial?.returnFocus ?? 'create';
     state = { ...state, creating: true, editing: null, confirming: null, notice: null };
     deps.render();
-    createForm?.open();
+    if (restored) {
+      if (!createForm?.resume(restored.id, restored)) {
+        state = { ...state, creating: false }; recoveryError = 'This recovery copy changed or is no longer available. Review the current drafts.';
+        deps.render(); return false;
+      }
+    } else createForm?.open(initial ? { ...initial, fromHistory: true } : undefined);
+    return true;
+  };
+  const resumeDraft = (id: string, target: HTMLElement, expected?: ReminderDraftEntry): boolean => {
+    const entry = deps.recovery?.get(id);
+    if (!entry || expected && JSON.stringify(entry) !== JSON.stringify(expected)) {
+      recoveryError = 'This recovery copy changed or is no longer available. Review the current drafts.'; deps.render(); return false;
+    }
+    recoveryError = ''; recoveryDiscard = undefined;
+    return openCreate(target, undefined, entry);
+  };
+  const recoveries = () => deps.recoveryList === false || state.creating ? '' : renderReminderRecoveries({ store: deps.recovery, actionAttr: deps.actionAttr,
+    currentId: createForm?.id?.(), confirming: recoveryDiscard, error: recoveryError, disabled: state.working !== null || Boolean(createForm?.hasDraft()) || dirtyEdit() });
+  const reusable = (row: ReminderView | null | undefined): row is ReminderView => !!row
+    && (row.state === 'delivered' || row.state === 'cancelled') && row.managed_by !== 'clock';
+  const remindAgain = (id: string, target: HTMLElement): void => {
+    if (again || !callers.create || !callers.get) return;
+    const shown = find(id) ?? state.delivered.find(row => row.reminder_id === id);
+    if (!reusable(shown) || !beforeLeave()) return;
+    const op = { id, detail: state.detail?.id ?? null, notice: { tone: 'ok' as const, text: 'Checking reminder…' } };
+    again = op; state = { ...state, notice: op.notice };
+    // This direct action owns focus even when a pointer click does not focus
+    // the button (WebKit). Subsequent replies still respect a newer focus owner.
+    pendingFocus = { key: 'notice' }; deps.render();
+    const current = () => !disposed && again === op && (state.detail?.id ?? null) === op.detail;
+    againPending = (async () => {
+      try {
+        const { reminder } = await callers.get!({ reminder_id: id });
+        if (!current()) return;
+        if (!reminder || reminder.reminder_id !== id) throw new Error('This reminder could not be confirmed. Refresh it and try again.');
+        if (!reusable(reminder)) throw new Error('This reminder is no longer available to reuse. Refresh it and try again.');
+        const active = target.ownerDocument.activeElement;
+        const key = active?.getAttribute?.(REMINDERS_FOCUS_ATTR);
+        const ownsFocus = active == null || active === target.ownerDocument.body || key === `again:${id}` || key === 'notice';
+        again = null; pendingFocus = null;
+        openCreate(target, { text: reminder.text, focus: ownsFocus, returnFocus: `again:${id}`,
+          ...(reminder.record_ref ? { record_ref: reminder.record_ref } : {}), ...(reminder.mail_ref ? { mail_ref: reminder.mail_ref } : {}) });
+      } catch (error) {
+        if (current()) {
+          state = { ...state, notice: { tone: 'bad', text: humanizeRpcError(error) } };
+          pendingFocus = { key: 'notice', from: [`again:${id}`, 'notice'] };
+        }
+      } finally { if (again === op) { again = null; if (!disposed) deps.render(); } }
+    })();
   };
 
   const save = async (id: string): Promise<void> => {
@@ -416,6 +513,9 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       pendingFocus = { key: `${field}:${id}` };
       deps.render();
     };
+    const order = state.reminders.map(row => row.reminder_id), index = order.indexOf(id);
+    const nearby = [...order.slice(index + 1), ...order.slice(0, Math.max(index, 0)).reverse()].map(other => `row:${other}`);
+    const fallback = [...nearby, 'query', 'notice'];
     const patch: { reminder_id: string; text?: string; at?: number } = { reminder_id: id };
     if (editing.text !== editing.initialText) {
       const text = editing.text.replace(/\s+/gu, ' ').trim();
@@ -423,12 +523,12 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       if (text.length > REMINDER_TEXT_MAX) { fail('text', `Keep the reminder within ${REMINDER_TEXT_MAX} characters.`); return; }
       if (text !== editing.initialText) patch.text = text;
     }
-    if (editing.value !== editing.initialValue) {
-      const at = zonedWallClockToEpochMs(editing.value, editing.zone);
+    if (editing.choice !== undefined || editing.value !== editing.initialValue) {
+      const at = editing.choice?.at ?? zonedWallClockToEpochMs(editing.value, editing.zone);
       if (at === null || reminderWallClockValue(at, editing.zone) !== editing.value) {
         fail('at', 'Pick a valid day and time on this reminder’s clock.'); return;
       }
-      patch.at = at;
+      if (at !== editing.initialAt) patch.at = at;
     }
     if (patch.text === undefined && patch.at === undefined) {
       state = { ...state, editing: null, notice: { text: 'No changes to save.', tone: 'ok' } };
@@ -449,12 +549,12 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         notice: { text: out.message, tone: out.updated ? 'ok' : 'bad' },
       };
       pendingFocus = { key: out.updated ? `edit:${id}` : retired ? 'notice' : `${patch.text !== undefined ? 'text' : 'at'}:${id}`,
-        from: ['notice'], fallback: 'notice' };
+        from: ['notice'], fallback: out.updated ? fallback : 'notice' };
       const settledFocus = pendingFocus.key;
       deps.render();
       // The refresh may retire the control just restored. Redirect only if it
       // still owns focus; another row or tab must keep the focus moved there.
-      pendingFocus = { key: settledFocus, from: [settledFocus], fallback: 'notice' };
+      pendingFocus = { key: settledFocus, from: [settledFocus], fallback: out.updated ? fallback : 'notice' };
       await refreshCurrent(true);
     } catch (error) {
       if (disposed) return;
@@ -494,16 +594,50 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     }
   };
 
+  const triage = createReminderTriage({ callers, rows: () => state.reminders, zone: filterZone, now,
+    actionAttr: deps.actionAttr, fieldAttr: REMINDERS_FIELD_ATTR, focusAttr: REMINDERS_FOCUS_ATTR,
+    render: deps.render, focus: (key, from) => { pendingFocus = { key, ...(from ? { from } : {}) }; },
+    beforeStart: () => {
+      if (!beforeLeave()) return false;
+      state = { ...state, editing: null, confirming: null, notice: null };
+      return true;
+    },
+    beforeWrite: retireReadsForWrite,
+    onResult: item => {
+      if (item.reminder || item.status === 'applied') state = { ...state,
+        ...confirmedState(item.reminder_id, item.reminder, !item.reminder || item.reminder.state !== 'pending') };
+    },
+    refresh: () => load(true),
+  });
+
   const focus = (key: string): string => `${REMINDERS_FOCUS_ATTR}="${e(key)}"`;
   const act = (action: string, id?: string): string =>
     `${deps.actionAttr}="${action}"${id !== undefined ? ` data-reminder-id="${e(id)}"` : ''}`;
+
+  const editAt = (editing: NonNullable<State['editing']>): number | null => {
+    if (editing.choice) return editing.choice.at;
+    if (editing.value === editing.initialValue) return editing.initialAt;
+    const at = zonedWallClockToEpochMs(editing.value, editing.zone);
+    return at !== null && reminderWallClockValue(at, editing.zone) === editing.value ? at : null;
+  };
+  const previewText = (editing: NonNullable<State['editing']>): string => {
+    const at = editAt(editing);
+    return at === null ? `Choose a valid time on this reminder’s clock (${editing.zone}).`
+      : `Selected time: ${formatReminderTimePreview(at, editing.zone)} (${editing.zone}).`;
+  };
+  const updateTimePreview = (target: HTMLElement): void => {
+    const editor = target.closest?.('.reminders-edit');
+    const preview = editor?.querySelector<HTMLElement>('[data-reminder-time-preview]');
+    if (preview && state.editing) preview.textContent = previewText(state.editing);
+    for (const button of editor?.querySelectorAll<HTMLElement>('[data-reminder-time-preset]') ?? []) button.setAttribute('aria-pressed', 'false');
+  };
 
   const renderActions = (reminder: ReminderView): string => {
     const id = reminder.reminder_id;
     const busy = state.working === id;
     if (reminder.managed_by === 'clock') return `<div class="reminders-managed"><span>Managed in Yours</span>
       <a class="data-button" href="#yours" ${focus(`manage:${id}`)}>Manage in Yours</a></div>`;
-    if (reminder.state !== 'pending') return '';
+    if (reminder.state !== 'pending') return renderAgain(reminder);
     if (state.editing !== null && state.editing.id === id) {
       const zone = state.editing.zone;
       const otherClock = zone !== browserZone();
@@ -519,7 +653,12 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
             <input type="datetime-local" ${REMINDERS_FIELD_ATTR}="at" data-reminder-id="${e(id)}"
               value="${e(state.editing.value)}" ${focus(`at:${id}`)}${state.editing.errorField === 'at' ? ' aria-invalid="true"' : ''} ${busy ? 'disabled' : ''}>
           </label>
-          <p class="reminders-subtle">${e(zone)} time. The saved time stays exact unless you change it.</p>
+          <div class="reminders-buttons" role="group" aria-label="Choose a reminder time">
+            ${REMINDER_TIME_PRESETS.map(preset => `<button type="button" class="data-button" ${act('reminders-time-preset', id)}
+              data-reminder-time-preset="${preset.key}" ${focus(`preset:${preset.key}:${id}`)} aria-pressed="${state.editing?.choice?.preset === preset.key}" ${busy ? 'disabled' : ''}>${preset.label}</button>`).join('')}
+          </div>
+          <p class="reminders-subtle" data-reminder-time-preview role="status">${e(previewText(state.editing))}</p>
+          <p class="reminders-subtle">${e(zone)} time. Presets use the time you choose them. Save to apply the selected time.</p>
           ${state.editing.error !== null ? `<p class="reminders-error" role="alert">${e(state.editing.error)}</p>` : ''}
           <div class="reminders-buttons">
             <button type="button" class="data-button" ${act('reminders-save', id)} ${focus(`save:${id}`)} ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save'}</button>
@@ -543,6 +682,9 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         ${callers.cancel !== undefined ? `<button type="button" class="data-button" ${act('reminders-cancel', id)} ${focus(`cancel:${id}`)}>Cancel</button>` : ''}
       </div>`;
   };
+  const renderAgain = (reminder: ReminderView): string => !callers.create || !callers.get || !reusable(reminder) ? ''
+    : `<div class="reminders-buttons"><button type="button" class="data-button" ${act('reminders-again', reminder.reminder_id)}
+      ${focus(`again:${reminder.reminder_id}`)}${again || state.working !== null || createForm?.pending() ? ' disabled' : ''}${again?.id === reminder.reminder_id ? ' aria-busy="true"' : ''}>${again?.id === reminder.reminder_id ? 'Checking reminder…' : 'Remind again'}</button></div>`;
 
   const renderUpcoming = (): string => {
     if (callers.list === undefined) {
@@ -554,17 +696,20 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     }
     if (!state.loaded) return '<p class="reminders-empty">Loading reminders…</p>';
     if (state.reminders.length === 0) {
-      return state.applied.query || state.applied.range !== 'all'
-        ? '<p class="reminders-empty">No waiting reminders match these filters.</p>'
+      return state.applied.status !== 'pending' ? '<p class="reminders-empty">No reminders match these filters. Finished reminders are kept for 30 days.</p>'
+        : state.applied.query || state.applied.range !== 'all' ? '<p class="reminders-empty">No waiting reminders match these filters.</p>'
         : callers.create ? '<p class="reminders-empty">No reminders waiting. Set one with New reminder.</p>'
         : '<p class="reminders-empty">No reminders waiting. Ask chat to set one: “remind me tomorrow at 3pm to call the dentist”.</p>';
     }
     return `
-      <ol class="reminders-list" aria-label="Reminders still to ring">
+      <ol class="reminders-list" aria-label="${state.applied.status === 'pending' ? 'Reminders still to ring' : 'Matching reminders'}">
         ${state.reminders.map((reminder) => `
           <li class="reminders-row" data-reminder-id="${e(reminder.reminder_id)}" tabindex="-1" ${focus(`row:${reminder.reminder_id}`)}>
-            <div class="reminders-when">${e(reminder.when)}</div>
+            ${triage.renderSelection(reminder)}
+            <div class="reminders-when">${e(reminder.when)}${state.applied.status !== 'pending' ? `<span class="reminders-subtle">${e(zoneOf(reminder))}</span>` : ''}</div>
             <div class="reminders-text">${e(reminder.text)}</div>
+            ${state.applied.status !== 'pending' ? `<div class="reminders-state">${REMINDER_STATUS_LABELS[reminder.state]}</div>` : ''}
+            ${state.applied.status !== 'pending' || state.applied.query || state.applied.range !== 'all' ? `<button type="button" class="data-button" ${act('reminders-open', reminder.reminder_id)} ${focus(`open:${reminder.reminder_id}`)}>Open reminder</button>` : ''}
             ${renderActions(reminder)}
           </li>`).join('')}
       </ol>
@@ -576,23 +721,28 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   };
 
   const renderFilters = (): string => `
-    <form class="reminders-filters" data-reminders-search aria-label="Find waiting reminders">
+    <form class="reminders-filters" data-reminders-search aria-label="Find reminders">
+      <div class="reminders-filter-fields">
       <label>Search reminders <input class="data-input" type="search" maxlength="200" ${REMINDERS_FIELD_ATTR}="query" ${focus('query')} value="${e(state.draft.query)}" ${state.paging === false ? 'disabled' : ''}></label>
+      <label>Status <select class="data-select" ${REMINDERS_FIELD_ATTR}="status" ${focus('status')}>
+        ${Object.entries(REMINDER_STATUS_LABELS).map(([value, label]) => `<option value="${value}"${state.draft.status === value ? ' selected' : ''}>${label}</option>`).join('')}
+      </select></label>
       <label>Dates <select class="data-select" ${REMINDERS_FIELD_ATTR}="range" ${focus('range')} ${state.paging === false ? 'disabled' : ''}>
         ${([['all', 'All dates'], ['today', 'Today'], ['week', 'Next 7 days'], ['custom', 'Choose dates']] as const)
           .map(([value, label]) => `<option value="${value}"${state.draft.range === value ? ' selected' : ''}>${label}</option>`).join('')}
       </select></label>
-      ${state.draft.range === 'custom' ? `<label>From <input class="data-input" type="date" ${REMINDERS_FIELD_ATTR}="from" ${focus('from')} value="${e(state.draft.from)}"></label>
-        <label>Through <input class="data-input" type="date" ${REMINDERS_FIELD_ATTR}="through" ${focus('through')} value="${e(state.draft.through)}"></label>` : ''}
-      <div class="reminders-buttons"><button type="submit" class="data-button" ${focus('apply')} ${state.paging === false ? 'disabled' : ''}>Apply filters</button>
+      </div>
+      ${state.draft.range === 'custom' ? `<div class="reminders-date-range"><label>From <input class="data-input" type="date" ${REMINDERS_FIELD_ATTR}="from" ${focus('from')} value="${e(state.draft.from)}"></label>
+        <label>Through <input class="data-input" type="date" ${REMINDERS_FIELD_ATTR}="through" ${focus('through')} value="${e(state.draft.through)}"></label></div>` : ''}
+      <div class="reminders-filter-actions"><button type="submit" class="data-button" ${focus('apply')} ${state.paging === false ? 'disabled' : ''}>Apply filters</button>
         <button type="button" class="data-button" ${act('reminders-clear')} ${focus('clear')}>Clear filters</button></div>
-      <p class="reminders-subtle">Dates use ${e(filterZone())}. Search applies to waiting reminders.</p>
+      <p class="reminders-subtle">Dates use ${e(filterZone())} and match the scheduled time. History includes the last 30 days. Apply filters to search the selected status.</p>
       ${state.paging === false ? '<p class="reminders-subtle">Update the server to search and load all waiting reminders.</p>' : ''}
       ${state.filterError ? `<p role="alert" class="reminders-error">${e(state.filterError)}</p>` : ''}
     </form>`;
 
   const renderHistory = (): string => {
-    if (state.delivered.length === 0) return '';
+    if (state.delivered.length === 0 || state.applied.status !== 'pending') return '';
     return `
       <details class="reminders-history" ${state.historyOpen ? 'open' : ''}>
         <summary ${act('reminders-history-toggle')} ${focus('history')}>Rung or cancelled in the last 30 days (${state.delivered.length})</summary>
@@ -602,6 +752,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
               <div class="reminders-when">${e(reminder.when)}</div>
               <div class="reminders-text">${e(reminder.text)}</div>
               <div class="reminders-state">${reminder.state === 'cancelled' ? 'Cancelled' : 'Rang'}</div>
+              ${renderAgain(reminder)}
             </li>`).join('')}
         </ol>
       </details>`;
@@ -612,16 +763,26 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     const reminder = detail.reminder;
     return `<section class="reminders" ${REMINDERS_HOST_ATTR}>
       <div class="data-contact-toolbar">
-        <button type="button" class="data-button" ${act('reminders-back')} ${focus('back')}>Back to reminders</button>
+        <button type="button" class="data-button" ${act('reminders-back')} ${focus('back')}>${e(deps.backLabel?.() ?? 'Back to reminders')}</button>
         <button type="button" class="data-button" ${act('reminders-retry')} ${focus('refresh')} ${detail.loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${detail.loading ? 'Refreshing…' : 'Refresh'}</button>
       </div>
       <h2 class="data-section-title" tabindex="-1" ${focus('detail')}>Reminder</h2>
       ${renderNotice()}
+      <div data-reminders-create-slot></div>
+        ${recoveries()}
       ${detail.error ? `<p class="reminders-error" role="alert">${e(detail.error)} <button type="button" class="data-button" ${act('reminders-retry')} ${focus('retry')}>Try again</button></p>` : ''}
       ${reminder ? `<article class="reminders-detail" data-reminder-id="${e(detail.id)}" data-state="${e(reminder.state)}">
         <p class="reminders-detail-text">${e(reminder.text)}</p>
         <dl class="reminders-detail-meta"><div><dt>Scheduled for</dt><dd>${e(reminder.when)}<span class="reminders-subtle">${e(zoneOf(reminder))}</span></dd></div>
           <div><dt>Status</dt><dd>${reminder.state === 'pending' ? 'Waiting to ring' : reminder.state === 'delivered' ? 'Rang' : 'Cancelled'}${reminder.delivered_at !== null ? `<span class="reminders-subtle">${e(formatReminderWhen(reminder.delivered_at, zoneOf(reminder), now()))}</span>` : ''}</dd></div></dl>
+        ${reminder.record_ref && deps.readRecord && deps.openRecord ? `<section aria-label="Linked record">
+          <button type="button" class="data-button" ${act('reminders-open-record')} ${focus('linked-record')}${linkedRecordBusy ? ' disabled aria-busy="true"' : ''}>${linkedRecordBusy ? 'Checking record…' : `Open ${e(reminder.record_ref.kind)}`}</button>
+          ${linkedRecordError ? `<p role="alert">${e(linkedRecordError)}</p>` : ''}
+        </section>` : ''}
+        ${reminder.mail_ref && deps.readMail && deps.openMail ? `<section aria-label="Linked email">
+          <button type="button" class="data-button" ${act('reminders-open-mail')} ${focus('linked-mail')}${linkedRecordBusy ? ' disabled aria-busy="true"' : ''}>${linkedRecordBusy ? 'Checking email…' : 'Open email'}</button>
+          ${linkedRecordError ? `<p role="alert">${e(linkedRecordError)}</p>` : ''}
+        </section>` : ''}
         ${renderActions(reminder)}
       </article>` : detail.loaded ? '<p class="reminders-empty">This reminder is no longer available. It may have been removed, or its 30-day history has expired.</p>'
         : detail.loading ? '<p class="reminders-empty" role="status">Loading reminder…</p>' : ''}
@@ -629,35 +790,97 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   };
   return {
     open,
+    resumeDraft,
+    showRecoveryNotice: message => { recoveryError = message; deps.render(); },
     detailId: () => state.detail?.id,
     render: () => state.detail ? renderDetail(state.detail) : `
       <section class="reminders" ${REMINDERS_HOST_ATTR}>
-        <div class="data-contact-toolbar">
+        <header class="reminders-header">
           <h2 class="data-section-title">Reminders</h2>
-          ${callers.create ? `<button type="button" class="data-button" ${act('reminders-create')} ${focus('create')}>New reminder</button>` : ''}
+          <div class="reminders-header-actions">
           <button type="button" class="data-button" ${act('reminders-retry')} ${focus('refresh')}
             ${state.loading || state.moreLoading ? 'aria-disabled="true" aria-busy="true"' : ''}>${state.loading ? 'Refreshing…' : 'Refresh'}</button>
-        </div>
+          ${callers.create ? `<button type="button" class="data-button data-button--primary" ${act('reminders-create')} ${focus('create')}>New reminder</button>` : ''}
+          </div>
+        </header>
         <p class="reminders-intro">Each reminder rings once, at its time, on every channel you set up.</p>
         <div data-reminders-create-slot></div>
+        ${recoveries()}
         ${renderNotice()}
         ${state.error !== null && state.loaded ? `<p class="reminders-error" role="alert">${e(state.error)}</p>` : ''}
         ${renderFilters()}
+        ${triage.render()}
         ${renderUpcoming()}
         ${renderHistory()}
       </section>`,
 
-    refresh: (silent = false) => refreshCurrent(silent),
+    refresh: (silent = false) => { retireAgain(); return refreshCurrent(silent); },
 
     handleAction: (action, target) => {
+      if (action.startsWith('reminders-recovery-')) {
+        if (state.working !== null || createForm?.hasDraft() || dirtyEdit() || !deps.recovery) return true;
+        const id = target.getAttribute('data-reminder-draft-id') ?? '', name = action.slice('reminders-recovery-'.length);
+        if (name === 'resume') { resumeDraft(id, target); return true; }
+        if (name === 'discard') { recoveryDiscard = id; pendingFocus = { key: `recovery-keep:${id}` }; }
+        else if (name === 'keep') { recoveryDiscard = undefined; pendingFocus = { key: `recovery-discard:${id}` }; }
+        else if (name === 'remove' && recoveryDiscard === id) {
+          if (!deps.recovery.remove(id)) { recoveryError = 'This recovery copy could not be discarded. Try again.'; pendingFocus = { key: `recovery-remove:${id}` }; }
+          else { recoveryError = ''; recoveryDiscard = undefined; pendingFocus = { key: 'create' }; }
+        }
+        deps.render(); return true;
+      }
       if (!action.startsWith(REMINDERS_ACTION_PREFIX)) return false;
+      if (disposed) return true;
+      if (action !== 'reminders-open-record' && action !== 'reminders-open-mail') { linkedRecordRead++; linkedRecordBusy = false; linkedRecordError = undefined; }
+      if (action === 'reminders-open-mail') {
+        const detail = state.detail, ref = detail?.reminder?.mail_ref;
+        if (!detail || !ref || !deps.readMail || !deps.openMail || linkedRecordBusy || !beforeLeave()) return true;
+        const mine = ++linkedRecordRead;
+        linkedRecordBusy = true; linkedRecordError = undefined; deps.render();
+        const current = () => !disposed && mine === linkedRecordRead && state.detail === detail && deps.isActive?.() !== false;
+        void (async () => {
+          try {
+            const message = await deps.readMail!(ref);
+            if (!current()) return;
+            if (!message.reminder_ref || !sameReminderMailReference(ref, message.reminder_ref))
+              throw new Error('This email or mailbox was removed or replaced. Reopen it from Mail.');
+            linkedRecordBusy = false;
+            if (beforeLeave()) await deps.openMail!(message, ref);
+          } catch (cause) { if (current()) linkedRecordError = humanizeRpcError(cause); }
+          finally { if (current()) { linkedRecordBusy = false; deps.render(); } }
+        })();
+        return true;
+      }
+      if (action === 'reminders-open-record') {
+        const detail = state.detail, ref = readReminderRecordReference(detail?.reminder?.record_ref);
+        if (!detail || !ref || !deps.readRecord || !deps.openRecord || linkedRecordBusy || !beforeLeave()) return true;
+        const mine = ++linkedRecordRead;
+        linkedRecordBusy = true; linkedRecordError = undefined; deps.render();
+        const current = () => !disposed && mine === linkedRecordRead && state.detail === detail && deps.isActive?.() !== false;
+        void (async () => {
+          try {
+            const response = await deps.readRecord!(ref);
+            if (!current()) return;
+            if (!matchesReminderRecord(ref, response.entity)) throw new Error('The linked record was removed or replaced. It cannot be opened from this reminder.');
+            linkedRecordBusy = false;
+            if (!beforeLeave()) return;
+            deps.openRecord!(response);
+          } catch (error) { if (current()) linkedRecordError = humanizeRpcError(error); }
+          finally { if (current()) { linkedRecordBusy = false; deps.render(); } }
+        })();
+        return true;
+      }
+      if (triage.handleAction(action)) return true;
+      if (triage.writing()) { beforeLeave(); return true; }
       const id = target.getAttribute('data-reminder-id') ?? '';
-      if (action === 'reminders-back') { open(null); return true; }
+      if (action === 'reminders-back') { if (!deps.onBack?.()) open(null); return true; }
+      if (action === 'reminders-open') { if (find(id)) open(id); return true; }
       if (action === 'reminders-create') { openCreate(target); return true; }
+      if (action === 'reminders-again') { remindAgain(id, target); return true; }
       if (action === 'reminders-apply' || action === 'reminders-clear') { applyFilters(action === 'reminders-clear'); return true; }
       if (action === 'reminders-more') { if (beforeLeave()) void load(true, true); return true; }
       if (action === 'reminders-retry') {
-        if (!state.loading && !state.moreLoading && !state.detail?.loading && beforeLeave()) void refreshCurrent(false);
+        if (!state.loading && !state.moreLoading && !state.detail?.loading && beforeLeave()) { triage.reset(); void refreshCurrent(false); }
         return true;
       }
       if (action === 'reminders-history-toggle') {
@@ -665,19 +888,32 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         state = { ...state, historyOpen: !state.historyOpen };
         return true;
       }
+      retireAgain();
       if (state.working !== null) return true;
       const editing = state.editing;
       if (editing && id !== editing.id && (action === 'reminders-edit' || action === 'reminders-cancel')
-        && (editing.value !== editing.initialValue || editing.text !== editing.initialText)) {
+        && dirtyEdit()) {
         state = { ...state, notice: { text: 'Save or discard your reminder changes before opening another one.', tone: 'bad' } };
         pendingFocus = { key: `text:${editing.id}` }; deps.render(); return true;
       }
       const reminder = find(id);
+      if (action === 'reminders-time-preset') {
+        const preset = REMINDER_TIME_PRESETS.find(value => value.key === target.getAttribute('data-reminder-time-preset'));
+        if (!preset || !editing || editing.id !== id || reminder?.state !== 'pending' || reminder.managed_by === 'clock') return true;
+        try {
+          const choice = reminderTimePreset(preset.key, now(), editing.zone);
+          state = { ...state, editing: { ...editing, value: choice.value, choice: { preset: preset.key, at: choice.at }, error: null, errorField: undefined } };
+        } catch (error) {
+          state = { ...state, editing: { ...editing, error: humanizeRpcError(error), errorField: 'at' } };
+        }
+        pendingFocus = { key: `preset:${preset.key}:${id}` }; deps.render(); return true;
+      }
+      if (action === 'reminders-edit' || action === 'reminders-cancel') triage.reset();
       if (action === 'reminders-edit' && reminder !== undefined && reminder.managed_by !== 'clock' && reminder.state === 'pending') {
         const initialValue = reminderWallClockValue(reminder.at, zoneOf(reminder));
         state = {
           ...state, confirming: null, notice: null,
-          editing: { id, value: initialValue, initialValue, text: reminder.text, initialText: reminder.text,
+          editing: { id, value: initialValue, initialValue, initialAt: reminder.at, text: reminder.text, initialText: reminder.text,
             zone: zoneOf(reminder), error: null },
         };
         pendingFocus = { key: `text:${id}` };
@@ -704,6 +940,7 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     },
 
     handleInput: (target) => {
+      if (target.getAttribute(REMINDERS_FIELD_ATTR) === 'triage-at') return triage.handleChange(target);
       const field = target.getAttribute(REMINDERS_FIELD_ATTR);
       if (field === 'query' || field === 'from' || field === 'through') {
         state = { ...state, draft: { ...state.draft, [field]: (target as HTMLInputElement).value } }; return true;
@@ -714,13 +951,21 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       if (state.editing !== null && state.editing.id === id) {
         // No repaint while typing: the field holds what is typed.
         state = { ...state, editing: { ...state.editing,
-          [field === 'text' ? 'text' : 'value']: (target as HTMLInputElement | HTMLTextAreaElement).value, error: null, errorField: undefined } };
+          [field === 'text' ? 'text' : 'value']: (target as HTMLInputElement | HTMLTextAreaElement).value,
+          ...(field === 'at' ? { choice: undefined } : {}), error: null, errorField: undefined } };
+        if (field === 'at') updateTimePreview(target);
       }
       return true;
     },
 
     handleChange: (target) => {
+      if (triage.handleChange(target)) return true;
       const field = target.getAttribute(REMINDERS_FIELD_ATTR);
+      if (field === 'status') {
+        const status = (target as HTMLSelectElement).value;
+        if (status === 'all' || isReminderState(status)) state = { ...state, draft: { ...state.draft, status } };
+        return true;
+      }
       if (field === 'query' || field === 'from' || field === 'through') {
         state = { ...state, draft: { ...state.draft, [field]: (target as HTMLInputElement).value } }; return true;
       }
@@ -734,25 +979,27 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       const id = target.getAttribute('data-reminder-id') ?? '';
       if (state.editing !== null && state.editing.id === id) {
         state = { ...state, editing: { ...state.editing,
-          [field === 'text' ? 'text' : 'value']: (target as HTMLInputElement | HTMLTextAreaElement).value, error: null, errorField: undefined } };
+          [field === 'text' ? 'text' : 'value']: (target as HTMLInputElement | HTMLTextAreaElement).value,
+          ...(field === 'at' ? { choice: undefined } : {}), error: null, errorField: undefined } };
+        if (field === 'at') updateTimePreview(target);
       }
       return true;
     },
 
-    isBusy: () => state.detail?.loading === true || state.loading || state.moreLoading || state.working !== null || state.editing !== null || state.confirming !== null
+    isBusy: () => triage.isBusy() || again !== null || state.detail?.loading === true || state.loading || state.moreLoading || state.working !== null || state.editing !== null || state.confirming !== null
       || createForm?.hasDraft() === true || JSON.stringify(state.draft) !== JSON.stringify(state.applied),
     beforeLeave,
-    whenLoaded: () => state.detail ? detailPending : pending,
+    whenLoaded: () => Promise.all([again !== null ? againPending : state.detail ? detailPending : pending, triage.whenSettled()]).then(() => undefined),
 
     hasUnsavedChanges: () => {
       const editing = state.editing;
       if (createForm?.hasDraft()) return true;
       if (editing === null) return false;
       const reminder = find(editing.id);
-      return reminder !== undefined && (editing.value !== editing.initialValue || editing.text !== editing.initialText);
+      return reminder !== undefined && dirtyEdit();
     },
 
-    hasInFlightWork: () => state.working !== null || createForm?.pending() === true,
+    hasInFlightWork: () => triage.writing() || state.working !== null || createForm?.pending() === true,
 
     captureFocus: (active) => {
       createFocus = createHost?.contains(active as Node) ? active as HTMLElement : null;
@@ -764,7 +1011,8 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       if (disposed) return;
       const searchForm = root.querySelector?.<HTMLFormElement>('[data-reminders-search]');
       if (searchForm) searchForm.onsubmit = event => { event.preventDefault(); applyFilters(); };
-      if (state.creating && createHost) root.querySelector?.('[data-reminders-create-slot]')?.appendChild(createHost);
+      const createSlot = root.querySelector?.('[data-reminders-create-slot]');
+      if (state.creating && createHost && createSlot && createHost.parentNode !== createSlot) createSlot.appendChild(createHost);
       if (createFocus?.isConnected) { createFocus.focus({ preventScroll: true }); createFocus = null; return; }
       const request = pendingFocus;
       // Consume even a rejected request: a reply received in another tab must
@@ -776,14 +1024,20 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
       const control = (value: string): HTMLElement | null | undefined => root.querySelector?.(
         `[${REMINDERS_FOCUS_ATTR}="${value.replace(/["\\]/g, '\\$&')}"]`,
       ) as HTMLElement | null | undefined;
-      const found = control(wanted) ?? (owned && request.fallback !== undefined ? control(request.fallback) : null);
-      found?.focus?.({ preventScroll: !owned || wanted === key });
+      const fallbacks = owned && request.fallback !== undefined ? typeof request.fallback === 'string' ? [request.fallback] : request.fallback : [];
+      const found = control(wanted) ?? fallbacks.map(control).find(Boolean);
+      const foundKey = found?.getAttribute?.(REMINDERS_FOCUS_ATTR) ?? wanted;
+      found?.focus?.({ preventScroll: !owned || foundKey === key });
+      return !!found && owned && foundKey !== key;
     },
 
     dispose: () => {
       disposed = true;
+      triage.dispose();
+      linkedRecordRead++;
       seq += 1;
       detailSeq += 1;
+      retireAgain();
       createForm?.dispose();
       pendingFocus = null;
     },
@@ -792,11 +1046,34 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
 
 /** The tab's styles, scoped to its host; injected with the Data route's. */
 export const REMINDERS_STYLES = `
-.reminders-filters { display:flex; flex-wrap:wrap; align-items:end; gap:.75rem; margin:1rem 0; }
-.reminders-filters label { display:flex; flex-direction:column; gap:.35rem; min-width:0; }
-.reminders-filters label:first-child { flex:1 1 15rem; }
-.reminders-filters p { flex-basis:100%; margin:0; }
-@media(max-width:600px) { .reminders-filters label { flex:1 1 100%; } }
+[${REMINDERS_HOST_ATTR}] .reminders-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; min-width:0; margin:0 0 8px; }
+[${REMINDERS_HOST_ATTR}] .reminders-header > .data-section-title { margin:0; font-size:20px; font-weight:600; line-height:1.2; }
+[${REMINDERS_HOST_ATTR}] .reminders-header-actions { display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-header-actions > .data-button--primary { min-width:var(--wc-task-action-width,7.5rem); }
+[${REMINDERS_HOST_ATTR}] .reminders-filters { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:12px; min-width:0; margin:16px 0; }
+[${REMINDERS_HOST_ATTR}] .reminders-filter-fields { display:grid; grid-template-columns:minmax(0,1fr) repeat(2,minmax(0,10rem)); gap:12px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-filters label { display:flex; flex-direction:column; gap:6px; min-width:0; font-size:12px; font-weight:600; line-height:1.4; color:var(--muted); }
+[${REMINDERS_HOST_ATTR}] .reminders-filters :is(input,select) { box-sizing:border-box; width:100%; min-width:0; max-width:100%; min-height:var(--wc-control-h,44px); padding:0 10px; border-radius:var(--wc-radius,9px); font-weight:400; }
+[${REMINDERS_HOST_ATTR}] .reminders-date-range { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-column:1 / -1; gap:12px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-filter-actions { display:flex; gap:8px; grid-column:2; grid-row:1; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-header-actions > .data-button,
+[${REMINDERS_HOST_ATTR}] .reminders-filter-actions > .data-button { min-height:var(--wc-control-h,44px); padding:0 12px; border-radius:var(--wc-radius,9px); font-weight:600; }
+[${REMINDERS_HOST_ATTR}] .reminders-filters > p { grid-column:1 / -1; margin:0; }
+@media(max-width:1100px) {
+  [${REMINDERS_HOST_ATTR}] .reminders-filters { grid-template-columns:minmax(0,1fr); }
+  [${REMINDERS_HOST_ATTR}] .reminders-filter-actions { grid-column:1; grid-row:auto; justify-content:flex-end; }
+}
+@media(max-width:600px) {
+  [${REMINDERS_HOST_ATTR}] .reminders-filter-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  [${REMINDERS_HOST_ATTR}] .reminders-filter-fields > label:first-child { grid-column:1 / -1; }
+  [${REMINDERS_HOST_ATTR}] .reminders-filter-actions > .data-button { flex:1; }
+}
+@media(max-width:380px) {
+  [${REMINDERS_HOST_ATTR}] .reminders-header-actions { width:100%; }
+  [${REMINDERS_HOST_ATTR}] .reminders-header-actions > .data-button { flex:1; }
+  [${REMINDERS_HOST_ATTR}] .reminders-filter-fields,
+  [${REMINDERS_HOST_ATTR}] .reminders-date-range { grid-template-columns:minmax(0,1fr); }
+}
 [${REMINDERS_HOST_ATTR}] { min-width: 0; }
 [${REMINDERS_HOST_ATTR}] .reminders-detail { display:grid; gap:20px; max-width:48rem; padding:24px; border:1px solid var(--border); border-radius:12px; background:var(--surface); min-width:0; }
 [${REMINDERS_HOST_ATTR}] .reminders-detail-text { margin:0; font-size:20px; line-height:1.5; overflow-wrap:anywhere; }
@@ -808,6 +1085,16 @@ export const REMINDERS_STYLES = `
 [${REMINDERS_HOST_ATTR}] .reminders-notice { margin: 0 0 8px; font-size: 13px; min-height: 0; }
 [${REMINDERS_HOST_ATTR}] .reminders-notice:empty { display: none; }
 [${REMINDERS_HOST_ATTR}] .reminders-notice[data-tone="bad"] { color: var(--danger); }
+[${REMINDERS_HOST_ATTR}] .reminders-triage { display:grid; gap:12px; margin:16px 0; padding:16px; border:1px solid var(--border); border-radius:10px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage :is(p,h3) { margin:0; overflow-wrap:anywhere; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage :is(button,input) { min-height:44px; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage :is(.reminders-triage-review,.reminders-triage-time) { display:grid; gap:12px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage ul { display:grid; gap:12px; padding-left:20px; min-width:0; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage li { overflow-wrap:anywhere; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage li[data-outcome="needs_review"],
+[${REMINDERS_HOST_ATTR}] .reminders-triage li[data-outcome="failed"] { color:var(--danger); }
+[${REMINDERS_HOST_ATTR}] .reminders-triage-select { display:flex; gap:8px; align-items:center; min-height:44px; grid-column:1 / -1; cursor:pointer; }
+[${REMINDERS_HOST_ATTR}] .reminders-triage-select input { width:20px; height:20px; margin:0; }
 [${REMINDERS_HOST_ATTR}] .reminders-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 [${REMINDERS_HOST_ATTR}] .reminders-row {
   display: grid; grid-template-columns: minmax(0, 14em) minmax(0, 1fr) auto; align-items: center; gap: 8px 16px;

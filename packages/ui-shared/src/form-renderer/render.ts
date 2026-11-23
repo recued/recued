@@ -47,6 +47,10 @@ export interface FormRenderOptions {
    *  shell reads back only what its mirror was seeded with. The
    *  work-entity dialog (data route) is the sole consumer today. */
   refPicker?: boolean;
+  /** Opt in only when the host also attaches a project lookup. */
+  projectRefPicker?: boolean;
+  /** Opt in only when the host also attaches a task lookup. */
+  taskRefPicker?: boolean;
 }
 
 /** Render a full form definition as an HTML string. */
@@ -319,11 +323,18 @@ const renderSelect = (
   >${placeholderOption}${options}</select>`;
 };
 
-/** Only `data.contact` refs become live pickers — that's the one
- *  inventory the host (data route) knows how to search. Any other
- *  `ref_target` (none exist today) safely falls back to the raw-id
- *  input rather than a wrongly-wired contact picker. */
+/** Each inventory opts in separately; other reference kinds keep their
+ * existing input rather than acquiring an unwired picker. */
 const CONTACT_REF_TARGET = 'data.contact';
+const PROJECT_REF_TARGET = 'data.project';
+const TASK_REF_TARGET = 'data.task';
+const refPickerTarget = (target: string | undefined, options: FormRenderOptions): string | undefined =>
+  options.refPicker === true && target === CONTACT_REF_TARGET ? target
+    : options.projectRefPicker === true && target === PROJECT_REF_TARGET ? target
+      : options.taskRefPicker === true && target === TASK_REF_TARGET ? target : undefined;
+
+const refPickerPlaceholder = (target: string): string => target === PROJECT_REF_TARGET ? 'Search projects…'
+  : target === TASK_REF_TARGET ? 'Search tasks…' : 'Search contacts…';
 
 const renderRefInput = (
   field: FormField,
@@ -331,26 +342,28 @@ const renderRefInput = (
   options: FormRenderOptions,
   error: string | undefined,
 ): string => {
-  if (options.refPicker === true && field.ref_target === CONTACT_REF_TARGET) {
+  const target = refPickerTarget(field.ref_target, options);
+  if (target) {
     return renderRefPicker(refPickerSeedState(value), {
       pickerId: refPickerFieldId(field.name),
-      placeholder: 'Search contacts…',
+      placeholder: refPickerPlaceholder(target),
       ariaLabel: field.label,
       formFieldName: field.name,
+      formRefTarget: target,
     }).replace(
       ` ${REF_PICKER_INPUT_ATTR}`,
       ` ${REF_PICKER_INPUT_ATTR}${invalidAttrs(field, error)}`,
     );
   }
   const display = stringValue(value);
-  const target = field.ref_target ?? '';
+  const rawTarget = field.ref_target ?? '';
   return `<input
     id="form-renderer-${e(field.name)}"
     class="form-renderer-input"
     type="text"
     data-form-field="${e(field.name)}"
     data-form-type="ref"
-    data-form-ref-target="${e(target)}"
+    data-form-ref-target="${e(rawTarget)}"
     value="${e(display)}"
     autocomplete="off"
     spellcheck="false"${invalidAttrs(field, error)}
@@ -537,12 +550,14 @@ const renderArrayItem = (
       data-form-type="enum"
     >${options}</select>`;
   } else if (itemType === 'ref') {
-    inputHtml = options.refPicker === true && refTarget === CONTACT_REF_TARGET
+    const target = refPickerTarget(refTarget, options);
+    inputHtml = target
       ? renderRefPicker(refPickerSeedState(value), {
           pickerId: refPickerArrayItemId(field.name, index),
-          placeholder: 'Search contacts…',
+          placeholder: refPickerPlaceholder(target),
           ariaLabel: arrayItemAccessibleName(field, index),
           arrayMirror: { field: field.name, index },
+          formRefTarget: target,
         })
       : `<input
       class="form-renderer-input"

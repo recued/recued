@@ -1,7 +1,10 @@
+import { heldActionName } from './ask-card-action-name.js';
+import { createRunLetThrough } from './run-let-through.js';
+import { bodyNumbersAllowsRead, bodyNumbersHeldReads } from './body-numbers-setting.js';
 import { PAUSED_RUN_CODE, PAUSED_RUN_DETAIL, PAUSED_RUN_REFUSAL } from './pause-approval.js';
 import { connectionIdentity, connectionRevisionGuard } from './connection-revision.js';
 import { canonicalJsonString } from '@recued/recipes';
-import { collectRefs, mergeValueLabels } from '@recued/contracts';
+import { collectRefs, mergeValueLabels, KITCHEN_DRAFT_FROM_JOB_SLUG } from '@recued/contracts';
 import { createReadScope, assertKernelReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
 /** Recipe execution handler for the headless server.
  *
@@ -41,6 +44,7 @@ import {
   deriveRunMode,
   assignOwnSafe,
   extendHeldRecipes,
+  loopAskedBeforeAnyItemRan,
   seedHeldRecipes,
   snapshotContextRecipe,
   type CatalogGrantCall,
@@ -79,6 +83,8 @@ import {
 } from '@recued/gateway';
 import { isReceptionOriginSource } from './reception-inbox-handler.js';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
+import type { ChainRuleHooks } from '@recued/contracts';
+import { createChainRuleAdmission, teachesChains } from './chain-evidence.js';
 import type {
   AdmissionDecision,
   ChunkedUploadAuditInfo,
@@ -104,6 +110,7 @@ import type {
   Dish,
   EmittedLink,
   ExchangeAcknowledgement,
+  PiiLedgerStoreSnapshot,
   RecipeDefinition,
   RecipeError,
   RecipeStep,
@@ -113,11 +120,19 @@ import type {
   ScanFn,
   ScopedSenderCandidate,
 } from '@recued/contracts';
+import { stepType } from '@recued/contracts';
+import type { ReplayedStep } from '@recued/engine';
+import { createPiiLedgerStore, type PiiLedgerStore } from '@recued/transforms';
 import {
   captureResourceReview,
+  preapprovalCallerOf,
+  browserPassKeyHash,
+  writeRulePrincipalOf,
+  type OperationApproval,
   scheduledPromptRunOf,
   triggeredRunOf,
   type TriggeredRun,
+  type PreapprovalBrowsers,
   type TriggerPreapprovalHooks,
   entityFieldsFromMetaFields,
   entityFieldsFromRecordsSnapshot,
@@ -232,9 +247,17 @@ import { heldCalendarValueLabels } from './held-calendar-labels.js';
 import { browserBatchReadsOnly, browserBatchUploads, describeHeldBrowserTarget, heldBrowserTargetRefusal, heldBrowserValueLabels } from './bridges/dom-adapter.js';
 import { browserBatchAdmissions } from './bridges/browser-batch-admission.js';
 import { browserPassOfferFor, browserPassSiteFor, useBrowserPass, useBrowserRequestPass } from './browser-passes.js';
-import { createNeutralWriteOf, recipeStepOps, triggerPreapprovalOfferFor } from './trigger-preapproval-ops.js';
+import { browserStepNeeds, browserStepRefusal, runBrowserWork, runBrowsersOf } from './browser-step-check.js';
+import { gatewayKindGrantOffer } from './kind-grants.js';
+import { gatherOpKey } from './chat-gather.js';
+import { createNeutralWriteOf, heldCallOpLabel, recipeStepOps, triggerPreapprovalOfferFor } from './trigger-preapproval-ops.js';
 import { createScheduledPromptBrowserUse, scheduledPromptBrowserOffer } from './scheduled-prompt-preapproval.js';
-import { createTriggerPreapprovalAdmission } from './trigger-preapproval-admission.js';
+import { browserTrials } from './bridges/browser-trials.js';
+import { createCallerPreapprovalAdmission, createTriggerPreapprovalAdmission } from './trigger-preapproval-admission.js';
+import {
+  endRunPreapprovals, nestedRunRefusal, nestedRunRefusalError, planRunQuestion, raiseRunQuestionAsk, runQuestionGatherKey, runQuestionStartOf,
+  type RunQuestionPlanInput,
+} from './run-question.js';
 import {
   buildAuditEntry,
   newRunId,
@@ -252,12 +275,15 @@ import {
 import { recipeRunFactsFromAuditEntry } from './recipe-run-facts.js';
 import { foreachApprovalCover } from './foreach-approval-items.js';
 import type { McpActionStore } from './mcp-action-store.js';
+import type { ApprovalRestartContinuationStore } from './storage/approval-restart-continuation-store.js';
 import {
   gatedActionHandoffFromResult,
   type FinishGatedActionInput,
   type GatedActionStore,
 } from './gated-action-store.js';
 import type {
+  ApprovedRunFailure,
+  ApprovedRunRestartStop,
   ExecuteRequest,
   ExecuteResponse,
   InternalExecuteOverrides,
@@ -271,7 +297,8 @@ import {
   type PolicyGateDenial,
 } from './policy-gate.js';
 import { applyAutoPiiForExecution } from './auto-pii-apply.js';
-import { browserFlows as processBrowserFlows } from './bridges/browser-flow-record.js';
+import { browserFlows as processBrowserFlows, recipeActsInBrowser } from './bridges/browser-flow-record.js';
+import { browserJobs as processBrowserJobs, browserJobSession } from './bridges/browser-job-registry.js';
 import {
   describeBreakingIngredientPin,
   findBreakingIngredientPins,
@@ -396,6 +423,7 @@ import type { ContactStore } from './storage/contact-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import { createEnrichmentReader } from './storage/enrichment-resolver.js';
+import { withContractDispatchReservation } from './contract-dispatch-reservation.js';
 import { createStoredRowOriginResolver } from './stored-root-origin.js';
 import type { WsClient } from './ws-server.js';
 import { createSingleOperationAdmission, type SingleOperationAdmissionDeps } from './single-operation-admission.js';
@@ -1044,6 +1072,492 @@ const settleCompletedGatedStep = async (
   await finishResumedGatedActionReceipt(store, actionRef, input);
 };
 
+/** D-201 Slice 10R — how far one step got, as the engine reported it, in a
+ *  resumed run the server's own stop may end. */
+export interface RestartStepProgress {
+  readonly id: string;
+  started: boolean;
+  finished: boolean;
+  skipped: boolean;
+  failed: boolean;
+}
+
+/** D-201 Slices 10N and 10R — where the server's own stop left a resumed run,
+ *  from the steps the engine reported from the approved one on. The owner's
+ *  calls (2026-11-19): the next start finishes the run without asking again,
+ *  from the first step that had not started, with what each finished step
+ *  returned standing in for it. Pure: `settleRestartStop` writes from it.
+ *
+ *  - `unsent`: the approved step never started, so nothing it approves was sent.
+ *  - `approved_in_doubt`: it started and did not come back as a value can stand
+ *    in for: under way at the stop, failed, chunked uploads, or a resume bound
+ *    to an egress budget, a resource review or a loop's progress. D-201 Slice
+ *    10BH (the owner's call, 2026-11-21) — a `foreach` that finished is kept as
+ *    any step that came back is: its value holds each item's result, which its
+ *    receipt is settled from. It was always in doubt, so its try again sent
+ *    every item again and ran each later step again.
+ *  - `returned`: it came back, and every step after it that started had either
+ *    finished, kept as it came out to stand in for its step, or is a transform
+ *    or guard under way, which sends nothing and simply runs again.
+ *  - `later_in_doubt`: it came back, but a later step that can send something
+ *    (anything but a transform or guard) was under way at the stop, failed, or
+ *    left no value. 10Q finding 1: the 10N form looked at the approved step
+ *    alone, so the next start ran every later step again, and a create that ran
+ *    unasked after it was made twice. D-201 Slice 10W (10V finding 1) — with
+ *    each later step that finished before it (`later`), so the owner's try again
+ *    goes on from the step in doubt, those standing in.
+ *
+ *  D-201 Slice 10W (10V finding 13) — a step the run was REPLAYING (`replayed`)
+ *  sends nothing, so a stop during its replay leaves it as known as before: its
+ *  kept value stands, never "under way". A wait before a replay (the shared
+ *  prefetch) read as a live call, and a run that could be finished went in doubt.
+ *  And every step it replays is kept again, reached or not: 10R kept only the
+ *  steps this run reported, so a stop after the approved step's replay and
+ *  before the next replay kept none of the later ones, and the next start sent
+ *  them again. */
+export type RestartStopClassification =
+  | { readonly kind: 'unsent' }
+  /** D-201 Slice 10BC (10AY finding 2) — `went_past`: a step after the
+   *  approved one started, so a try again that asks for the approved step again
+   *  runs again each later step that went through. A loop, a chunked upload or
+   *  a bound resume is in doubt here however far the run got: 10AV's row named
+   *  it as a plain step in doubt, and Settings said only it could run twice. */
+  | {
+    readonly kind: 'approved_in_doubt';
+    readonly went_past?: true;
+    /** D-201 Slice 10BP (the 10BM audit's note) — the step came back before the
+     *  stop, though Recued cannot keep what it did, and nothing after it started
+     *  (`went_past` says the rest). Its words say it returned: they said it was
+     *  running. */
+    readonly returned?: true;
+  }
+  | {
+    readonly kind: 'returned';
+    readonly value: unknown;
+    readonly skipped: boolean;
+    readonly later: readonly ReplayedStep[];
+  }
+  | {
+    readonly kind: 'later_in_doubt';
+    readonly value: unknown;
+    readonly skipped: boolean;
+    readonly step_id: string;
+    /** The later steps that finished before it, as they came out. */
+    readonly later: readonly ReplayedStep[];
+  };
+
+export const classifyRestartStop = (input: {
+  approvedStepId: string;
+  /** The executed recipe's steps, for each step's kind. */
+  steps: readonly RecipeStep[];
+  /** In the order they started, from the approved step on. */
+  progress: readonly RestartStepProgress[];
+  stepValues: Readonly<Record<string, unknown>>;
+  /** Chunked uploads the approved step made. */
+  approvedUploads: number;
+  /** No egress bound, resource review or foreach progress on the resume. */
+  plain: boolean;
+  /** D-201 Slice 10W (10V finding 13) — what this run replays rather than
+   *  runs: the approved step's kept value and the later steps kept with it. */
+  replayed?: {
+    readonly approved?: { readonly value: unknown; readonly skipped?: true };
+    readonly steps?: readonly ReplayedStep[];
+  };
+}): RestartStopClassification => {
+  const [approved, ...after] = input.progress;
+  if (approved === undefined) return { kind: 'unsent' };
+  const definition = (id: string): RecipeStep | undefined => input.steps.find((step) => step.id === id);
+  const approvedReplay = approved.id === input.approvedStepId ? input.replayed?.approved : undefined;
+  const replayedLater = (id: string): ReplayedStep | undefined =>
+    input.replayed?.steps?.find((step) => step.step_id === id);
+  let value: unknown;
+  let skipped: boolean;
+  if (approvedReplay !== undefined) {
+    // Replayed: what it returned is known, however far its replay got.
+    value = approvedReplay.value;
+    // D-201 Slice 10BO (10BM finding 7) — skipped, as the stop that kept it
+    // read it. A replay read as one that ran, and every row past it said so.
+    skipped = approvedReplay.skipped === true;
+  } else if (approved.id !== input.approvedStepId || !approved.started || !approved.finished || approved.failed
+    || !input.plain || input.approvedUploads > 0
+    || !Object.hasOwn(input.stepValues, approved.id)) {
+    const returned = approved.id === input.approvedStepId && approved.started && approved.finished && !approved.failed;
+    return {
+      kind: 'approved_in_doubt',
+      ...(after.length > 0 ? { went_past: true as const } : returned ? { returned: true as const } : {}),
+    };
+  } else {
+    value = approved.skipped ? null : input.stepValues[approved.id];
+    skipped = approved.skipped;
+  }
+  // What it replays stands as kept, ahead of what this run did after it.
+  const later: ReplayedStep[] = [...(input.replayed?.steps ?? [])];
+  for (const step of after) {
+    // Replayed (whether its replay finished or was under way): kept above.
+    if (replayedLater(step.id) !== undefined) continue;
+    if (step.finished && !step.failed && (step.skipped || Object.hasOwn(input.stepValues, step.id))) {
+      const stepValue = input.stepValues[step.id];
+      later.push(step.skipped || stepValue === undefined
+        ? { step_id: step.id, skipped: step.skipped }
+        : { step_id: step.id, skipped: false, value: stepValue });
+      continue;
+    }
+    // Under way at the stop, failed, or with no value to stand in. A transform
+    // or a guard sends nothing, so it runs again; and nothing after it started.
+    const kind = definition(step.id) === undefined
+      ? undefined
+      : stepType(definition(step.id) as unknown as Record<string, unknown>);
+    if (kind === 'transform' || kind === 'guard') break;
+    return { kind: 'later_in_doubt', value, skipped, step_id: step.id, later };
+  }
+  return { kind: 'returned', value, skipped, later };
+};
+
+/** D-201 Slice 10BH — the approved step is a loop (`foreach`). */
+export const isApprovedLoop = (steps: readonly RecipeStep[], approvedStepId: string): boolean => {
+  const loop = (steps.find((step) => step.id === approvedStepId) as { foreach?: unknown } | undefined)?.foreach;
+  return loop !== undefined && loop !== null;
+};
+
+/** D-201 Slice 10BH — a kept loop's step log, as the engine leaves one: its
+ *  value is each item's result (`{ ok, … }`), and its receipt is settled item
+ *  by item from them, as on the normal road. */
+const keptLoopStepLog = (id: string, value: unknown): ExecutionResult['steps'][number] => {
+  const entries = Array.isArray(value) ? value : [];
+  return {
+    id,
+    type: 'ingredient',
+    skipped: false,
+    result: value,
+    error: null,
+    duration_ms: 0,
+    foreach: {
+      items: entries.length,
+      failed: entries.filter((entry) => !(entry !== null && typeof entry === 'object'
+        && (entry as { ok?: unknown }).ok === true)).length,
+    },
+  } as ExecutionResult['steps'][number];
+};
+
+/** D-201 Slice 10W (10V finding 14) — what the stop's classification reads off
+ *  the run beside its progress, pinned on its own: a resume bound to an egress
+ *  budget, a resource review or a loop's progress is never plain; only the
+ *  approved step's chunked uploads count; and what the run replays. The review
+ *  replaced the handler's `plain` with `true` and its uploads with 0 and every
+ *  test stayed green. */
+export const restartClassificationContext = (input: {
+  readonly approvedStepId: string;
+  readonly resumeFrom: InternalExecuteOverrides['resume_from'];
+  readonly chunkedUploadsByStep: ReadonlyMap<string, readonly unknown[]>;
+}): {
+  approvedUploads: number;
+  plain: boolean;
+  replayed: NonNullable<Parameters<typeof classifyRestartStop>[0]['replayed']>;
+} => ({
+  approvedUploads: (input.chunkedUploadsByStep.get(input.approvedStepId) ?? []).length,
+  // D-201 Slice 10BH — a loop asked for from its first item, nothing of it run
+  // before the ask, is the whole loop: plain, and kept once it finished. A gate
+  // raised in a loop always carries its progress, so every loop read as bound.
+  // One resumed mid-way stays in doubt: its value holds items an earlier
+  // segment settled. D-201 Slice 10BN (10BM finding 3) — items before the ask
+  // that its own filter skipped ran nothing: as the engine reads it.
+  plain: input.resumeFrom?.egress_bound === undefined
+    && input.resumeFrom?.resource_review === undefined
+    && (input.resumeFrom?.foreach_progress === undefined
+      || loopAskedBeforeAnyItemRan(input.resumeFrom.foreach_progress)),
+  replayed: {
+    ...(input.resumeFrom?.replayed_result !== undefined
+      ? {
+        approved: {
+          value: input.resumeFrom.replayed_result.value,
+          // D-201 Slice 10BO (10BM finding 7).
+          ...(input.resumeFrom.replayed_result.skipped === true ? { skipped: true as const } : {}),
+        },
+      }
+      : {}),
+    ...(input.resumeFrom?.replayed_steps !== undefined ? { steps: input.resumeFrom.replayed_steps } : {}),
+  },
+});
+
+/** D-201 Slice 10AV (10AS findings 7 and 9) — what a resumed run would leave
+ *  were the server to die as `stepId` starts, read as a stop there is
+ *  (`classifyRestartStop`): the approved step in doubt, or, once it came back,
+ *  the starting step, what finished before it standing in. A step that sends
+ *  nothing (a transform, a guard) is named too, so the row moves past the one
+ *  before it. Undefined for a step the run replays (it sends nothing, and the
+ *  row it replays from stands) and for a replayed approved step (nothing is in
+ *  doubt yet). */
+export const stepUnderWay = (input: {
+  readonly approvedStepId: string;
+  readonly stepId: string;
+  readonly steps: readonly RecipeStep[];
+  readonly progress: readonly RestartStepProgress[];
+  readonly stepValues: Readonly<Record<string, unknown>>;
+  readonly resumeFrom: InternalExecuteOverrides['resume_from'];
+  readonly chunkedUploadsByStep: ReadonlyMap<string, readonly unknown[]>;
+  readonly piiLedgers: () => PiiLedgerStoreSnapshot | undefined;
+}): Extract<ApprovedRunRestartStop, { kind: 'in_doubt' }> | undefined => {
+  if (input.resumeFrom?.replayed_steps?.some((step) => step.step_id === input.stepId) === true) return undefined;
+  const classification = classifyRestartStop({
+    approvedStepId: input.approvedStepId,
+    steps: input.steps,
+    progress: input.progress,
+    stepValues: input.stepValues,
+    ...restartClassificationContext({
+      approvedStepId: input.approvedStepId,
+      resumeFrom: input.resumeFrom,
+      chunkedUploadsByStep: input.chunkedUploadsByStep,
+    }),
+  });
+  if (classification.kind === 'unsent') return undefined;
+  // D-201 Slice 10BC (10AY finding 2) — past an approved step Recued cannot
+  // keep: held at it, the steps after it to run again.
+  if (classification.kind === 'approved_in_doubt') {
+    return { kind: 'in_doubt', ...(classification.went_past === true ? { later_run_again: true as const } : {}) };
+  }
+  // The approved step replayed, nothing after it started: nothing in doubt.
+  if (input.stepId === input.approvedStepId) return undefined;
+  const pii = input.piiLedgers();
+  return {
+    kind: 'in_doubt',
+    // The step a stop here would name: this one, or an earlier one that failed
+    // and that the run went on past. A transform or a guard starting reads as
+    // returned, the steps before it in `later`: it is named, so the row moves
+    // past the step before it.
+    step_id: classification.kind === 'later_in_doubt' ? classification.step_id : input.stepId,
+    value: classification.value,
+    later: classification.later,
+    ...(pii !== undefined ? { pii_ledgers: pii } : {}),
+    // D-201 Slice 10BH — a kept loop, so the start settles its receipt item by item.
+    ...(isApprovedLoop(input.steps, input.approvedStepId) ? { approved_foreach: true as const } : {}),
+    // D-201 Slice 10BJ (10BF finding 9) — skipped, so the start settles it so.
+    ...(classification.skipped ? { approved_skipped: true as const } : {}),
+  };
+};
+
+/** D-201 Slice 10AB (10AA finding 2) — a held try again that failed rather
+ *  than stopped, read as a stop is: the step it failed at, the approved step's
+ *  value, and each step that finished before it. A step that finished but
+ *  failed the run (its `fail_on`), or a transform that failed, is named by the
+ *  run's error. Undefined when the approved step itself is not known to have
+ *  come back, which a try again that replays it cannot reach. */
+export const failureAfterApproval = (
+  classification: RestartStopClassification,
+  errors: readonly RecipeError[],
+  approvedStepId: string,
+  piiLedgers?: PiiLedgerStoreSnapshot,
+  /** D-201 Slice 10BH — the approved step is a loop. */
+  approvedForeach = false,
+): ApprovedRunFailure | undefined => {
+  if (classification.kind !== 'returned' && classification.kind !== 'later_in_doubt') return undefined;
+  const named = errors.find((error) => typeof error.source?.step_id === 'string'
+    && error.source.step_id !== approvedStepId)?.source?.step_id ?? undefined;
+  const stepId = classification.kind === 'later_in_doubt' ? classification.step_id : named;
+  // What finished before it stands in; it, and what comes after it, runs again.
+  const cut = stepId === undefined ? -1 : classification.later.findIndex((step) => step.step_id === stepId);
+  return {
+    ...(stepId !== undefined ? { step_id: stepId } : {}),
+    value: classification.value,
+    later: cut === -1 ? [...classification.later] : classification.later.slice(0, cut),
+    ...(piiLedgers !== undefined ? { pii_ledgers: piiLedgers } : {}),
+    ...(approvedForeach ? { approved_foreach: true as const } : {}),
+    // D-201 Slice 10BJ (10BF finding 9).
+    ...(classification.skipped ? { approved_skipped: true as const } : {}),
+  };
+};
+
+const RESTART_APPROVED_IN_DOUBT_MESSAGE = 'The server restarted while the approved operation was running, so Recued '
+  + 'cannot tell whether it went through. Check before trying it again.';
+/** D-201 Slice 10BC (10AY findings 2 and 11) — the run went past an approved
+ *  step whose outcome Recued cannot keep: a loop resumed past its first item
+ *  (one that finished is kept since 10BH), a chunked upload, a resume bound to
+ *  an egress budget or a resource review, or a hand-off its receipt cannot
+ *  prove. D-201 Slice 10BI (10BF findings 4 and 5) — the run's record only,
+ *  and only when its caller holds the run for the owner's try again; the
+ *  receipt, a run held by nothing and a hand-off say otherwise (below). */
+export const RESTART_APPROVED_NOT_KEPT_MESSAGE = 'The server restarted after the run went past the approved '
+  + 'operation, but Recued cannot keep what that operation did, so it cannot tell whether it went through. Trying it '
+  + 'again asks you for it again, and the steps after it that ran run again too. Check before trying it again.';
+/** D-201 Slice 10BI (10BF finding 4) — the receipt's words for that stop, on
+ *  any run: what a try again does is the run's record's and Settings' to say,
+ *  for only a run its caller holds has one that asks again. The receipt
+ *  promised it to chat and MCP runs too. */
+export const RESTART_APPROVED_NOT_KEPT_RECEIPT_MESSAGE = 'The server restarted after the run went past the approved '
+  + 'operation, but Recued cannot keep what that operation did, so it cannot tell whether it went through. Check '
+  + 'before trying it again.';
+/** D-201 Slice 10BI (10BF finding 4) — the run's record and its caller's action
+ *  for that stop when nothing holds the run for a try again: a chat or MCP run,
+ *  or a webhook run none of whose rows could be kept. Its next run runs each of
+ *  its steps again. */
+export const RESTART_APPROVED_NOT_KEPT_UNHELD_MESSAGE = 'The server restarted after the run went past the approved '
+  + 'operation, but Recued cannot keep what that operation did, so it cannot tell whether it went through. Running '
+  + 'it again runs each of its steps again, that operation too. Check before running it again.';
+/** D-201 Slice 10BP (the 10BM audit's note) — the approved step came back, but
+ *  Recued cannot keep what it did (a loop resumed past its first item, a chunked
+ *  upload, a resume bound to an egress budget or a resource review), and the
+ *  server restarted before any step after it started. Its receipt, its record and
+ *  its caller's action said the operation was running. */
+export const restartApprovedReturnedNotKeptMessage = (to: 'receipt' | 'held' | 'unheld'): string =>
+  'The server restarted after the approved operation returned, but Recued cannot keep what that operation did, so it '
+  + 'cannot tell whether it went through. '
+  + (to === 'held'
+    ? 'Trying it again asks you for it again. Check before trying it again.'
+    : to === 'unheld'
+      ? 'Running it again runs each of its steps again, that operation too. Check before running it again.'
+      : 'Check before trying it again.');
+/** D-201 Slice 10BI (10BF finding 5) — a stop after the approved step returned,
+ *  having handed its work on with no hand-off its receipt can check: what the
+ *  run did is kept, and only the hand-off is unproven. It said Recued could not
+ *  keep what the operation did, or that the operation was running. */
+export const restartHandoffUnprovenMessage = (held: boolean, wentPast: boolean): string =>
+  'The server restarted after the approved operation returned, but Recued cannot prove it went through: it handed '
+  + 'its work on, and returned no hand-off Recued can check. '
+  + (held
+    ? `Trying it again asks you for it again${wentPast ? ', and the steps after it that ran run again too' : ''}. `
+      + 'Check before trying it again.'
+    : 'Running it again runs each of its steps again, that operation too. Check before running it again.');
+/** D-201 Slice 10R — a later step, not the approved one, was under way. */
+export const RESTART_LATER_STEP_IN_DOUBT_MESSAGE = 'The approved operation went through, but the server restarted '
+  + 'while a later step was running, so Recued cannot tell whether that step went through. Check before trying it '
+  + 'again.';
+/** D-201 Slice 10BH — as above, the approved step a kept loop: each of its
+ *  items came back with its own result, which may be a failure, so it is said
+ *  to have run, not gone through. Its receipt says which items went through. */
+/** D-201 Slice 10BZ (10BX finding 5) — as above, the approved step skipped
+ *  before the stop (at the answer): its receipt reads cancelled, and the
+ *  record said it went through. */
+export const RESTART_LATER_STEP_AFTER_SKIP_IN_DOUBT_MESSAGE = 'The approved operation was skipped, but the server '
+  + 'restarted while a later step was running, so Recued cannot tell whether that step went through. Check before '
+  + 'trying it again.';
+export const RESTART_LATER_STEP_AFTER_LOOP_IN_DOUBT_MESSAGE = 'The approved operation ran for each of its items, as '
+  + 'its receipt says, but the server restarted while a later step was running, so Recued cannot tell whether that '
+  + 'step went through. Check before trying it again.';
+
+/** D-201 Slice 10AV (10AS finding 9) — the approved step's receipt settled
+ *  from the value a held row kept, as a stop that found the step returned
+ *  settles it (`settleRestartStop`). Read at the start after a death, before
+ *  receipts still dispatching are frozen in doubt: the row was written only
+ *  once the step came back. Whether it now reads as having gone through. */
+export const settleApprovedStepFromKeptValue = async (
+  store: GatedActionStore,
+  actionRef: string,
+  stepId: string,
+  value: unknown,
+  /** D-201 Slice 10BH — a kept loop: settled item by item. */
+  approvedForeach = false,
+  /** D-201 Slice 10BJ (10BF finding 9) — skipped: settled as the live stop
+   *  settles a skipped step. It settled as one that ran. */
+  approvedSkipped = false,
+): Promise<boolean> => {
+  await settleCompletedGatedStep(store, actionRef, approvedForeach && !approvedSkipped ? keptLoopStepLog(stepId, value) : {
+    id: stepId,
+    type: 'ingredient',
+    skipped: approvedSkipped,
+    result: approvedSkipped ? null : value,
+    error: null,
+    duration_ms: 0,
+  } as ExecutionResult['steps'][number]);
+  const settled = await store.get(actionRef);
+  return settled?.status === 'succeeded' || settled?.status === 'dispatched'
+    // D-201 Slice 10BH — a kept loop's items, some or all failed, are as known.
+    || (approvedForeach && (settled?.status === 'partial' || settled?.status === 'failed'))
+    // D-201 Slice 10BJ (10BF finding 9) — as the live stop reads a skipped step.
+    || (approvedSkipped && settled?.status === 'cancelled');
+};
+
+/** D-201 Slices 10N and 10R — what a stop leaves in the approved step's receipt,
+ *  and what the resumer is told. The receipt is settled from the step's value
+ *  once it came back, as a finished step's is; under way, it reads in doubt.
+ *  `actionRef` is absent on the run that finishes a kept one: the first stop
+ *  settled its receipt. */
+const settleRestartStop = async (input: {
+  store: GatedActionStore | undefined;
+  actionRef: string | undefined;
+  approvedStepId: string;
+  classification: RestartStopClassification;
+  /** The run's alias ledgers at the stop, kept with what the steps left. */
+  piiLedgers: PiiLedgerStoreSnapshot | undefined;
+  /** D-201 Slice 10BH — the approved step is a loop. */
+  approvedForeach?: boolean;
+}): Promise<ApprovedRunRestartStop> => {
+  const stop = input.classification;
+  if (stop.kind === 'unsent') return { kind: 'unsent' };
+  if (stop.kind === 'approved_in_doubt') {
+    if (input.actionRef !== undefined) {
+      await finishResumedGatedActionReceipt(input.store, input.actionRef, {
+        status: 'in_doubt',
+        // D-201 Slice 10BI (10BF finding 4) — no try again promised here.
+        // D-201 Slice 10BP (the 10BM audit's note) — one that came back, said so.
+        status_message: stop.went_past === true ? RESTART_APPROVED_NOT_KEPT_RECEIPT_MESSAGE
+          : stop.returned === true ? restartApprovedReturnedNotKeptMessage('receipt')
+          : RESTART_APPROVED_IN_DOUBT_MESSAGE,
+        result: { reason: 'stopped_by_restart' },
+        observed: { items: 1, succeeded: 0, failed: 0 },
+      });
+    }
+    // D-201 Slice 10BC (10AY finding 2) — past it: the steps after it run again.
+    return {
+      kind: 'in_doubt',
+      ...(stop.went_past === true ? { later_run_again: true as const } : {}),
+      ...(stop.returned === true ? { returned_not_kept: true as const } : {}),
+    };
+  }
+  if (input.actionRef !== undefined) {
+    // D-201 Slice 10BH — a kept loop, item by item.
+    await settleCompletedGatedStep(input.store, input.actionRef, input.approvedForeach === true && !stop.skipped
+      ? keptLoopStepLog(input.approvedStepId, stop.value)
+      : {
+        id: input.approvedStepId,
+        type: 'ingredient',
+        skipped: stop.skipped,
+        result: stop.skipped ? null : stop.value,
+        error: null,
+        duration_ms: 0,
+      } as ExecutionResult['steps'][number]);
+    const settled = await input.store?.get(input.actionRef);
+    if (!(settled?.status === 'succeeded' || settled?.status === 'dispatched'
+      || (settled?.status === 'cancelled' && stop.skipped)
+      // D-201 Slice 10BH — a kept loop whose items some or all failed: known.
+      || (input.approvedForeach === true && (settled?.status === 'partial' || settled?.status === 'failed')))) {
+      // Settled otherwise (an asynchronous hand-off it cannot prove): the
+      // receipt says what is known, and the run is left for the owner.
+      // D-201 Slice 10BC (10AY finding 11) — held at the approved step, and
+      // when the run went past it, the steps after it that ran run again too.
+      // D-201 Slice 10BI (10BF finding 5) — a hand-off it cannot check, said so.
+      return {
+        kind: 'in_doubt',
+        ...(stop.kind === 'later_in_doubt' || stop.later.length > 0 ? { later_run_again: true as const } : {}),
+        ...(settled?.status === 'in_doubt' && settled.settlement_mode === 'durable_handoff'
+          ? { handoff_unproven: true as const }
+          : {}),
+      };
+    }
+  }
+  // D-201 Slice 10W (10V finding 1) — with what went through before it, so the
+  // owner's try again goes on from the step in doubt, those standing in.
+  if (stop.kind === 'later_in_doubt') {
+    return {
+      kind: 'in_doubt',
+      step_id: stop.step_id,
+      value: stop.value,
+      later: stop.later,
+      ...(input.piiLedgers !== undefined ? { pii_ledgers: input.piiLedgers } : {}),
+      ...(input.approvedForeach === true ? { approved_foreach: true as const } : {}),
+      // D-201 Slice 10BJ (10BF finding 9) — so the start reads it as this does.
+      ...(stop.skipped ? { approved_skipped: true as const } : {}),
+    };
+  }
+  return {
+    kind: 'returned',
+    value: stop.value,
+    later: stop.later,
+    ...(input.piiLedgers !== undefined ? { pii_ledgers: input.piiLedgers } : {}),
+    // D-201 Slice 10BO (10BM finding 7) — so the run kept for the next start
+    // replays it as skipped, as `later_in_doubt` carries it above.
+    ...(stop.skipped ? { approved_skipped: true as const } : {}),
+  };
+};
+
 /** D-145 engine-wiring (D-153 P1) — process-lived correlation tracker.
  *  One instance per server process: the ~1-min intent-burst heuristic
  *  has to observe successive `handleExecute` calls to group them, so
@@ -1076,6 +1590,8 @@ export interface ExecuteHandlerDeps {
   preapprovalDriver?: import('./preapproval-driver.js').PreapprovalDriver;
   mailDraft?: import('@recued/ingredients').KernelDispatchers['mailDraft'];
   kitchenDraftImport?: import('@recued/ingredients').KernelDispatchers['kitchenDraftImport'];
+  /** D-402 slice A5 — an AI app's draft request. */
+  kitchenDraftFromJob?: import('@recued/ingredients').KernelDispatchers['kitchenDraftFromJob'];
   kitchenDraft?: import('@recued/ingredients').KernelDispatchers['kitchenDraft'];
   /** D-264 — `core.mail.draft.save-to-mailbox`. Optional: a server with no mail stack
    *  wired leaves it absent and the kernel case says so. */
@@ -1090,19 +1606,48 @@ export interface ExecuteHandlerDeps {
   /** Durable owner projection per checkpointed gated step. This is distinct
    * from the MCP invocation-level continuation above. */
   gatedActionStore?: GatedActionStore;
+  /** D-201 Slice 10N — an approved run the server's own stop ended after its
+   *  approved step returned, kept for the next start to finish without sending
+   *  the operation again. Read and written by the host resumer only. Absent ⇒
+   *  such a stop is reported as before (the run is not continued). */
+  approvalRestartContinuations?: ApprovalRestartContinuationStore;
   /** D-329 §3.4 — the write rules an AI's approvals teach: the resumer keeps each answer to
    *  a held Tier-1 write, and the chat's and the MCP door's gates spend a live rule's use
    *  instead of asking. Absent ⇒ every held write asks. */
   writeRules?: import('./storage/write-rule-store.js').WriteRuleStore;
+  /** D-348 — the evidence chains are learned from: the resumer keeps each answer to a held call of
+   *  a request of the owner's chats, and its outcome. Absent ⇒ nothing is learned. */
+  chainEvidence?: import('./storage/chain-evidence-store.js').ChainEvidenceStore;
+  /** D-348 slice 2 — what the evidence teaches: each request key's suggestion and the rules the
+   *  owner accepted. Absent ⇒ nothing is suggested. */
+  chainRules?: import('./storage/chain-rule-store.js').ChainRuleStore;
+  /** D-348 — the clock chains are learned on (the resumer's `recordChainOutcome`) and spent on (the
+   *  gates' rule), so a rule is judged in the time its evidence was. Absent ⇒ `Date.now`; a test
+   *  sets it. */
+  now?: () => number;
   /** D-335 slice F — passes for Browser Toolkit writes (who × recipe × site): the commit
    *  gateway lets a live one stand in for a browser write's ask, a held browser write offers
    *  one on its site, and the resumer mints the answer's and keeps every answer. Absent ⇒
    *  every browser write asks, offering allow once and deny. */
   browserPasses?: import('./storage/browser-pass-store.js').BrowserPassStore;
+  /** D-402 slice F3d — an AI app's name, as the owner gave it its key, by the contract its runs carry:
+   *  the question before a run says who asks. Absent, or none known: "Your AI app". */
+  aiAppNameOf?: (contract_id: string) => string | undefined;
+  /** D-402 slice F4 — an AI app's contract, by the name the owner gave its key (any case): what the
+   *  owner's chat names when it stops allowing that app. */
+  aiAppContractOf?: (name: string) => string | undefined;
+  /** D-402 slice F4 (§7.9) — "Stop allowing" over the stores each permission lives in
+   *  (`stop-allowing.ts`), composed once beside the contract-definition store. The owner's chat tool
+   *  and an AI app's own op (`recued_stopAllowing`) call it. Absent ⇒ both report it unavailable. */
+  stopAllowing?: (input: { readonly caller: import('@recued/contracts').PreapprovalCaller; readonly recipe_id: string;
+    readonly by: import('./stop-allowing.js').StopAllowingBy }) => import('@recued/contracts').StopAllowingResult;
   /** D-341 slice B1 — triggers' standing pre-approvals (trigger × recipe version × writes): the
    *  commit gateway lets one stand in for the ask of a write a schedule, an event trigger or a
    *  webhook started, spending a use. Absent ⇒ those writes ask. */
   triggerPreapprovals?: import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore;
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers: on Allow, the catalog gate lets
+   *  their chats' read of a Body's numbers (held at `always`) through without asking. Absent ⇒ it asks. */
+  bodyNumbers?: Pick<import('./body-numbers-setting.js').BodyNumbersSetting, 'forChats'>;
   /** D-341 slice B2 — grants what a held write's "Always allow for this …" offered, when the owner
    *  answers it (`preflight-resumer.ts`). Late-bound in `compose-listeners.ts`, where the stores a
    *  trigger is checked against exist. Absent ⇒ that answer is a plain approve. */
@@ -1114,6 +1659,9 @@ export interface ExecuteHandlerDeps {
   /** D-335 slice W2 — where a run's browser steps are filed under the owner's chat turn that ran
    *  it; the process's own by default (the DOM adapter records into the same one). */
   browserFlows?: import('./bridges/browser-flow-record.js').BrowserFlowRecorder;
+  /** D-402 slice A2 — the jobs AI apps started, which their runs are bound to; the process's own by
+   *  default (the MCP server's `recued_startJob` starts them in the same one). */
+  browserJobs?: import('./bridges/browser-job-registry.js').BrowserJobRegistry;
   /** D-221 — namespaced Records storage and execution authority. Optional for
    * old/dbless harnesses; a Records catalog call fails closed when absent. */
   recordsStore?: RecordsStore;
@@ -1364,6 +1912,18 @@ export interface ExecuteHandlerDeps {
    *  resumes through. A getter: chat builds the registry after these deps. Absent ⇒ such a
    *  resume fails closed, never runs. */
   tier1Registry?: () => import('@recued/contracts').InternalToolRegistry | undefined;
+  /** A held Tier-1 call, approved: runs `dispatch` as a write approved on its card runs, with
+   *  its reviewed change and a receipt under its proposal, so the owner can undo it
+   *  (`createRunApprovedTier1Write`). `validate` rechecks, inside the write's own transaction,
+   *  that the call is still allowed. Absent, or a call that changes nothing Recued can undo:
+   *  `dispatch` alone. A getter's work: chat builds the proposals after these deps. */
+  runApprovedTier1Write?: (call: {
+    readonly run_id: string;
+    readonly tool: string;
+    readonly args: Record<string, unknown>;
+    readonly source: import('@recued/contracts').ExecutionSource;
+    readonly validate: () => void;
+  }, dispatch: () => Promise<import('@recued/contracts').ChatDispatchResult>) => Promise<import('@recued/contracts').ChatDispatchResult>;
   /** D-320 audit — the door a webhook run waiting for approval resumes under when a
    *  re-derive replaced the one it started under (`webhook-resume-door.ts`). Absent ⇒
    *  it resumes under its own, and is refused if that door was revoked. */
@@ -2450,6 +3010,68 @@ const liveRunDeclaration = (
   };
 };
 
+/** How Live control names a live run (`ActiveExecutionEntry.recipe_name`, `recipe_inline`,
+ *  `step_name`). An installed recipe by its name, read only off one loaded by id: a recipe passed in
+ *  with the run carries its caller's id and name, and either may be an installed recipe's. Each step
+ *  by its action, as its approval names it (`heldActionName`), from its ingredient's manifest.
+ *  The kernel `run-ingredient` recipe (every MCP ingredient tool, the chat's own actions, the peer
+ *  carrier) is no recipe the owner knows: its run is named by the one action it runs, read off its
+ *  config ("Send mail"), and only an action no manifest names stays a one-off. */
+/** An ingredient's action by its name, as its approval names it ("Send mail"), or undefined. */
+const namedAction = (
+  manifests: ExecuteHandlerDeps['executorConfig']['manifests'],
+  slug: string,
+  operation: string | undefined,
+): string | undefined => {
+  const getManifest = (s: string) => manifests.get(s);
+  try {
+    return (operation !== undefined
+      ? heldActionName(`${slug}.${operation}`, getManifest) ?? heldActionName(operation, getManifest)
+      : undefined) ?? heldActionName(slug, getManifest);
+  } catch { return undefined; }
+};
+
+const liveRunNames = (
+  recipe: RecipeDefinition,
+  inline: boolean,
+  manifests: ExecuteHandlerDeps['executorConfig']['manifests'],
+  config?: Record<string, unknown>,
+): { recipe_name?: string; recipe_inline?: true; step_names?: Record<string, string> } => {
+  const actionName = (slug: string, operation: string | undefined) => namedAction(manifests, slug, operation);
+  if (recipe.recipe_id === RUN_INGREDIENT_RECIPE.recipe_id) {
+    const slug = typeof config?.ingredient_slug === 'string' ? config.ingredient_slug : '';
+    const input = config?.input !== null && typeof config?.input === 'object'
+      ? config.input as Record<string, unknown>
+      : undefined;
+    const action = slug.length > 0
+      ? actionName(slug, typeof input?.operation === 'string' ? input.operation : undefined)
+      : undefined;
+    const named = action === undefined ? '' : boundLiveText(action, 120);
+    if (named.length > 0) return { recipe_name: named };
+  }
+  const step_names: Record<string, string> = {};
+  for (const raw of [
+    ...(recipe.trigger_steps ?? []),
+    ...(recipe.prefetch_steps ?? []),
+    ...(recipe.steps ?? []),
+  ]) {
+    const step = raw as unknown as { id?: unknown; ingredient?: unknown; input?: unknown };
+    if (typeof step.id !== 'string' || typeof step.ingredient !== 'string' || step.ingredient.length === 0) continue;
+    const input = step.input !== null && typeof step.input === 'object'
+      ? step.input as Record<string, unknown>
+      : undefined;
+    const operation = typeof input?.operation === 'string' ? input.operation : undefined;
+    const name = actionName(step.ingredient, operation);
+    if (name !== undefined) step_names[step.id] = boundLiveText(name, 80);
+  }
+  const named = inline ? '' : boundLiveText(typeof recipe.metadata?.name === 'string' ? recipe.metadata.name : '', 120);
+  return {
+    ...(named.length > 0 ? { recipe_name: named } : {}),
+    ...(inline ? { recipe_inline: true as const } : {}),
+    ...(Object.keys(step_names).length > 0 ? { step_names } : {}),
+  };
+};
+
 const attachedRunningResponse = async (
   outcome: Promise<import('./execution/in-flight-registry.js').RunningTwinOutcome>,
 ): Promise<ExecuteResponse> => {
@@ -2520,6 +3142,16 @@ const awaitExecutionOrOwnerAbort = async (
  *  `success: false` + `errors: [...]` fields, not thrown.
  *  Starts an independent run; explicit local/exchange invocations below retain
  *  their parent's cancellation through the private entry instead. */
+/** D-402 slice F5 — an admission's hooks, telling `onAdmit` of each write they let through. */
+const countedAdmission = <H extends { admit: (call: never) => string | null }>(hooks: H, onAdmit: () => void): H => ({
+  ...hooks,
+  admit: ((call: never) => {
+    const id = hooks.admit(call);
+    if (id !== null) onAdmit();
+    return id;
+  }) as H['admit'],
+});
+
 export const handleExecute = (
   deps: ExecuteHandlerDeps, request: ExecuteRequest, internal: InternalExecuteOverrides = {},
 ): Promise<ExecuteResponse> => {
@@ -2531,6 +3163,12 @@ export const handleExecute = (
   if (internal.resume_from === undefined && deps.isDraining?.() === true) {
     return Promise.reject(new RpcError('draining', 'The server is restarting; try again in a moment.', 503));
   }
+  // D-402 slice C — a trial of a draft asks about every change itself: no reviewed run or automatic
+  // qualification stands in for it. `recipe.try` never sets either, so this guards the invariant.
+  if (internal.trial === true && (internal.preapproval_run !== undefined || internal.preapproval_candidate !== undefined)) {
+    return Promise.reject(new RpcError('trial_preapproval',
+      'A trial of a draft asks about every change itself: it cannot run under a pre-approval.', 409));
+  }
   // D-188 — no run starts while the server is paused, whatever starts it (the emergency stop,
   // the owner's ruling of 2026-11-08), refused like a drain: before anything is registered or
   // audited, so a schedule, a trigger or a queue reads "not run" and keeps its work for after
@@ -2540,6 +3178,20 @@ export const handleExecute = (
   if (internal.resume_from === undefined && deps.isServerPaused?.() === true) {
     return Promise.reject(new RpcError(PAUSED_RUN_CODE,
       request.trigger_source === 'manual' ? PAUSED_RUN_REFUSAL : PAUSED_RUN_DETAIL, 409));
+  }
+  // D-402 slice C — a trial of a draft: while it executes, its browser steps ask the owner at each
+  // change (`bridges/browser-trials.ts`). Marked from the minted id, so a resume, which comes back here
+  // with the trial flag from its checkpoint, is marked again under the same run.
+  if (internal.trial === true) {
+    let minted: string | undefined;
+    const reported = internal.onRunMinted;
+    const marked: InternalExecuteOverrides = { ...internal, onRunMinted: (run_id) => {
+      minted = run_id;
+      browserTrials.begin(run_id);
+      reported?.(run_id);
+    } };
+    return withoutRunAbortContext(() => handleExecuteInRunContext(deps, request, marked))
+      .finally(() => { if (minted !== undefined) browserTrials.end(minted); });
   }
   return withoutRunAbortContext(() => handleExecuteInRunContext(deps, request, internal));
 };
@@ -2629,6 +3281,9 @@ const handleExecuteInner = async (
     };
   }
 
+  // D-402 slice A1 — the caller's own arguments, before any dish or install setting is merged in:
+  // what the plan records for the call (the overlays below build a new request, not change this).
+  const planArgs: Record<string, unknown> = request.config ?? {};
   // Capture WIRE ownership before dish/install overlays mutate `request.config`.
   // An inline recipe supplied by a direct MCP customer is itself caller-owned;
   // a stored recipe's batch multiplicity is caller-owned only where its ref
@@ -2645,6 +3300,8 @@ const handleExecuteInner = async (
   let authoredRecipeSha256 = '';
   let operationBoundWebhookConsumer: ExecutionContext['operationBoundWebhookConsumer'];
   let storedRecipeCallerPack: string | undefined;
+  /** D-402 slice F3 — the pack an installed recipe came with (null: the owner's own). */
+  let storedRecipePack: string | null | undefined;
 
   if (request.recipe) {
     recipe = request.recipe as RecipeDefinition;
@@ -2665,6 +3322,7 @@ const handleExecuteInner = async (
         ? deps.recipeStore.getStored(request.recipe_id)
         : null;
       if (stored) {
+        storedRecipePack = stored.pack_slug;
         storedRecipeCallerPack = stored.pack_slug ?? `local:${stored.recipe_id}`;
         operationBoundWebhookConsumer = stored.pack_slug === null
           ? { kind: 'local_recipe', id: stored.recipe_id }
@@ -3961,6 +4619,12 @@ const handleExecuteInner = async (
     throw new RpcError('permission_denied', 'This contract has restricted spheres. Raw data references cannot enforce that boundary; read through situation.query or a scoped work reader instead.', 403);
   }
   const stores = createNamespaceStores(vault, config, context);
+  /** D-402 slice B4 — a call's input as the gateway sees it (review, admission, hash), vault refs left
+   *  for the adapter. An Act call's data steps keep `{{item.*}}` outside a foreach, for Act's own data
+   *  engine, exactly as its dispatch does (`server-executor.ts`): resolved here they would be nothing,
+   *  and Act would refuse the step before it ran. */
+  const gatewayResolve = (slug: string) => (merged: Record<string, unknown>) => resolveDeep(merged, stores,
+    { deferVault: true, ...(slug === 'dom-act' && stores.item === undefined ? { deferItem: true } : {}) }) as Record<string, unknown>;
 
   // D-157 server-wiring — seed `stores.step` from the resume payload
   // BEFORE the engine takes the run. The engine's resume mode
@@ -4176,9 +4840,21 @@ const handleExecuteInner = async (
   // D-335 slice W2 — the owner's chat turn this run belongs to, so the browser steps it does are
   // filed under it; a run resumed once the owner approved it binds again, to the same turn.
   const runSource = request.execution_source;
+  const flowRecorder = deps.browserFlows ?? processBrowserFlows;
   if (runSource?.channel === 'chat' && runSource.actor === 'user_self' && runSource.turn_id !== undefined) {
-    (deps.browserFlows ?? processBrowserFlows).bindRun(run_id, { session_id: runSource.chat_session_id, turn_id: runSource.turn_id });
+    flowRecorder.bindRun(run_id, { session_id: runSource.chat_session_id, turn_id: runSource.turn_id });
+  } else if (runSource?.channel === 'mcp' && !(recipe.recipe_id === RUN_INGREDIENT_RECIPE.recipe_id
+    && planArgs.ingredient_slug === KITCHEN_DRAFT_FROM_JOB_SLUG)) {
+    // D-402 slice A2 — an AI app's run, bound to the job the app started, while one is going.
+    // Slice A5: never its draft request, which asks about the job and is no part of it.
+    const job = (deps.browserJobs ?? processBrowserJobs).activeFor({ mcp_token_id: runSource.mcp_token_id,
+      agent_id: runSource.agent_id });
+    if (job !== undefined) flowRecorder.bindRun(run_id, { session_id: browserJobSession(job), turn_id: job });
   }
+  // D-402 slice A1 — the call the request's plan records (nothing for a run bound to no request).
+  flowRecorder.startCall(run_id, { recipe_id: recipe.recipe_id, args: planArgs, browser: recipeActsInBrowser(recipe),
+    // D-402 slice B3 — the ops it runs: which reader read a document.
+    ops: (recipe.steps ?? []).flatMap((step) => (typeof (step as { op?: unknown }).op === 'string' ? [(step as { op: string }).op] : [])) });
   // D-179 P1 — the run's dish attribution. A standing dish keeps its
   // long-life id; a dishless (manual / legacy-dispatch) run derives an
   // ephemeral id from the run id — attribution-only, never persisted.
@@ -4822,6 +5498,7 @@ const handleExecuteInner = async (
     granted_recipe_steps: grantedRecipeSteps,
     recipeCoversOp: opId => coverageIsInherited
       || recipeCoversOp(recipe.recipe_id, opId, resolveRecipeCoverage()),
+    ...(internal.trial === true ? { trial: true as const } : {}),
   });
 
   // D-157 P1 slice 4 — per-call admission probe. Closes over the run's
@@ -5287,7 +5964,8 @@ const handleExecuteInner = async (
       || POLICY_GATED_USER_CHANNELS.has(executionSource.channel)
       || POLICY_GATED_CONTRACT_CHANNELS.has(executionSource.channel))
       ? (slug: string): void | object => {
-          if (deps.preapprovalRuntime?.recordDispatchUse(executionSource, slug, overlayForUse)) return;
+          const reviewedTake = deps.preapprovalRuntime?.recordDispatchUse(executionSource, slug, overlayForUse);
+          if (reviewedTake) return reviewedTake === true ? undefined : reviewedTake;
           // Meter the contract's use iff the overlay reports this dispatch meterable.
           // No op id is threaded: the metering op axis RETIRED (home #2 —
           // `contract_grant` owns op admission), so the scope match gates on
@@ -5358,6 +6036,9 @@ const handleExecuteInner = async (
   // when a resolver is present (`sessionGrantResolverForRun` is the narrowed
   // const the closures capture, mirroring `overlayForUse` above); absent ⇒
   // the Gateway dep is omitted and every `ask` holds exactly as pre-D-177.
+  // D-402 slice F5 (§7.10) — what let each of this run's writes through without asking: recorded where
+  // each gate's host lets one through, carried on the response (`let_through`). It only counts.
+  const letThrough = createRunLetThrough(() => (runIdentity !== undefined ? preapprovalCallerOf(runIdentity.source) : undefined));
   const sessionGrantResolverForRun = deps.sessionGrantResolver;
   // D-202 task 4a — the narrowed quality-delegation resolver the gateway
   // closure captures (mirroring `sessionGrantResolverForRun`); absent ⇒ the
@@ -5370,6 +6051,7 @@ const handleExecuteInner = async (
   // envelope (the only coherent `'exact'`-mode choice; multi-item coverage is
   // P5a's batch mode). Per-run closure state, so a fresh run never inherits it.
   let sessionGrantMinted = false;
+  const sessionGrantDecision = internal.resume_from?.session_grant_decision;
   // D-177 P5a — per-run claim memo: an ordinary `foreach` gated step re-dispatches
   // per iteration, each carrying the SAME `preflight_batch_claim` marker;
   // one member covers the whole gated step (exactly as one approval does
@@ -5429,6 +6111,7 @@ const handleExecuteInner = async (
             canonical_payload_hash?: string;
             pinned_projection_hash?: string;
             destination_emails?: ReadonlyArray<string>;
+            operation_id?: string;
           },
         ) => boolean;
         claimBatchMember: (
@@ -5466,6 +6149,8 @@ const handleExecuteInner = async (
                 : {}),
               recipe_id: recipe.recipe_id,
               recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
+              // D-177 N.15 — an inline recipe carries the AI's own call.
+              ...(request.recipe !== undefined ? { recipe_inline: true } : {}),
             });
           },
           consume: (
@@ -5474,6 +6159,7 @@ const handleExecuteInner = async (
               canonical_payload_hash?: string;
               pinned_projection_hash?: string;
               destination_emails?: ReadonlyArray<string>;
+              operation_id?: string;
             },
           ): boolean => {
             // Slice D — the store's scoped arm RE-VERIFIES containment at the
@@ -5490,12 +6176,14 @@ const handleExecuteInner = async (
               doorSourceContractId !== undefined
                 ? { ...(call ?? {}), source_contract_id: doorSourceContractId }
                 : call;
-            return sessionGrantResolverForRun.consume(
+            const spent = sessionGrantResolverForRun.consume(
               contract_id,
               withDoor !== undefined && candidates !== undefined
                 ? { ...withDoor, scoped_sender_candidates: candidates }
                 : withDoor,
             );
+            if (spent) letThrough.record('grant');
+            return spent;
           },
           claimBatchMember: (
             contract_id: string,
@@ -5509,7 +6197,7 @@ const handleExecuteInner = async (
             // FIRST claim (the dispatch the ask enumerated) is
             // hash-verified; the loop rides the same approval.
             const memo = [contract_id, member_id].join(' ');
-            if (claimedBatchMembers.has(memo)) return true;
+            if (claimedBatchMembers.has(memo)) { letThrough.record('grant'); return true; }
             const claimed = sessionGrantResolverForRun.claimBatchMember(
               contract_id,
               member_id,
@@ -5524,7 +6212,7 @@ const handleExecuteInner = async (
                   : {}),
               },
             );
-            if (claimed) claimedBatchMembers.add(memo);
+            if (claimed) { claimedBatchMembers.add(memo); letThrough.record('grant'); }
             return claimed;
           },
           mint: (call: SessionGrantMintGateCall): void => {
@@ -5538,6 +6226,10 @@ const handleExecuteInner = async (
                 : {}),
               recipe_id: recipe.recipe_id,
               recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
+              ...(sessionGrantDecision !== undefined ? {
+                approved_action_ref: sessionGrantDecision.approval_ref,
+                decision_version: sessionGrantDecision.version,
+              } : {}),
             });
           },
         }
@@ -5564,12 +6256,15 @@ const handleExecuteInner = async (
       ? {
           match: (
             call: Omit<QualityDelegationMatchContext, 'recipe_id' | 'recipe_hash'>,
-          ): boolean =>
-            qualityGateResolverForRun.match({
+          ): boolean => {
+            const delegated = qualityGateResolverForRun.match({
               ...call,
               recipe_id: recipe.recipe_id,
               recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
-            }),
+            });
+            if (delegated) letThrough.record('grant');
+            return delegated;
+          },
           getSwitches: (): QualityGateSwitches =>
             qualityGateResolverForRun.switches(),
         }
@@ -5621,6 +6316,23 @@ const handleExecuteInner = async (
     store: deps.triggerPreapprovals,
     ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
   });
+  // D-402 slice H4 (§7.6, §8 item 7) — the browsers this run's settings name, by setting: what a caller's
+  // pre-approval holds each site's writes to, and what the question records with its answer. A browser
+  // setting changed under "Always" is not covered, so the run asks again.
+  const runBrowsers: PreapprovalBrowsers = runBrowsersOf(recipe, request.config ?? {});
+  /** D-402 slice H4c — each browser step's browser, by step: what the question's check of a site pass reads. */
+  const stepBrowsers = new Map(browserStepNeeds(recipe, request.config ?? {}).map((need) => [need.step_id, need.browser_id]));
+  /** D-402 slice H4c (§4.2 item 8) — the browser a write runs in, for a recipe that names its browsers:
+   *  its step's `bridge_id`, when that is one of the run's browser settings. A site pass records it, so a
+   *  pass granted in one browser lets no other through. A caller's own choice of browser (a Browser
+   *  Toolkit call's) is no setting of the run, so its passes are as they were. */
+  const browserOfCall = (input: unknown): { browser?: string; browser_name?: string } => {
+    const id = input !== null && typeof input === 'object' ? (input as { bridge_id?: unknown }).bridge_id : undefined;
+    if (typeof id !== 'string' || !Object.values(runBrowsers).includes(id)) return {};
+    // D-402 slice H4d — and its name, as the owner gave it: the ask says its answers are for it alone.
+    const name = deps.executorConfig.bridgeDispatcherRef?.()?.listBrowsers?.().find((browser) => browser.browser_id === id)?.name;
+    return { browser: id, ...(name !== undefined ? { browser_name: name } : {}) };
+  };
   const browserPasses: BrowserPassHooks | undefined =
     deps.browserPasses !== undefined && runIdentity !== undefined
       ? {
@@ -5633,6 +6345,7 @@ const handleExecuteInner = async (
               manifests: { get: (manifestSlug) => deps.executorConfig.manifests.get(manifestSlug) ?? null },
               input,
               run_id,
+              ...(deps.heldBrowserDescribeTimeoutMs !== undefined ? { timeoutMs: deps.heldBrowserDescribeTimeoutMs } : {}),
             })) {
               browserBatchAdmissions.record(run_id, input, { open: new Set() });
               return true;
@@ -5646,6 +6359,7 @@ const handleExecuteInner = async (
             // listed sites, and a secret is still asked for at its step.
             if (useScheduledPromptBrowser(identity.source) !== undefined) {
               if (stripCorePrefix(slug) === 'dom-act') browserBatchAdmissions.record(run_id, input, { open: 'any' });
+              letThrough.record('trigger');
               return true;
             }
             // D-341 slice A — a request approved ahead: the owner's chat, with its switch on, lets every
@@ -5654,6 +6368,7 @@ const handleExecuteInner = async (
             const request = useBrowserRequestPass(deps.browserPasses, identity.source, identity.channel_session_id);
             if (request !== undefined) {
               requestPassWrites += 1;
+              letThrough.record('switch');
               if (stripCorePrefix(slug) === 'dom-act') browserBatchAdmissions.record(run_id, input, { open: 'any' });
               if (deps.auditLog !== undefined) {
                 const at = Date.now();
@@ -5679,6 +6394,7 @@ const handleExecuteInner = async (
               recipe_id: recipe.recipe_id,
               site: browserPassSiteFor(slug, input, target !== undefined && 'origin' in target ? target : undefined),
               channel_session_id: identity.channel_session_id,
+              ...browserOfCall(input),
             });
             if (offer === undefined) return false;
             const pass = useBrowserPass(deps.browserPasses, offer.key, identity.channel_session_id);
@@ -5686,6 +6402,7 @@ const handleExecuteInner = async (
             lastBrowserTargetRead = undefined;
             // Slice X — a batch the pass let through may open a tab on the pass's site only.
             if (stripCorePrefix(slug) === 'dom-act') browserBatchAdmissions.record(run_id, input, { open: new Set([offer.key.site]) });
+            letThrough.record('site_pass');
             if (deps.auditLog !== undefined) {
               const at = Date.now();
               void deps.auditLog.logActivity({
@@ -5724,20 +6441,72 @@ const handleExecuteInner = async (
     manifestOf: (slug) => deps.executorConfig.manifests.get(slug),
     ...(deps.localManifestStore !== undefined ? { localManifestStore: deps.localManifestStore } : {}),
   });
+  // Named on the first write the run holds, once the run's packs are known (`runPackOps`).
+  const preapprovedStepOps = () => recipeStepOps(authoredRecipe, {
+    manifestOf: (slug) => deps.executorConfig.manifests.get(slug),
+    ...(runPackOps !== undefined ? { packs: runPackOps } : {}),
+  });
+  // D-402 slice F2 (§7.6) — else the pre-approvals the run's caller holds: the owner's chats or an AI
+  // app, for this recipe version, this run's own first. By the run's caller, version and id.
+  const preapprovalCaller = preapprovedRun === undefined && runIdentity !== undefined
+    ? preapprovalCallerOf(runIdentity.source) : undefined;
   const triggerPreapprovals: TriggerPreapprovalHooks | undefined =
     deps.triggerPreapprovals !== undefined && preapprovedRun !== undefined
-      ? createTriggerPreapprovalAdmission({
+      ? countedAdmission(createTriggerPreapprovalAdmission({
           store: deps.triggerPreapprovals, run: preapprovedRun, recipe_id: authoredRecipe.recipe_id,
           recipe_sha256: authoredRecipeSha256, run_id: promptRun?.run_id ?? run_id,
-          // Named on the first write the run holds, once the run's packs are known (`runPackOps`).
-          stepOps: () => recipeStepOps(authoredRecipe, {
-            manifestOf: (slug) => deps.executorConfig.manifests.get(slug),
-            ...(runPackOps !== undefined ? { packs: runPackOps } : {}),
-          }),
+          stepOps: preapprovedStepOps,
           neutralWriteOf,
           ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
-        })
+        }), () => letThrough.record('trigger'))
+      : deps.triggerPreapprovals !== undefined && preapprovalCaller !== undefined
+        ? createCallerPreapprovalAdmission({
+            store: deps.triggerPreapprovals, caller: preapprovalCaller, recipe_id: authoredRecipe.recipe_id,
+            recipe_sha256: authoredRecipeSha256, run_id, browsers: runBrowsers,
+            stepOps: preapprovedStepOps,
+            neutralWriteOf,
+            ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+            onUse: ({ this_run }) => letThrough.record(this_run ? 'this_run' : 'always'),
+            // D-402 ruling 17 — a run another recipe's run started: covered by the outermost run's answer too.
+            ...(internal.outer_caller_run !== undefined ? { outer: internal.outer_caller_run } : {}),
+          })
+        : undefined;
+
+  // D-348 slice 5 — the rule the owner accepted for the request the chat turn that started this run
+  // is part of: a held call on it goes ahead without asking, at either gate. A run resumed after an
+  // approval carries no request (its options are the resumer's), and asks.
+  const chainRules: ChainRuleHooks | undefined =
+    deps.chainRules !== undefined && internal.chain_request_key !== undefined
+      && request.execution_source !== undefined && teachesChains(request.execution_source)
+      ? countedAdmission(createChainRuleAdmission({
+          rules: deps.chainRules, key_hash: internal.chain_request_key, run_id,
+          recipe_id: recipe.recipe_id, recipe_source_hash: authoredRecipeHash,
+          ...(deps.auditLog !== undefined ? { auditLog: deps.auditLog } : {}),
+          ...(deps.now !== undefined ? { now: deps.now } : {}),
+        }), () => letThrough.record('rule'))
       : undefined;
+
+  // D-339 slice 12a — a read held at `always` the owner lets this run's caller make without asking:
+  // their chats' "Allow" for a Body's numbers. Audited once a run, as the first read it lets through.
+  let bodyNumbersReadAudited = false;
+  const heldReads = deps.bodyNumbers !== undefined
+    ? bodyNumbersHeldReads({
+        setting: deps.bodyNumbers,
+        source: request.execution_source,
+        onAdmit: (operation_id) => {
+          if (bodyNumbersReadAudited || deps.auditLog === undefined) return;
+          bodyNumbersReadAudited = true;
+          const at = Date.now();
+          void deps.auditLog.logActivity({
+            activity_id: `body_numbers_read_allowed_${run_id}_${at}`,
+            timestamp: at,
+            action: 'body_numbers_read_allowed',
+            target: operation_id,
+            detail: JSON.stringify({ run_id, recipe_id: recipe.recipe_id, principal: 'owner_chat' }),
+          }).catch(() => {});
+        },
+      })
+    : undefined;
 
   // 2026-11-04 — a held browser write whose page or element the Bridge says has gone fails
   // instead of being asked: the approval could only end in the same error. The read is the one
@@ -5805,6 +6574,8 @@ const handleExecuteInner = async (
                 : {}),
               recipe_id: recipe.recipe_id,
               recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
+              // D-177 N.15 — an inline recipe carries the AI's own call.
+              ...(request.recipe !== undefined ? { recipe_inline: true } : {}),
               risk_tier: call.risk_tier,
               pre_lift_approval: call.pre_lift_approval,
               arg_shape_hash: call.arg_shape_hash,
@@ -5829,6 +6600,7 @@ const handleExecuteInner = async (
               canonical_payload_hash: string;
               pinned_projection_hash?: string;
               destination_emails?: ReadonlyArray<string>;
+              operation_id?: string;
             },
           ): boolean => {
             // Slice D — same store-side containment re-verify pairing as the
@@ -5843,12 +6615,14 @@ const handleExecuteInner = async (
               doorSourceContractId !== undefined
                 ? { ...(call ?? {}), source_contract_id: doorSourceContractId }
                 : call;
-            return sessionGrantResolverForRun.consume(
+            const spent = sessionGrantResolverForRun.consume(
               contract_id,
               withDoor !== undefined && candidates !== undefined
                 ? { ...withDoor, scoped_sender_candidates: candidates }
                 : withDoor,
             );
+            if (spent) letThrough.record('grant');
+            return spent;
           },
           claimBatchMember: (
             contract_id: string,
@@ -5860,7 +6634,7 @@ const handleExecuteInner = async (
             // member covers it (a `foreach` catalog step's later iterations
             // ride the first claim exactly as one approval covers the loop).
             const memo = [contract_id, member_id].join(' ');
-            if (claimedBatchMembers.has(memo)) return true;
+            if (claimedBatchMembers.has(memo)) { letThrough.record('grant'); return true; }
             const claimed = sessionGrantResolverForRun.claimBatchMember(
               contract_id,
               member_id,
@@ -5875,7 +6649,7 @@ const handleExecuteInner = async (
                   : {}),
               },
             );
-            if (claimed) claimedBatchMembers.add(memo);
+            if (claimed) { claimedBatchMembers.add(memo); letThrough.record('grant'); }
             return claimed;
           },
           // D-177 catalog open mode (N.11) — the catalog variant of the
@@ -5967,7 +6741,8 @@ const handleExecuteInner = async (
               canonical_payload_hash: call.canonical_payload_hash,
               ttl_ms: call.ttl_ms,
               max_uses: call.max_uses,
-              approved_action_ref: runIdentity.request_id,
+              approved_action_ref: sessionGrantDecision?.approval_ref ?? runIdentity.request_id,
+              ...(sessionGrantDecision !== undefined ? { decision_version: sessionGrantDecision.version } : {}),
               // D-177 catalog open mode — the projection trio recomputed by
               // the gate from the resume dispatch's own walk (absent on an
               // exact mint; the resolver refuses an open mint without them —
@@ -6218,7 +6993,7 @@ const handleExecuteInner = async (
           const manifest = deps.executorConfig.manifests.get(slug);
           const review = !surfaceDispatch && (stepMeta?.resource_review || decision?.verdict === 'ask')
             ? captureResourceReview(hooks, slug, hooks && manifest ? actionIdentityBasis(manifest, input,
-              merged => resolveDeep(merged, stores, { deferVault: true }) as Record<string, unknown>,
+              gatewayResolve(slug),
               { surfaceDispatch }) ?? input : input,
               stepMeta?.resource_review, stepMeta?.preflight_admitted === true) : undefined;
           if (decision?.verdict === 'ask') {
@@ -6229,7 +7004,7 @@ const handleExecuteInner = async (
             // has gone fails now rather than being asked.
             if (!resumeApproved && isBrowserActionSlug(slug)) {
               const resolved = manifest ? actionIdentityBasis(manifest, authorityInput,
-                merged => resolveDeep(merged, stores, { deferVault: true }) as Record<string, unknown>,
+                gatewayResolve(slug),
                 { surfaceDispatch }) : undefined;
               const refusal = await browserTargets.refusal({ slug, input: resolved ?? authorityInput })
                 .catch(() => undefined);
@@ -6242,7 +7017,15 @@ const handleExecuteInner = async (
         }
       : usageAwareFallbackExecutor;
 
-  const localSourceRecipeHash = hashRecipe(deps.recipeStore.get(recipe.recipe_id) ?? recipe);
+  // The recipe a local write is checked against: a stored recipe's run, its stored copy, so one
+  // changed or removed meanwhile refuses the write; an inline run (the chat's own recipe, a resumed
+  // snapshot), the recipe it runs, whatever the store holds under its id.
+  // ⛔ CANONICAL FORM, as the authored hash above: an inline run's `recipe` is rewritten in place
+  // (`output.sidebar`→`render`) once the engine parses it, so hashing it as handed in refused every
+  // local write of an inline recipe spelled the legacy way with "the original recipe changed".
+  const storedLocalRecipe = request.recipe === undefined ? deps.recipeStore.get(recipe.recipe_id) : null;
+  const localRecipeNow = (): RecipeDefinition | null => storedLocalRecipe ? deps.recipeStore.get(recipe.recipe_id) : recipe;
+  const localSourceRecipeHash = hashRecipe(canonicalRecipeDefinition(storedLocalRecipe ?? recipe));
   const localRunIdentity = runIdentity ? structuredClone(runIdentity) : undefined;
   const localManifestHashes = new WeakMap<object, string>();
   const resumedLocalStep = recipe.steps.find(step => step.id === internal.resume_from?.gated_step_id);
@@ -6255,7 +7038,8 @@ const handleExecuteInner = async (
         ...(singleLocalStep ? { single_action_step_id: singleLocalStep } : {}),
         validate(call) {
           if (effectiveRunAbortSignal.aborted) throw new RpcError('run_killed', 'The run stopped before its local write.', 409);
-          if (hashRecipe(deps.recipeStore.get(recipe.recipe_id) ?? recipe) !== localSourceRecipeHash) {
+          const current = localRecipeNow();
+          if (!current || hashRecipe(canonicalRecipeDefinition(current)) !== localSourceRecipeHash) {
             throw new RpcError('resource_conflict', 'The original recipe changed before its local write.', 409);
           }
           const manifest = deps.executorConfig.manifests.get(call.slug);
@@ -6339,7 +7123,7 @@ const handleExecuteInner = async (
             return actionIdentityBasis(
               manifest,
               input,
-              (merged) => resolveDeep(merged, stores, { deferVault: true }) as Record<string, unknown>,
+              gatewayResolve(slug),
               { surfaceDispatch },
             );
           },
@@ -6449,6 +7233,7 @@ const handleExecuteInner = async (
           ...(qualityDelegations ? { qualityDelegations } : {}),
           ...(browserPasses ? { browserPasses } : {}),
           ...(triggerPreapprovals ? { triggerPreapprovals } : {}),
+          ...(chainRules ? { chainRules } : {}),
           browserTargets,
         })
       : admissionAwareFallbackExecutor;
@@ -6462,17 +7247,35 @@ const handleExecuteInner = async (
       ? deps.dishContextStore.get(boundDish.dish_id)
       : null;
 
-  // D-187 AMENDMENT — resolve the recipe's bound-contract read-grant checker ONCE for
-  // the MCP-triggered `readEnrichmentRow` reader (`enrichment-or-fetch`). Gated via the
-  // overlay (active / grant-kind), the same bound contract the policy gate keys on.
-  // Non-MCP triggers don't gate (`gate_mcp_private` false), so skip the resolution; an
-  // absent overlay / unbound source ⇒ undefined ⇒ the reader's author-default checker
-  // (registry defaults). (The recipe-channel `enrichment-list` + `timeline-read` kernel
-  // dispatchers resolve their own per-dispatch contract separately.)
-  const readGrantChecker =
-    isMcpTriggeredRecipe && executionSource !== undefined
-      ? deps.contractOverlay?.resolveReadGrantChecker?.(executionSource)
-      : undefined;
+  // Cached reads bypass ingredient admission. Recheck the MCP door and resolve
+  // its grants at each read; a dead definition must never become author-default
+  // authority. This read has no dispatch reservation of its own.
+  const enrichmentStore = deps.enrichmentStore;
+  const enrichmentContractId = isMcpTriggeredRecipe && executionSource !== undefined
+    ? executionSourceContractId(executionSource) : undefined;
+  // Unbound MCP calls carry their token id as a synthetic contract id. This
+  // is the existing read-governance distinction, not an owner trust ceiling.
+  // Once a real binding is observed, deleting it must not make it unbound.
+  const unboundEnrichmentSource = executionSource?.channel === 'mcp'
+    && enrichmentContractId === executionSource.mcp_token_id
+    && deps.contractOverlay?.hasContractDefinition?.(enrichmentContractId) === false;
+  const readEnrichmentRow = enrichmentStore === undefined ? undefined
+    : (...args: Parameters<ReturnType<typeof createEnrichmentReader>>) => {
+        const readGrantChecker = withContractDispatchReservation(undefined, () => {
+          if (!isMcpTriggeredRecipe || executionSource === undefined) return undefined;
+          const overlay = deps.contractOverlay;
+          // Older embeddings without a live resolver retain their existing
+          // read policy. Production overlays always supply the live check.
+          if (enrichmentContractId !== undefined && !unboundEnrichmentSource
+            && overlay?.isContractLive !== undefined && !overlay.isContractLive(enrichmentContractId)) return null;
+          return overlay?.resolveReadGrantChecker?.(executionSource);
+        });
+        if (readGrantChecker === null) return null;
+        return createEnrichmentReader(enrichmentStore, {
+          gate_mcp_private: isMcpTriggeredRecipe,
+          ...(readGrantChecker ? { readGrantChecker } : {}),
+        })(...args);
+      };
 
   // D-221 §10.6 — acquire namespace-stamped leases before the engine can run
   // any step. A first-dispatch hook is too late: a foreign pack may read this
@@ -6529,6 +7332,15 @@ const handleExecuteInner = async (
   // `finally` then skips the temp sweep on a resumable pause and lets the
   // terminal invocation reclaim the scratch root.
   let resumablePause = false;
+  // D-201 Slice 10R (10Q finding 2) — the server's own stop ended this resumed
+  // run, and the resumer keeps it for the next start (`unsent` / `returned`),
+  // which continues it under the same `run_id`, as after a pause: its temp
+  // files and its "Yes, this time" pre-approvals stay with it. A keep that
+  // then fails releases them in the resumer. A separate flag, not
+  // `resumablePause`, whose other readers mean a checkpoint this run wrote.
+  let keptForNextStart = false;
+  // D-201 Slice 10R — the alias store a run a restart may keep runs on (below).
+  let restartLedger: PiiLedgerStore | undefined;
   let resumedChatCall: ReturnType<typeof observeResumedChatToolCall>;
   try {
   if (registerLiveRun && runningActionKey !== undefined) {
@@ -6554,6 +7366,7 @@ const handleExecuteInner = async (
       ...(parentRun?.run_id && parentRun.run_id !== run_id ? { parent_run_id: parentRun.run_id } : {}),
       recipe_id: recipe.recipe_id,
       ...(boundDish?.dish_id !== undefined ? { dish_id: boundDish.dish_id } : {}),
+      ...liveRunNames(recipe, request.recipe !== undefined, deps.executorConfig.manifests, request.config),
       ...declaration,
       source: executionSource!,
       origin: runAttentionForTriggerSource(request.trigger_source),
@@ -6609,7 +7422,134 @@ const handleExecuteInner = async (
   }
     const executionStartedAt = Date.now();
     internal.beforeRunStart?.(run_id);
-    const execution = executeRecipe({
+    // D-402 slice H3 (§4.2 item 3) — each browser the recipe names, checked before step 1 by routing's
+    // own rule: here, so the question below is never raised for a run that cannot start, and its answer,
+    // which starts the run afresh through this path, checks them again. A run resumed part-way is past
+    // step 1. See `browser-step-check.ts`.
+    const browserProblems = internal.resume_from === undefined
+      ? deps.executorConfig.bridgeDispatcherRef?.()?.checkBrowsers?.(browserStepNeeds(recipe, request.config ?? {})) ?? []
+      : [];
+    // D-402 slice F3 (§7.4) — the question before a run: a fresh run the owner's chat or an AI app
+    // started, of an installed recipe whose steps would ask where an approval ahead can stand in,
+    // with nothing covering them yet, is held before its first step. The engine does not run: the
+    // host's ordinary approval hold is written, marked with the question (`run_question`), and the
+    // answer starts the run afresh under this `run_id`.
+    const runQuestionInput: RunQuestionPlanInput | undefined = browserProblems.length === 0 && deps.triggerPreapprovals !== undefined
+      && runIdentity !== undefined
+      ? {
+        recipe, recipe_sha256: authoredRecipeSha256, caller: preapprovalCallerOf(runIdentity.source), browsers: runBrowsers,
+        // D-402 slice H4a — what it does in each browser, by the owner's names for them, when it uses several.
+        ...(() => {
+          if (new Set(Object.values(runBrowsers)).size < 2) return {};
+          const names = new Map((deps.executorConfig.bridgeDispatcherRef?.()?.listBrowsers?.() ?? [])
+            .map((browser) => [browser.browser_id, browser.name] as const));
+          return {
+            browserWork: runBrowserWork(recipe, request.config ?? {}, (browser_id) => names.get(browser_id)),
+            browserOfStep: (step_id: string) => {
+              const browser_id = stepBrowsers.get(step_id);
+              return browser_id === undefined ? undefined : names.get(browser_id);
+            },
+          };
+        })(),
+        installed: request.recipe === undefined && request.recipe_id !== undefined, pack_slug: storedRecipePack,
+        not_fresh: internal.run_question !== undefined || internal.resume_from !== undefined || reviewed !== undefined
+          || internal.preapproval_candidate !== undefined || internal.trial === true || internal.held_recipes !== undefined
+          || internal.after_auto_run_qualification !== undefined,
+        source: runIdentity.source,
+        lookups: {
+          getManifest: (slug) => deps.executorConfig.manifests.get(slug),
+          packOps: () => runPackOps ?? new Map(),
+          ...(deps.contractScan !== undefined ? { ownerRuling: (ingredient_id: string, operation_id: string) =>
+            readOwnerOperationOverride({ scan: deps.contractScan!, ingredient_id, operation_id }) } : {}),
+          recipeOf: (id) => deps.recipeStore.get(id),
+          // D-339 slice 12a — the owner's chats on "Allow" read a Body's numbers without asking.
+          ...(deps.bodyNumbers !== undefined ? { heldReadAllowed: (source: import('@recued/contracts').ExecutionSource, slug: string, operation_id: string) =>
+            bodyNumbersAllowsRead(deps.bodyNumbers, source, slug, operation_id) } : {}),
+        },
+        opDeps: { manifestOf: (slug) => deps.executorConfig.manifests.get(slug), ...(runPackOps !== undefined ? { packs: runPackOps } : {}) },
+        store: deps.triggerPreapprovals,
+        browserSwitchOn: deps.browserPasses !== undefined
+          && deps.browserPasses.requestPass(runIdentity.channel_session_id, Date.now()) !== undefined,
+        ...(() => {
+          const caller = preapprovalCallerOf(runIdentity.source);
+          const name = caller?.kind === 'ai_app' ? deps.aiAppNameOf?.(caller.contract_id) : undefined;
+          return name !== undefined && name.trim() !== '' ? { appName: name.trim() } : {};
+        })(),
+        // F3b — what the owner already granted that would let a step through: a site pass for a browser
+        // step's site, or a session grant ("Allow in this chat") naming its op. Read, never spent. A grant
+        // that pins a call's arguments cannot be matched before the run, so it does not count here.
+        coveredBy: (ask, where) => {
+          const identity = runIdentity!;
+          if (ask.slug === undefined) return false;
+          if (isBrowserActionSlug(ask.slug) && where.site !== undefined && deps.browserPasses !== undefined) {
+            const principal = writeRulePrincipalOf(identity.source);
+            if (principal !== undefined) {
+              // D-402 slice H4c — and the browser the step runs in, for a recipe that names its browsers.
+              const browser = ask.recipe_id === recipe.recipe_id ? stepBrowsers.get(ask.step_id) : undefined;
+              const key = browserPassKeyHash({ principal, recipe: recipe.recipe_id, site: where.site,
+                ...(browser !== undefined ? { browser } : {}) });
+              if (deps.browserPasses.listPasses(Date.now()).some((pass) => browserPassKeyHash(pass.key) === key
+                && (pass.kind === 'always' || pass.channel_session_id === identity.channel_session_id))) return true;
+            }
+          }
+          if (deps.sessionGrantResolver === undefined || ask.risk_tier === undefined || ask.pre_lift_approval === undefined) return false;
+          return deps.sessionGrantResolver.match({
+            channel: identity.source.channel, actor: identity.source.actor, channel_session_id: identity.channel_session_id,
+            ingredient_slug: ask.slug, ...(ask.operation_id !== undefined ? { operation_id: ask.operation_id } : {}),
+            risk_tier: ask.risk_tier as RiskTier, pre_lift_approval: ask.pre_lift_approval as OperationApproval,
+            // No call yet, so no arguments: a grant that pins them (exact, open) cannot match here.
+            arg_shape_hash: '', canonical_payload_hash: '',
+            recipe_id: recipe.recipe_id, recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)),
+            ...(doorSourceContractId !== undefined ? { source_contract_id: doorSourceContractId } : {}),
+            ...(doorRunMcpTokenId !== undefined ? { mcp_token_id: doorRunMcpTokenId } : {}),
+          }) !== null;
+        },
+      }
+      : undefined;
+    // D-402 ruling 17 — a recipe it runs (D-232) that would stop to ask cannot: refused before step 1,
+    // naming what would have stopped, and never asked about. Else the question, which covers the recipes
+    // it runs too.
+    const nestedRefusal = runQuestionInput !== undefined ? nestedRunRefusal(runQuestionInput) : undefined;
+    const runQuestion = runQuestionInput !== undefined && nestedRefusal === undefined ? planRunQuestion(runQuestionInput) : undefined;
+    const runQuestionStart = runQuestion !== undefined ? runQuestionStartOf(recipe) : undefined;
+    // D-201 Slices 10N and 10R — how far each step from the approved one on got,
+    // as the engine reports it, for a resumed run the server's own stop may end
+    // (`onStoppedByRestart`): the approved step's own run, and the run that
+    // finishes a kept one. Sequential steps run one at a time, so a finish
+    // belongs to the last step that started.
+    const sinceApproval: RestartStepProgress[] = [];
+    const approvedStepId = internal.onStoppedByRestart !== undefined
+      && (internal.resume_from?.execution_phase ?? 'sequential') === 'sequential'
+      ? internal.resume_from?.gated_step_id
+      : undefined;
+    // D-201 Slice 10R — such a run's alias ledgers live in a store the handler
+    // owns, so a stop can keep them with the values the steps left: a replayed
+    // value may carry an alias minted after the checkpoint. The engine would
+    // otherwise mint (and dispose) its own, from the same snapshot.
+    restartLedger = internal.onStoppedByRestart !== undefined && internal.resume_from !== undefined
+      ? createPiiLedgerStore(internal.resume_from.pii_ledgers)
+      : undefined;
+    const execution = browserProblems.length > 0
+      ? Promise.resolve({
+        recipe_id: recipe.recipe_id, recipe_hash: preEngineRecipeHash, success: false,
+        output: { render: [], sidebar: [] }, steps: [], errors: [browserStepRefusal(recipe, browserProblems)],
+        duration_ms: 0, validation_issues: [],
+      } as Awaited<ReturnType<typeof executeRecipe>>)
+      : nestedRefusal !== undefined
+      ? Promise.resolve({
+        recipe_id: recipe.recipe_id, recipe_hash: preEngineRecipeHash, success: false,
+        output: { render: [], sidebar: [] }, steps: [], errors: [nestedRunRefusalError(recipe, nestedRefusal)],
+        duration_ms: 0, validation_issues: [],
+      } as Awaited<ReturnType<typeof executeRecipe>>)
+      : runQuestion !== undefined && runQuestionStart !== undefined
+      ? Promise.resolve({
+        recipe_id: recipe.recipe_id, recipe_hash: preEngineRecipeHash, success: false,
+        output: { render: [], sidebar: [] }, steps: [], errors: [], duration_ms: 0, validation_issues: [],
+        awaiting_approval: { gated_step_id: runQuestionStart.gated_step_id, execution_phase: runQuestionStart.execution_phase,
+          ...(runQuestionStart.execution_phase === 'prefetch' ? { prefetch_completed: [] } : {}),
+          step_state: {}, reason: 'run_question' },
+      } as Awaited<ReturnType<typeof executeRecipe>>)
+      : executeRecipe({
       ...(internal.regression_capture ? { onTestCaptureInput: internal.regression_capture.input } : {}),
       ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
       // D-336 (spec §53) — a chat door's look at each record change the run makes.
@@ -6670,6 +7610,41 @@ const handleExecuteInner = async (
       // turn; individual CLI heartbeat/file-growth signals replace this with
       // their more specific contract inside the CLI executor.
       onProgress: (event) => {
+        if (approvedStepId !== undefined && 'step_id' in event) {
+          if (event.type === 'sequential_step_started'
+            && (sinceApproval.length > 0 || event.step_id === approvedStepId)) {
+            sinceApproval.push({ id: event.step_id, started: true, finished: false, skipped: false, failed: false });
+            // D-201 Slice 10AV (10AS findings 7 and 9) — the row first: what a
+            // death here would leave, before the step's work begins.
+            if (internal.onStepUnderWay !== undefined) {
+              const underWay = stepUnderWay({
+                approvedStepId,
+                stepId: event.step_id,
+                steps: recipe.steps,
+                progress: sinceApproval,
+                stepValues: stores.step as Record<string, unknown>,
+                resumeFrom: internal.resume_from,
+                chunkedUploadsByStep,
+                piiLedgers: () => restartLedger?.serialize(),
+              });
+              if (underWay !== undefined) {
+                try {
+                  internal.onStepUnderWay(underWay);
+                } catch {
+                  // The resumer's own record of where the run is; a death after
+                  // it leaves the row an earlier step left (its limit).
+                }
+              }
+            }
+          } else if (event.type === 'sequential_step_finished') {
+            const running = sinceApproval[sinceApproval.length - 1];
+            if (running !== undefined && running.id === event.step_id && !running.finished) {
+              running.finished = true;
+              running.skipped = event.skipped;
+              running.failed = event.error !== null;
+            }
+          }
+        }
         if (registerLiveRun) deps.inFlightRegistry!.reportProgress(run_id, 'provider-event');
         if (event.type === 'prefetch_arrived' || event.type === 'sequential_step_finished') {
           reportToolProgress({ kind: 'steps',
@@ -6731,17 +7706,7 @@ const handleExecuteInner = async (
       stepEffect: createStepEffect((slug) => deps.executorConfig.manifests.get(slug)),
       sharedResolvers,
       ...(linkSink ? { linkSink } : {}),
-      ...(deps.enrichmentStore
-        ? {
-            readEnrichmentRow: createEnrichmentReader(deps.enrichmentStore, {
-              gate_mcp_private: isMcpTriggeredRecipe,
-              // D-187 AMENDMENT — the recipe's bound-contract read-grant checker
-              // (resolved above via the overlay); the reader short-circuits a topic the
-              // contract isn't read-granted. Absent ⇒ the reader's author-default checker.
-              ...(readGrantChecker ? { readGrantChecker } : {}),
-            }),
-          }
-        : {}),
+      ...(readEnrichmentRow ? { readEnrichmentRow } : {}),
       // D-316 amendment — a `pii-protect` step's `content` tags get the same
       // known-value match the AI adapter gives `llm.pii_fields`: the run's ONE
       // matcher (`run-known-values.ts`), shared with the adapter by `run_id` and
@@ -6864,6 +7829,11 @@ const handleExecuteInner = async (
             ),
             ...(reviewedChild ? { preapproval_run: reviewedChild.handle, run_id: reviewedChild.run_id } : {}),
             ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
+            // D-402 ruling 17 — the outermost run, whose caller's answer covers the inner recipe's writes at
+            // the versions its question saw: this run's own when it is the outermost, else passed on unchanged.
+            ...((outer) => (outer !== undefined ? { outer_caller_run: outer } : {}))(internal.outer_caller_run
+              ?? (preapprovalCaller !== undefined ? { recipe_id: authoredRecipe.recipe_id, recipe_sha256: authoredRecipeSha256, run_id,
+                ...(Object.keys(runBrowsers).length > 0 ? { browsers: runBrowsers } : {}) } : undefined)),
           },
         );
         if (reviewedChild) deps.preapprovalRuntime!.nestedReturned(internal.preapproval_run!, reviewedChild.handle, nested);
@@ -7149,6 +8119,10 @@ const handleExecuteInner = async (
       // D-341 slice B1 — a trigger's standing pre-approval, at the catalog gate (the commit
       // gateway gets the same host for a single-op ingredient).
       ...(triggerPreapprovals ? { triggerPreapprovals } : {}),
+      // D-348 slice 5 — and the rule for the request a chat run was made for.
+      ...(chainRules ? { chainRules } : {}),
+      // D-339 slice 12a — and the owner's chats' "Allow" for a Body's numbers.
+      ...(heldReads ? { heldReads } : {}),
       ...(typeof request.trigger_source === 'string'
         ? { trigger_source: request.trigger_source }
         : {}),
@@ -7207,6 +8181,8 @@ const handleExecuteInner = async (
       ...(runResourceReview ? { resourceReview: runResourceReview } : {}),
       ...(ordinaryLocalMutations ? { localMutations: ordinaryLocalMutations } : {}),
       ...(deps.contractScan ? { contractScan: deps.contractScan } : {}),
+      // D-402 slice C — a trial of a draft: every catalog write asks.
+      ...(internal.trial === true ? { trial: true as const } : {}),
       // D-157 server-wiring — switch the engine into resume mode when
       // the resumer threaded `resume_from` through `internal`. The
       // engine skips every trigger / prefetch step (their outputs
@@ -7246,6 +8222,18 @@ const handleExecuteInner = async (
               ...(internal.resume_from.arg_overrides !== undefined
                 ? { arg_overrides: internal.resume_from.arg_overrides }
                 : {}),
+              // D-201 Slice 10N — the step's value from before a restart
+              // stopped the run: it stands in for the call. Same boundary:
+              // only the resumer sets it, from its own record of that stop.
+              ...(internal.resume_from.replayed_result !== undefined
+                ? { replayed_result: internal.resume_from.replayed_result }
+                : {}),
+              // D-201 Slice 10R — and the steps after it that had finished
+              // before that stop, each standing in for its step, so the run
+              // goes on from the first that had not. Same boundary.
+              ...(internal.resume_from.replayed_steps !== undefined
+                ? { replayed_steps: internal.resume_from.replayed_steps }
+                : {}),
               // D-177 P3 — carry the `allow_session` answer's mint
               // instruction onto the resumed gated step. Same boundary as
               // the siblings: `internal.resume_from` is populated EXCLUSIVELY
@@ -7272,6 +8260,9 @@ const handleExecuteInner = async (
             },
           }
         : {}),
+      // D-201 Slice 10R — hydrated from that same snapshot (above), and owned
+      // here: the engine leaves a store it did not mint for its host to dispose.
+      ...(restartLedger !== undefined ? { piiLedgerStore: restartLedger } : {}),
     });
     const executionOutcome = registerLiveRun
       ? await awaitExecutionOrOwnerAbort(
@@ -7356,12 +8347,29 @@ const handleExecuteInner = async (
     // that is a different action receipt.
     let resumedPeerActionPending = false;
     let gatedActionSegmentPredecessorRef: string | undefined;
+    // D-201 Slice 10N — set when the server's own stop ended this resumed run.
+    let restartStop: ApprovedRunRestartStop | undefined;
     let pendingForeachSegmentSettlement: {
       action_ref: string;
       step: ExecutionResult['steps'][number];
       start_index: number;
       end_index: number;
     } | undefined;
+    // D-201 Slices 10N and 10R — the server's own stop, not the owner's Stop:
+    // the drain abandoned the engine of a resumed run the resumer may keep.
+    const stoppedByOwnServer = runTermination === 'killed' && approvedStepId !== undefined
+      && executionOutcome.drain !== undefined && deps.isDraining?.() === true;
+    const classifyThisStop = (): RestartStopClassification => classifyRestartStop({
+      approvedStepId: approvedStepId!,
+      steps: recipe.steps,
+      progress: sinceApproval,
+      stepValues: stores.step as Record<string, unknown>,
+      ...restartClassificationContext({
+        approvedStepId: approvedStepId!,
+        resumeFrom: internal.resume_from,
+        chunkedUploadsByStep,
+      }),
+    });
     if (internal.gated_action_ref !== undefined && internal.resume_from !== undefined) {
       const resumedStep = result.steps.find(
         (step) => step.id === internal.resume_from!.gated_step_id,
@@ -7387,16 +8395,30 @@ const handleExecuteInner = async (
             : undefined,
         );
       } else if (runTermination !== undefined) {
-        await finishResumedGatedActionReceipt(
-          deps.gatedActionStore,
-          internal.gated_action_ref,
-          {
-            status: 'cancelled',
-            status_message: 'The owner cancelled the approved operation before it completed.',
-            result: { run_terminated: runTermination },
-            observed: { items: 1, succeeded: 0, failed: 0 },
-          },
-        );
+        // D-201 Slice 10N — not the owner's Stop: the server's own stop, which
+        // abandoned the engine. What the engine reported says how far the
+        // approved step got, and the resumer is told before the record.
+        if (stoppedByOwnServer) {
+          restartStop = await settleRestartStop({
+            store: deps.gatedActionStore,
+            actionRef: internal.gated_action_ref,
+            approvedStepId: approvedStepId!,
+            classification: classifyThisStop(),
+            piiLedgers: restartLedger?.serialize(),
+            approvedForeach: isApprovedLoop(recipe.steps, approvedStepId!),
+          });
+        } else {
+          await finishResumedGatedActionReceipt(
+            deps.gatedActionStore,
+            internal.gated_action_ref,
+            {
+              status: 'cancelled',
+              status_message: 'The owner cancelled the approved operation before it completed.',
+              result: { run_terminated: runTermination },
+              observed: { items: 1, succeeded: 0, failed: 0 },
+            },
+          );
+        }
       } else if (
         result.awaiting_peer?.gated_step_id === internal.resume_from.gated_step_id
       ) {
@@ -7453,6 +8475,103 @@ const handleExecuteInner = async (
             observed: { items: 1, succeeded: 0, failed: 0 },
           },
         );
+      }
+    }
+    // D-201 Slice 10R — the run that finishes a kept one has no receipt of its
+    // own (the first stop settled it), so a second stop is read here, and kept
+    // again with what this run did too.
+    if (restartStop === undefined && internal.gated_action_ref === undefined && stoppedByOwnServer) {
+      restartStop = await settleRestartStop({
+        store: undefined,
+        actionRef: undefined,
+        approvedStepId: approvedStepId!,
+        classification: classifyThisStop(),
+        piiLedgers: restartLedger?.serialize(),
+        approvedForeach: isApprovedLoop(recipe.steps, approvedStepId!),
+      });
+    }
+    if (restartStop !== undefined) {
+      keptForNextStart = restartStop.kind === 'unsent' || restartStop.kind === 'returned';
+      // D-201 Slice 10BI (10BF finding 4) — the row first, then the record as it
+      // stands: only a run its caller holds is told its try again asks again.
+      let heldForTryAgain = false;
+      try {
+        // D-201 Slice 10AB (10AA finding 12) — a run its caller holds for the
+        // owner's try again keeps what it made, as one the next start finishes.
+        if (internal.onStoppedByRestart?.(restartStop) === true && restartStop.kind === 'in_doubt') {
+          keptForNextStart = true;
+          heldForTryAgain = true;
+        }
+      } catch {
+        // The resumer's own record of the stop; the run's stays as written below.
+      }
+      if (restartStop.kind === 'in_doubt') {
+        // The record says why: a restart, not the owner's Stop, and which step
+        // it caught under way.
+        const laterStep = restartStop.step_id;
+        result = {
+          ...result,
+          errors: [...result.errors, {
+            error_id: `${run_id}:stopped_by_restart`,
+            code: 'ACTION_DELIVERY_UNCERTAIN',
+            severity: 'fatal',
+            // D-201 Slice 10BC (10AY finding 2) — past an approved step Recued
+            // cannot keep, it says the steps after it run again too.
+            message: laterStep !== undefined
+              // D-201 Slice 10BZ (10BX finding 5) — past one skipped at the answer.
+              ? restartStop.approved_skipped === true
+                ? RESTART_LATER_STEP_AFTER_SKIP_IN_DOUBT_MESSAGE
+                // D-201 Slice 10BH — past a kept loop, whose items may have failed.
+                : restartStop.approved_foreach === true
+                  ? RESTART_LATER_STEP_AFTER_LOOP_IN_DOUBT_MESSAGE
+                  : RESTART_LATER_STEP_IN_DOUBT_MESSAGE
+              // D-201 Slice 10BI (10BF findings 4 and 5) — as what holds the
+              // run, and a hand-off said as one.
+              : restartStop.handoff_unproven === true
+                ? restartHandoffUnprovenMessage(heldForTryAgain, restartStop.later_run_again === true)
+                : restartStop.later_run_again === true
+                  ? heldForTryAgain ? RESTART_APPROVED_NOT_KEPT_MESSAGE : RESTART_APPROVED_NOT_KEPT_UNHELD_MESSAGE
+                  // D-201 Slice 10BP (the 10BM audit's note) — it came back.
+                  : restartStop.returned_not_kept === true
+                    ? restartApprovedReturnedNotKeptMessage(heldForTryAgain ? 'held' : 'unheld')
+                    : RESTART_APPROVED_IN_DOUBT_MESSAGE,
+            source: { recipe_id: recipe.recipe_id, step_id: laterStep ?? approvedStepId ?? null, ingredient_slug: null },
+            details: {
+              reason: 'stopped_by_restart',
+              ...(laterStep !== undefined && approvedStepId !== undefined ? { approved_step_id: approvedStepId } : {}),
+            },
+            timestamp: new Date().toISOString(),
+            retryable: false,
+          }],
+        };
+      }
+    }
+    // D-201 Slice 10AB (10AA finding 2) — the owner's try again of a held run
+    // failed at a later step: not stopped (a stop of any kind sets
+    // `runTermination`, the server's own included), and not waiting on anyone.
+    // Read as a stop is, so its caller holds it again from the step it failed
+    // at, what went through standing in. Before, the held row was dropped and
+    // the delivery's retry ran the recipe from its first step, its approved
+    // step again.
+    if (approvedStepId !== undefined
+      && internal.onFailedAfterApproval !== undefined
+      && !result.success && runTermination === undefined
+      && result.awaiting_approval === undefined && result.awaiting_peer === undefined) {
+      // D-201 Slice 10AK (10AI finding 12) — the approved step itself failed,
+      // or its outcome is in doubt: nothing past it to hold from, so it is held
+      // as it stood, its temp files and pre-approvals kept. It reported
+      // nothing, and they went as at any run's end.
+      const failure: ApprovedRunFailure = failureAfterApproval(
+        classifyThisStop(),
+        result.errors,
+        approvedStepId,
+        restartLedger?.serialize(),
+        isApprovedLoop(recipe.steps, approvedStepId),
+      ) ?? { unasked: true, value: undefined, later: [] };
+      try {
+        if (internal.onFailedAfterApproval(failure) === true) keptForNextStart = true;
+      } catch {
+        // The resumer's own record of the failure; the run's stays as written below.
       }
     }
     const resultDegraded: RunDegradation[] = [...(result.degraded ?? [])];
@@ -7784,7 +8903,8 @@ const handleExecuteInner = async (
           // A held `foreach` step: ONE approval covers every remaining item that
           // targets the same operation and account, so the ask must say how many
           // and list them — it used to show only the item it paused on.
-          const foreachCover = awaitingApproval.resource_review === undefined && awaitingApproval.foreach_progress !== undefined
+          // D-402 slice C — not in a trial of a draft, where each item asks for itself.
+          const foreachCover = internal.trial !== true && awaitingApproval.resource_review === undefined && awaitingApproval.foreach_progress !== undefined
             ? foreachApprovalCover({
                 recipe,
                 gated_step_id,
@@ -7882,6 +9002,7 @@ const handleExecuteInner = async (
                   browserTarget !== undefined && 'origin' in browserTarget ? browserTarget : undefined,
                 ),
                 channel_session_id: runIdentity?.channel_session_id,
+                ...browserOfCall(heldCall.input),
               })
             : undefined;
           // D-341 slice B2 — what this hold's "Always allow for this webhook / schedule / trigger /
@@ -7927,6 +9048,32 @@ const handleExecuteInner = async (
             )
             && !(stripCorePrefix(awaitingApproval.tool_slug) === 'dom-act' && browserBatchUploads(heldCall.input))
               ? scheduledPromptBrowserOffer(executionSource) : undefined);
+          // D-177 N.15 (§N.15.6 1b) — what this hold's "Allow in this chat" would grant: the op as its
+          // gate names it, on its connection, for the rest of this conversation; a stored recipe that
+          // made the call at its version, an inline one (the AI's own call) none. Not where a site
+          // pass or a pre-approval answers instead.
+          const kindGrantOffer = deps.sessionGrantResolver !== undefined
+            && browserPassOffer === undefined
+            && heldOffer === undefined
+            ? gatewayKindGrantOffer({
+                source: executionSource,
+                channel_session_id: runIdentity?.channel_session_id,
+                ingredient_slug: awaitingApproval.ingredient_slug,
+                ...(awaitingApproval.operation_id !== undefined ? { operation_id: awaitingApproval.operation_id } : {}),
+                ...(awaitingApproval.connection_name !== undefined ? { connection_name: awaitingApproval.connection_name } : {}),
+                risk_tier: awaitingApproval.risk_tier,
+                provenance: awaitingApproval.authorization_provenance,
+                single: foreachCover === undefined,
+                resource_review: awaitingApproval.resource_review !== undefined,
+                ...(request.recipe === undefined
+                  ? { recipe: { recipe_id: recipe.recipe_id, recipe_hash: (runRecipeHashMemo ??= hashRecipe(recipe)) } }
+                  : {}),
+                name: awaitingApproval.ingredient_slug === undefined ? undefined : heldCallOpLabel({
+                  slug: awaitingApproval.ingredient_slug,
+                  ...(awaitingApproval.operation_id !== undefined ? { operation_id: awaitingApproval.operation_id } : {}),
+                }, (slug) => deps.executorConfig.manifests.get(slug)),
+              })
+            : undefined;
           const browserLabels = heldBrowserValueLabels(browserTarget, heldCall.input);
           const heldValueLabels = browserLabels === undefined ? valueLabels
             : valueLabels === undefined ? browserLabels : { ...valueLabels, ...browserLabels };
@@ -7961,14 +9108,29 @@ const handleExecuteInner = async (
               ? { origin_actor: executionSource.actor }
               : {}),
             // The approval is titled by the recipe's own title, as the owner
-            // knows it, never by its operation's internal name.
-            ...(typeof recipe.metadata?.name === 'string' && recipe.metadata.name.trim() !== ''
-              ? { recipe_title: recipe.metadata.name.trim() }
-              : {}),
+            // knows it, never by its operation's internal name. The kernel
+            // run-ingredient recipe (an MCP ingredient tool, the chat's own
+            // actions) is no recipe the owner knows, and "Approve: Run
+            // Ingredient" told them nothing: its hold is titled by the action
+            // it holds ("Approve: Send mail"), and by its operation when no
+            // manifest names it.
+            ...((): { recipe_title?: string } => {
+              if (recipe.recipe_id === RUN_INGREDIENT_RECIPE.recipe_id) {
+                const slug = awaitingApproval.ingredient_slug ?? awaitingApproval.tool_slug;
+                const action = slug === undefined
+                  ? undefined
+                  : namedAction(deps.executorConfig.manifests, slug, awaitingApproval.operation_id);
+                return action !== undefined ? { recipe_title: action } : {};
+              }
+              return typeof recipe.metadata?.name === 'string' && recipe.metadata.name.trim() !== ''
+                ? { recipe_title: recipe.metadata.name.trim() }
+                : {};
+            })(),
             ...(heldValueLabels !== undefined ? { value_labels: heldValueLabels } : {}),
             ...(browserTarget !== undefined ? { browser_target: browserTarget } : {}),
             ...(browserPassOffer !== undefined ? { browser_pass: browserPassOffer } : {}),
             ...(heldOffer !== undefined ? { trigger_preapproval: heldOffer } : {}),
+            ...(kindGrantOffer !== undefined ? { kind_grant: kindGrantOffer } : {}),
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }
               : {}),
@@ -7991,9 +9153,12 @@ const handleExecuteInner = async (
             checkpoint_id: randomUUID(),
             run_id,
             ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
+            ...(internal.trial === true ? { trial: true as const } : {}),
             recipe_id: recipe.recipe_id,
             recipe_source_hash: authoredRecipeHash,
             gated_step_id,
+            // D-402 slice F3 — held before step 1, to ask the question: never a resume of this step.
+            ...(runQuestion !== undefined && runQuestionStart !== undefined ? { run_question: runQuestion } : {}),
             ...(awaitingApproval.preapproval_nested_wait ? { preapproval_nested_wait: awaitingApproval.preapproval_nested_wait } : {}),
             // D-165 follow-on (op-identity binding) — capture the resolved
             // identity the user is approving so resume re-verifies the call
@@ -8029,6 +9194,12 @@ const handleExecuteInner = async (
                   gated_action_predecessor_ref:
                     gatedActionSegmentPredecessorRef,
                 }
+              : {}),
+            // D-201 Slice 10AB (10AA finding 13) — the owner's try again asks
+            // for its approved step again: its earlier run was in doubt.
+            ...(internal.asked_again_in_doubt === true
+              && gated_step_id === internal.resume_from?.gated_step_id
+              ? { asked_again_in_doubt: true as const }
               : {}),
             // D-202 Slice 1b — persist the quality-relevance marker so the
             // answer-path resumer can record the owner's reject-driven quality
@@ -8102,6 +9273,31 @@ const handleExecuteInner = async (
                   console.warn(
                     `[execute-handler] gated action receipt is unavailable for run ${run_id}; leaving the durable hold ask-less for boot recovery`,
                   );
+                  return;
+                }
+                // D-402 slice F3 — the question before a run is its own ask: never gathered into the
+                // round's held calls, batched, or put as one held call's approval.
+                if (checkpoint.run_question !== undefined) {
+                  // Ruling 13 — a chat round that runs this recipe more than once asks once, at its end,
+                  // for every run of it it held (`chat-gather.ts`), the hold recording that ask as below.
+                  if (internal.defer_ask !== undefined && internal.defer_ask({
+                    run_id,
+                    op_key: runQuestionGatherKey(checkpoint),
+                    notifier: preflightNotifier,
+                    checkpoint,
+                    context: { recipe_id: recipe.recipe_id, gated_step_id },
+                    item: { summary: checkpoint.run_question.question.recipe_name },
+                    link: async (ask_id) => {
+                      if (heldActionReceiptRef !== undefined) {
+                        await updateGatedActionReceipt(deps.gatedActionStore, heldActionReceiptRef,
+                          (actions, ref) => actions.linkApproval(ref, heldApprovalRef ?? ref, ask_id));
+                      }
+                      const anchor = await deps.auditLog?.get(run_id);
+                      if (anchor !== null && anchor !== undefined) await deps.auditLog!.append({ ...anchor, ask_id });
+                    },
+                    ...(deps.approvalAskChannels !== undefined ? { askChannels: deps.approvalAskChannels } : {}),
+                  })) return;
+                  askId = (await raiseRunQuestionAsk(preflightNotifier, checkpoint)).ask_id;
                   return;
                 }
                 // D-157 server-wiring — the engine surfaces the gateway-
@@ -8263,6 +9459,85 @@ const handleExecuteInner = async (
                   // release path keys on.
                   return;
                 }
+                // The hold's own ask, as raised below when no batch takes it.
+                const holdAskContext: PreflightAskContext = {
+                  recipe_id: recipe.recipe_id,
+                  gated_step_id,
+                  ...(awaitingApproval.tool_slug !== undefined
+                    ? { tool_slug: awaitingApproval.tool_slug }
+                    : {}),
+                  ...(awaitingApproval.connection_name !== undefined
+                    ? { connection_name: awaitingApproval.connection_name }
+                    : {}),
+                  ...(awaitingApproval.risk_tier !== undefined
+                    ? { risk_tier: awaitingApproval.risk_tier }
+                    : {}),
+                  ...(awaitingApproval.reason !== undefined
+                    ? { reason: awaitingApproval.reason }
+                    : {}),
+                  ...(awaitingApproval.owner_override_offer !== undefined
+                    ? { owner_override_offer: awaitingApproval.owner_override_offer }
+                    : {}),
+                  ...(awaitingApproval.approval_clamped_from !== undefined
+                    ? { approval_clamped_from: awaitingApproval.approval_clamped_from }
+                    : {}),
+                  ...(awaitingApproval.authorization_provenance !== undefined
+                    ? {
+                        authorization_provenance:
+                          awaitingApproval.authorization_provenance,
+                      }
+                    : {}),
+                  ...(sessionGrantOffer !== undefined
+                    ? { session_grant: sessionGrantOffer }
+                    : {}),
+                  // D-177 P5b — the ask body's pinned/varies lines (rendered
+                  // only when the offer carries grant_mode 'open').
+                  ...(openPreview !== undefined
+                    ? { open_projection_preview: openPreview }
+                    : {}),
+                  ...(foreachCover !== undefined ? { foreach_cover: foreachCover } : {}),
+                };
+                // D-177 §N.15.9 — a call the owner's chat round repeats keeps its ask for the round's
+                // end, to be asked once with the round's other held calls of its op (Q7, "After each
+                // round"). Never a foreach cover (it lists its own items), a request count to review,
+                // or a review given each time. One the round does not take asks as before, below.
+                if (
+                  internal.defer_ask !== undefined
+                  && foreachCover === undefined
+                  && awaitingApproval.resource_review === undefined
+                  && !individualWorkflowReview
+                  && awaitingApproval.ingredient_slug !== undefined
+                  && internal.defer_ask({
+                    run_id,
+                    op_key: gatherOpKey({
+                      ingredient_slug: awaitingApproval.ingredient_slug,
+                      ...(awaitingApproval.operation_id !== undefined ? { operation_id: awaitingApproval.operation_id } : {}),
+                      ...(awaitingApproval.connection_name !== undefined ? { connection_name: awaitingApproval.connection_name } : {}),
+                      recipe_id: recipe.recipe_id,
+                    }),
+                    notifier: preflightNotifier,
+                    checkpoint,
+                    context: holdAskContext,
+                    item: {
+                      summary: awaitingApproval.tool_slug ?? awaitingApproval.ingredient_slug,
+                      ...(awaitingApproval.args_preview !== undefined ? { args_preview: awaitingApproval.args_preview } : {}),
+                    },
+                    // As this hold's own raise records it (below, and on its publish): on the
+                    // receipt, then on the run's anchor as it stands.
+                    link: async (ask_id) => {
+                      if (heldActionReceiptRef !== undefined) {
+                        await updateGatedActionReceipt(deps.gatedActionStore, heldActionReceiptRef,
+                          (actions, ref) => actions.linkApproval(ref, heldApprovalRef ?? ref, ask_id));
+                      }
+                      const anchor = await deps.auditLog?.get(run_id);
+                      if (anchor !== null && anchor !== undefined) await deps.auditLog!.append({ ...anchor, ask_id });
+                    },
+                    // D-329 — where it went, read as below once this hold's own ask is raised.
+                    ...(deps.approvalAskChannels !== undefined ? { askChannels: deps.approvalAskChannels } : {}),
+                  })
+                ) {
+                  return;
+                }
                 let batchAskId: string | undefined;
                 if (
                   deps.batchApprovals !== undefined
@@ -8278,6 +9553,9 @@ const handleExecuteInner = async (
                   // write a trigger's run held (which batches) would never be offered it.
                   // Found live on an auto-run's task (B1b); a Records write never batched.
                   && heldOffer === undefined
+                  // D-177 N.15 — and one that offers "Allow in this chat", which a batch ask does
+                  // not offer either (gathering a turn's holds into one ask is §N.15.6 ruling 4).
+                  && kindGrantOffer === undefined
                   // Slice J — a sequence asks on its own too: its ask lists each step as the
                   // page shows it, hiding what goes into a password field, and a batch ask
                   // would list its raw steps instead.
@@ -8384,46 +9662,9 @@ const handleExecuteInner = async (
                 if (batchAskId !== undefined) {
                   askId = batchAskId;
                 } else {
-                  const context: PreflightAskContext = {
-                    recipe_id: recipe.recipe_id,
-                    gated_step_id,
-                    ...(awaitingApproval.tool_slug !== undefined
-                      ? { tool_slug: awaitingApproval.tool_slug }
-                      : {}),
-                    ...(awaitingApproval.connection_name !== undefined
-                      ? { connection_name: awaitingApproval.connection_name }
-                      : {}),
-                    ...(awaitingApproval.risk_tier !== undefined
-                      ? { risk_tier: awaitingApproval.risk_tier }
-                      : {}),
-                    ...(awaitingApproval.reason !== undefined
-                      ? { reason: awaitingApproval.reason }
-                      : {}),
-                    ...(awaitingApproval.owner_override_offer !== undefined
-                      ? { owner_override_offer: awaitingApproval.owner_override_offer }
-                      : {}),
-                    ...(awaitingApproval.approval_clamped_from !== undefined
-                      ? { approval_clamped_from: awaitingApproval.approval_clamped_from }
-                      : {}),
-                    ...(awaitingApproval.authorization_provenance !== undefined
-                      ? {
-                          authorization_provenance:
-                            awaitingApproval.authorization_provenance,
-                        }
-                      : {}),
-                    ...(sessionGrantOffer !== undefined
-                      ? { session_grant: sessionGrantOffer }
-                      : {}),
-                    // D-177 P5b — the ask body's pinned/varies lines (rendered
-                    // only when the offer carries grant_mode 'open').
-                    ...(openPreview !== undefined
-                      ? { open_projection_preview: openPreview }
-                      : {}),
-                    ...(foreachCover !== undefined ? { foreach_cover: foreachCover } : {}),
-                  };
                   const { ask_id } = await raisePreflightAsk(
                     preflightNotifier,
-                    { checkpoint, context },
+                    { checkpoint, context: holdAskContext },
                   );
                   askId = ask_id;
                 }
@@ -8498,6 +9739,7 @@ const handleExecuteInner = async (
             checkpoint_id: randomUUID(),
             run_id,
             ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
+            ...(internal.trial === true ? { trial: true as const } : {}),
             recipe_id: recipe.recipe_id,
             recipe_source_hash: authoredRecipeHash,
             gated_step_id: awaitingPeer.gated_step_id,
@@ -8779,7 +10021,9 @@ const handleExecuteInner = async (
     // ⛔⛔ ONE EXPRESSION, TWO CONSUMERS. The status the row records and the status
     // the exemption reasons about must be the same value — two copies is how a run
     // gets exempted as `succeeded` while its row says `failed`.
-    const anchorCommitStatus = runTermination === 'killed'
+    const anchorCommitStatus = restartStop?.kind === 'in_doubt'
+      ? 'in_doubt'
+      : runTermination === 'killed'
       ? 'killed'
       : result.awaiting_approval
         ? (checkpointId !== undefined ? 'awaiting_approval' : 'failed')
@@ -9415,6 +10659,31 @@ const handleExecuteInner = async (
       );
       resumedPeerActionPending = false;
     }
+    // D-201 Slice 10AG (10AE findings 4 and 10) — a held try again that paused
+    // at a gate whose ask could not be written (`CHECKPOINT_WRITE_FAILED`)
+    // failed there: held again from that gate, what went through standing in,
+    // or, its approved step not yet run, as it stood. The report above fires
+    // only for a run that did not pause, so the held row stood as it was: the
+    // next try again ran those steps twice, and the run's temp files and
+    // pre-approvals went.
+    if (approvedStepId !== undefined
+      && internal.onFailedAfterApproval !== undefined
+      && runTermination === undefined
+      && pauseFailureError !== undefined
+      && (result.awaiting_approval !== undefined || result.awaiting_peer !== undefined)) {
+      const failure: ApprovedRunFailure = failureAfterApproval(
+        classifyThisStop(),
+        [pauseFailureError],
+        approvedStepId,
+        restartLedger?.serialize(),
+        isApprovedLoop(recipe.steps, approvedStepId),
+      ) ?? { unasked: true, value: undefined, later: [] };
+      try {
+        if (internal.onFailedAfterApproval(failure) === true) keptForNextStart = true;
+      } catch {
+        // The resumer's own record of the failure; the run's stays as written below.
+      }
+    }
     const durablePauseMarker: { awaiting_approval: true } | { awaiting_peer: true } | undefined =
       runTermination !== undefined || pauseFailureError !== undefined
         ? undefined
@@ -9559,6 +10828,16 @@ const handleExecuteInner = async (
         packOfCatalog: (catalog) => installedPackOf(runPackOps, catalog),
         signInOf: slotSignIn,
         packNameOf,
+        // D-402 slice H3c — "Use this browser instead", on the dish whose settings the run used.
+        browsers: {
+          ...(() => {
+            const dish_id = boundDish?.dish_id ?? deps.dishStore?.listByRecipe(recipe.recipe_id).find((dish) => dish.is_default)?.dish_id;
+            return dish_id !== undefined ? { dish_id } : {};
+          })(),
+          named: new Set(browserStepNeeds(recipe, request.config ?? {}).map((need) => need.browser_id)),
+          connected: () => (deps.executorConfig.bridgeDispatcherRef?.()?.listBrowsers?.() ?? [])
+            .filter((browser) => browser.online).map(({ browser_id, name }) => ({ browser_id, name })),
+        },
       })
       : [];
 
@@ -9621,6 +10900,8 @@ const handleExecuteInner = async (
       ...(result.exchange_ack !== undefined ? { exchange_ack: result.exchange_ack } : {}),
       // D-341 slice A — what the conversation's switch let through without asking.
       ...(requestPassWrites > 0 ? { request_pass_writes: requestPassWrites } : {}),
+      // D-402 slice F5 (§7.10) — every write that ran without asking, by what let it through.
+      ...((): { let_through?: import('@recued/contracts').RunLetThrough } => { const record = letThrough.result(); return record !== undefined ? { let_through: record } : {}; })(),
       // D-232 § 30 — the PEER's verdict, named here for the reason the line
       // above documents: this is the enumerating copier, and a field it does not
       // list reaches no client. The asker's own tool result is the one place a
@@ -9656,12 +10937,26 @@ const handleExecuteInner = async (
       });
       runningTwinSettled = true;
     }
+    // D-402 slice A1 — how the call ended, and its steps' results, for the request's plan. The
+    // response leaves `result` out (it can be megabytes); the plan keeps it, bounded.
+    try {
+      const failed = (response.errors[0] as { code?: unknown } | null | undefined)?.code;
+      flowRecorder.finishCall(run_id, {
+        outcome: response.success ? 'done' : durablePauseMarker !== undefined ? 'held' : 'failed',
+        ...(typeof failed === 'string' ? { error_code: failed } : {}),
+        steps: result.steps.map((step) => ({ id: step.id, result: step.result })),
+      });
+    } catch { /* the plan is a record; it never fails a run */ }
     return response;
   } catch (e) {
     if (runningTwinLeader && !runningTwinSettled) {
       deps.inFlightRegistry!.settleRunningTwin(run_id, { status: 'failed', error: e });
       runningTwinSettled = true;
     }
+    try {
+      const code = (e as { code?: unknown } | null)?.code;
+      flowRecorder.finishCall(run_id, { outcome: 'failed', ...(typeof code === 'string' ? { error_code: code } : {}) });
+    } catch { /* the plan is a record; it never fails a run */ }
     // Preserve already-coded errors (shouldn't happen from the engine,
     // but keeps the abstraction honest if a deeper layer ever throws one).
     emitExecution(deps.eventBus, {
@@ -9719,7 +11014,14 @@ const handleExecuteInner = async (
       // on a resumable pause: that run continues under the same `run_id` in a later
       // invocation, which performs the terminal sweep. Best-effort + idempotent +
       // a no-op when the run produced no temp output (the root never existed).
-      reclaimRunScratchUnlessResumable(run_id, resumablePause);
+      reclaimRunScratchUnlessResumable(run_id, resumablePause || keptForNextStart);
+      // D-402 slice F4 — "Yes, this time" ends with its run: at the run's terminal end (never a resumable
+      // pause, whose resume is still this run) its own pre-approvals end, so none outlives it.
+      // D-201 Slice 10R — nor a run the next start finishes, which is still this run.
+      if (!resumablePause && !keptForNextStart) endRunPreapprovals(deps.triggerPreapprovals, run_id);
+      // The alias store this run ran on, once the engine is done with it (its
+      // ledgers, if the run is kept, were serialized at the stop).
+      restartLedger?.dispose();
     };
     if (drainingExecution !== undefined) {
       // The caller-facing killed result intentionally stopped awaiting an

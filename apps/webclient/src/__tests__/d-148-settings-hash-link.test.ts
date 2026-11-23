@@ -156,6 +156,7 @@ describe('D-148 hash-link affordance — Reception → Settings', () => {
 
 interface FakeElement {
   tagName: string;
+  value?: string;
   textContent: string;
   children: FakeElement[];
   parent: FakeElement | null;
@@ -177,6 +178,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
   const children: FakeElement[] = [];
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
+    ...(tagName.toLowerCase() === 'input' ? { value: '' } : {}),
     textContent: '',
     children,
     parent: null,

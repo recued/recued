@@ -2,7 +2,7 @@
 
 import type { Checkpoint } from '@recued/contracts';
 import type { PreflightNotifier } from '@recued/gateway';
-import { NEVER_ASK_OPERATION_OPTION_ID } from '@recued/gateway';
+import { NEVER_ASK_OPERATION_OPTION_ID, PREFLIGHT_GATHERED_HANDLER_KIND } from '@recued/gateway';
 import {
   buildAuditEntry,
   createAuditLogStore,
@@ -942,5 +942,62 @@ describe('sweepAwaitingCheckpoints', () => {
     expect(result.failed).toBe(1);
     expect(result.raised).toBe(1);
     expect(notes.ask).toHaveBeenCalledTimes(2);
+  });
+
+  // D-177 §N.15.9 — a round's gathered approval lists each held call by its checkpoint: a held call
+  // it lists is paired with it, never asked again on its own.
+  it('links a raw-op hold a surviving gathered ask lists, without raising its own', async () => {
+    const notes = notifier();
+    const actions = gatedActionStore();
+    const result = await sweepAwaitingCheckpoints({
+      checkpointStore: checkpointStore([rawCheckpoint()]),
+      auditLog: auditLog(),
+      notifier: notes,
+      gatedActionStore: actions.store,
+      listUnresolvedAsks: vi.fn().mockResolvedValue([{
+        ask_id: 'ask-gathered',
+        handler_kind: PREFLIGHT_GATHERED_HANDLER_KIND,
+        handler_payload: {
+          members: [{ checkpoint_id: 'checkpoint-raw-0' }, { checkpoint_id: 'checkpoint-raw-1' }],
+          checkpoint_ids: ['checkpoint-raw-0', 'checkpoint-raw-1'],
+        },
+      }]),
+    });
+    expect(result).toMatchObject({ inspected: 1, raised: 0, alreadyPaired: 1, failed: 0 });
+    expect(notes.ask).not.toHaveBeenCalled();
+    expect(actions.store.linkApproval).toHaveBeenCalledWith('action-raw-1', 'action-raw-1', 'ask-gathered');
+  });
+
+  it('pairs a recipe hold a surviving gathered ask lists; one it does not list is asked on its own', async () => {
+    const gathered = {
+      ask_id: 'ask-gathered',
+      handler_kind: PREFLIGHT_GATHERED_HANDLER_KIND,
+      handler_payload: { members: [{ checkpoint_id: 'checkpoint-1' }], checkpoint_ids: ['checkpoint-1'] },
+    };
+    const listed = auditLog();
+    await append(listed, anchor(continuityFields));
+    const notes = notifier();
+    expect(await sweepAwaitingCheckpoints({
+      checkpointStore: checkpointStore([checkpoint()]),
+      auditLog: listed,
+      notifier: notes,
+      listUnresolvedAsks: vi.fn().mockResolvedValue([gathered]),
+    })).toMatchObject({ alreadyPaired: 1, raised: 0, failed: 0 });
+    expect(notes.ask).not.toHaveBeenCalled();
+    expect(await listed.get('run-1')).toMatchObject({ ask_id: 'ask-gathered' });
+
+    // The control: an approval that lists another hold leaves this one to its own ask.
+    const other = auditLog();
+    await append(other, anchor(continuityFields));
+    const own = notifier();
+    expect(await sweepAwaitingCheckpoints({
+      checkpointStore: checkpointStore([checkpoint()]),
+      auditLog: other,
+      notifier: own,
+      listUnresolvedAsks: vi.fn().mockResolvedValue([{
+        ...gathered, handler_payload: { members: [{ checkpoint_id: 'checkpoint-9', run_id: 'run-9' }], checkpoint_ids: ['checkpoint-9'] },
+      }]),
+    })).toMatchObject({ raised: 1 });
+    expect(own.ask).toHaveBeenCalledTimes(1);
   });
 });

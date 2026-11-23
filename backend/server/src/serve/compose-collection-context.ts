@@ -56,6 +56,12 @@ import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { createMailFactWriter, sweepGoneEmails, type MailFactWriter } from '../mail-facts/fact-writer.js';
 import { createHeldMailFactEvents, type HeldMailFactEvents } from '../mail-facts/held-events.js';
 import { createInstanceStore } from '../collections/instance-store.js';
+import { createCalendarEventCreationStore } from '../storage/calendar-event-creations.js';
+import type { CalendarCollection } from '../collections/calendar/calendar-collection.js';
+import { createOccasionCalendarSync, occasionOwningEvent, openBookingsByInvite, ownerCalendarWriter, type OccasionCalendarSync } from '../situations/occasion-calendar-sync.js';
+import { createOccasionEventAdoption, type OccasionEventAdoption } from '../situations/occasion-event-adoption.js';
+import type { OccasionCalendarChoice } from '@recued/contracts';
+import { occasionIsPrivate } from '@recued/contracts';
 import { createBackfillStateLookup } from '../triggers/backfill-state.js';
 import { bootEventKeep, createBootEventRecorder, type BootEventRecorder } from '../triggers/boot-events.js';
 import { createEventTriggersStore, type EventTriggersStore } from '../triggers/store.js';
@@ -123,6 +129,8 @@ import { createNotificationSettingsStore, type NotificationSettings } from '@rec
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createYoursService, type YoursService } from '../situations/yours-service.js';
+import { createAssetReadingDays } from '../situations/asset-reading-days.js';
+import type { RecordsStore } from '../records/store.js';
 import { createSphereStore, nonAssetSphereOrigins } from '../storage/sphere-store.js';
 import { createQuietHoursStore } from '../storage/quiet-hours-store.js';
 import { quietHoursEndFor, shouldSuppressForQuietHours } from '@recued/contracts';
@@ -172,7 +180,7 @@ export interface ComposeCollectionContextOptions {
   chatNotices?: import('@recued/ingredients').ConnectionNoticeHook;
   /** D-343 slice 4 (ruling 20) — opens a conversation holding today's evening notice for Today's
    *  "Close the day". Absent ⇒ Today offers no button. */
-  openNoticeConversation?: (notice: { title: string; text: string }) => Promise<{ session_id: string; message_id: string }>;
+  openNoticeConversation?: import('../chat-notices.js').NoticeConversationOpener;
   oauthAppNativePermissionNeeds?: (row: import('../collections/instance-store.js').CollectionInstanceRecord) => import('@recued/contracts').OAuthPermissionNeeds;
   oauthAppPermissionNeeds?: (name: string) => import('@recued/contracts').OAuthPermissionNeeds;
   oauthAppConnectionUses?: (name: string) => { uses: readonly import('@recued/contracts').ManagedOAuthConnectionUse[]; complete: boolean };
@@ -189,6 +197,12 @@ export interface ComposeCollectionContextOptions {
   /** D-315 — mail facts. Undefined on a dbless boot: mail is then not read
    *  for facts, and nothing else changes. */
   mailFactStore: MailFactStore | undefined;
+  /** D-339 slice 10 — Records, which a Body reading's line reads its days from. Absent ⇒ every
+   *  reading's line is its history. */
+  recordsStore?: Pick<RecordsStore, 'ownerSearch'>;
+  /** D-339 slice 12a — the owner's chats' switch for a Body's numbers, which a Body's page shows.
+   *  Absent ⇒ the page shows no switch. */
+  bodyNumbers?: Pick<import('../body-numbers-setting.js').BodyNumbersSetting, 'forChats'>;
   gateRegistry: GateRegistry | undefined;
   accountStore: ServerAccountStore | undefined;
   eventBus: EventBus;
@@ -230,6 +244,8 @@ export interface ComposeCollectionContextOptions {
 }
 
 export interface CollectionContext extends ConnectionNotificationBundle {
+  /** D-407 slice 5 — the Occasion tick on an event in the owner's calendar. */
+  occasionEventAdoption?: OccasionEventAdoption;
   collectionAuthentication?: import('../collection-authentication-service.js').CollectionAuthenticationService;
   collectionOAuthAppSwitch?: import('../collection-oauth-app-switch.js').CollectionOAuthAppSwitchService;
   inboundFileCollection: InboundFileCollection | undefined;
@@ -794,6 +810,9 @@ export const composeCollectionContext = (
   });
 
   const situationStore = db ? createSituationStore(db, warehouseBus) : undefined;
+  /** D-407 slice 4 — each occasion's own calendar event; made with the reminders, read by Yours. */
+  let occasionCalendar: OccasionCalendarSync | undefined;
+  let occasionEventAdoption: OccasionEventAdoption | undefined;
   let assetOccurrences: AssetOccurrenceService | undefined;
   let assetReminders: AssetReminderService | undefined;
   // D-340 slice 3 — the owner's reminders wait for the daily stream that carries them. The scheduler is
@@ -861,6 +880,30 @@ export const composeCollectionContext = (
         return auth.type === 'bearer' && typeof auth.token === 'string' && auth.token ? auth.token : null; },
     });
 
+    // D-407 slice 4 — an occasion's own calendar event, written as the owner's Calendar writes one (an idempotent create,
+    // a versioned edit and delete), into the calendar chosen once in Yours. The marking is read back from the event as
+    // Recued keeps it.
+    const calendarEvents = { instances: createInstanceStore({ db }), isPaused: isSyncPaused,
+      getCollection: (slug: string) => collectionRegistry.get('calendar', slug) as CalendarCollection | undefined };
+    const occasionCalendarSetting = 'occasion_calendar';
+    occasionCalendar = situationStore && proactiveHistory ? createOccasionCalendarSync({ db, timeZone: serverTimeZone, now: () => Date.now(),
+      // D-407 slice 4b — the occasion as its event moved it, saved as Yours keeps it.
+      save: input => proactiveHistory.saveOccasion(input, Date.now()),
+      choice: () => situationStore.readSetting<OccasionCalendarChoice | null>(occasionCalendarSetting, null),
+      dropsPrivate: choice => situationStore.writeSetting(occasionCalendarSetting, { ...choice, keeps_private: false }),
+      writer: ownerCalendarWriter({ calendar: calendarEvents, creations: createCalendarEventCreationStore(db) }) }) : undefined;
+    // D-407 slice 5 — the Occasion tick on an event already in the owner's calendar (their habit, a clinic's invite):
+    // an occasion wraps it, or it is the next one of an occasion waiting for its date. Read from Recued's copy of the
+    // calendar, and never written: the occasion follows it.
+    occasionEventAdoption = occasionCalendar && proactiveHistory ? createOccasionEventAdoption({ db, history: proactiveHistory,
+      timeZone: serverTimeZone, now: () => Date.now(),
+      event: (slug, source_id) => {
+        const row = (collectionRegistry.get('calendar', slug) as CalendarCollection | undefined)?.table.get(source_id);
+        return row ? { event: row.event, calendar_name: row.event.calendar_name?.trim() || slug } : undefined;
+      },
+      // As the chat's occasions name a person: the contact's id, else its email.
+      ...(contactStore ? { contactId: (email: string) => { const contact = contactStore.get(email.toLowerCase()); return contact?.contact_id ?? contact?.email; } } : {}),
+    }) : undefined;
     assetReminders = createAssetReminderService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
       occurrences: assetOccurrences, timeZone: serverTimeZone,
       projectHousehold: () => householdHomeAssistant!.tick(),
@@ -872,6 +915,12 @@ export const composeCollectionContext = (
         declared: () => declaredOccasions({ ...(contactStore ? { contacts: contactStore } : {}), calendars: localSituationCalendars,
           timeZone: serverTimeZone, place: value => proactiveHistory!.place(value), sphere: (ref, source) => spheres?.resolve(ref, source).sphere }),
         excludedPerson: id => { const contact = contactStore?.getByContactIdResolved(id) ?? contactStore?.get(id); return !!contact && contactExcludedFromProactive(contact); },
+        // D-407 — an occasion's alert before its time, on the owner's channels as D-324's reminders go (never one of
+        // them); held in quiet hours and while the server is paused.
+        sendAlert: message => handleNotificationSend({ dispatchers: channelDispatchers ?? {} }, message),
+        ...(occasionCalendar ? { calendarSync: occasionCalendar } : {}),
+        isQuiet: at => shouldSuppressForQuietHours({ policy: quiet.read(), instant: at, timeZone: serverTimeZone() }),
+        isPaused: isSyncPaused,
         emitRule: input => { situationStore.save(occasionRuleSituation(input), { source: `occasion-rule:${input.occurrence.id}` }, Date.now()); },
         cycleEnded: occurrence => { resolveRuleSituation(situationStore, occurrence.id, `occasion-rule:${occurrence.id}`, Date.now()); },
         outcome: input => {
@@ -945,6 +994,8 @@ export const composeCollectionContext = (
     sources: [...buildSituationSources({ db, work: workEntityStore, reminders: createReminderStore(db),
       ...(contactStore ? { contacts: contactStore } : {}), ...(options.mailFactStore ? { mailFacts: options.mailFactStore } : {}),
       timeZone: serverTimeZone,
+      // D-339 slice 15 — a body goal's progress from the Body's days in Records, as Yours reads them.
+      ...(options.recordsStore ? { readingDays: createAssetReadingDays(options.recordsStore) } : {}),
       place: value => proactiveHistory!.place(value),
       ...(spheres ? { sphere: (ref, source) => spheres.resolve(ref, source).sphere } : {}),
       calendars: localSituationCalendars,
@@ -963,13 +1014,32 @@ export const composeCollectionContext = (
       mailboxes: () => collectionRegistry.list().filter(row => row.platform === 'mail' && !mailChatDoor?.isChatOnlyMailbox(row.slug))
         .flatMap(row => { const address = (row as MailCollection).accountEmail; return typeof address === 'string' && address ? [{ slug: row.slug, address }] : []; }),
       ...(householdHomeAssistant ? { homeAssistant: householdHomeAssistant } : {}),
+      // D-407 slice 4 — each occasion's own calendar event, for its card. D-407 slice 5 (U2) — an event it holds but did
+      // not write is its appointment, with the title of the booking the same invite made.
+      ...(occasionCalendar ? { occasionEvents: () => {
+        const events = occasionCalendar!.events();
+        const bookings = openBookingsByInvite(db, Object.values(events).flatMap(entry => entry.ical_uid !== undefined ? [entry.ical_uid] : []));
+        return Object.fromEntries(Object.entries(events).map(([id, { ical_uid, appointment, ...entry }]) => [id, { ...entry,
+          ...(appointment ? { appointment: { ...appointment, ...(ical_uid !== undefined && bookings.has(ical_uid) ? { booking: bookings.get(ical_uid)! } : {}) } } : {}) }]));
+      } } : {}),
+      ...(occasionEventAdoption ? { occasionEventAdoption } : {}),
+      ...(options.bodyNumbers ? { bodyNumbers: () => options.bodyNumbers!.forChats() } : {}),
       ...(options.openNoticeConversation ? { openNoticeConversation: options.openNoticeConversation } : {}),
+      ...(options.recordsStore ? { readingDays: createAssetReadingDays(options.recordsStore) } : {}),
       isVaultUnlocked, timeZone: serverTimeZone }) : undefined;
   // D-343 slice 1 — the chat changes an occasion as Yours' "Save occasion" does. Only the owner's
   // own call reaches here (`OCCASION_UPDATE_OP_ID`, which no contract grants), and the change it
   // carries is theirs (ruling 16), so Yours takes it as the owner's own.
   if (options.occasionsRef && yours) options.occasionsRef.current = {
     read: id => yours.history.occasion(id),
+    // D-407 slice 1 — found by `work.search`, and a place as Yours keeps one.
+    list: () => yours.history.occasions(10_000),
+    place: name => yours.history.place(name),
+    // D-407 slice 4 — the calendar occasions put their events in, when this server writes them.
+    ...(occasionCalendar && situationStore ? { calendar: () => situationStore.readSetting<OccasionCalendarChoice | null>('occasion_calendar', null) } : {}),
+    // D-407 slice 5 — an event an occasion holds, private as that occasion is.
+    ...(db ? { eventPrivate: (() => { const holder = occasionOwningEvent(db); return (slug: string, source_id: string) => {
+      const owner = yours.history.occasion(holder(slug, source_id) ?? ''); return owner ? occasionIsPrivate(owner) : false; }; })() } : {}),
     save: async (occasion, by) => {
       if (by.actor !== 'user_self' || executionSourceContractId(by) !== undefined) throw new Error('Only the owner changes an occasion');
       return yours.command({ action: 'occasion.save', occasion }, { channel: 'user', actor: 'user_self',
@@ -984,7 +1054,10 @@ export const composeCollectionContext = (
   if (options.closingRecordsRef && db && proactiveHistory && workEntityStore) {
     options.closingRecordsRef.current = createClosingRecords({ db, history: proactiveHistory, work: workEntityStore, calendars: localSituationCalendars,
       ...(contactStore ? { contacts: contactStore } : {}), ...(mailFactStore ? { mailFacts: mailFactStore } : {}), reminders: createReminderStore(db),
-      timeZone: serverTimeZone });
+      timeZone: serverTimeZone,
+      // Yours, Today and Contracts refresh on any `warehouse` change; a day closed from a messenger
+      // or the chat left them stale until a reload.
+      onRecorded: (episodes) => { for (const episode of episodes) eventBus.emit({ kind: 'warehouse', collection: 'episode', op: 'update', id: episode.id }); } });
   }
 
   const scheduledSituations = db && workEntityStore && situationStore && querySituation && yours
@@ -999,11 +1072,19 @@ export const composeCollectionContext = (
         } }) } : {}),
         overview: () => yours.overview(), send: message => handleNotificationSend({ dispatchers: channelDispatchers ?? {} }, message),
         ...(episodeRuntime ? { retainCited: clusters => episodeRuntime!.retainCited(clusters), memoryAllowed: cluster => episodeRuntime!.memoryAllowed(cluster) } : {}),
-        ...(contactStore ? { personName: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return contact ? contact.name ?? contact.email : undefined; } } : {}),
+        ...(contactStore ? { personName: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return contact ? contact.name ?? contact.email : undefined; },
+          // D-407 slice 2 — as the occasion clock's: Today asks nothing of an occasion with a person kept out.
+          excludedPerson: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return !!contact && contactExcludedFromProactive(contact); } } : {}),
         mailHealth: () => mailboxHealthOf(collectionRegistry.list(), Date.now()),
         ...(enrichmentStore ? { prepNotesReady: preparationNotesReady(enrichmentStore) } : {}),
+        // D-407 Q8 — the calendars the situation sources read, so an event its calendar marks private is.
+        calendars: localSituationCalendars,
         ...(options.getPromptSchedules ? { promptSchedules: options.getPromptSchedules } : {}),
         ...(assetReminders ? { reminders: assetReminders } : {}),
+        // D-343 — what went out is kept in the app's "Your day" conversation too.
+        recordAppNotice: () => options.openNoticeConversation?.record,
+        // D-340 ruling 13 — a message waiting for its suggestions goes within seconds of them.
+        suggestionsRecheckMs: 5_000,
       }) : undefined;
   if (scheduledSituations) yours!.bindScheduled(scheduledSituations);
   if (scheduledSituations) streamHold.current = () => scheduledSituations.holdsReminders();
@@ -1148,6 +1229,7 @@ export const composeCollectionContext = (
   }
 
   return {
+    ...(occasionEventAdoption ? { occasionEventAdoption } : {}),
     inboundFileCollection,
     uploadService,
     downloadService,

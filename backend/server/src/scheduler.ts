@@ -34,6 +34,7 @@ import {
 } from '@recued/scheduler';
 import { selectRecurringScheduleTick } from './automation-start-decisions.js';
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
+import { executeResponseAuditRunId } from './types.js';
 import type { ScheduleStore } from './schedule-store.js';
 import { retireSchedule } from './schedule-retire.js';
 import { emitSchedule } from './events/emit-sites.js';
@@ -280,6 +281,8 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       total_refusal: boolean,
       // D-346 follow-up — what the run needed, so the notice says how to fix it.
       needs?: readonly RunNeed[],
+      // D-402 slice E4b — the failing run, so a hand-off's notice can carry it on in Chat.
+      run_id?: string,
     ): { consecutive_failures: number; enabled?: false } => {
       const unit: AutomationUnitRef = {
         kind: 'schedule',
@@ -294,6 +297,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         prior_consecutive_failures: schedule.consecutive_failures ?? 0,
         threshold: config.failureThreshold ?? CIRCUIT_BREAKER_THRESHOLD,
         needs,
+        run_id,
       });
       // A `conditional` code is the recipe deciding not to act and being right
       // to. It leaves the counter alone — it is not an episode and never was.
@@ -493,6 +497,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
             : undefined,
           totalRefusal && !failed,
           (result as { run_needs?: readonly RunNeed[] }).run_needs,
+          executeResponseAuditRunId(result),
         )
         : { consecutive_failures: 0 };
       config.store.updateRun(schedule.schedule_id, {
@@ -528,7 +533,8 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
         last_error: reason,
         ...(stoppedByRestart(code)
           ? {}
-          : failurePatch(reason, typeof code === 'string' ? code : undefined, false)),
+          : failurePatch(reason, typeof code === 'string' ? code : undefined, false, undefined,
+            typeof (e as { run_id?: unknown } | null)?.run_id === 'string' ? (e as { run_id: string }).run_id : undefined)),
         ...terminalPatch,
       });
       return true;

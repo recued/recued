@@ -12,7 +12,7 @@ import { PURSUIT_CLASS_ID, type ExecutionSource, type InternalToolRegistry, type
 import type { WsClient } from '../ws-server.js';
 import { createSituationQuery } from '../situations/query.js';
 import { createSituationAccess } from '../situations/access.js';
-import { createScheduledSituations } from '../situations/scheduled-situations.js';
+import { createScheduledSituations, SUGGESTIONS_MISSING } from '../situations/scheduled-situations.js';
 import { createYoursService } from '../situations/yours-service.js';
 import { makeYoursHandlers } from '../situations/yours-handler.js';
 import { createSituationStore } from '../storage/situation-store.js';
@@ -27,7 +27,7 @@ import { createSqliteChatPlanStore } from '../storage/chat-plan-store.js';
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import { withQueuedChatTurns } from '../chat-turn-queue.js';
 import { createPromptSchedules } from '../prompt-schedules.js';
-import { agendaSuggestionsCron, agendaSuggestionsPrompt } from '../situations/agenda-suggestions.js';
+import { agendaSuggestionsCron, agendaSuggestionsPrompt, SUGGESTIONS_STALL_MS } from '../situations/agenda-suggestions.js';
 import { quotedClosingDay } from '../chat-closing-day.js';
 import type { NotificationSendArgs } from '../notification-handler.js';
 
@@ -294,20 +294,24 @@ describe('D-340 slice 2 — each stream\'s AI suggestions are its own (§3.3, ru
     // The weekly stream's save made its schedule: the weekly Agenda's request, at its time.
     const managed = (await f.schedules!.list(undefined, { managed: true })).filter(row => row.managed_by === 'agenda');
     expect(managed).toHaveLength(1);
-    // D-340 slice 4 — a stream's start ten minutes ahead of it (§3.3), so it can carry them.
+    // D-340 ruling 13 — a stream's start at its own time (§3.3), and its message waits for them.
     const weekly = managed[0]!; const asAgenda = { ...settings, frequency: 'weekly' as const, head_start: true };
     expect(f.store.readSetting('situations.weekly_suggestions', {})).toEqual({ schedule_id: weekly.schedule_id });
-    expect(weekly).toMatchObject({ prompt: agendaSuggestionsPrompt(asAgenda), cron_expression: '20 7 * * 1', time_zone: 'UTC' });
-    expect(agendaSuggestionsCron(asAgenda)).toBe('20 7 * * 1');
+    expect(weekly).toMatchObject({ prompt: agendaSuggestionsPrompt(asAgenda), cron_expression: '30 7 * * 1', time_zone: 'UTC' });
+    expect(agendaSuggestionsCron(asAgenda)).toBe('30 7 * * 1');
     // They run on the weekly stream's run, which lists the week; the daily stream's (off) run none.
     const due = at('07:30');
     expect(await f.scheduled.agendaRunGate(weekly, due)).toBe('run');
     expect(await f.scheduled.agendaRunGate({ ...weekly, schedule_id: 'the-daily-streams' }, due)).toBe('skip');
-    // Their answer waits for the week's message, then goes.
+    // Their answer waits for the week's message, which waits for them; none started here, so it goes
+    // after the stall limit, saying so, and they never go on their own after it.
     expect(f.scheduled.agendaDoneGate(weekly, { due_at: due })).toBe('wait');
     f.setClock(due); await f.scheduled.tick();
+    expect(f.sent).toEqual([]);
+    f.setClock(due + SUGGESTIONS_STALL_MS); await f.scheduled.tick();
     expect(f.sent.map(message => message.title)).toEqual(['Your week · Mon 19 Oct to Sun 25 Oct']);
-    expect(f.scheduled.agendaDoneGate(weekly, { due_at: due })).toBe('notify');
+    expect(f.sent[0]!.text).toContain(`Suggestions\n${SUGGESTIONS_MISSING.not_started}\n`);
+    expect(f.scheduled.agendaDoneGate(weekly, { due_at: due })).toBe('skip');
     // D-342 §5: their run reads the owner's pursuits, and no other run does.
     const run = (schedule_id: string) => ({ channel: 'schedule', actor: 'system', schedule_id,
       prompt_schedule: { schedule_id, occurrence_id: 'occurrence-1', revision: 1, due_at: due, cron: weekly.cron_expression } }) as ExecutionSource;
@@ -380,7 +384,7 @@ describe('D-340 slice 5 — Include private items (§3.4)', () => {
     expect(named.prompt).toContain('This reply goes to my notifications, where I chose to have my private items named: you may name an item or '
       + 'pursuit marked private and suggest about it like any other.');
     expect(named.prompt).not.toMatch(/Leave out|a reminder in Yours/u);
-    expect(named.prompt).toContain('as a short list of plain lines, without bold (my notifications show it as asterisks)');
+    expect(named.prompt).toContain('as a short list of plain lines, each starting with "- ", without bold (my notifications show it as asterisks)');
     // The same conversation, its words rewritten.
     expect(named.session_id).toBe(schedule!.session_id);
   });

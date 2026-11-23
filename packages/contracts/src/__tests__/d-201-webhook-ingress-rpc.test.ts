@@ -34,12 +34,17 @@ const METHODS = [
   'webhook.delivery.event.get',
   'webhook.delivery.rejected.list',
   'webhook.delivery.retention.prune',
+  // D-201 Slice 10B — owner review of dead letters.
+  'webhook.delivery.dead_letter.list',
+  'webhook.delivery.dead_letter.requeue',
+  'webhook.delivery.dead_letter.resolve',
 ] as const satisfies readonly (keyof ServerRpcRegistry)[];
 
 const LOCAL_RECIPE_METHODS = [
   'recipe.webhook.status',
   'recipe.webhook.arm',
   'recipe.webhook.disarm',
+  'recipe.webhook.preview',
 ] as const satisfies readonly (keyof ServerRpcRegistry)[];
 
 describe('D-201 Slices 1 / 5A / 5B2B / 6B2 ingress RPC contract', () => {

@@ -1,5 +1,5 @@
 import type { ChatQueuedTurn, ChatTurnAcceptance, ChatTurnQueueSnapshot, ChatWithdrawnDraft } from '@recued/contracts';
-import { readAssetChatMessage } from './asset-context.js';
+import { readRecordChatMessage } from './record-context.js';
 import { isServerPausedNow, onServerPauseChange } from '../shell/server-pause-signal.js';
 
 export const CHAT_QUEUE_STYLES = `
@@ -163,7 +163,7 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
       const text = doc.createElement('span');
       const labels = { queued: paused ? 'Waits for Resume' : 'Queued', running: 'Working', cancelling: 'Stopping after the current operation',
         completed: 'Already answered', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted by a restart', withdrawn: 'Withdrawn' };
-      const preview = readAssetChatMessage(turn.message)?.question ?? turn.message;
+      const preview = readRecordChatMessage(turn.message)?.question ?? turn.message;
       text.textContent = `${labels[turn.status]}: ${preview.slice(0, 160)}${preview.length > 160 ? '…' : ''}`;
       if (turn.failure_reason === 'attachment_deleted') text.textContent += ' — required attachment permanently deleted';
       row.appendChild(text);

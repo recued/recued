@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { isAssetDate, nextAnnualDate, validateAssetRule, type Episode, type EpisodeInput, type Occasion, type OccasionInput,
+import { isAssetDate, isOccasionAlertMinutes, isOccasionTimeZone, nextAnnualDate, OCCASION_TIME, validateAssetRule, type Episode, type EpisodeInput, type Occasion, type OccasionInput,
   type ProactiveSuppression, type SituationPlace, type SituationRef } from '@recued/contracts';
 import type { ProactiveProposalStore } from './proactive-proposal-store.js';
 
@@ -92,6 +92,16 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
           ...(scope.subject !== undefined ? { subject_collection: scope.subject.collection, subject_id: scope.subject.id } : {}) }) as { value: string }[])
         .map(row => JSON.parse(row.value));
     },
+    /** D-343 (2026-11-15) — the closing records (`owner_record.v1`) of a day: each one whose window
+     * starts in [from, until), from whichever conversation recorded it, the earliest first, with when
+     * it was last written. One hidden in the owner's lists is left out, as there. */
+    ownerRecordsIn: (from: number, until: number): Array<Episode & { recorded_at: number }> =>
+      (db.prepare(`SELECT p.value,p.updated_at FROM proactive_episodes p WHERE p.id NOT IN (SELECT value FROM json_each(@hidden))
+        AND json_extract(p.value,'$.assembly_rule')='owner_record.v1'
+        AND json_extract(p.value,'$.when.from')>=@from AND json_extract(p.value,'$.when.from')<@until
+        ORDER BY json_extract(p.value,'$.when.from'),p.updated_at,p.id LIMIT 200`)
+        .all({ hidden: hiddenEpisodes(), from, until }) as { value: string; updated_at: number }[])
+        .map(row => ({ ...JSON.parse(row.value) as Episode, recorded_at: row.updated_at })),
     /** D-343 slice 5 — when the owner did each of these items (a pursuit): the start of every stored
      * episode that cites one and says it was done (a closing record's `outcome`, or none), the
      * latest first. A skipped record is not done, and one hidden in their lists counts for nothing. */
@@ -116,6 +126,20 @@ export const createProactiveHistoryStore = (db: Database.Database, proposals: Pr
       if (input.source_next_on !== undefined && input.source_next_on !== null && !isAssetDate(input.source_next_on)) throw new Error('Invalid occasion date');
       if (input.where && (!validText(input.where.key, 2000) || !validText(input.where.name, 500))) throw new Error('Invalid occasion place');
       if (input.sphere !== undefined && !['personal', 'professional'].includes(input.sphere)) throw new Error('Invalid occasion sphere');
+      // D-407 slice 3 — Private or Shown by name, nothing else (`occasionIsPrivate` reads only these too).
+      if (input.private !== undefined && typeof input.private !== 'boolean') throw new Error('Invalid occasion privacy');
+      // D-407 slice 2 — whenever the last one says: its next one is a date, and it is the owner's, not a contact's or a calendar's.
+      if (input.after_each !== undefined && (input.after_each !== true || typeof input.source_next_on !== 'string'
+        || !isAssetDate(input.source_next_on) || input.source !== undefined)) throw new Error('Invalid occasion repeat');
+      // D-407 slice 2 (Q2) — a time of day with the zone it is on, or neither.
+      if ((input.time !== undefined || input.time_zone !== undefined)
+        && (typeof input.time !== 'string' || !OCCASION_TIME.test(input.time) || !isOccasionTimeZone(input.time_zone))) throw new Error('Invalid occasion time');
+      // D-407 — an alert is minutes before its time of day, so it needs one.
+      if (input.alert_minutes !== undefined && (!isOccasionAlertMinutes(input.alert_minutes) || input.time === undefined)) throw new Error('Invalid occasion alert');
+      // D-407 slice 4 — its own event: an owner's occasion only; a source dates the others.
+      if (input.in_calendar !== undefined && (typeof input.in_calendar !== 'boolean' || (input.in_calendar && input.source !== undefined))) {
+        throw new Error('Invalid occasion calendar');
+      }
       for (const rule of input.rules) {
         if (rule.when.kind !== 'expiry' || rule.when.field !== 'next_on') throw new Error('An occasion rule reads its next_on date');
         if (rule.reaction.occurrence === 'action' && rule.expiry_policy !== 'strict_expire') throw new Error('An occasion habit expires after its actual due day');

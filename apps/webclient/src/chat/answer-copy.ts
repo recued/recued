@@ -167,7 +167,8 @@ export const createAnswerCopy = (doc: Document, root: HTMLElement) => {
   };
   root.addEventListener('click', click);
   return {
-    append(row: HTMLElement, message: Answer, sessionId?: string): void {
+    /** Draws the answer's actions row, and returns it for the actions that join it. */
+    append(row: HTMLElement, message: Answer, sessionId?: string): HTMLElement {
       const key = JSON.stringify([sessionId ?? '', message.id]);
       const sources = chatSourceCitationsOf(message.source_citations);
       const snapshot = { id: message.id, content: message.content, source_citations: sources };
@@ -178,6 +179,7 @@ export const createAnswerCopy = (doc: Document, root: HTMLElement) => {
       button.setAttribute('aria-label', 'Copy answer'); button.title = 'Copy this answer and its source links';
       const status = doc.createElement('span'); status.setAttribute('role', 'status'); status.setAttribute('aria-atomic', 'true');
       actions.appendChild(button); actions.appendChild(status); row.appendChild(actions); targets.set(button, target); paint(button, target);
+      return actions;
     },
     repaint,
     dispose(): void { disposed = true; copies.clear(); root.removeEventListener?.('click', click); },

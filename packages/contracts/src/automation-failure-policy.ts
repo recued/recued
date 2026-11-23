@@ -98,6 +98,9 @@ export const ENVIRONMENT_RETRY_POLICY: Readonly<Record<string, 'retry' | 'stop'>
   STEP_TIMEOUT: 'retry',
   TRANSFORM_TIMEOUT: 'retry',
   API_RATE_LIMITED: 'retry',
+  // D-402 E4 — a page that showed something the recipe has not met: a run on another day may meet the
+  // page it knows again, and each hand-off counts toward turning the automation off.
+  RECIPE_HAND_OFF: 'retry',
   API_SERVER_ERROR: 'retry',
   SERVER_NOT_REACHABLE: 'retry',
   COLLECTION_SOURCE_UNREACHABLE: 'retry',

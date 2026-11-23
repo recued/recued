@@ -189,13 +189,17 @@ for (const point of ['inside-transaction', 'after-commit'] as const) it(`recover
     `await store.activate(${JSON.stringify(request)},${JSON.stringify(f.actor)},()=>{});process.exit(87);`,
   ].join('\n'));
   await f.close();
-  const result = spawnSync(process.execPath, ['--import', url('node_modules/tsx/dist/loader.mjs'), child], { cwd: root, encoding: 'utf8', timeout: 30_000,
+  // Under a full sweep's load the child, compiling its imports, outran the 30
+  // seconds it had (2026-11-22, one sweep in 90): it ended with no exit code and
+  // said nothing. It has 120 now, and how it ended is said if it ends early.
+  const result = spawnSync(process.execPath, ['--import', url('node_modules/tsx/dist/loader.mjs'), child], { cwd: root, encoding: 'utf8', timeout: 120_000,
     env: { ...process.env, TSX_TSCONFIG_PATH: join(root, 'tsconfig.test.json') } });
-  expect(result.status, result.stdout + result.stderr).toBe(point === 'inside-transaction' ? 86 : 87);
+  expect(result.status, `${result.signal ?? ''} ${result.error?.message ?? ''} ${result.stdout}${result.stderr}`)
+    .toBe(point === 'inside-transaction' ? 86 : 87);
   const next = await f.reopenPermissions(); expect(next.grants.get(f.contract.contract_id, f.remove)).toBe(point === 'inside-transaction');
   expect((await next.store.activate(request, f.actor, () => {})).activated?.sequence).toBe(2);
   expect((await next.store.read(f.contract.contract_id, f.actor, () => {})).history.map(item => item.sequence)).toEqual([1, 2]);
-}, 45_000);
+}, 150_000);
 
 
 it('loads an immutable retained case version without changing the saved head or grants', async () => {

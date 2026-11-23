@@ -8,7 +8,7 @@ import {
 import { CONNECTION_NAME_REGEX, OAUTH_APP_ID, isAuthenticationIncidentScope, isAuthenticationAccessSelection,
   authenticationIncidentHistoryFilters, isAuthenticationIncidentHistoryFilters,
   type AuthenticationIncidentScope, type AuthenticationIncidentHistoryFilters, type AuthenticationAccessSelection, type OAuthAppIssuer } from '@recued/contracts';
-import type { ShellRoute } from '../shell/route.js';
+import type { ChatAnswerAddress, ShellRoute } from '../shell/route.js';
 import { PACK_PERMISSION_REPAIR_ID } from '../settings/pack-permission-repair.js';
 
 export const CONNECTIONS_TAB_IDS = [
@@ -47,6 +47,9 @@ export type ConnectionsAddress =
   | {
       readonly kind: 'lane';
       readonly tab: ConnectionsTabId;
+      /** D-405 slice 7 — the chat answer whose "Connect your mail" opened this lane: the page offers the
+       *  way back to it, where the row then says one is connected and offers Ask again. */
+      readonly returnToChat?: ChatAnswerAddress;
     }
   | {
       readonly kind: 'account';
@@ -274,6 +277,16 @@ export const parseConnectionsAddress = (
     : 'mail';
   const tail = route.segments[1];
 
+  // D-405 slice 7 — `#connections/<lane>/return/chat/<session>/<message>`: a chat answer's "Connect your
+  // mail" carries the answer after the lane, and only there. Read as an account, it would open a mailbox
+  // named "return".
+  if (
+    isFoundationalConnectionsLane(route.segments[0])
+    && tail === 'return' && route.segments[2] === 'chat'
+    && (route.segments[3] ?? '').length > 0 && (route.segments[4] ?? '').length > 0 && route.segments.length === 5
+  ) {
+    return { kind: 'lane', tab, returnToChat: { sessionId: route.segments[3]!, messageId: route.segments[4]! } };
+  }
   if (
     isFoundationalConnectionsLane(tab)
     && typeof tail === 'string'

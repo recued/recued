@@ -9,6 +9,9 @@ export type RecipeErrorCode =
   | 'RECIPE_VALIDATION_FAILED'
   | 'RECIPE_GUARD_TRIGGERED'
   | 'RECIPE_FAIL_ON_TRIGGERED'
+  /** D-402 slice E4 — a guard marked `hand_off` held: the page showed something the recipe has not met.
+   *  Unlike a guard's own code, a failure the automation's owner hears of (`environment`, retried). */
+  | 'RECIPE_HAND_OFF'
   | 'RECIPE_PREREQUISITE_NOT_MET'
   | 'RECIPE_APPROVAL_TIMEOUT'
   /** D-234 § 234.4n — a run held on a peer's answer was abandoned because the
@@ -523,6 +526,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   RECIPE_VALIDATION_FAILED: 'fatal',
   RECIPE_GUARD_TRIGGERED: 'warn',
   RECIPE_FAIL_ON_TRIGGERED: 'error',
+  RECIPE_HAND_OFF: 'error',
   RECIPE_PREREQUISITE_NOT_MET: 'error',
   RECIPE_HOLD_ABANDONED: 'error',
   RECIPE_APPROVAL_TIMEOUT: 'error',
@@ -707,6 +711,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   RECIPE_VALIDATION_FAILED: 'This recipe failed validation and cannot run as written. The author needs to publish a fix.',
   RECIPE_GUARD_TRIGGERED: 'A guard step asked the recipe to stop. The conditions you set were not met.',
   RECIPE_FAIL_ON_TRIGGERED: 'A fail-on condition stopped the recipe. Open the step to see which check tripped.',
+  RECIPE_HAND_OFF: 'The page showed something this recipe has not met, so it stopped for you to carry on in the chat.',
   RECIPE_PREREQUISITE_NOT_MET: 'A prerequisite step did not return what this recipe needs to continue.',
   RECIPE_HOLD_ABANDONED: 'This run was waiting on a peer\u2019s answer, and the dish that started it no longer exists. Nothing will resume it.',
   RECIPE_APPROVAL_TIMEOUT: 'Approval was not granted in time. Re-run the recipe to try again.',
@@ -912,6 +917,9 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   RECIPE_VALIDATION_FAILED: 'choice',
   RECIPE_GUARD_TRIGGERED: 'conditional',
   RECIPE_FAIL_ON_TRIGGERED: 'conditional',
+  // D-402 E4, the owner's ruling (2026-11-17): a hand-off counts as a failed run. The page it acts on
+  // changed, which is the environment's doing, so it is retried and the breaker turns it off.
+  RECIPE_HAND_OFF: 'environment',
   RECIPE_PREREQUISITE_NOT_MET: 'conditional',
   RECIPE_APPROVAL_TIMEOUT: 'owner',
   RECIPE_APPROVAL_DENIED: 'owner',

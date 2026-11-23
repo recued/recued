@@ -77,8 +77,9 @@ export interface WsClientOptions {
    *  the structured `<token_id>.<bearer>` shape the server's
    *  `parseStructuredBearer` expects (matches webclient's
    *  `resolveBearer` posture; see
-   *  `apps/webclient/src/webclient-bootstrap.ts:668-690`). */
-  resolveBearer: () => Promise<string>;
+   *  `apps/webclient/src/webclient-bootstrap.ts:668-690`). Check the
+   *  attempt's lifetime after awaits before publishing shared state. */
+  resolveBearer: (attempt: { isCurrent(): boolean }) => Promise<string>;
   factory: WsTransportFactory;
   handlers?: WsClientHandlers;
   /** Initial backoff in ms. Default 1000. */
@@ -137,49 +138,74 @@ export const createWsClient = (options: WsClientOptions): WsClient => {
   let attempt_count = 0;
   let backoff = initial;
   let connect_loop_p: Promise<void> | null = null;
-  /** Whether the server has sent a frame on the current connection. */
-  let spoke = false;
+  // A stop or a disconnect invalidates every await and callback from that run.
+  // Checking stopped alone is insufficient once start() has cleared it again.
+  let generation = 0;
+  let removeListeners: (() => void) | null = null;
+  const isCurrent = (run: number): boolean => !stopped && run === generation;
 
-  /** Wait the current backoff, then grow it: what a failed attempt costs. */
-  const backOff = async (): Promise<void> => {
-    await sleep(backoff);
-    backoff = Math.min(backoff * mult, max);
+  const detachTransport = (): void => {
+    const remove = removeListeners;
+    removeListeners = null;
+    remove?.();
+  };
+  const closeTransport = (next: WsTransport): void => {
+    try { next.close(1000, 'bridge: shutdown'); } catch { /* Already closed. */ }
   };
 
-  const wireTransport = (next: WsTransport): void => {
+  /** Wait the current backoff, then grow it: what a failed attempt costs. */
+  const backOff = async (run: number): Promise<void> => {
+    if (!isCurrent(run)) return;
+    await sleep(backoff);
+    if (isCurrent(run)) backoff = Math.min(backoff * mult, max);
+  };
+
+  const wireTransport = (next: WsTransport, run: number): void => {
     transport = next;
-    spoke = false;
-    next.onMessage((payload) => {
+    let spoke = false;
+    const ownsTransport = (): boolean => isCurrent(run) && transport === next;
+    const subscriptions: Array<() => void> = [];
+    removeListeners = () => {
+      for (const remove of subscriptions) {
+        try { remove(); } catch { /* Other listeners still need removing. */ }
+      }
+    };
+    subscriptions.push(next.onMessage((payload) => {
+      if (!ownsTransport()) return;
       spoke = true;
       options.handlers?.onMessage?.(payload);
-    });
-    next.onError(() => {
+    }));
+    subscriptions.push(next.onError(() => {
       // Errors are handled implicitly via subsequent close.
-    });
-    next.onClose((info) => {
+    }));
+    subscriptions.push(next.onClose((info) => {
+      if (!ownsTransport()) return;
       transport = null;
-      options.handlers?.onDisconnected?.(info.reason || `code=${info.code}`);
-      if (stopped) return;
+      const retryRun = ++generation;
+      detachTransport();
       if (refusedCodes.has(info.code)) {
         refused = true;
         stopped = true;
         connect_loop_p = null;
+        options.handlers?.onDisconnected?.(info.reason || `code=${info.code}`);
         options.handlers?.onSignInRefused?.({ code: info.code, reason: info.reason });
         return;
       }
+      options.handlers?.onDisconnected?.(info.reason || `code=${info.code}`);
+      if (!isCurrent(retryRun)) return;
       if (spoke) {
         // A session the server accepted dropped: reconnect at once, from the start.
         backoff = initial;
-        connect_loop_p = connectLoop();
+        connect_loop_p = connectLoop(retryRun);
       } else {
         // The server closed it without a word: that attempt failed.
-        connect_loop_p = backOff().then(() => connectLoop());
+        connect_loop_p = backOff(retryRun).then(() => connectLoop(retryRun));
       }
-    });
+    }));
   };
 
-  const connectLoop = async (): Promise<void> => {
-    while (!stopped) {
+  const connectLoop = async (run: number): Promise<void> => {
+    while (isCurrent(run)) {
       attempt_count++;
       try {
         // D-169 P0 Slice 2B — unwrap-fresh-on-every-connect. Bearer
@@ -187,20 +213,30 @@ export const createWsClient = (options: WsClientOptions): WsClient => {
         // network errors so a transient store / WebCrypto hiccup
         // doesn't crash the SW; persistent failures surface to the
         // user via the side panel's connection status.
-        const bearer = await options.resolveBearer();
+        const bearer = await options.resolveBearer({ isCurrent: () => isCurrent(run) });
+        if (!isCurrent(run)) return;
         const next = await options.factory.open({
           url: options.url,
           auth_bearer: bearer,
         });
-        wireTransport(next);
+        if (!isCurrent(run)) {
+          closeTransport(next);
+          return;
+        }
+        wireTransport(next, run);
         // The backoff is NOT reset here: only a connection the server spoke
         // on earns that (see the header).
         attempt_count = 0;
         await options.handlers?.onConnected?.(next);
         return;
       } catch {
+        if (!isCurrent(run)) return;
+        const failed = transport;
+        transport = null;
+        detachTransport();
+        if (failed) closeTransport(failed);
         // Sleep for current backoff then increase, capping at max.
-        await backOff();
+        await backOff(run);
       }
     }
   };
@@ -213,21 +249,18 @@ export const createWsClient = (options: WsClientOptions): WsClient => {
       stopped = false;
       backoff = initial;
       attempt_count = 0;
-      connect_loop_p = connectLoop();
+      connect_loop_p = connectLoop(++generation);
       // Don't await — start returns as soon as the loop is scheduled.
       // Caller can await the connect via `onConnected` handler.
     },
     async stop() {
       stopped = true;
-      if (transport) {
-        try {
-          transport.close(1000, 'bridge: shutdown');
-        } catch {
-          // ignore
-        }
-      }
+      generation++;
+      const previous = transport;
       transport = null;
       connect_loop_p = null;
+      detachTransport();
+      if (previous) closeTransport(previous);
     },
     isConnected() {
       return transport !== null;

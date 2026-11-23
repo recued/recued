@@ -1,6 +1,7 @@
 /** Synchronous inventory/claim admission using the dispatcher's policy
  * primitives. Descriptions carry no authority; every call resolves it afresh. */
 import {
+  honorsAuthoredNever,
   cliPrincipalFromExecutionSource, readOwnerOperationOverride, recordsPrincipalFromExecutionSource,
   resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, resolveSimpleFormOperationPolicy,
   resolveTrustCeiling, type CatalogOperationResolution, type ExecutionSource, type RecordsExecutionBinding,
@@ -84,11 +85,13 @@ export const createPreapprovalAdmission = (deps: PreapprovalAdmissionDeps) => (
       : call.connection_name ? readCurrentConnectionOperationProfile(deps.profiles, call.connection_name) : null;
     const owner_override = readOwnerOperationOverride({ scan: execution.contractScan,
       ingredient_id: call.slug, operation_id: call.manifest.operations?.[opKey]?.operation_id ?? opKey });
+    // D-177 §N.15.7 — as the catalog gate resolves it: the owner's own chat runs an author's `never`.
+    const authoredNever = honorsAuthoredNever(source) ? { honor_authored_never: true } : {};
     resolution = target.cli ? resolveCliReachabilityPolicy({ operations: call.manifest.operations ?? {}, operation_id: opKey,
       reachable: execution.cliReachabilityResolver?.(cliPrincipalFromExecutionSource(source), call.slug, opKey) ?? false,
-      ceiling, owner_override, default_policy: call.manifest.default_policy })
+      ceiling, owner_override, default_policy: call.manifest.default_policy, ...authoredNever })
       : resolveCatalogOperationPolicy({ operations: call.manifest.operations ?? {}, operation_id: opKey,
-        profile, catalog_slug: call.slug, ceiling, owner_override, default_policy: call.manifest.default_policy });
+        profile, catalog_slug: call.slug, ceiling, owner_override, default_policy: call.manifest.default_policy, ...authoredNever });
     resolution = applyCatalogOverrideTightening({ actor: source.actor, contractScan: execution.contractScan }, resolution, call.slug);
   }
   return { verdict: resolution.verdict === 'deny' ? 'deny'

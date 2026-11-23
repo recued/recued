@@ -78,14 +78,26 @@ describe('D-269 — the browser-zone idiom is accounted for, file by file', () =
     //  · the one-off reschedule editor — its native datetime picker uses
     //    the device's wall clock and labels that clock explicitly. It sends
     //    an absolute run_at; it never replaces the schedule's time_zone.
+    //  · the project overview — a read-only overdue badge follows the viewer's
+    //    local task dates. Whole-day deadlines stay current through that local
+    //    day; the view explicitly labels the clock and stamps no durable zone.
+    //  · the Data route — project attention sends the viewer's zone for a
+    //    read-only overdue and upcoming window. Its counts and copied update
+    //    label that zone; this read never stamps a saved schedule or policy.
+    //  · the Body's send (D-339 slice 13, `yours/body-chat.ts`) — a chat turn sent from a Body's
+    //    page, so D-193's per-turn `time_zone`, the same reading as the chat route's, for the
+    //    same reason: "this week" in the answer is the owner's week where they are.
     //  · two-clock.ts — the fallback implementations themselves (`stampZone`
     //    and the preview's own client-zone default). This is where the reading
     //    is supposed to live, exactly once.
     expect(hits.sort()).toEqual([
       'apps/webclient/src/automation/one-off-reschedule.ts',
       'apps/webclient/src/chat/bootstrap-chat-route.ts',
+      'apps/webclient/src/data/bootstrap-data-route.ts',
       'apps/webclient/src/data/collection-explorer.ts',
+      'apps/webclient/src/yours/body-chat.ts',
       'packages/ui-shared/src/two-clock.ts',
+      'packages/ui-shared/src/work-entity-page/project-overview.ts',
     ]);
   });
 

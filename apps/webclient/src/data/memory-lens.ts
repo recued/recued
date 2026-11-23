@@ -1219,10 +1219,13 @@ const renderDetail = (
   </section>`;
 };
 
-const renderMemoryLensFrame = (content: string): string => `
+const renderMemoryLensFrame = (content: string, primaryAction = ''): string => `
   <section class="memory-lens" data-recued-memory-lens
     aria-labelledby="${MEMORY_LENS_HEADING_ID}">
-    <h2 class="memory-lens-title" id="${MEMORY_LENS_HEADING_ID}">Memory</h2>
+    <header class="memory-lens-header">
+      <h2 class="memory-lens-title" id="${MEMORY_LENS_HEADING_ID}">Memory</h2>
+      ${primaryAction}
+    </header>
     ${content}
   </section>`;
 
@@ -1299,7 +1302,7 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       filteringOrigin === f,
     ),
   ).join('');
-  const addBtn = canWrite
+  const tools = canWrite
     ? `<div class="memory-lens-actions">
         <button type="button" class="memory-btn"
           ${props.actionAttr}="${MEMORY_EXPORT_ACTION}"${exporting
@@ -1311,11 +1314,13 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
           ${props.actionAttr}="${MEMORY_IMPORT_ACTION}"${listLocked
             ? ' aria-disabled="true"'
             : ''}>Import</button>
-        <button type="button" class="memory-btn memory-btn--primary"
-          ${props.actionAttr}="${MEMORY_ADD_ACTION}"${listLocked
-            ? ' aria-disabled="true"'
-            : ''}>Add memory</button>
       </div>`
+    : '';
+  const addBtn = canWrite
+    ? `<button type="button" class="memory-btn memory-btn--primary"
+        ${props.actionAttr}="${MEMORY_ADD_ACTION}"${listLocked
+          ? ' aria-disabled="true"'
+          : ''}>Add memory</button>`
     : '';
 
   let body: string;
@@ -1365,11 +1370,11 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
   return renderMemoryLensFrame(`
     <div class="memory-lens-controls">
       <div class="memory-filter-chips" role="group" aria-label="Filter memory by origin">${chips}</div>
-      ${addBtn}
+      ${tools}
     </div>
     ${props.claimCounts !== undefined ? renderClaimCounts(props.claimCounts) : ''}
     ${body}
-  `);
+  `, addBtn);
 };
 
 export const MEMORY_LENS_STYLES = `
@@ -1383,9 +1388,13 @@ export const MEMORY_LENS_STYLES = `
 }
 .data-lens-btn.is-active { background: var(--surface); color: var(--fg-strong); box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
 .memory-lens { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
-.memory-lens-title { margin: 0; font-size: 15px; font-weight: 650; color: var(--fg-strong); }
+.memory-lens-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; min-width:0; }
+.memory-lens-title { margin:0; font-size:20px; font-weight:600; line-height:1.2; color:var(--fg-strong); }
+.memory-lens-header > .memory-btn { min-width:var(--wc-task-action-width,7.5rem); }
+.memory-lens-header > .memory-btn, .memory-lens-actions > .memory-btn { min-height:var(--wc-control-h,44px); padding:0 12px; border-radius:var(--wc-radius,9px); font-weight:600; }
 .memory-lens-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; min-width: 0; }
 .memory-filter-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
+.memory-filter-chips > .memory-filter-chip { min-height:var(--wc-control-h,44px); }
 .memory-lens-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.375rem; min-width: 0; }
 .memory-import-result { margin: 0; font-size: 0.8125rem; color: var(--fg-muted); overflow-wrap: anywhere; }
 .memory-filter-chip {
@@ -1395,7 +1404,7 @@ export const MEMORY_LENS_STYLES = `
   cursor: pointer;
 }
 .memory-filter-chip.is-active {
-  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  background:var(--accent-weak); border-color:var(--accent); color:var(--accent); font-weight:600;
 }
 .memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; }
 .memory-row { min-width: 0; border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.625rem 0.75rem; }

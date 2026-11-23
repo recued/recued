@@ -273,14 +273,14 @@ describe('D-149 follow-on — mountLaunchWizard: step content slot', () => {
     view.dispose();
   });
 
-  it('a non-config step with no renderStepContent leaves the slot empty', () => {
+  it('the Share step explains disabled creation without a host slot', () => {
     const { host, getHtml } = makeFakeHost();
     const { shell } = makeFakeShell();
     const view = mountLaunchWizard({
       ...baseOpts(host, shell),
       initialStep: 'share',
     });
-    expect(getHtml()).toContain('data-wizard-step="share"></div>');
+    expect(getHtml()).toContain('creates the new links disabled');
     view.dispose();
   });
 });

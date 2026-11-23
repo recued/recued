@@ -52,6 +52,12 @@ export interface RunRegistration {
   parent_run_id?: string;
   recipe_id: string;
   dish_id?: string;
+  /** How Live control names the run (`ActiveExecutionEntry.recipe_name` / `recipe_inline`): an
+   *  installed recipe's name, for one loaded by id; set by the host, never by the caller. */
+  recipe_name?: string;
+  recipe_inline?: true;
+  /** What each step does, by step id, as its approval names it (`ActiveExecutionEntry.step_name`). */
+  step_names?: Readonly<Record<string, string>>;
   /** Host-derived declaration summary. Never caller data or run output. */
   intent?: string;
   risk?: RiskTier;
@@ -147,6 +153,18 @@ interface RunProgress {
   last_signal_at: number;
 }
 
+/** How Live control names a run and the step it is on (`ActiveExecutionEntry.recipe_name`,
+ *  `recipe_inline`, `step_name`), from what its host registered. */
+const runNames = (
+  reg: Pick<RunRegistration, 'recipe_name' | 'recipe_inline' | 'step_names'>,
+  step_id: string | undefined,
+): Pick<ActiveExecutionEntry, 'recipe_name' | 'recipe_inline' | 'step_name'> => ({
+  ...(reg.recipe_name !== undefined ? { recipe_name: reg.recipe_name } : {}),
+  ...(reg.recipe_inline === true ? { recipe_inline: true as const } : {}),
+  ...(step_id !== undefined && reg.step_names !== undefined && Object.hasOwn(reg.step_names, step_id)
+    ? { step_name: reg.step_names[step_id]! } : {}),
+});
+
 export class InFlightRegistry {
   private readonly runs = new Map<string, RunRegistration>();
   /** D-259 — exact D-157 action identity to one pre-dispatch leader. The slot
@@ -175,6 +193,8 @@ export class InFlightRegistry {
    *  `progress.stalled` in the snapshot + fanned as a `stalled` delta. Cleared
    *  by `completeRun`. */
   private readonly stalledRuns = new Set<string>();
+  /** D-201 Slice 10R — `holdUntilSettled`'s live holds. */
+  private readonly settling = new Set<symbol>();
   private childSeq = 0;
   private readonly emit?: ExecutionDeltaEmit;
 
@@ -269,7 +289,20 @@ export class InFlightRegistry {
    *  reads this alongside the housekeeping engine-busy signal, which only sees
    *  the auto-run scheduler's own in-flight counter + adapter drains. */
   activeRunCount(): number {
-    return this.runs.size;
+    return this.runs.size + this.settling.size;
+  }
+
+  /** D-201 Slice 10R (10Q finding 3) — work that must land before the server
+   *  stops, though no run is on the active-list: an approval resume's writes
+   *  after its run ended. A run leaves the list the moment the drain abandons
+   *  it, so without this the drain's `await_inflight` saw nothing, and
+   *  `flush_audit` and `close_db` went ahead of what the resumer kept for the
+   *  next start. Counted by `activeRunCount` (so the auto-apply quiesce gate
+   *  waits too); never listed, never killed. Returns an idempotent release. */
+  holdUntilSettled(): () => void {
+    const hold = Symbol('settling');
+    this.settling.add(hold);
+    return () => { this.settling.delete(hold); };
   }
 
   /** D-259 §7.4.3–4 — correlate intent and stop exactly one live run owned by
@@ -593,6 +626,7 @@ export class InFlightRegistry {
         ...(reg.intent !== undefined ? { intent: reg.intent } : {}),
         ...(reg.risk !== undefined ? { risk: reg.risk } : {}),
         ...(reg.effect !== undefined ? { effect: reg.effect } : {}),
+        ...runNames(reg, held?.descriptor.step_id),
         ...(held?.descriptor.step_id !== undefined ? { step_id: held.descriptor.step_id } : {}),
         ...(held ? { lane: held.lane } : {}),
         // D-181 slice-4 #1 resolution — a run the owner KILLED but which has not
@@ -646,6 +680,7 @@ export class InFlightRegistry {
         ...(reg?.intent !== undefined ? { intent: reg.intent } : {}),
         ...(reg?.risk !== undefined ? { risk: reg.risk } : {}),
         ...(reg?.effect !== undefined ? { effect: reg.effect } : {}),
+        ...(reg !== undefined ? runNames(reg, g.descriptor.step_id) : {}),
         ...(g.descriptor.step_id !== undefined ? { step_id: g.descriptor.step_id } : {}),
         lane: g.lane,
         state: 'waiting_slot',

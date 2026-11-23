@@ -45,6 +45,21 @@ export interface ChromePermissionsApi {
  *  can't supply on its own (software / browser version, optional UA). The
  *  bootstrap captures these once at boot + threads them through. */
 export interface BridgeCapabilityProfileSnapshot {
+  dom_readiness?: boolean;
+  guarded_links?: boolean;
+  wait_read?: boolean;
+  /** Preserves omitted element siblings for positional collection. */
+  structural_reads?: boolean;
+  /** D-402 slice G — checks a row named by its texts again at the step (`within`). */
+  row_checks?: boolean;
+  /** 2026-11-21 (D-402, task P) — checks the card a step's element sits in (`within_card`), as a row. */
+  card_rows?: boolean;
+  /** 2026-11-21 (D-402, task H) — watches a click or a sent form, and waits for a page to change, up to 30 s. */
+  long_waits?: boolean;
+  /** 2026-11-20 — a read asked to settle waits for the page to stop changing (`settle_ms`). */
+  settled_reads?: boolean;
+  /** 2026-11-20 — a read asked to wait for a change waits for the page to change, then settle (`wait_change_ms`). */
+  settled_waits?: boolean;
   software_version: string;
   chrome_version: string;
   user_agent?: string;
@@ -93,6 +108,15 @@ export const buildCapabilityProfile = async (deps: {
   };
   if (s.user_agent !== undefined) profile.user_agent = s.user_agent;
   if (s.dom_documents !== undefined) profile.dom_documents = s.dom_documents;
+  if (s.dom_readiness !== undefined) profile.dom_readiness = s.dom_readiness;
+  if (s.guarded_links !== undefined) profile.guarded_links = s.guarded_links;
+  if (s.wait_read !== undefined) profile.wait_read = s.wait_read;
+  if (s.structural_reads !== undefined) profile.structural_reads = s.structural_reads;
+  if (s.row_checks !== undefined) profile.row_checks = s.row_checks;
+  if (s.card_rows !== undefined) profile.card_rows = s.card_rows;
+  if (s.long_waits !== undefined) profile.long_waits = s.long_waits;
+  if (s.settled_reads !== undefined) profile.settled_reads = s.settled_reads;
+  if (s.settled_waits !== undefined) profile.settled_waits = s.settled_waits;
   return profile;
 };
 

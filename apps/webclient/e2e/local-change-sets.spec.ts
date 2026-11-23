@@ -16,7 +16,10 @@ for (const width of [280,1280]) {
     expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
     await host.getByRole('button',{ name: 'Approve changes together',exact: true }).focus(); await page.keyboard.press('Enter');
     await expect(host).toContainText('All 2 local changes are confirmed.');
-    await expect(host.locator('[data-local-change-receipts]')).toContainText('lmr_30000000');
+    // Each confirmed change in the owner's words; its receipt stays out of the sentence.
+    const confirmed = host.locator('[data-local-change-receipts] [data-local-mutation-receipt^="lmr_30000000"]');
+    await expect(confirmed).toHaveText(['Records change confirmed', 'Calendar change confirmed']);
+    await expect(host.locator('[data-local-change-receipts]')).not.toContainText('lmr_');
     await expect(host.getByRole('status')).toBeFocused();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
@@ -31,7 +34,8 @@ for (const width of [280,1280]) {
     expect(await page.evaluate(() => window.__app.rpcCallCount('local_changes.decide'))).toBe(1);
     await host.getByRole('button',{ name: 'Approve undo together',exact: true }).click();
     await expect(host).toContainText('All 2 local changes are confirmed.');
-    await expect(host.locator('[data-local-change-receipts]')).toContainText('lmr_40000000');
+    await expect(host.locator('[data-local-change-receipts] [data-local-mutation-receipt^="lmr_40000000"]'))
+      .toHaveText(['Records change confirmed', 'Calendar change confirmed']);
     await page.reload(); await expect(host).toContainText('All 2 local changes are confirmed.');
     expect(await page.evaluate(() => window.__app.rpcCallCount('local_changes.decide'))).toBe(0);
   });

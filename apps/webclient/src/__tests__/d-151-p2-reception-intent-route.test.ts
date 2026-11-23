@@ -36,7 +36,7 @@ const makeShell = () =>
   ({
     getState: () => ({}),
     subscribe: () => () => {},
-    loadPage: () => {},
+    loadPage: () => Promise.resolve(),
     // R19 Slice 4 — `mountReceptionRoute` reconciles the drill-in view state
     // on mount, so the (minimal) fake shell must stub these.
     closeViewAsVisitor: () => {},

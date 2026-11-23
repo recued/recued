@@ -7,6 +7,7 @@ type Reply = { result?: RotationResult; error?: { code: string; message: string 
 interface TlsRenewFocusFixture {
   calls: unknown[];
   blockedWrites: string[];
+  prompts: string[];
   release(index: number, outcome: Outcome): void;
 }
 declare global { interface Window { __tlsRenewFocus: TlsRenewFocusFixture } }
@@ -52,7 +53,7 @@ const open = async (page: Page, width: number) => {
   await page.evaluate(now => {
     const pending: Array<((reply: Reply) => void) | null> = [];
     const fixture: TlsRenewFocusFixture = {
-      calls: [], blockedWrites: [],
+      calls: [], blockedWrites: [], prompts: [],
       release(index, outcome) {
         const resolve = pending[index];
         if (!resolve) throw new Error(`No pending local renewal ${index}`);
@@ -185,7 +186,12 @@ for (const width of [390, 1280]) {
     test(`Certificate renewal ignores disposed ${outcome} after remount at ${width}px`, async ({ page, browserName }) => {
       await open(page, width);
       await beginRenewal(page, browserName, key);
+      const departure = page.waitForEvent('dialog');
+      page.once('dialog', dialog => { void dialog.accept(); });
       await page.evaluate(() => window.__app.setHash('#yours'));
+      const question = await departure;
+      expect(question.type()).toBe('confirm');
+      expect(question.message()).toBe('A certificate renewal is still in progress. Leave Settings anyway?');
       await expect(panel(page)).toHaveCount(0);
       await page.evaluate(() => window.__app.setHash('#settings/server/certificates'));
       await expect(button(page, 'Renew now')).toBeVisible();
@@ -212,4 +218,39 @@ for (const width of [390, 1280]) {
     await expect(connect).toBeFocused();
     await expect(connect).toHaveAttribute('aria-selected', 'true');
   });
+}
+
+const renewalUnloadIsGuarded = (page: Page) => page.evaluate(() => {
+  const event = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+});
+for (const width of [390, 1280]) {
+  for (const outcome of ['success', 'refused', 'transport'] as const) {
+    test(`Certificate renewal guards pending navigation until ${outcome} at ${width}px`, async ({ page }) => {
+      await open(page, width); await enterConfirmation(page);
+      expect(await renewalUnloadIsGuarded(page)).toBe(false);
+      await page.evaluate(() => {
+        window.confirm = message => { window.__tlsRenewFocus.prompts.push(message ?? ''); return false; };
+      });
+      await button(page, 'Yes, renew').focus(); await button(page, 'Yes, renew').press('Enter');
+      await state(page, 'busy'); await expect(status(page)).toBeFocused();
+      const original = await status(page).elementHandle();
+      expect(await renewalUnloadIsGuarded(page)).toBe(true);
+      await page.evaluate(() => window.__app.setHash('#chat'));
+      await expect(page).toHaveURL(/#settings\/server\/certificates$/);
+      await expect(status(page)).toBeFocused();
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await page.evaluate(() => window.__tlsRenewFocus.prompts)).toEqual([
+        'A certificate renewal is still in progress. Leave Settings anyway?',
+      ]);
+      await release(page, 0, outcome);
+      await state(page, outcome === 'success' ? 'done' : 'error');
+      expect(await renewalUnloadIsGuarded(page)).toBe(false);
+      await page.evaluate(() => window.__app.setHash('#chat'));
+      await expect(panel(page)).toHaveCount(0);
+      expect(await page.evaluate(() => window.__tlsRenewFocus.calls)).toEqual([{}]);
+      expect(await page.evaluate(() => window.__tlsRenewFocus.prompts)).toHaveLength(1);
+    });
+  }
 }

@@ -1,7 +1,8 @@
 /** Owner-started message reading and verified reply/forward context. Never sends or
  * marks mail read. Provider ids and provider thread ids are not RFC headers. */
 import { simpleParser } from 'mailparser';
-import { MAIL_DRAFT_SOURCE_MAX, RpcError, type MailMessageRef, type MailMessageSnapshot } from '@recued/contracts';
+import { MAIL_DRAFT_SOURCE_MAX, RpcError, readReminderMailReference, reminderMailReference, sameReminderMailReference,
+  type MailMessageRef, type MailMessageSnapshot } from '@recued/contracts';
 import { materializeMailBody } from '../../mail-body-read-handler.js';
 import type { BlobStore } from '../../storage/blob-store.js';
 import type { MailCollection } from './mail-collection.js';
@@ -44,12 +45,21 @@ export const getMailMessage = async (deps: MailMessageReadDeps, input: MailMessa
   const storedRfcId = record.hot_fields.rfc_message_id;
   const mailboxAddress = collection.accountEmail;
   const incarnation = deps.getIncarnation?.(input.slug);
+  const expected = input.expected_reminder_ref === undefined ? undefined : readReminderMailReference(input.expected_reminder_ref);
+  if (input.expected_reminder_ref !== undefined && !expected)
+    throw new RpcError('invalid_args', 'Choose a valid saved email reference.', 400);
   const scope = input.conversation;
   if (scope !== undefined && (!scope || scope.thread_id !== null && (typeof scope.thread_id !== 'string' || !scope.thread_id || scope.thread_id.length > 4096)
     || typeof scope.incarnation !== 'string' || !scope.incarnation || scope.incarnation.length > 256)) {
     throw new RpcError('invalid_args', 'A valid conversation identity is required.', 400);
   }
   const assertScope = (): void => {
+    if (expected) {
+      const current = deps.getCollection(input.slug)?.get(input.record_id);
+      const actual = current && reminderMailReference(input.slug, current, deps.getIncarnation?.(input.slug));
+      if (deps.getCollection(input.slug) !== collection || !actual || !sameReminderMailReference(expected, actual))
+        throw new RpcError('resource_changed', 'This email or mailbox was removed or replaced. Reopen it from Mail.', 409);
+    }
     if (!scope) return;
     const current = collection.get(input.record_id);
     if (deps.getCollection(input.slug) !== collection || !current || current.source_id !== sourceId
@@ -63,6 +73,7 @@ export const getMailMessage = async (deps: MailMessageReadDeps, input: MailMessa
     slug: input.slug, record_id: input.record_id, from: text(hot.from), to: strings(hot.to), cc: strings(hot.cc), subject: text(hot.subject),
     received_at: record.received_at,
     body: null, body_truncated: false, read: 'stored', reply: null, forward: null,
+    ...(reminderMailReference(input.slug, record, incarnation) ? { reminder_ref: reminderMailReference(input.slug, record, incarnation) } : {}),
   };
   const checkedState = await readMailMessageState(deps, input);
   snapshot.state = checkedState.state;

@@ -114,14 +114,16 @@ const snapshot = (allowed_tools: readonly string[]): ContractSnapshot => ({
 });
 
 describe('D-187 slice 4 — resolveTrustCeiling', () => {
-  it('contract-less OWNER-DIRECT + admin-shell sources resolve the admin ceiling', () => {
+  it('contract-less OWNER-DIRECT (from the app) + admin-shell sources resolve the admin ceiling', () => {
     expect(CONTRACT_LESS_TRUST_CEILING).toBe('admin');
-    // D-209 §1.4 — the owner acting DIRECTLY (HID / owner chat) and the admin-shell system
+    // D-209 §1.4 — the owner acting DIRECTLY from the app (HID) and the admin-shell system
     // channels (webhook door / housekeeping maintenance) take `admin`. Owner AUTOMATION
-    // (schedule/reactive) no longer does — it fails closed below.
-    for (const s of [USER, CHAT_OWNER, HOUSEKEEPING]) {
+    // (schedule/reactive) does not — it fails closed below — and since D-177 §N.15.6 neither
+    // does the owner's chat, where the AI decides what runs.
+    for (const s of [USER, HOUSEKEEPING]) {
       expect(resolveTrustCeiling(s)).toBe('admin');
     }
+    expect(resolveTrustCeiling(CHAT_OWNER)).toBe('read');
   });
 
   it('a contract-less system SCHEDULE/REACTIVE source fails closed to the LOW read ceiling (D-209 §1.4 — unattended owner automation HOLDS its writes for review)', () => {
@@ -185,35 +187,33 @@ describe('D-187 slice 4 — admitByOpRisk op-risk × stage-trust', () => {
   });
 });
 
-describe('D-187 slice 4 — outbound-send LIFT (user_self-scoped)', () => {
-  it('lifts an outbound send to ask at a contract-less user_self cell (admin ceiling would otherwise admit)', () => {
-    // mail-send is `write`; at the admin ceiling it would relax to admit — the lift
-    // re-raises it so the send surfaces for approval (the user reviews the recipient).
-    const d = opRisk('mail-send', 'write', USER);
+describe('D-187 slice 4 — a send follows its approval (the by-name lift is gone, D-177 §N.15.6)', () => {
+  it('asks in the owner\'s chat by its approval, and runs from the app like every write', () => {
+    // mail-send is `write`: the chat's `read` ceiling keeps its `ask`, so the send surfaces for
+    // approval (the owner reviews the recipient); the app's `admin` ceiling relaxes it.
+    const d = opRisk('mail-send', 'write', CHAT_OWNER);
     expect(d.verdict).toBe('ask');
     if (d.verdict === 'ask') {
       expect(d.risk_tier).toBe('write');
       // The send's own reason, in the owner's words (it names no slug).
       expect(d.detail).toContain('sends a message to someone outside this server');
     }
+    expect(opRisk('mail-send', 'write', USER).verdict).toBe('admit');
   });
 
-  it('does NOT lift an outbound send for a system actor — the lift is user_self-scoped (a system source at the admin ceiling admits)', () => {
-    // The outbound-send LIFT fires only for `user_self`. A system source at the admin
-    // ceiling (housekeeping / webhook door) therefore admits the send — the lift never
-    // raises it.
+  it('a system actor\'s send follows its channel\'s ceiling (admin-shell admits, automation holds)', () => {
     expect(opRisk('mail-send', 'write', HOUSEKEEPING).verdict).toBe('admit');
     // D-209 §1.4 — a `schedule`/`reactive` system source now holds the send via the LOW
     // CEILING (write > read), NOT the lift. Same surfaced outcome, different mechanism.
     expect(opRisk('mail-send', 'write', SCHEDULE).verdict).toBe('ask');
   });
 
-  it('does NOT separately lift for a contracted actor — the LOW ceiling already surfaces the write', () => {
-    // It asks, but via the ceiling (write > read), NOT the user_self-scoped lift.
+  it('a contracted actor\'s send asks through the LOW ceiling', () => {
     expect(opRisk('mail-send', 'write', MCP_BOUND_DOOR).verdict).toBe('ask');
   });
 
-  it('does NOT lift a non-send internal write at user_self (admin ceiling admits it)', () => {
+  it('an internal write is the same: it asks in the owner\'s chat and runs from the app', () => {
+    expect(opRisk('annotation-create', 'write', CHAT_OWNER).verdict).toBe('ask');
     expect(opRisk('annotation-create', 'write', USER).verdict).toBe('admit');
   });
 
@@ -312,8 +312,8 @@ describe('D-207 slice 1 — an anonymous reception visitor can never take the ow
     expect(decision.verdict).not.toBe('admit');
   });
 
-  it('the owner is unaffected — a contract-less owner dispatch keeps the admin ceiling', () => {
+  it('the owner is unaffected — the owner from the app keeps the admin ceiling; their chat follows each op', () => {
     expect(resolveTrustCeiling(USER)).toBe(CONTRACT_LESS_TRUST_CEILING);
-    expect(resolveTrustCeiling(CHAT_OWNER)).toBe(CONTRACT_LESS_TRUST_CEILING);
+    expect(resolveTrustCeiling(CHAT_OWNER)).toBe('read');
   });
 });

@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, ChatToolCall } from '@recued/contracts';
 
+import { callName } from '../chat/activity.js';
 import { describeToolRow, planToolRows, readToolResult, toolNameOfRow } from '../chat/tool-rows.js';
 
 const base = {
@@ -48,7 +49,21 @@ describe('a loaded conversation folds tool rows into the answer that lists them'
     ]);
     expect(plan.folded.has('settle:run-1')).toBe(true);
     expect(plan.late_results.get('m1')).toEqual([{ message_id: 'settle:run-1', run_id: 'run-1',
-      tool_name: TOOL, text: `control-device-home-assistant: ${RESULT}` }]);
+      tool_name: TOOL, args: {}, text: `control-device-home-assistant: ${RESULT}` }]);
+  });
+
+  it('names a late result by the recipe the answer\'s call ran, and by its arguments', () => {
+    const plan = planToolRows([
+      answer('m1', [{ run_id: 'run-1', recipe_name: 'Control a device' },
+        { tool_name: 'work.create', tier: 1, args: { kind: 'note' }, run_id: 'run-2' }]),
+      toolRow('settle:run-1', `control-device-home-assistant: ${RESULT}`, { ts: 9 }),
+      toolRow('settle:run-2', 'work.create: {}', { ts: 10 }),
+    ]);
+    const [recipe, note] = plan.late_results.get('m1')!;
+    expect(recipe).toMatchObject({ tool_name: TOOL, recipe_name: 'Control a device' });
+    expect(callName(recipe!)).toBe('“Control a device”');
+    expect(note).not.toHaveProperty('recipe_name');
+    expect(callName(note!)).toBe('“Add a note”');
   });
 
   it('keeps a call no answer lists as a row of its own, carrying its result for the details', () => {
@@ -106,5 +121,29 @@ describe('a tool result read for a person', () => {
     expect(describeToolRow(toolRow('tool:a:result', `${TOOL}: {}`))).toBe(`The result from ${TOOL}`);
     expect(describeToolRow(toolRow('settle:r', 'control-device: {}'))).toBe('A later result from control-device');
     expect(toolNameOfRow('mail.search({"q":"a: b"}): {}')).toBe('mail.search');
+  });
+
+  it('a chat tool\'s row is named by its title, as its card names it', () => {
+    expect(describeToolRow(toolRow('tool:b', 'calendar.update({"summary":"Team sync"})')))
+      .toBe('Called “Change a calendar event”');
+    expect(describeToolRow(toolRow('tool:b:result', 'mail.search: {}'))).toBe('The result from “Search your mail”');
+  });
+
+  it('a recipe\'s call by the recipe\'s name, from its record, where it read the tool\'s (live, 2026-11-13)', () => {
+    const named = { ...callRecord('run-1'), tool_name: 'recued-core/weekly-digest', recipe_name: 'Weekly digest' };
+    expect(describeToolRow(toolRow('tool:a', 'recued-core/weekly-digest({})', { tool_call: named })))
+      .toBe('Called “Weekly digest”');
+    // A waiting `recipe.run` read "Called “Run a recipe”".
+    expect(describeToolRow(toolRow('tool:a', 'recipe.run({"recipe_id":"weekly-digest"})',
+      { tool_call: { ...named, tool_name: 'recipe.run' } }))).toBe('Called “Weekly digest”');
+    // A later result, by its run's record; one with no record, or no name, as before.
+    const records = { 'run-1': named };
+    expect(describeToolRow(toolRow('settle:run-1', 'recued-core/weekly-digest: {}'), records))
+      .toBe('A later result from “Weekly digest”');
+    expect(describeToolRow(toolRow('settle:run-2', 'recued-core/weekly-digest: {}'), records))
+      .toBe('A later result from recued-core/weekly-digest');
+    const { recipe_name: _unnamed, ...unnamed } = named;
+    expect(describeToolRow(toolRow('tool:a', 'recued-core/weekly-digest({})', { tool_call: unnamed })))
+      .toBe('Called recued-core/weekly-digest');
   });
 });

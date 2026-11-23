@@ -455,17 +455,33 @@ export const createInternalToolRegistry = (
    *  own turn reads where to turn it on ("Self (you)" on the Contracts page), any other
    *  contract's only that it is not available. It said "Re-enable it in Settings → Contracts",
    *  and Contracts is its own page. */
+  /** A Tier-2 recipe's own title, as the owner knows it ("Weekly digest"), or undefined. */
+  const tier2RecipeTitle = (name: string): string | undefined => {
+    try {
+      const entry = tier2Source.recipeNamed !== undefined
+        ? tier2Source.recipeNamed(name)
+        : tier2Source.listRecipes().find((recipe) => `${recipe.publisher_id}/${recipe.recipe_id}` === name) ?? null;
+      const title = entry?.recipe.metadata?.name;
+      return typeof title === 'string' && title.trim() !== '' ? title.trim() : undefined;
+    } catch { return undefined; }
+  };
+
   const turnedOff = (name: string, ctx: ChatDispatchContext, tab: 'Ops' | 'Recipes'): ChatDispatchResult => {
     const ownersOwn = isOwnersOwnCall(ctx.execution_source);
     // A Tier-2 name is `<publisher>/<recipe_id>`, its switch `recipe.<publisher>/<recipe_id>`.
     const entry_key = tab === 'Recipes' ? `${RECIPE_GRANT_PREFIX}${name}` : primitiveGrantEntry(name);
+    // The offer under the answer names it as the owner knows it: a recipe by its title
+    // ("“Weekly digest” is turned off for you"), where it read "recued-core/weekly-digest is
+    // turned off for you". The refusal the model reads keeps the name it calls.
+    const recipeTitle = tab === 'Recipes' ? tier2RecipeTitle(name) : undefined;
+    const label = grantSwitchText(entry_key)?.title ?? (recipeTitle !== undefined ? `“${recipeTitle}”` : name);
     return {
       ok: false,
       reason: 'classification_blocked',
       detail: grantRefusalSentence(`'${name}'`, ownersOwn, tab),
       // D-346 follow-up — the owner's own chat offers to turn it on under the answer.
       ...(ownersOwn
-        ? { fixes: [{ kind: 'switch' as const, entry_key, label: grantSwitchText(entry_key)?.title ?? name }] }
+        ? { fixes: [{ kind: 'switch' as const, entry_key, label }] }
         : {}),
     };
   };

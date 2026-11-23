@@ -1,12 +1,32 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FORM_RESPONSE_ON_SHORTHAND,
+  type LocalRecipeWebhookDoorPreview,
   type LocalRecipeWebhookStatus,
   type MailFactTypeSpec,
   type MailTemplate,
   type MailTemplateDefinition,
   type RecipeDefinition,
+  type RecipeRunCaptureSummary,
+  type ServerExecuteResponse,
 } from '@recued/contracts';
+import type { BrowserVariableCallers, ConfigEditorOverlayOptions, MailboxVariableCallers } from '@recued/ui-shared';
+import type { HeldRunDelivery } from '../../../held-run-follow.js';
+
+/** D-402 slice C5 — the shared settings form a trial opens, as the editor hands it over. What the form
+ *  does with them is `ui-shared`'s own (`config-editor-overlay.test.ts`); here, its confirm and close. */
+const settingsForms = vi.hoisted(() => [] as Array<{ opts: ConfigEditorOverlayOptions; closed: boolean; close(): void }>);
+vi.mock('@recued/ui-shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@recued/ui-shared')>();
+  return {
+    ...actual,
+    wireConfigEditorOverlay: (opts: ConfigEditorOverlayOptions) => {
+      const form = { opts, closed: false, close: () => { if (form.closed) return; form.closed = true; opts.onClose?.(); } };
+      settingsForms.push(form);
+      return { element: {} as HTMLElement, hasInFlightWork: () => false, destroy: form.close };
+    },
+  };
+});
 
 import {
   RECIPE_EDITOR_ADD_ATTR,
@@ -59,6 +79,8 @@ import {
   RECIPE_EDITOR_VALIDATE_ATTR,
   RECIPE_EDITOR_WEBHOOK_ADD_ATTR,
   RECIPE_EDITOR_WEBHOOK_ARM_ATTR,
+  RECIPE_EDITOR_SAVE_QUESTION_ATTR,
+  RECIPE_EDITOR_SAVE_ANSWER_ATTR,
   RECIPE_EDITOR_WEBHOOK_DISARM_ATTR,
   RECIPE_EDITOR_WEBHOOK_DOOR_ATTR,
   RECIPE_EDITOR_WEBHOOK_REMOVE_ATTR,
@@ -66,10 +88,16 @@ import {
   RECIPE_EDITOR_WEBHOOK_STATUS_ATTR,
   RECIPE_EDITOR_WEBHOOKS_ATTR,
   bootstrapRecipeEditorRoute,
+  RECIPE_EDITOR_TRIAL_CAPTURE_ATTR,
+  RECIPE_EDITOR_TRIAL_ERROR_ATTR,
+  RECIPE_EDITOR_TRIAL_STATUS_ATTR,
+  RECIPE_EDITOR_TRY_ATTR,
+  TRIAL_CAPTURE_READ_DELAYS_MS,
   type RecipeSaveResult,
   type RecipeWebhookControl,
   type RecipeValidateResult,
 } from '../recipe-editor-route.js';
+import type { RecipeTryCaller, RecipeTryResult } from '../recipe-try-caller.js';
 import {
   mountExecutionCaseDraftRoute,
   EXECUTION_CASE_DRAFT_HOST_ATTR,
@@ -280,6 +308,10 @@ interface MountOptions {
   mailFactTypesCaller?: () => Promise<{ readonly types: readonly MailFactTypeSpec[] }>;
   mailTemplatesCaller?: () => Promise<{ readonly templates: readonly MailTemplate[] }>;
   mailTemplateStarterCaller?: (args: { template_id: string }) => Promise<{ readonly starter: MailTemplateDefinition }>;
+  tryCaller?: RecipeTryCaller;
+  followHeldRun?: (held: ServerExecuteResponse, deliver: HeldRunDelivery) => () => void;
+  trialCapturesCaller?: (args: { recipe_id: string }) => Promise<{ captures: RecipeRunCaptureSummary[] }>;
+  trialSettingsCallers?: { browsers?: BrowserVariableCallers; mailboxes?: MailboxVariableCallers };
 }
 type BootstrapValidate = (args: {
   recipe: RecipeDefinition;
@@ -288,6 +320,8 @@ type BootstrapSave = (args: {
   recipe: RecipeDefinition;
   publisher_id?: string;
   webhook_bindings?: ReadonlyArray<{ binding: string; ingress_id: string }>;
+  webhook_on?: boolean;
+  webhook_consent?: string;
 }) => Promise<RecipeSaveResult>;
 
 const mount = (options: MountOptions = {}) => {
@@ -302,6 +336,10 @@ const mount = (options: MountOptions = {}) => {
     ...(options.mailFactTypesCaller ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
     ...(options.mailTemplatesCaller ? { mailTemplatesCaller: options.mailTemplatesCaller } : {}),
     ...(options.mailTemplateStarterCaller ? { mailTemplateStarterCaller: options.mailTemplateStarterCaller } : {}),
+    ...(options.tryCaller ? { tryCaller: options.tryCaller } : {}),
+    ...(options.followHeldRun ? { followHeldRun: options.followHeldRun } : {}),
+    ...(options.trialCapturesCaller ? { trialCapturesCaller: options.trialCapturesCaller } : {}),
+    ...(options.trialSettingsCallers ? { trialSettingsCallers: options.trialSettingsCallers } : {}),
     ...(options.initialRecipe !== undefined
       ? { initialRecipe: options.initialRecipe }
       : {}),
@@ -765,6 +803,27 @@ describe('recipe-editor step inspector route', () => {
     );
   });
 
+  // D-201 Slice 10AW (10AS finding 30) — a recipe may leave its variables out,
+  // as the validator allows. The editor holds them, so it opens such a recipe,
+  // offers to add an input, and saves the recipe with them.
+  it('opens a recipe that leaves its variables out, and saves it with them', async () => {
+    const { variables: _left, ...bare } = opRecipe({ id: 'note', transform: 'template', template: 'hello' });
+    const saveCalls: RecipeDefinition[] = [];
+    const { root, route } = mount({
+      initialRecipe: bare as RecipeDefinition,
+      saveCaller: async (args) => {
+        saveCalls.push(args.recipe);
+        return { saved: true, recipe_id: args.recipe.recipe_id, version: 2, name: args.recipe.metadata.name };
+      },
+    });
+    expect(route.getRecipe().variables).toEqual({});
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)!.click();
+    await tick();
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0]!.variables).toEqual({});
+    expect(saveCalls[0]!.steps).toEqual(bare.steps);
+  });
+
   it('keeps Save focused and single-flight while the save caller is pending', async () => {
     const saveCalls: RecipeDefinition[] = [];
     const saveGate: {
@@ -929,6 +988,620 @@ describe('recipe-editor step inspector route', () => {
     expect(doc.activeElement).toBe(
       findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, 'new'),
     );
+  });
+
+  it('D-201 Slice 10I — a save while its webhook is on asks first whether to keep it on, saying what the new version can also do', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status = (armed: boolean): LocalRecipeWebhookStatus => ({
+      declared: true,
+      configured: true,
+      armed,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+      door: { state: 'minted', contract_id: 'contract_keep_on', operation_ids: ['core.ai.classify'] },
+    });
+    const saved: Array<Parameters<BootstrapSave>[0]> = [];
+    const previewed: RecipeDefinition[] = [];
+    const previewBindings: unknown[] = [];
+    const preview: { door: LocalRecipeWebhookDoorPreview | null } = {
+      door: {
+        state: 'derivable',
+        operation_ids: ['core.ai.classify', 'core.mail.send'],
+        added: ['core.mail.send'],
+        removed: [],
+        widened: [],
+        kept_off: [],
+        history: 'kept',
+        armed: true,
+        consent: 'consent-shown',
+      },
+    };
+    const { doc, root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status(true),
+        armCaller: async () => ({ webhook: status(true) }),
+        disarmCaller: async () => ({ webhook: status(false) }),
+        previewCaller: async ({ recipe, webhook_bindings }) => {
+          previewed.push(recipe);
+          previewBindings.push(webhook_bindings);
+          return preview;
+        },
+      },
+      saveCaller: async (args) => {
+        saved.push(args);
+        return {
+          saved: true,
+          recipe_id: args.recipe.recipe_id,
+          version: saved.length + 1,
+          name: args.recipe.metadata.name,
+          webhook: status(args.webhook_on === true),
+        };
+      },
+    });
+    const question = () => findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR);
+    const answer = (value: string) => findByAttrValue(root, RECIPE_EDITOR_SAVE_ANSWER_ATTR, value)!;
+
+    // Save asks first: nothing is saved before the answer.
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Sends a mail now');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(saved).toEqual([]);
+    expect(previewed).toHaveLength(1);
+    expect(question()?.getAttribute(RECIPE_EDITOR_SAVE_QUESTION_ATTR)).toBe('asking');
+    const text = textOf(question()!);
+    expect(text).toContain('Its webhook is on. Keep it on for the version you save?');
+    expect(text).toContain('This version can also do these when a message comes in, which the saved one cannot:');
+    expect(text).toContain('core.mail.send');
+    expect(text).not.toContain('core.ai.classify');
+    // The question takes the focus, not its yes, and it is read whole.
+    expect(doc.activeElement).toBe(question());
+    const describedBy = question()!.getAttribute('aria-describedby')!.split(' ');
+    // D-201 Slice 10AC (10AA finding 23) — the history sentence is part of it.
+    expect(describedBy).toHaveLength(4);
+    expect(describedBy[3]).toMatch(/-history$/);
+    expect(answer('keep-on').getAttribute('aria-describedby')).toBe(describedBy.join(' '));
+
+    // An edit closes it: it was about the draft as it was.
+    const nameField = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!;
+    nameField.focus();
+    setValue(nameField, 'Sends a mail now, edited');
+    expect(question()).toBeUndefined();
+    expect(saved).toEqual([]);
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(previewed).toHaveLength(2);
+    expect(previewed[1]!.metadata.name).toBe('Sends a mail now, edited');
+    // Asked from the field (as ⌘S asks), it still takes the focus.
+    expect(doc.activeElement).toBe(question());
+
+    // Keep it on: saved with the owner's answer.
+    answer('keep-on').click();
+    await tick();
+    expect(saved).toHaveLength(1);
+    // D-201 Slice 10M — the save carries what the owner was shown, and the
+    // question was asked with the ways in the save sends.
+    expect(saved[0]).toMatchObject({
+      webhook_on: true,
+      webhook_consent: 'consent-shown',
+      webhook_bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    });
+    expect(previewBindings[0]).toEqual([{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }]);
+    expect(question()).toBeUndefined();
+    expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)).toBeDefined();
+
+    // Cancel saves nothing and gives Save back its focus.
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Changed again');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    answer('cancel').click();
+    await tick();
+    expect(saved).toHaveLength(1);
+    expect(question()).toBeUndefined();
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR));
+
+    // Undo changes the draft without an edit's own path: it closes it too.
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(question()).toBeDefined();
+    const buttonLabelled = (el: FakeElement, label: string): FakeElement | undefined =>
+      el.tagName === 'BUTTON' && el.textContent === label
+        ? el
+        : el.children.map((child) => buttonLabelled(child, label)).find((found) => found !== undefined);
+    buttonLabelled(root, 'Undo')!.click();
+    await tick();
+    expect(question()).toBeUndefined();
+    expect(saved).toHaveLength(1);
+
+    // Switch it off: saved without keeping it on.
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(textOf(question()!)).toContain(
+      'Switching it off closes the messages that did not reach it and cancels the ones waiting.',
+    );
+    answer('switch-off').click();
+    await tick();
+    expect(saved).toHaveLength(2);
+    expect(saved[1]!.webhook_on).toBeUndefined();
+    expect(saved[1]!.webhook_consent).toBeUndefined();
+    expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)).toBeDefined();
+
+    // Off, a save asks nothing.
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Saved while off');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(saved).toHaveLength(3);
+    expect(question()).toBeUndefined();
+
+    // Switching it off while asked closes the question, and saves nothing.
+    findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!.click();
+    await tick();
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Asked, then switched off');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(question()).toBeDefined();
+    findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!.click();
+    await tick();
+    expect(question()).toBeUndefined();
+    expect(saved).toHaveLength(3);
+  });
+
+  it('D-201 Slice 10M — the question names everything the door gains, what stays off, and when the history closes; a stale answer asks again', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status: LocalRecipeWebhookStatus = {
+      declared: true,
+      configured: true,
+      armed: true,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    };
+    const answers: LocalRecipeWebhookDoorPreview[] = [
+      {
+        state: 'derivable',
+        operation_ids: ['core.ai.summarize', 'core.mail.send'],
+        added: ['core.mail.send', 'connection:acct-work', 'ingredient:http-fetch'],
+        removed: ['connection:acct-personal'],
+        widened: ['webhook_delivery:scoped_read'],
+        kept_off: ['core.ai.summarize'],
+        history: 'closed',
+        armed: true,
+        consent: 'consent-1',
+      },
+      {
+        state: 'derivable',
+        operation_ids: ['core.mail.send'],
+        added: ['core.mail.send'],
+        removed: [],
+        widened: [],
+        kept_off: [],
+        history: 'kept',
+        armed: true,
+        consent: 'consent-2',
+      },
+    ];
+    let asked = 0;
+    const saved: Array<Parameters<BootstrapSave>[0]> = [];
+    const { root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status,
+        armCaller: async () => ({ webhook: status }),
+        disarmCaller: async () => ({ webhook: status }),
+        previewCaller: async () => ({ door: answers[Math.min(asked++, answers.length - 1)]! }),
+      },
+      saveCaller: async (args) => {
+        saved.push(args);
+        if (saved.length === 1) {
+          throw Object.assign(new Error('recipe.save: what keeping its webhook on would allow changed'), {
+            code: 'webhook_consent_stale',
+          });
+        }
+        return { saved: true, recipe_id: args.recipe.recipe_id, version: 2, name: args.recipe.metadata.name, webhook: status };
+      },
+    });
+    const question = () => findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR);
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Mails at work');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    // The fake document joins each element's text with a space.
+    const text = textOf(question()!).replace(/\s+/g, ' ');
+    expect(text).toContain('core.mail.send');
+    expect(text).toContain('use the connection acct-work');
+    expect(text).toContain('run http-fetch');
+    expect(text).toContain('read what webhook_delivery messages say');
+    expect(text).toContain('These stay off, as you switched them off under Contracts: core.ai.summarize');
+    // D-201 Slice 10Y — an answer without `history_triggers` is a server's
+    // before 10Y: one trigger closes, it does not say which.
+    expect(text).toContain('This version changes how messages reach it, so those it takes differently close if they did not reach it');
+    expect(question()!.getAttribute('aria-describedby')!.split(' ')).toHaveLength(5);
+
+    // Kept on, but what it would allow changed meanwhile: nothing saved; asked again.
+    findByAttrValue(root, RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'keep-on')!.click();
+    await tick();
+    expect(saved[0]).toMatchObject({ webhook_on: true, webhook_consent: 'consent-1' });
+    expect(asked).toBe(2);
+    expect(textOf(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)!))
+      .toContain('What keeping its webhook on would allow changed since you were asked. Here it is again.');
+    expect(textOf(question()!)).not.toContain('acct-work');
+    findByAttrValue(root, RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'keep-on')!.click();
+    await tick();
+    expect(saved[1]).toMatchObject({ webhook_on: true, webhook_consent: 'consent-2' });
+    expect(question()).toBeUndefined();
+  });
+
+  it('D-201 Slice 10S — an operation the owner switched off and the draft adds back is listed once, as staying off (10Q finding 13)', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status: LocalRecipeWebhookStatus = {
+      declared: true,
+      configured: true,
+      armed: true,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    };
+    const { root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status,
+        armCaller: async () => ({ webhook: status }),
+        disarmCaller: async () => ({ webhook: status }),
+        previewCaller: async () => ({
+          door: {
+            state: 'derivable',
+            operation_ids: ['core.ai.summarize', 'core.mail.send'],
+            added: ['core.ai.summarize', 'core.mail.send'],
+            removed: [],
+            kept_off: ['core.ai.summarize'],
+            history: 'kept',
+            armed: true,
+            consent: 'c',
+          },
+        }),
+      },
+    });
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Adds summarize back');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    const text = textOf(findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!).replace(/\s+/g, ' ');
+    expect(text).toContain('which the saved one cannot: core.mail.send');
+    expect(text).toContain('These stay off, as you switched them off under Contracts: core.ai.summarize');
+    expect(text.split('core.ai.summarize').length - 1).toBe(1);
+  });
+
+  it('D-201 Slice 10M — a webhook switched off since the editor opened cannot be kept on', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status: LocalRecipeWebhookStatus = {
+      declared: true,
+      configured: true,
+      armed: true,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    };
+    const { root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status,
+        armCaller: async () => ({ webhook: status }),
+        disarmCaller: async () => ({ webhook: status }),
+        previewCaller: async () => ({
+          door: { state: 'derivable', operation_ids: [], added: [], removed: [], armed: false, consent: 'c' },
+        }),
+      },
+    });
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Changed elsewhere');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    expect(findByAttrValue(root, RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'keep-on')!.disabled).toBe(true);
+    const text = textOf(findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!);
+    expect(text).toContain('Its webhook was switched off since you opened this. Saving now leaves it off.');
+    // D-201 Slice 10S (10Q finding 13) — not "Its webhook is on." above it, and
+    // no promise about keeping what it can no longer keep.
+    expect(text).not.toContain('Its webhook is on.');
+    expect(text).not.toContain('Keeping it on keeps them');
+    // It is already off: there is nothing for switching it off to close now.
+    expect(text).not.toContain('Switching it off closes');
+  });
+
+  it('D-201 Slice 10I — a version that cannot have a webhook door cannot be kept on', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status: LocalRecipeWebhookStatus = {
+      declared: true,
+      configured: true,
+      armed: true,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    };
+    const saved: Array<Parameters<BootstrapSave>[0]> = [];
+    const { doc, root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status,
+        armCaller: async () => ({ webhook: status }),
+        disarmCaller: async () => ({ webhook: status }),
+        previewCaller: async () => ({
+          door: {
+            state: 'refused',
+            refusal: {
+              reason: 'dynamic_dispatch',
+              step_id: 'noop',
+              detail: "step 'noop' chooses what to run at runtime",
+            },
+          },
+        }),
+      },
+      saveCaller: async (args) => {
+        saved.push(args);
+        return { saved: true, recipe_id: args.recipe.recipe_id, version: 2, name: args.recipe.metadata.name };
+      },
+    });
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Dynamic now');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    const keepOn = findByAttrValue(root, RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'keep-on')!;
+    expect(keepOn.disabled).toBe(true);
+    const refusedText = textOf(findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!);
+    expect(refusedText).toContain("This version cannot keep it on: step 'noop' chooses what to run at runtime.");
+    // D-201 Slice 10S (10Q finding 13) — keeping it on is not an answer here.
+    expect(refusedText).toContain('Switching it off closes the messages that did not reach it and cancels the ones waiting.');
+    expect(refusedText).not.toContain('Keeping it on keeps them');
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR));
+    expect(saved).toEqual([]);
+  });
+
+  it('D-201 Slice 10X — a closed door names a remedy the owner can take, not a switch under Contracts', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status: LocalRecipeWebhookStatus = {
+      declared: true,
+      configured: true,
+      armed: true,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    };
+    const { root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status,
+        armCaller: async () => ({ webhook: status }),
+        disarmCaller: async () => ({ webhook: status }),
+        previewCaller: async () => ({
+          door: {
+            state: 'refused',
+            refusal: { reason: 'door_revoked', step_id: '<recipe>', detail: 'its door is closed' },
+          },
+        }),
+      },
+      saveCaller: async (args) => ({ saved: true, recipe_id: args.recipe.recipe_id, version: 2, name: args.recipe.metadata.name }),
+    });
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Door closed');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    const refusedText = textOf(findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!);
+    // 10S said to switch the door on under Contracts, which has no such switch
+    // for a webhook's door (10V finding 12).
+    // D-201 Slice 10AC (10AA finding 16) — the remedy keeps what is waiting:
+    // saving switched off, which 10X named, closes it.
+    expect(refusedText).toContain(
+      'Its door is closed, so this save cannot keep it on. Open its door first, from its webhook in Settings → '
+        + 'Connections → Webhooks, then save again: what is waiting for it is kept. Saving with it switched off closes that.',
+    );
+    expect(refusedText).not.toContain('Contracts');
+  });
+
+  /** D-201 Slice 10Y — the save's question on a recipe whose webhook is on,
+   *  as the server answers it with `door`. */
+  const askedWith = async (door: LocalRecipeWebhookDoorPreview) => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{ binding: 'webhook_delivery', event_types: ['delivery'] }];
+    const status: LocalRecipeWebhookStatus = {
+      declared: true,
+      configured: true,
+      armed: true,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+    };
+    const { root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status,
+        armCaller: async () => ({ webhook: status }),
+        disarmCaller: async () => ({ webhook: status }),
+        previewCaller: async () => ({ door }),
+      },
+    });
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name')!, 'Asked');
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+    const question = findByAttr(root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!;
+    return { root, text: textOf(question).replace(/\s+/g, ' ') };
+  };
+  const derivable = {
+    state: 'derivable',
+    operation_ids: [],
+    added: [],
+    removed: [],
+    widened: [],
+    kept_off: [],
+    armed: true,
+    consent: 'c',
+  } as const satisfies LocalRecipeWebhookDoorPreview;
+  const trigger = (event_type: string, history: 'kept' | 'closed') => ({ slot: 'billing', event_type, history });
+
+  it('D-201 Slice 10AC — the question is described by what its history does, each list included (10AA finding 23)', async () => {
+    const partly = await askedWith({
+      ...derivable,
+      history: 'closed',
+      history_triggers: [trigger('subscription.canceled', 'closed'), trigger('subscription.updated', 'kept')],
+    });
+    const question = findByAttr(partly.root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!;
+    const ids = question.getAttribute('aria-describedby')!.split(' ');
+    const describedText = ids.map((id) => {
+      const element = findByAttrValue(question, 'id', id);
+      expect(element, id).toBeDefined();
+      return textOf(element!).replace(/\s+/g, ' ');
+    }).join(' ');
+    expect(describedText).toContain('so the ones that did not reach it close and the ones waiting are cancelled, whichever you choose:');
+    expect(describedText).toContain('subscription.canceled on billing');
+    expect(describedText).toContain('Keeping it on keeps these for this version. Switching it off closes them too:');
+    expect(describedText).toContain('subscription.updated on billing');
+    // The single sentence too, when every trigger's history goes the same way.
+    const kept = await askedWith({
+      ...derivable,
+      history: 'kept',
+      history_triggers: [trigger('subscription.canceled', 'kept')],
+    });
+    const keptQuestion = findByAttr(kept.root, RECIPE_EDITOR_SAVE_QUESTION_ATTR)!;
+    const keptIds = keptQuestion.getAttribute('aria-describedby')!.split(' ');
+    expect(keptIds.map((id) => textOf(findByAttrValue(keptQuestion, 'id', id)!)).join(' '))
+      .toContain('Keeping it on keeps them for this version.');
+  });
+
+  it("D-201 Slice 10AC — what stays off is only what this version's door has, as a server before 10Y lists more (10AA finding 22)", async () => {
+    const asked = await askedWith({
+      ...derivable,
+      operation_ids: ['core.mail.send'],
+      kept_off: ['core.ai.summarize', 'core.mail.send'],
+      history: 'kept',
+    });
+    expect(asked.text).toContain('These stay off, as you switched them off under Contracts: core.mail.send');
+    expect(asked.text).not.toContain('core.ai.summarize');
+  });
+
+  it('D-201 Slice 10Y — the question says which history closes and which keeping it on keeps (10V finding 6)', async () => {
+    const partly = await askedWith({
+      ...derivable,
+      history: 'closed',
+      history_triggers: [trigger('subscription.canceled', 'closed'), trigger('subscription.updated', 'kept')],
+    });
+    expect(partly.text).toContain(
+      'This version changes how these messages reach it, so the ones that did not reach it close and the ones waiting are cancelled, whichever you choose: subscription.canceled on billing',
+    );
+    expect(partly.text).toContain(
+      'Keeping it on keeps these for this version. Switching it off closes them too: subscription.updated on billing',
+    );
+    // 10V reproduced "whichever you choose" for the whole history here.
+    expect(partly.text).not.toContain('so the messages that did not reach it close');
+
+    const all = await askedWith({
+      ...derivable,
+      history: 'closed',
+      history_triggers: [trigger('subscription.canceled', 'closed'), trigger('subscription.updated', 'closed')],
+    });
+    expect(all.text).toContain(
+      'This version changes how messages reach it, so the messages that did not reach it close and the ones waiting are cancelled, whichever you choose.',
+    );
+    expect(all.text).not.toContain('Keeping it on keeps');
+
+    const kept = await askedWith({
+      ...derivable,
+      history: 'kept',
+      history_triggers: [trigger('subscription.canceled', 'kept'), trigger('subscription.updated', 'kept')],
+    });
+    expect(kept.text).toContain(
+      'Switching it off closes the messages that did not reach it and cancels the ones waiting. Keeping it on keeps them for this version.',
+    );
+
+    // A server before 10Y says one closes, not which.
+    const older = await askedWith({ ...derivable, history: 'closed' });
+    expect(older.text).toContain(
+      'so those it takes differently close if they did not reach it and their waiting ones are cancelled, whichever you choose. Keeping it on keeps the rest for this version.',
+    );
+  });
+
+  it('D-201 Slice 10Y — each thing a version gains is asked about on its own, and one that stays off is not a gain (10V finding 19)', async () => {
+    const offOnly = await askedWith({
+      ...derivable,
+      operation_ids: ['core.ai.summarize'],
+      added: ['core.ai.summarize'],
+      kept_off: ['core.ai.summarize'],
+      history: 'kept',
+    });
+    expect(offOnly.text).toContain('This version can do nothing a message could start that the saved one cannot.');
+    expect(offOnly.text).not.toContain('can also do these');
+    expect(offOnly.text).toContain('These stay off, as you switched them off under Contracts: core.ai.summarize');
+    const gains: Array<[Partial<LocalRecipeWebhookDoorPreview>, string]> = [
+      [{ added: ['core.mail.send'] }, 'core.mail.send'],
+      [{ added: ['connection:acct-work'] }, 'use the connection acct-work'],
+      [{ added: ['ingredient:http-fetch'] }, 'run http-fetch'],
+      [{ widened: ['webhook_delivery:scoped_read'] }, 'read what webhook_delivery messages say'],
+    ];
+    for (const [gain, shown] of gains) {
+      const one = await askedWith({ ...derivable, history: 'kept', ...gain });
+      expect(one.text).toContain(`This version can also do these when a message comes in, which the saved one cannot: ${shown}`);
+      expect(one.text).toContain('Keeping it on says yes to them.');
+    }
+  });
+
+  it('D-201 Slice 10Y — a draft that cannot keep it on, on a webhook switched off since, says it is off (10V finding 21)', async () => {
+    const off = await askedWith({
+      state: 'refused',
+      refusal: { reason: 'dynamic_dispatch', step_id: 'noop', detail: "step 'noop' chooses what to run at runtime" },
+      armed: false,
+    });
+    expect(off.text).toContain('Its webhook was switched off since you opened this. Saving now leaves it off.');
+    expect(off.text).not.toContain('Its webhook is on.');
+    expect(off.text).not.toContain('Switching it off closes');
+    expect(findByAttrValue(off.root, RECIPE_EDITOR_SAVE_ANSWER_ATTR, 'keep-on')!.disabled).toBe(true);
+    // On, the refusal is said as before.
+    const on = await askedWith({
+      state: 'refused',
+      refusal: { reason: 'dynamic_dispatch', step_id: 'noop', detail: "step 'noop' chooses what to run at runtime" },
+      armed: true,
+    });
+    expect(on.text).toContain("Its webhook is on. Keep it on for the version you save? This version cannot keep it on: step 'noop' chooses what to run at runtime.");
   });
 
   it('keeps webhook authority focused and single-flight across Arm and Disarm', async () => {
@@ -1164,16 +1837,273 @@ describe('recipe-editor step inspector route', () => {
       expect(text).toContain('Switching it on was your yes');
     });
 
-    it('disables Arm on a missing door and names the remedy', () => {
+    // D-201 Slice 10S (10Q finding 12) — a save that switched it off kept the
+    // door, switch-offs and all: switching it on lists those apart, never as let through.
+    it('lists what the owner switched off apart from what is let through', () => {
+      const count = (text: string, needle: string) => text.split(needle).length - 1;
       const { root } = mount({
         initialRecipe: webhookRecipe(),
-        webhookControl: control({ state: 'missing' }),
+        webhookControl: control({
+          state: 'minted',
+          contract_id: 'contract_door_1',
+          operation_ids: ['core.ai.summarize', 'core.mail.send'],
+          switched_off: ['core.ai.summarize'],
+        }),
       });
+      const text = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted')!).replace(/\s+/g, ' ');
+      expect(text).toContain('Once this is on, anything let through may: core.mail.send');
+      expect(text).toContain('Switched off under Contracts, so these never run: core.ai.summarize');
+      expect(count(text, 'core.ai.summarize')).toBe(1);
 
-      expect(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'missing')).toBeDefined();
-      expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.disabled).toBe(true);
-      expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent)
-        .toContain('Save the Recipe again to make one');
+      const { root: allOff } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: control({
+          state: 'minted',
+          contract_id: 'contract_door_1',
+          operation_ids: ['core.ai.summarize'],
+          switched_off: ['core.ai.summarize'],
+        }),
+      });
+      expect(textOf(findByAttrValue(allOff, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted')!))
+        .toContain('Everything it would ask for is switched off under Contracts, so nothing is let through.');
+    });
+
+    // D-201 Slice 10Y (10V finding 20) — a server before 10Y lists a switch-off
+    // carried onto a door without that operation, and one taken back as added.
+    it('lists only the door\'s own switch-offs, and none of them as added by the save', () => {
+      const { root } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: control({
+          state: 'minted',
+          contract_id: 'contract_door_2',
+          operation_ids: ['core.ai.summarize', 'core.mail.send'],
+          added: ['core.ai.summarize', 'core.mail.send'],
+          removed: [],
+          switched_off: ['core.ai.summarize', 'core.task.delete'],
+        }),
+      });
+      const text = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'minted')!).replace(/\s+/g, ' ');
+      expect(text).toContain('Switched off under Contracts, so these never run: core.ai.summarize');
+      expect(text).not.toContain('core.task.delete');
+      expect(text).toContain('Saving changed what this webhook may do: + core.mail.send');
+      expect(text).not.toContain('+ core.ai.summarize');
+    });
+
+    // D-201 Slice 10AC (10AA finding 9) — its switch makes or opens the door,
+    // as the card's "Open its door" does: Kitchen disabled it and named a save.
+    it('switches on a recipe whose door is missing or closed, which makes or opens it', async () => {
+      for (const doorState of ['missing', 'closed'] as const) {
+        const armed: string[] = [];
+        const { root } = mount({
+          initialRecipe: webhookRecipe(),
+          webhookControl: {
+            ...control({ state: doorState }),
+            armCaller: async (args) => {
+              armed.push(args.recipe_id);
+              return { webhook: { ...control({ state: 'minted', contract_id: 'c', operation_ids: [] }).initialStatus, armed: true } };
+            },
+          },
+        });
+        const block = findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, doorState)!;
+        expect(textOf(block), doorState).toContain(doorState === 'missing'
+          ? 'There is no door behind this webhook. Nothing gets through until there is one. Switching it on makes one.'
+          : 'The door behind this webhook is closed. Nothing gets through while it is closed. Switching it on opens '
+            + 'it again, with what you switched off under Contracts still off.');
+        expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent, doorState).toBe(doorState === 'missing'
+          ? 'Its webhook door is missing. Switching it on makes one.'
+          : 'Its webhook door is closed. Switching it on opens it again, with what you switched off under Contracts still off.');
+        const arm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+        expect(arm.textContent).toBe('Switch on webhook');
+        expect(arm.disabled, doorState).toBe(false);
+        arm.click();
+        await tick();
+        expect(armed, doorState).toEqual([webhookRecipe().recipe_id]);
+      }
+    });
+
+    it('offers to open the door of a webhook already on whose door is missing or closed; one that is open needs none', async () => {
+      for (const doorState of ['missing', 'closed'] as const) {
+        const armed: string[] = [];
+        const { root } = mount({
+          initialRecipe: webhookRecipe(),
+          webhookControl: {
+            ...control({ state: doorState }, true),
+            armCaller: async (args) => {
+              armed.push(args.recipe_id);
+              return { webhook: { ...control({ state: 'minted', contract_id: 'c', operation_ids: [] }).initialStatus, armed: true } };
+            },
+          },
+        });
+        expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR), doorState).toBeDefined();
+        const open = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+        expect(open.textContent, doorState).toBe('Open its door');
+        expect(open.disabled, doorState).toBe(false);
+        expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent, doorState).toBe(doorState === 'missing'
+          ? 'Its webhook door is missing, so nothing it lets through runs. Open its door to make one.'
+          : 'Its webhook door is closed, so nothing it lets through runs. Open its door to open it again, with what you switched off under Contracts still off.');
+        open.click();
+        await tick();
+        expect(armed, doorState).toEqual([webhookRecipe().recipe_id]);
+      }
+      const { root } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: control({ state: 'minted', contract_id: 'c', operation_ids: ['core.mail.send'] }, true),
+      });
+      expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)).toBeUndefined();
+    });
+
+    // D-201 Slice 10AF (10AE finding 16) — a server since 10AF sends a closed
+    // door as `missing` with `closed`, which a Kitchen before 10AC reads as
+    // letting nothing through; this one reads it closed.
+    it('reads a closed door sent as missing with closed, as it reads closed', () => {
+      const { root } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: control({ state: 'missing', closed: true }, true),
+      });
+      expect(textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'closed')!))
+        .toContain('The door behind this webhook is closed.');
+      expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent).toBe(
+        'Its webhook door is closed, so nothing it lets through runs. Open its door to open it again, with what you switched off under Contracts still off.');
+    });
+
+    // D-201 Slice 10AX (10AS finding 13) — its owner's closing in the card's
+    // words (`ownerClosedDoorClause`): Kitchen said "the door behind this
+    // webhook is closed" where the card said there was none, and "refused"
+    // alone where the card said "you closed it".
+    it("says a door its owner closed as the webhook's card does: a door there, none now, or none yet", () => {
+      const cases = [
+        {
+          door: { state: 'missing', closed: true, closed_by_owner: true },
+          lede: 'You closed its door.',
+          status: 'You closed its door, so nothing it lets through runs. Open its door to open it again, with what you '
+            + 'switched off under Contracts still off.',
+        },
+        {
+          door: { state: 'missing', closed: true, closed_by_owner: true, no_door: true },
+          lede: 'You closed its door, and there is no door behind it now.',
+          status: 'You closed its door, and there is no door behind it now, so nothing it lets through runs. Open its '
+            + 'door to make one, with what you switched off under Contracts still off.',
+        },
+        {
+          door: { state: 'missing', closed: true, closed_by_owner: true, no_door: true, no_door_yet: true },
+          lede: 'You closed it before its door was made, so there is no door behind it.',
+          status: 'You closed it before its door was made, so there is no door behind it and nothing it lets through '
+            + 'runs. Open its door to make one, with what you switched off under Contracts still off.',
+        },
+      ] as const;
+      for (const { door, lede, status } of cases) {
+        const { root } = mount({ initialRecipe: webhookRecipe(), webhookControl: control(door, true) });
+        const block = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'closed')!);
+        expect(block, lede).toContain(lede);
+        expect(block, lede).not.toContain('The door behind this webhook is closed.');
+        // With no door now, opening it makes one; with a door there, opens it again.
+        expect(block, lede).toContain(door.closed_by_owner === true && 'no_door' in door
+          ? 'Open its door to make one' : 'Open its door to open it again');
+        expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent, lede).toBe(status);
+      }
+      // Switched off, with no door now: switching it on makes one.
+      const off = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: control({ state: 'missing', closed: true, closed_by_owner: true, no_door: true }),
+      });
+      expect(findByAttr(off.root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent).toBe(
+        'You closed its door, and there is no door behind it now. Switching it on makes one, with what you switched '
+          + 'off under Contracts still off.');
+      // A version that cannot have a door, under its owner's closing: both.
+      const { root } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: control({
+          state: 'refused',
+          refusal: { reason: 'exposure_refused', step_id: '<recipe>', detail: 'it reads Records' },
+          closed_by_owner: true,
+          no_door: true,
+        }, true),
+      });
+      const refused = textOf(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR, 'refused')!);
+      expect(refused).toContain('You closed its door, and there is no door behind it now. A webhook cannot start this '
+        + 'Recipe as it stands:');
+      expect(refused).toContain('it reads Records');
+      expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)?.textContent).toBe(
+        'You closed its door, and there is no door behind it now. This Recipe cannot have a webhook door as it '
+          + 'stands. Change the step that was refused, then save.');
+    });
+
+    // D-201 Slice 10AF (10AE finding 15) — on, with its door missing: only the
+    // button pressed reads busy and keeps focus. "Opening its door…" read busy
+    // during a switch-off, and focus was lost after it.
+    it('switching off beside "Open its door" marks only itself busy, and keeps focus on the switch', async () => {
+      let finish!: () => void;
+      const { root, doc } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: {
+          ...control({ state: 'missing' }, true),
+          disarmCaller: () => new Promise((resolve) => {
+            finish = () => resolve({ webhook: { ...control({ state: 'missing' }).initialStatus, armed: false } });
+          }),
+        },
+      });
+      const disarm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
+      disarm.focus();
+      disarm.click();
+      await tick();
+      const busy = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
+      expect(busy.textContent).toBe('Switching off…');
+      expect(busy.getAttribute('aria-busy')).toBe('true');
+      const open = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+      expect(open.textContent).toBe('Open its door');
+      expect(open.getAttribute('aria-busy')).toBeNull();
+      expect(doc.activeElement).toBe(busy);
+      finish();
+      await tick();
+      // Off: the switch drawn in its place takes focus.
+      const arm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+      expect(arm.textContent).toBe('Switch on webhook');
+      expect(doc.activeElement).toBe(arm);
+    });
+
+    it('pressing "Open its door" keeps focus there and marks only it busy, not the switch-off drawn before it', async () => {
+      let finish!: () => void;
+      const { root, doc } = mount({
+        initialRecipe: webhookRecipe(),
+        webhookControl: {
+          ...control({ state: 'missing' }, true),
+          armCaller: () => new Promise((resolve) => {
+            finish = () => resolve({
+              webhook: { ...control({ state: 'minted', contract_id: 'c', operation_ids: [] }).initialStatus, armed: true },
+            });
+          }),
+        },
+      });
+      const open = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+      expect(open.textContent).toBe('Open its door');
+      open.focus();
+      open.click();
+      await tick();
+      const busy = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+      expect(busy.textContent).toBe('Opening its door…');
+      expect(busy.getAttribute('aria-busy')).toBe('true');
+      const off = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
+      expect(off.textContent).toBe('Switch off webhook');
+      expect(off.getAttribute('aria-busy')).toBeNull();
+      expect(doc.activeElement).toBe(busy);
+      finish();
+      await tick();
+    });
+
+    // D-201 Slice 10AF (10AE finding 15) — not set up, its switch cannot be
+    // pressed, so it is not offered as the remedy.
+    it('a webhook not set up is not told that switching it on makes or opens its door', () => {
+      for (const door of [{ state: 'missing' as const }, { state: 'missing' as const, closed: true as const }]) {
+        const base = control(door);
+        const { root } = mount({
+          initialRecipe: webhookRecipe(),
+          webhookControl: { ...base, initialStatus: { ...base.initialStatus, configured: false } },
+        });
+        expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!.disabled).toBe(true);
+        const status = findByAttr(root, RECIPE_EDITOR_WEBHOOK_STATUS_ATTR)!.textContent ?? '';
+        expect(status).toContain('Once its webhook is set up, switching it on');
+        expect(textOf(findByAttr(root, RECIPE_EDITOR_WEBHOOK_DOOR_ATTR)!)).toContain('Once its webhook is set up, switching it on');
+      }
     });
 
     it('disables Arm on a refused door and shows the refusal', () => {
@@ -1624,7 +2554,7 @@ describe('recipe-editor step inspector route', () => {
     add.focus();
     add.click();
 
-    expect(route.getRecipe().variables.crm).toMatchObject({
+    expect(route.getRecipe().variables!.crm).toMatchObject({
       type: 'connection',
       connection_kind: 'mcp',
       label: 'crm',
@@ -1684,7 +2614,7 @@ describe('recipe-editor step inspector route', () => {
     setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_label:crm'), 'My CRM');
     setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_kind:crm'), 'mcp');
 
-    const v = route.getRecipe().variables.crm as unknown as Record<string, unknown>;
+    const v = route.getRecipe().variables!.crm as unknown as Record<string, unknown>;
     expect(v).toMatchObject({ label: 'My CRM', connection_kind: 'mcp', type: 'connection' });
   });
 
@@ -1698,7 +2628,7 @@ describe('recipe-editor step inspector route', () => {
     remove.focus();
     remove.click();
 
-    expect('crm' in route.getRecipe().variables).toBe(false);
+    expect('crm' in route.getRecipe().variables!).toBe(false);
     expect(findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_ROW_ATTR, 'crm')).toBeUndefined();
     expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_CONN_VAR_NAME_ATTR));
   });
@@ -1769,7 +2699,7 @@ describe('recipe-editor step inspector route', () => {
       findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR, 'template')!.click();
       await flush();
       expect(mailTemplateStarterCaller).toHaveBeenCalledWith({ template_id: 'mtpl_mine' });
-      expect(route.getRecipe().variables.template).toMatchObject({ type: 'mail_template', starter });
+      expect(route.getRecipe().variables!.template).toMatchObject({ type: 'mail_template', starter });
     });
 
     it('finds the template a starter came from, and says when it changed since the copy', async () => {
@@ -1798,7 +2728,7 @@ describe('recipe-editor step inspector route', () => {
       await flush();
       expect(textOf(findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, 'template')!))
         .toContain('rules[0].find.label: holds an email address');
-      expect(route.getRecipe().variables.template).not.toHaveProperty('starter');
+      expect(route.getRecipe().variables!.template).not.toHaveProperty('starter');
     });
 
     it('narrows a mail-fact trigger to the template a setting holds, and back to any', () => {
@@ -1821,7 +2751,7 @@ describe('recipe-editor step inspector route', () => {
       const { root, route } = mount({ initialRecipe: recipe, mailTemplatesCaller: async () => ({ templates: [] }) });
       setValue(findByAttr(root, RECIPE_EDITOR_MAIL_TEMPLATE_NAME_ATTR), 'parcels');
       findByAttr(root, RECIPE_EDITOR_MAIL_TEMPLATE_ADD_ATTR)!.click();
-      expect(route.getRecipe().variables.parcels).toEqual({ label: 'Mail template', type: 'mail_template' });
+      expect(route.getRecipe().variables!.parcels).toEqual({ label: 'Mail template', type: 'mail_template' });
     });
   });
 
@@ -2547,5 +3477,285 @@ describe('execution-case draft route: iterative refinement', () => {
     // ⚠ This file's finder returns undefined (not null) when absent.
     expect(findByAttr(root, EXECUTION_CASE_DRAFT_REFINE_ATTR)).toBeUndefined();
     route.dispose();
+  });
+});
+
+describe('D-402 slice C — "Try it" for a recipe not saved yet', () => {
+  const draft = (): RecipeDefinition => ({ recipe_id: 'browser-plan-shop', version: 1, ttl: 300,
+    metadata: { name: 'Shop search', description: '', author: '', supported_platforms: [] }, variables: {}, prefetch_steps: [],
+    steps: [{ id: 'act_1', op: 'core.dom.act', args: { target: 'https://shop.example.com/*', steps: [] } } as never], output: { render: [] } });
+  /** A trial that answers when the test says. */
+  const gate = () => {
+    const calls: Array<{ recipe: RecipeDefinition; config?: Record<string, unknown> }> = [];
+    let finish: (result: RecipeTryResult) => void = () => undefined;
+    const tryCaller: RecipeTryCaller = async (args) => { calls.push(args); return new Promise((resolve) => { finish = resolve; }); };
+    return { calls, tryCaller, finish: (result: RecipeTryResult) => finish(result) };
+  };
+
+  it('shows only for Kitchen\'s work in progress, and tries the recipe as the editor holds it, saying it asks in the approvals', async () => {
+    expect(findByAttr(mount({ initialRecipe: draft() }).root, RECIPE_EDITOR_TRY_ATTR)).toBeUndefined();
+    const g = gate();
+    const { root } = mount({ initialRecipe: draft(), tryCaller: g.tryCaller });
+    const button = findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!;
+    expect(button.textContent).toBe('Try it');
+    button.click();
+    await tick();
+    expect(g.calls).toEqual([{ recipe: draft(), config: {} }]);
+    expect(findByAttr(root, RECIPE_EDITOR_TRY_ATTR)?.textContent).toBe('Trying…');
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_STATUS_ATTR)?.textContent).toBe('Trying… answer each change in your approvals.');
+    g.finish({ success: true, errors: [], run_id: 'run-1', capture: { capture_id: 'c-1', recipe_id: 'browser-plan-shop', created_at: 1,
+      expires_at: 2, state: 'ready', trial: true, run_outcome: 'passed' } } as unknown as RecipeTryResult);
+    await tick();
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_STATUS_ATTR)?.textContent).toBe('It worked.');
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)?.textContent)
+      .toBe('Kept as this recipe\'s saved test for 10 minutes: save the recipe, then keep it under Captured runs on its page.');
+  });
+
+  it('a step that stopped names its element, with what to fix when it named several; a trial that stopped is no saved test', async () => {
+    const g = gate();
+    const { root } = mount({ initialRecipe: draft(), tryCaller: g.tryCaller });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    g.finish({ success: false, run_id: 'run-2', errors: [{ code: 'DOM_SELECTOR_NOT_FOUND', source: { step_id: 'act_1' },
+      message: 'Stopped at step 1 of 2: “Delete” (button) names 8 elements on the page: the button “Delete” (e1), …' }],
+    capture: { capture_id: 'c-2', recipe_id: 'browser-plan-shop', created_at: 1, expires_at: 2, state: 'unavailable', trial: true,
+      reason: 'The trial did not finish, so it is no saved test. Try the recipe again once it works.' } } as unknown as RecipeTryResult);
+    await tick();
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_STATUS_ATTR)?.textContent).toBe('It stopped.');
+    const error = findByAttr(root, RECIPE_EDITOR_TRIAL_ERROR_ATTR)!;
+    expect(textOf(error)).toContain('Step act_1: Stopped at step 1 of 2: “Delete” (button) names 8 elements on the page');
+    expect(textOf(error)).toContain('To fix: name this element so that only one on the page matches it, by a selector of its own.');
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)?.textContent)
+      .toBe('No saved test from this run: The trial did not finish, so it is no saved test. Try the recipe again once it works.');
+  });
+
+  it('a trial held for an answer says where to answer, and that it finishes on its own', async () => {
+    const g = gate();
+    const { root } = mount({ initialRecipe: draft(), tryCaller: g.tryCaller });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    g.finish({ success: false, errors: [], awaiting_approval: true, run_id: 'run-3' } as unknown as RecipeTryResult);
+    await tick();
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_STATUS_ATTR)?.textContent)
+      .toBe('It waits for your answer in your approvals. It finishes once you answer, and its result shows in Logs.');
+  });
+});
+
+
+describe('D-402 slice C5 — a trial\'s own settings, and a held trial followed to its end', () => {
+  afterEach(() => { settingsForms.length = 0; vi.useRealTimers(); });
+
+  const draft = (): RecipeDefinition => ({ recipe_id: 'browser-plan-search', version: 1, ttl: 300,
+    metadata: { name: 'Shop search', description: '', author: '', supported_platforms: [] },
+    variables: { query: { label: 'Search for', type: 'text', default: 'Grace Hopper' }, browser: 'b-home' },
+    prefetch_steps: [],
+    steps: [{ id: 'act_1', op: 'core.dom.act',
+      args: { target: 'https://shop.example.com/*', bridge_id: '{{config.browser}}', steps: [] } } as never],
+    output: { render: [] } });
+  const noSettings = (): RecipeDefinition => ({ ...draft(), variables: {},
+    steps: [{ id: 'act_1', op: 'core.dom.act', args: { target: 'https://shop.example.com/*', steps: [] } } as never] });
+  /** A trial that answers when the test says. */
+  const gate = () => {
+    const calls: Array<{ recipe: RecipeDefinition; config?: Record<string, unknown> }> = [];
+    let finish: (result: RecipeTryResult) => void = () => undefined;
+    const tryCaller: RecipeTryCaller = async (args) => { calls.push(args); return new Promise((resolve) => { finish = resolve; }); };
+    return { calls, tryCaller, finish: (result: RecipeTryResult) => finish(result) };
+  };
+  /** The shared form's confirm, as the real form does it: the settings, then it closes. */
+  const confirm = (config: Record<string, unknown>): void => {
+    const form = settingsForms.at(-1)!;
+    void form.opts.onConfirm(config, {});
+    form.close();
+  };
+  /** The held-run follower, as the page hands it each held trial; each follow can be stopped. */
+  const follower = () => {
+    const follows: Array<{ held: ServerExecuteResponse; deliver: HeldRunDelivery; stopped: boolean }> = [];
+    const followHeldRun = (held: ServerExecuteResponse, deliver: HeldRunDelivery): (() => void) => {
+      const one = { held, deliver, stopped: false };
+      follows.push(one);
+      return () => { one.stopped = true; };
+    };
+    return { follows, followHeldRun };
+  };
+  const capture: RecipeRunCaptureSummary = { capture_id: 'c-1', recipe_id: 'browser-plan-search', created_at: 1, expires_at: 2,
+    state: 'running', trial: true, run_outcome: 'held', run_id: 'run-1' };
+  const held = (action_ref = 'act-1'): RecipeTryResult =>
+    ({ recipe_id: 'browser-plan-search', success: false, errors: [], awaiting_approval: true, action_ref, run_id: 'run-1', capture }) as unknown as RecipeTryResult;
+  const status = (root: FakeElement) => findByAttr(root, RECIPE_EDITOR_TRIAL_STATUS_ATTR)?.textContent;
+  const captureLine = (root: FakeElement) => findByAttr(root, RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)?.textContent;
+  const KEPT = 'Kept as this recipe\'s saved test for 10 minutes: save the recipe, then keep it under Captured runs on its page.';
+  const UNKNOWN = 'Whether this run is the recipe\'s saved test shows on its page, once you save it.';
+
+  it('a recipe with settings asks for this trial\'s first, each where the last trial left it, else at its default', async () => {
+    const g = gate();
+    const browsers: BrowserVariableCallers = { list: async () => [] };
+    const mailboxes: MailboxVariableCallers = { list: async () => [] };
+    const { root } = mount({ initialRecipe: draft(), tryCaller: g.tryCaller, trialSettingsCallers: { browsers, mailboxes } });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    expect(g.calls).toEqual([]);
+    expect(settingsForms).toHaveLength(1);
+    const { opts } = settingsForms[0]!;
+    expect(opts).toMatchObject({ title: 'Try “Shop search”', confirmLabel: 'Try it', variables: draft().variables,
+      currentOverlay: {}, requireSettings: true, browsers: { settings: [{ key: 'browser' }], callers: browsers } });
+    expect(opts.copy).toBe('Settings for this trial only. They do not change the recipe.');
+    // No setting of this recipe names a mailbox, so the form offers no mailboxes.
+    expect(opts.mailboxes).toBeUndefined();
+    // A second click while the form is open opens no second one.
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    expect(settingsForms).toHaveLength(1);
+    confirm({ query: 'Ada Lovelace', browser: 'b-work' });
+    await tick();
+    expect(g.calls).toEqual([{ recipe: draft(), config: { query: 'Ada Lovelace', browser: 'b-work' } }]);
+    g.finish({ success: true, errors: [], run_id: 'run-1' } as unknown as RecipeTryResult);
+    await tick();
+    expect(status(root)).toBe('It worked.');
+    // The next trial starts where this one left them.
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    expect(settingsForms[1]!.opts.currentOverlay).toEqual({ query: 'Ada Lovelace', browser: 'b-work' });
+  });
+
+  it('closing the form tries nothing; a setting the recipe does not declare is never sent', async () => {
+    const g = gate();
+    const { root } = mount({ initialRecipe: draft(), tryCaller: g.tryCaller });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    // Without the owner's list of browsers, the browser setting is a text box.
+    expect(settingsForms[0]!.opts.browsers).toBeUndefined();
+    settingsForms[0]!.close();
+    await tick();
+    expect(g.calls).toEqual([]);
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    expect(settingsForms).toHaveLength(2);
+    // One kept from an earlier trial of a recipe that has since dropped it: a run would refuse it.
+    confirm({ query: 'Ada Lovelace', dropped: 'x' });
+    await tick();
+    expect(g.calls).toEqual([{ recipe: draft(), config: { query: 'Ada Lovelace' } }]);
+  });
+
+  it('a held trial is followed: approved anywhere, its result shows here, then whether it is the saved test', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const g = gate();
+    const f = follower();
+    const reads: string[] = [];
+    let state: RecipeRunCaptureSummary['state'] = 'running';
+    const trialCapturesCaller = async ({ recipe_id }: { recipe_id: string }) => {
+      reads.push(recipe_id);
+      return { captures: [{ ...capture, state, ...(state === 'ready' ? { run_outcome: 'passed' as const } : {}) }] };
+    };
+    const { root } = mount({ initialRecipe: noSettings(), tryCaller: g.tryCaller, followHeldRun: f.followHeldRun, trialCapturesCaller });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    const first = held();
+    g.finish(first);
+    await tick();
+    expect(f.follows.map((one) => one.held)).toEqual([first]);
+    expect(status(root)).toBe('It waits for your answer in your approvals. Its result shows here once you answer.');
+    expect(captureLine(root)).toBe('Kept for its saved test as it goes, while it waits for you.');
+    // Approved elsewhere: the run finishes, and its result is delivered here.
+    f.follows[0]!.deliver({ recipe_id: 'browser-plan-search', success: true, errors: [], run_id: 'run-1' } as unknown as ServerExecuteResponse,
+      { replaces: first });
+    await tick();
+    expect(status(root)).toBe('It worked.');
+    expect(captureLine(root)).toBe('Checking whether this run is the recipe\'s saved test…');
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)?.getAttribute(RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)).toBe('checking');
+    expect(reads).toEqual(['browser-plan-search']);
+    // Still being built at the first read: read again shortly.
+    state = 'ready';
+    await vi.advanceTimersByTimeAsync(TRIAL_CAPTURE_READ_DELAYS_MS[0]!);
+    await tick();
+    expect(reads).toHaveLength(2);
+    expect(captureLine(root)).toBe(KEPT);
+    expect(findByAttr(root, RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)?.getAttribute(RECIPE_EDITOR_TRIAL_CAPTURE_ATTR)).toBe('ready');
+  });
+
+  it('held again further on, it is followed on; declined, it says so and is no saved test', async () => {
+    const g = gate();
+    const f = follower();
+    const trialCapturesCaller = async () => ({ captures: [{ ...capture, state: 'unavailable' as const, run_outcome: 'failed' as const,
+      reason: 'The trial did not finish, so it is no saved test. Try the recipe again once it works.' }] });
+    const { root } = mount({ initialRecipe: noSettings(), tryCaller: g.tryCaller, followHeldRun: f.followHeldRun, trialCapturesCaller });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    const first = held();
+    g.finish(first);
+    await tick();
+    const again = held('act-2') as unknown as ServerExecuteResponse;
+    f.follows[0]!.deliver(again, { replaces: first });
+    await tick();
+    expect(status(root)).toBe('It waits for your answer in your approvals. Its result shows here once you answer.');
+    expect(captureLine(root)).toBe('Kept for its saved test as it goes, while it waits for you.');
+    // What no longer shows here is not replaced.
+    f.follows[0]!.deliver({ recipe_id: 'browser-plan-search', success: true, errors: [] } as unknown as ServerExecuteResponse,
+      { replaces: first });
+    await tick();
+    expect(status(root)).toBe('It waits for your answer in your approvals. Its result shows here once you answer.');
+    f.follows[0]!.deliver({ recipe_id: 'browser-plan-search', success: false,
+      errors: [{ message: 'You declined this, so it did not go ahead.' }] } as unknown as ServerExecuteResponse, { replaces: again });
+    await tick();
+    expect(status(root)).toBe('It stopped.');
+    expect(textOf(findByAttr(root, RECIPE_EDITOR_TRIAL_ERROR_ATTR)!)).toBe('You declined this, so it did not go ahead.');
+    expect(captureLine(root))
+      .toBe('No saved test from this run: The trial did not finish, so it is no saved test. Try the recipe again once it works.');
+  });
+
+  it('a saved test no longer kept says so; one that cannot be read, or is never settled, says where it will show', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const ended = async (trialCapturesCaller?: (args: { recipe_id: string }) => Promise<{ captures: RecipeRunCaptureSummary[] }>) => {
+      const g = gate();
+      const f = follower();
+      const { root } = mount({ initialRecipe: noSettings(), tryCaller: g.tryCaller, followHeldRun: f.followHeldRun,
+        ...(trialCapturesCaller !== undefined ? { trialCapturesCaller } : {}) });
+      findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+      await tick();
+      const first = held();
+      g.finish(first);
+      await tick();
+      f.follows[0]!.deliver({ recipe_id: 'browser-plan-search', success: true, errors: [] } as unknown as ServerExecuteResponse,
+        { replaces: first });
+      await tick();
+      return root;
+    };
+    expect(captureLine(await ended(async () => ({ captures: [] })))).toBe('No saved test from this run: it is no longer kept.');
+    expect(captureLine(await ended(async () => { throw new Error('Recued is busy'); }))).toBe(UNKNOWN);
+    expect(captureLine(await ended())).toBe(UNKNOWN);
+    // Never settled: read again at each wait, then said as unknown.
+    let reads = 0;
+    const root = await ended(async () => { reads += 1; return { captures: [capture] }; });
+    for (const wait of TRIAL_CAPTURE_READ_DELAYS_MS) {
+      expect(captureLine(root)).toBe('Checking whether this run is the recipe\'s saved test…');
+      await vi.advanceTimersByTimeAsync(wait);
+      await tick();
+    }
+    expect(reads).toBe(TRIAL_CAPTURE_READ_DELAYS_MS.length + 1);
+    expect(captureLine(root)).toBe(UNKNOWN);
+  });
+
+  it('a new trial stops following the last one, as leaving the editor does; a hold with no receipt is not followed', async () => {
+    const g = gate();
+    const f = follower();
+    const { root, route } = mount({ initialRecipe: noSettings(), tryCaller: g.tryCaller, followHeldRun: f.followHeldRun });
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    g.finish(held());
+    await tick();
+    expect(f.follows).toHaveLength(1);
+    findByAttr(root, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    expect(f.follows[0]!.stopped).toBe(true);
+    g.finish(held('act-2'));
+    await tick();
+    expect(f.follows).toHaveLength(2);
+    route.dispose();
+    expect(f.follows[1]!.stopped).toBe(true);
+
+    const other = gate();
+    const g2 = follower();
+    const { root: root2 } = mount({ initialRecipe: noSettings(), tryCaller: other.tryCaller, followHeldRun: g2.followHeldRun });
+    findByAttr(root2, RECIPE_EDITOR_TRY_ATTR)!.click();
+    await tick();
+    other.finish({ ...held(), action_ref: undefined } as unknown as RecipeTryResult);
+    await tick();
+    expect(g2.follows).toEqual([]);
+    expect(status(root2)).toBe('It waits for your answer in your approvals. It finishes once you answer, and its result shows in Logs.');
   });
 });

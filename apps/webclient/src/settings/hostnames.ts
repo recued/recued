@@ -104,6 +104,7 @@ export const HOSTNAMES_DDNS_STATE_ATTR = 'data-recued-hostnames-ddns-state';
 export const HOSTNAMES_DDNS_TOGGLE_ATTR = 'data-recued-hostnames-ddns-toggle';
 export const HOSTNAMES_DDNS_BLOCKED_ATTR = 'data-recued-hostnames-ddns-blocked';
 export const HOSTNAMES_DDNS_ERROR_ATTR = 'data-recued-hostnames-ddns-error';
+export const HOSTNAMES_DDNS_PROGRESS_ATTR = 'data-recued-hostnames-ddns-progress';
 /** Listener-port checkbox group. The FIELDSET carries this attr (value =
  *  `add` / `update`) so a test can assert the control exists at all; each
  *  checkbox carries the form's own field attr with value `listener_port_<port>`
@@ -122,6 +123,7 @@ export const HOSTNAMES_ADDRESS_CONFIRM_ATTR = 'data-recued-hostnames-address-con
 export const HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR = 'data-recued-hostnames-address-confirm-btn';
 export const HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR = 'data-recued-hostnames-address-cancel-btn';
 export const HOSTNAMES_ADDRESS_ERROR_ATTR = 'data-recued-hostnames-address-error';
+export const HOSTNAMES_ADDRESS_PROGRESS_ATTR = 'data-recued-hostnames-address-progress';
 export const HOSTNAMES_ADDRESS_LINKS_ATTR = 'data-recued-hostnames-address-links';
 /** On a remove confirmation or an edit form whose name is kept for a use
  *  (value = the name). */
@@ -1164,11 +1166,36 @@ export const mountHostnamesPanel = (
   const ddnsHost = doc.createElement('div');
   const addressesHost = doc.createElement('div');
   const localUrlsHost = doc.createElement('div');
+  const statusControls = new Map<string, { host: HTMLElement; controls: HTMLElement[]; target: HTMLElement }>();
+  let statusFallback: HTMLElement | null = null;
+  const statusOwner = (host?: HTMLElement): string | undefined => [...statusControls]
+    .find(([, entry]) => (host === undefined || entry.host === host) && entry.controls.includes(doc.activeElement as HTMLElement))?.[0];
+  const restoreStatusFocus = (owner: string | undefined): void => {
+    if (owner === undefined || disposed) return;
+    const target = statusControls.get(owner)?.target ?? statusFallback;
+    if ((target as HTMLInputElement | null)?.disabled !== true) target?.focus?.({ preventScroll: true });
+  };
+  const rememberStatus = (key: string, host: HTMLElement, controls: HTMLElement[], target: HTMLElement): void => {
+    statusControls.set(key, { host, controls, target });
+  };
+  const statusProgress = (attr: string, text: string): HTMLElement => {
+    const p = doc.createElement('p');
+    p.className = 'hostnames-muted hostnames-status-progress';
+    p.setAttribute(attr, '');
+    p.setAttribute('role', 'status');
+    p.setAttribute('aria-atomic', 'true');
+    p.setAttribute('tabindex', '-1');
+    p.textContent = text;
+    return p;
+  };
   const renderStatus = (host: HTMLElement, content: (target: HTMLElement) => void): void => {
     if (disposed) return;
+    const owner = statusOwner(host);
+    for (const [key, entry] of statusControls) if (entry.host === host) statusControls.delete(key);
     clearChildren(host);
     content(host);
     host.hidden = host.firstChild === null;
+    restoreStatusFocus(owner);
   };
   const keptWarnings: Array<{ host: HTMLElement; hostname: string; action: 'Removing it' | 'Switching it off' }> = [];
 
@@ -2089,6 +2116,7 @@ export const mountHostnamesPanel = (
       return;
     }
     if (state.hostnames.length === 0) {
+      if (state.error !== null) return;
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_PANEL_EMPTY_ATTR, '');
@@ -2232,9 +2260,10 @@ export const mountHostnamesPanel = (
   // effective `enabled`, and surface failures inline (mirrors the server-pill
   // pause control). Refreshes nothing else — pause only affects this slice.
   const doSetDdnsEnabled = async (enabled: boolean): Promise<void> => {
-    if (opts.runDdnsSetEnabled === undefined || state.ddns.busy) return;
+    if (disposed || opts.runDdnsSetEnabled === undefined || state.ddns.busy
+      || !state.ddns.available || state.ddns.blockToggle) return;
     state = { ...state, ddns: { ...state.ddns, busy: true, error: null } };
-    render();
+    renderStatus(ddnsHost, renderProDdns);
     try {
       const res = await trackWrite(opts.runDdnsSetEnabled({ enabled }));
       if (disposed) return;
@@ -2243,7 +2272,7 @@ export const mountHostnamesPanel = (
       if (disposed) return;
       state = { ...state, ddns: { ...state.ddns, busy: false, error: errMessage(err) } };
     }
-    render();
+    renderStatus(ddnsHost, renderProDdns);
   };
 
   // R27 delta-B — the Pro DDNS pause/resume control. Renders ONLY when DDNS is
@@ -2260,6 +2289,7 @@ export const mountHostnamesPanel = (
     const title = doc.createElement('h3');
     title.className = 'hostnames-local-urls-title';
     title.textContent = 'Your Pro web address';
+    title.setAttribute('tabindex', '-1');
     section.appendChild(title);
 
     const host = state.ddns.hostname ?? 'Your Pro web address';
@@ -2280,10 +2310,12 @@ export const mountHostnamesPanel = (
         `through ${host}. Switch to another address (a LAN URL or a custom domain) ` +
         'with Change address, under Settings, then Servers. After that you can pause.';
       section.appendChild(blocked);
+      rememberStatus('ddns', target, [], title);
       target.appendChild(section);
       return;
     }
 
+    let toggle: HTMLElement;
     if (state.ddns.enabled) {
       const warn = doc.createElement('p');
       warn.className = 'hostnames-muted';
@@ -2293,17 +2325,15 @@ export const mountHostnamesPanel = (
         'NOT cancel Pro. You keep paying, and paying again will not start it up. ' +
         'Manage billing in the dashboard.';
       section.appendChild(warn);
-      section.appendChild(
-        makeButton('Pause the address', 'pause', HOSTNAMES_DDNS_TOGGLE_ATTR, 'danger', () => {
-          void doSetDdnsEnabled(false);
-        }, state.ddns.busy),
-      );
+      toggle = makeButton('Pause the address', 'pause', HOSTNAMES_DDNS_TOGGLE_ATTR, 'danger', () => {
+        void doSetDdnsEnabled(false);
+      }, state.ddns.busy);
+      section.appendChild(toggle);
     } else {
-      section.appendChild(
-        makeButton('Start the address again', 'play', HOSTNAMES_DDNS_TOGGLE_ATTR, 'primary', () => {
-          void doSetDdnsEnabled(true);
-        }, state.ddns.busy),
-      );
+      toggle = makeButton('Start the address again', 'play', HOSTNAMES_DDNS_TOGGLE_ATTR, 'primary', () => {
+        void doSetDdnsEnabled(true);
+      }, state.ddns.busy);
+      section.appendChild(toggle);
     }
 
     if (state.ddns.error !== null) {
@@ -2311,6 +2341,12 @@ export const mountHostnamesPanel = (
       err.setAttribute(HOSTNAMES_DDNS_ERROR_ATTR, '');
       section.appendChild(err);
     }
+    if (state.ddns.busy) {
+      toggle.setAttribute('aria-busy', 'true');
+      const progress = statusProgress(HOSTNAMES_DDNS_PROGRESS_ATTR, 'Updating your Pro web address…');
+      section.appendChild(progress);
+      rememberStatus('ddns', target, [toggle, progress], progress);
+    } else rememberStatus('ddns', target, [toggle], toggle);
     target.appendChild(section);
   };
 
@@ -2425,6 +2461,14 @@ export const mountHostnamesPanel = (
         label.textContent = ADDRESS_USE_LABELS[use];
         row.appendChild(label);
         row.appendChild(select);
+        label.setAttribute('tabindex', '-1');
+        let focusTarget: HTMLElement = select.disabled ? label : select;
+        const progress = state.addresses.saving === use
+          ? statusProgress(HOSTNAMES_ADDRESS_PROGRESS_ATTR, 'Updating this address…') : null;
+        if (progress !== null) { row.appendChild(progress); focusTarget = progress; }
+        rememberStatus(`address:${use}`, target, progress === null ? [select] : [select, progress], focusTarget);
+        rememberStatus(`cancel:${use}`, target, [], focusTarget);
+        rememberStatus(`confirm:${use}`, target, [], focusTarget);
 
         const status = addressStatus(entry);
         const line = doc.createElement('p');
@@ -2451,17 +2495,18 @@ export const mountHostnamesPanel = (
           panel.appendChild(warn);
           const actions = doc.createElement('div');
           actions.className = 'hostnames-actions';
-          actions.appendChild(
-            makeButton('Cancel', 'close', HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR, 'secondary', () => {
-              handle.cancelAddressUse();
-            }),
-          );
-          actions.appendChild(
-            makeButton('Change the address', 'save', HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR, 'danger', () => {
-              void handle.confirmAddressUse();
-            }),
-          );
+          const cancel = makeButton('Cancel', 'close', HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR, 'secondary', () => {
+            handle.cancelAddressUse();
+          });
+          actions.appendChild(cancel);
+          const confirm = makeButton('Change the address', 'save', HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR, 'danger', () => {
+            void handle.confirmAddressUse();
+          });
+          actions.appendChild(confirm);
           panel.appendChild(actions);
+          rememberStatus(`address:${use}`, target, [select], cancel);
+          rememberStatus(`cancel:${use}`, target, [cancel], cancel);
+          rememberStatus(`confirm:${use}`, target, [confirm], confirm);
           section.appendChild(panel);
         }
       }
@@ -2485,6 +2530,7 @@ export const mountHostnamesPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const owner = statusOwner();
     for (const feedback of editorFeedback.values()) clearValidationAssociation(feedback);
     editorControls.clear();
     editorFeedback.clear();
@@ -2496,6 +2542,8 @@ export const mountHostnamesPanel = (
     const title = doc.createElement('h3');
     title.className = 'hostnames-panel-title';
     title.textContent = 'Hostnames';
+    title.setAttribute('tabindex', '-1');
+    statusFallback = title;
     header.appendChild(title);
     header.appendChild(
       makeButton('Add hostname', 'link', HOSTNAMES_ADD_OPEN_BTN_ATTR, 'primary', () => {
@@ -2514,6 +2562,7 @@ export const mountHostnamesPanel = (
     wrapper.appendChild(localUrlsHost);
     renderStatus(localUrlsHost, renderLocalUrls);
     applyValidationAssociation();
+    restoreStatusFocus(owner);
   };
 
   /** Read the addresses handed out. `gen` ties a refresh's read to that
@@ -2549,7 +2598,8 @@ export const mountHostnamesPanel = (
       ...state,
       addresses: { ...state.addresses, saving: use, confirm: null, error: null },
     };
-    render();
+    renderStatus(addressesHost, renderAddresses);
+    updateKeptWarnings();
     try {
       const response = await trackWrite(opts.runSetAddressUse({ use, hostname }));
       if (disposed) return;
@@ -2561,7 +2611,8 @@ export const mountHostnamesPanel = (
         addresses: { ...state.addresses, saving: null, error: errMessage(err) },
       };
     }
-    render();
+    renderStatus(addressesHost, renderAddresses);
+    updateKeptWarnings();
   };
 
   const setAddressUse = async (
@@ -2582,7 +2633,7 @@ export const mountHostnamesPanel = (
         ...state,
         addresses: { ...state.addresses, confirm: { use, hostname }, error: null },
       };
-      render();
+      renderStatus(addressesHost, renderAddresses);
       return;
     }
     await saveAddressUse(use, hostname);
@@ -3151,6 +3202,8 @@ export const mountHostnamesPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      statusControls.clear();
+      statusFallback = null;
       updateBaseline = null;
       verifyBaseline = null;
       localValidation = null;
@@ -3383,7 +3436,7 @@ export const mountHostnamesPanel = (
     cancelAddressUse: () => {
       if (disposed || state.addresses.confirm === null) return;
       state = { ...state, addresses: { ...state.addresses, confirm: null } };
-      render();
+      renderStatus(addressesHost, renderAddresses);
     },
   };
 

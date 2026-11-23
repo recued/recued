@@ -38,7 +38,7 @@ const stores = () => {
   const sources = buildSituationSources({ db, work, reminders: createReminderStore(db), calendars: () => [], now: () => time, timeZone: () => 'UTC' });
   const query = createSituationQuery({ now: () => time, sources, sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
   const grants = { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true };
-  const items = async (surface: 'today' | 'tool' = 'today') => (await query({ time: { from: time, to: time + 7 * DAY }, surface }, { owner: true, grants } as never))
+  const items = async (surface: 'today' | 'tool' | 'digest' = 'today') => (await query({ time: { from: time, to: time + 7 * DAY }, surface }, { owner: true, grants } as never))
     .clusters.flatMap(cluster => cluster.items).filter(item => item.ref.collection === 'asset');
   const put = (rules: AssetRule[], observation: Omit<AssetCondition, 'source'> | null) => work.writeAsset({ source_id: 'recued.asset',
     source: { kind: 'owner', ref: 'owner' }, name: 'Body', dates: {}, observations: { short_sleep: observation ? { ...observation, source: 'owner' } : null }, rules }, time);
@@ -88,6 +88,18 @@ describe('D-340 states in the situation', () => {
     const conditional = s.put([rule()], condition({ certainty: 'conditional' })); await s.occurrences.reconcileAsset(conditional.id);
     const clear = s.put([rule()], condition({ active: false })); await s.occurrences.reconcileAsset(clear.id);
     expect(await s.items()).toEqual([]);
+  });
+  it('shows every state that holds on Today, though a cluster shows a few items; the digest keeps its few', async () => {
+    const s = stores();
+    const fields = ['short_sleep', 'low_hrv', 'high_rhr', 'late_bed'];
+    const asset = s.work.writeAsset({ source_id: 'recued.asset', source: { kind: 'owner', ref: 'owner' }, name: 'Body', dates: {},
+      observations: Object.fromEntries(fields.map(field => [field, { ...condition(), source: 'owner' }])),
+      rules: fields.map(field => rule({ id: field, title: field.replace('_', ' '), when: { kind: 'condition', field, certainty: 'confirmed' } })) } as never, NIGHT_END + HOUR);
+    await s.occurrences.reconcileAsset(asset.id);
+    const today = await s.items('today');
+    expect(today.filter(item => item.kind === 'asset_state')).toHaveLength(4);
+    const digest = await s.items('digest');
+    expect(digest).toHaveLength(3);
   });
   it('leaves an ordinary condition rule as it was: due, not a state', async () => {
     const s = stores(); const task = rule({ id: 'check', title: 'Check sleep tracking', reaction: { notify: false, occurrence: 'notice', emit: false } });

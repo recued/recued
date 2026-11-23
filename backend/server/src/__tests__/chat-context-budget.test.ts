@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   noteContextAccepted,
   noteContextRefused,
+  noteTokenRatio,
   resetEndpointCapabilities,
   type LLMConfig,
 } from '@recued/llm';
@@ -69,6 +70,33 @@ describe('resolveChatInputTokenBudget', () => {
     learnCeiling('http://slot2.test', 32_000);
     const got = resolveChatInputTokenBudget(config(), { layer: 'byok', hint: 'quality' });
     expect(got!).toBeLessThan(32_000);
+  });
+
+  // 2026-11-20 (the owner: "on the slot that knows the limit (from the api or hit the limit before) we use that").
+  it('a window the owner typed is known: it budgets with nothing learned, and the smaller of typed and learned wins', () => {
+    const typed = (window1: number | undefined, window2: number | undefined): LLMConfig => ({ ...config(),
+      slot_1: { ...byokSlot('http://slot1.test'), ...(window1 !== undefined ? { context_window_tokens: window1 } : {}) },
+      slot_2: { ...byokSlot('http://slot2.test'), ...(window2 !== undefined ? { context_window_tokens: window2 } : {}) } } as unknown as LLMConfig);
+    const at128 = resolveChatInputTokenBudget(typed(128_000, 128_000), { layer: 'byok', hint: 'quality' });
+    expect(at128).toBeDefined();
+    expect(at128!).toBeLessThanOrEqual(128_000 - 8_000);
+    expect(resolveChatInputTokenBudget(typed(128_000, 64_000), { layer: 'byok', hint: 'quality' })!).toBeLessThan(64_000);
+    learnCeiling('http://slot1.test', 90_000);
+    const learnedUnder = resolveChatInputTokenBudget(typed(128_000, undefined), { layer: 'byok', hint: 'quality' })!;
+    expect(learnedUnder).toBeLessThan(90_000);
+    expect(learnedUnder).toBeGreaterThan(64_000);
+  });
+
+  // 2026-11-20 (the owner: "go ahead", the estimate) — the window is in the provider's tokens and the trims measure in
+  // the estimator's, which counted browser task P at about twice the provider.
+  it('scales the budget into the estimator\'s units by the ratio every candidate has shown, and not before', () => {
+    const typed = { ...config(), slot_1: { ...byokSlot('http://slot1.test'), context_window_tokens: 128_000 },
+      slot_2: { ...byokSlot('http://slot2.test'), context_window_tokens: 128_000 } } as unknown as LLMConfig;
+    const plain = resolveChatInputTokenBudget(typed, { layer: 'byok', hint: 'quality' })!;
+    for (const _ of [1, 2, 3]) noteTokenRatio(byokSlot('http://slot1.test'), 184, 100);
+    expect(resolveChatInputTokenBudget(typed, { layer: 'byok', hint: 'quality' })).toBe(plain);
+    for (const _ of [1, 2, 3]) noteTokenRatio(byokSlot('http://slot2.test'), 190, 100);
+    expect(resolveChatInputTokenBudget(typed, { layer: 'byok', hint: 'quality' })).toBe(Math.floor(plain * 1.84));
   });
 
   it('⚠ ONE unlearned candidate does not veto the bound, but IS the residual risk', () => {

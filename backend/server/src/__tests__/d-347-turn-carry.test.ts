@@ -75,7 +75,8 @@ describe('D-347 — the carry beside the brief, in the chat store', () => {
     store.createSession({ id: 's1', now: 1000 });
     await store.writeSessionCarry!('s1', CARRY);
     const row = db.prepare('SELECT carry_encrypted FROM chat_session_carry WHERE session_id = ?').get('s1') as { carry_encrypted: string };
-    expect(row.carry_encrypted).not.toContain('318');
+    // A phrase no base64 ciphertext holds by chance ("318" alone did, about 1 run in 500: 2026-11-15).
+    expect(row.carry_encrypted).not.toContain('Bonded-warehouse');
     expect(await createChatStore(db, () => chatKey(1), () => undefined).readSessionCarry!('s1')).toBe(CARRY);
   });
 
@@ -135,6 +136,7 @@ const conversation = (turns: ReadonlyArray<{ tool: string; result: unknown; writ
   const { readStatementsFoldedAt: _readFolded, markStatementsFolded: _markFolded, ...withoutStatements } = full;
   const store: ChatStore = options.carry === false ? withoutCarry : options.statements === false ? withoutStatements : full;
   store.createSession({ id: sid });
+  // This fixture supplies Standard writer responses for its carry lifecycle.
   store.setRollingBriefEnabled(true);
   const catalog = [...new Set(turns.map((t) => t.tool))].map((name) => tool(name, turns.find((t) => t.tool === name)!.write ? 'write' : 'read'));
   let turn = -1;

@@ -12,6 +12,8 @@ export interface BrowserLoginRpcDeps {
   readonly store?: BrowserLoginStore;
   readonly auditLog?: AuditLogStore;
   readonly now?: () => number;
+  /** D-402 slice H5 — a browser's name as its owner gave it, for the list. */
+  readonly browserNameOf?: (browser_id: string) => string | undefined;
 }
 
 const text = (method: string, field: string, args: unknown): string => {
@@ -33,18 +35,23 @@ export const createBrowserLoginRpcHandlers = (deps: BrowserLoginRpcDeps) => {
   };
   return {
     'collection.contract.listBrowserLogins': async (): Promise<{ logins: BrowserLoginRow[] }> =>
-      ({ logins: store('collection.contract.listBrowserLogins').list() }),
+      ({ logins: store('collection.contract.listBrowserLogins').list().map((login) => {
+        // D-402 slice H5 — each by the browser it was saved in, named as its owner named it.
+        const name = deps.browserNameOf?.(login.browser);
+        return name !== undefined ? { ...login, browser_name: name } : login;
+      }) }),
 
     'collection.contract.forgetBrowserLogin': async (args: unknown): Promise<{ forgotten: true }> => {
       const method = 'collection.contract.forgetBrowserLogin';
+      const browser = text(method, 'browser', args);
       const origin = text(method, 'origin', args);
       const field = text(method, 'field', args);
-      if (!store(method).forget(origin, field)) {
+      if (!store(method).forget(browser, origin, field)) {
         throw new RpcError('not_found', `${method}: no login is remembered for that field on ${origin}`, 404, method);
       }
       if (deps.auditLog !== undefined) {
         void deps.auditLog.logActivity({ activity_id: '', timestamp: now(), action: 'browser_login_forgotten', target: origin,
-          detail: JSON.stringify({ field }) }).catch(() => undefined);
+          detail: JSON.stringify({ field, browser }) }).catch(() => undefined);
       }
       return { forgotten: true };
     },

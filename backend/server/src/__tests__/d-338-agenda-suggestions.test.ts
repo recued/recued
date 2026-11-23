@@ -93,9 +93,12 @@ describe('D-338 the Agenda\'s AI suggestions', () => {
     // A line that only said "A reminder in Yours (all day)." came back as the request grew (4 of 15 live
     // runs, 2026-11-07), and the Agenda lists it already.
     expect(schedule!.prompt).toContain('anything to do for it. A line that only says I have a reminder in Yours is not a suggestion. ');
-    // Plain lines: the notice and the stream's messengers show bold as it was typed.
-    expect(schedule!.prompt).toContain('Reply with the suggestions only, as a short list of plain lines, without bold (my notifications '
-      + 'show it as asterisks): I already have the agenda, so do not repeat it.');
+    // Plain lines: the notice and the stream's messengers show bold as it was typed. Each line starts with
+    // "- " (6 of 21 live runs wrote bare lines, 2026-11-07). ⛔ Nothing names a pursuit no step fits:
+    // both wordings that did dropped the pursuit's step from 6 runs in 6 to 2 (2026-11-14, the prompt log).
+    expect(schedule!.prompt).toContain('Reply with the suggestions only, as a short list of plain lines, each starting '
+      + 'with "- ", without bold (my notifications show it as asterisks): I already have the agenda, so do not repeat it.');
+    expect(schedule!.prompt).not.toMatch(/no (?:pursuit )?step fits/u);
     // Its run takes the suggestions' own rounds too (`suggestionsToolRounds`), and its request says so.
     expect(schedule!.prompt).toContain(`at most ${String(SUGGESTIONS_TOOL_ROUNDS - 1)} lookups besides the read.`);
     expect(await f.schedules.list()).toEqual([]);

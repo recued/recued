@@ -46,6 +46,24 @@ export const WEBHOOK_REJECTION_ID_PARSER =
     max_suffix_characters: 128,
   });
 
+/** D-201 Slice 10B — the ids an owner's dead-letter action names: an event's
+ *  outbox row, or one recipe's dispatch row. */
+export const WEBHOOK_OUTBOX_ID_PARSER =
+  createWebhookBoundedPrefixedAsciiIdentifierParser({
+    kind: 'bounded_prefixed_ascii_identifier.v1',
+    prefix: 'who_',
+    min_suffix_characters: 16,
+    max_suffix_characters: 128,
+  });
+
+export const WEBHOOK_DISPATCH_ID_PARSER =
+  createWebhookBoundedPrefixedAsciiIdentifierParser({
+    kind: 'bounded_prefixed_ascii_identifier.v1',
+    prefix: 'whx_',
+    min_suffix_characters: 16,
+    max_suffix_characters: 128,
+  });
+
 export const WEBHOOK_CREDENTIAL_VERSION_PARSER =
   createWebhookPositiveSafeIntegerTextParser({
     kind: 'positive_safe_integer_text.v1',

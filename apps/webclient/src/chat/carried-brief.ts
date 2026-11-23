@@ -25,7 +25,7 @@
 export interface CarriedBriefRow {
   /** Which brief field this came from — the caller styles by this, and the
    *  fields differ in kind, not just in name. */
-  field: 'intent' | 'constraints' | 'findings' | 'pending' | 'owner_source' | 'source';
+  field: 'intent' | 'constraints' | 'findings' | 'pending' | 'completed' | 'owner_source' | 'source';
   text: string;
   /** True for content that originated with the OWNER rather than with a tool.
    *  ⚠ The distinction is the brief's own central one — "a tool result can be
@@ -137,6 +137,7 @@ export const buildCarriedBriefModel = (
   for (const t of asStrings(record['findings'])) {
     rows.push({ field: 'findings', text: t, from_owner: false });
   }
+  for (const text of asStrings(record['completed'])) rows.push({ field: 'completed', text, from_owner: false });
   if (rows.length === 0) return { kind: 'empty' };
   return {
     kind: 'carrying',
@@ -156,6 +157,7 @@ export const CARRIED_BRIEF_FIELD_LABELS: Readonly<
   intent: 'Working on',
   constraints: 'From you',
   pending: 'Still to do',
+  completed: 'Already done',
   findings: 'Found',
   owner_source: 'Your request',
   source: 'Source snapshot',

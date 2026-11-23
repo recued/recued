@@ -1,24 +1,21 @@
-/** D-157 / D-158 outbound-send approval promise — now enforced through the D-187
- *  slice-4 op-risk path (`admitByOpRisk`), where the matrix-coupled
- *  `escalateOutboundSend` relocated to the actor-scoped `liftOutboundSend`.
+/** D-157 / D-158 outbound-send approval promise — kept since D-177 §N.15.6 (2026-11-10) by each
+ *  op's own approval, with NO send named. The owner: *"(mail-send, mail-post, slack-post) should
+ *  join the risk & approval setting so that it is uniformed"*, and *"that lays the foundation of
+ *  the approval system unformly"*.
  *
- *  Plain `write`-tier outbound sends (`mail-send` / `mail-post` / `slack-post` /
- *  `notification-send` / `connection-mcp-write`) RELAX to admit at the `admin` ceiling
- *  (owner-direct HID/chat, or an admin-shell system source — housekeeping / webhook door)
- *  — so an AI or recipe could email / Slack someone on the user's behalf with no prompt —
- *  unless the lift re-raises them to `'ask'` at the attended `user_self` cells, routing
- *  them through the D-157 preflight gate. The lift stays deliberately actor-scoped: it
- *  never fires for a `system` actor, and every internal write / `read` is left admit.
- *
- *  D-209 §1.4 note: a `schedule`/`reactive` system send no longer admits — that source
- *  now fails closed to the LOW `read` ceiling and HOLDS the send via the CEILING (not the
- *  lift). The lift's actor-scoping is unchanged; only the automation ceiling moved.
+ *  Until then the owner's chat took the `admin` ceiling, where a `write` relaxes, and a by-name
+ *  lift (`liftOutboundSend`) re-raised these sends to `ask` for a person driving. Now the owner's
+ *  chat and messenger chat take the `read` ceiling (`OWNER_CHAT_TRUST_CEILING`), as automation
+ *  does, so a send asks there by its approval like every write — internal ones too — while what
+ *  the owner runs from the app (`user`) relaxes, sends included. The send set survives only to
+ *  name Recued's sends (the Reason line's words, `mail-send`'s attachment check).
  */
 
 import { describe, expect, it } from 'vitest';
 
 import {
   OUTBOUND_SEND_INGREDIENT_SLUGS,
+  OWNER_CHAT_TRUST_CEILING,
   admitByOpRisk,
   isOutboundSendSlug,
   resolveTrustCeiling,
@@ -97,7 +94,7 @@ const SENDS = [
   'peer-ask',
 ] as const;
 
-describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', () => {
+describe('D-157 outbound-send promise, kept by each op\'s approval (admitByOpRisk)', () => {
   it('the closed send set is exactly the six RECIPIENT-AUTHORING slugs', () => {
     // ⚠ The membership rule is "does the RECIPE author a destination?", NOT
     // "does a packet leave the machine" — `notification-send` does the latter
@@ -122,9 +119,7 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
     expect(isOutboundSendSlug('connection-mcp-read')).toBe(false);
   });
 
-  it('§5 — core- kernel aliases of the send slugs lift identically', () => {
-    // A published recipe must not reach an outbound send via the core alias that
-    // bypasses the preflight lift its bare slug triggers.
+  it('§5 — core- kernel aliases name the same sends', () => {
     expect(isOutboundSendSlug('core-mail-post')).toBe(true);
     expect(isOutboundSendSlug('core-slack-post')).toBe(true);
     expect(isOutboundSendSlug('core-notify-booking-visitor')).toBe(true);
@@ -132,54 +127,51 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
     expect(isOutboundSendSlug('core-ai-classify')).toBe(false);
   });
 
-  it.each(SENDS)('lifts "%s" to ask at (user, user_self)', (slug) => {
-    const decision = admit(slug, USER);
-    expect(decision.verdict).toBe('ask');
-    if (decision.verdict === 'ask') {
+  it('the owner\'s chat and messenger chat take the same ceiling as automation; the app keeps the owner\'s', () => {
+    expect(OWNER_CHAT_TRUST_CEILING).toBe('read');
+    expect(resolveTrustCeiling(CHAT)).toBe('read');
+    expect(resolveTrustCeiling(MESSENGER)).toBe('read');
+    expect(resolveTrustCeiling(SCHEDULE)).toBe('read');
+    expect(resolveTrustCeiling(USER)).toBe('admin');
+  });
+
+  it.each(SENDS)('"%s" asks in the owner\'s chat by its own approval, with no review lift', (slug) => {
+    for (const source of [CHAT, MESSENGER]) {
+      const decision = admit(slug, source);
+      expect(decision.verdict).toBe('ask');
+      if (decision.verdict !== 'ask') continue;
       // Risk tier preserved for audit — a send is a `write`, not reclassified.
       expect(decision.risk_tier).toBe('write');
-      // ⛔ NO SEND NAMES ITS SLUG. `detail` renders VERBATIM into the ask body's
-      // "Reason:" line (see the comment on the branch in `op-risk-admission.ts`),
-      // so it is owner-facing prose. The generic send sentence used to carry the
-      // slug because it is otherwise identical for five different sends, but the
-      // ask already says which: its opening, its `Technical:` line and the
-      // card's Action row. The slug was the last machine token in the email's
-      // prose (owner, 2026-10-19). § 234.4o's peer-ask sentence differs only in
-      // wording; the lift is asserted identically for it.
+      // Asked because its approval is `ask` and nothing relaxes it here: no lift marks it.
+      expect(decision.authorization_provenance).toEqual({ pre_lift_approval: 'ask' });
+      // ⛔ NO SEND NAMES ITS SLUG on the Reason line, which renders VERBATIM in the ask (owner,
+      // 2026-10-19); it still says why in words.
       expect(decision.detail).not.toContain(slug);
       expect(decision.detail).toContain(
         slug === 'peer-ask' ? 'another server owner\'s screen' : 'someone outside this server');
     }
   });
 
-  it('lifts a send to ask at (chat, user_self) and (messenger, user_self)', () => {
-    for (const source of [CHAT, MESSENGER]) {
-      expect(admit('mail-send', source).verdict).toBe('ask');
-    }
+  it.each(SENDS)('"%s" run by the owner from the app relaxes like every write: no name lifts it', (slug) => {
+    expect(admit(slug, USER).verdict).toBe('admit');
   });
 
-  it('does NOT lift a send for a system actor — the lift is actor-scoped (an admin-shell system source admits)', () => {
-    // The lift is exempt for `system`, so at the admin ceiling (housekeeping / webhook
-    // door) the write send relaxes to admit — the lift never re-raises it.
+  it('a system actor\'s send follows its channel\'s ceiling: an admin-shell source admits', () => {
     expect(admit('mail-send', HOUSEKEEPING).verdict).toBe('admit');
   });
 
-  it('D-209 §1.4 — a (schedule|reactive) system send HOLDS via the LOW ceiling, not the lift', () => {
-    // Unattended owner automation now fails closed to the `read` ceiling, so the write
-    // send surfaces (write > read) — a different mechanism than the user_self-scoped lift,
-    // same surfaced outcome. Silence is earned via the D-177 learner, never by default.
+  it('D-209 §1.4 — a (schedule|reactive) system send HOLDS via the LOW ceiling', () => {
     for (const source of [SCHEDULE, REACTIVE]) {
       expect(admit('mail-send', source).verdict).toBe('ask');
     }
   });
 
-  it('does NOT lift an internal write (non-send) at (user, user_self)', () => {
-    // `annotation-create` is `risk_tier: 'write'` like the sends, but it is not an
-    // external send — the admin ceiling relaxes it to admit and it must stay silent.
+  it('an internal write is no different: it asks in the chat and runs from the app', () => {
+    expect(admit('annotation-create', CHAT, 'write').verdict).toBe('ask');
     expect(admit('annotation-create', USER, 'write').verdict).toBe('admit');
   });
 
-  it('does NOT lift a read at (user, user_self)', () => {
-    expect(admit('mail-reader', USER, 'read').verdict).toBe('admit');
+  it('a read runs everywhere the owner is', () => {
+    for (const source of [USER, CHAT, MESSENGER]) expect(admit('mail-reader', source, 'read').verdict).toBe('admit');
   });
 });

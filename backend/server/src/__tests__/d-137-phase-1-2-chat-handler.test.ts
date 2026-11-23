@@ -508,6 +508,9 @@ describe('D-137 P1.2 — chat.session.delete', () => {
   it('deletes the row + emits chat_session_deleted audit with deleted message count', async () => {
     const deleteSessionExecutionCases = vi.fn(async () => 2);
     deps.deleteSessionExecutionCases = deleteSessionExecutionCases;
+    // D-348 — and the requests it kept for chains to learn from.
+    const deleteSessionChainEvidence = vi.fn();
+    deps.deleteSessionChainEvidence = deleteSessionChainEvidence;
     await store.appendMessage({
       id: 'msg-delete-1',
       session_id: 'mint-stub',
@@ -527,6 +530,7 @@ describe('D-137 P1.2 — chat.session.delete', () => {
     expect(store.getSession('mint-stub')).toBeNull();
     expect(deleteSessionExecutionCases).toHaveBeenCalledOnce();
     expect(deleteSessionExecutionCases).toHaveBeenCalledWith('mint-stub');
+    expect(deleteSessionChainEvidence).toHaveBeenCalledWith('mint-stub');
     expect(auditRows[0].action).toBe('chat_session_deleted');
     expect(auditRows[0].target).toBe('mint-stub');
     expect(auditRows[0].detail).toBeTypeOf('string');

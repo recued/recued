@@ -42,6 +42,10 @@ export const MCP_TOOL_CATALOG = [
   // D-139 P5 — contact-rooted engagement evidence read (body-stripped
   // projection; default-off per the per-token tool checklist).
   'recued_contactEngagementsList',
+  // D-402 slice A2 — an AI app's job, whose calls are kept together to be made
+  // into a recipe; granted per token like every tool.
+  'recued_startJob',
+  'recued_endJob',
 ] as const;
 
 export type McpToolName = (typeof MCP_TOOL_CATALOG)[number];
@@ -104,6 +108,9 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // repair are owner control-plane actions; external agents reach Records only
   // through installed, grant-gated Tier-P operations.
   'records.',
+  // D-403 — what takes space and the purge are the owner's own decisions about their server's data;
+  // no agent lists them, and none deletes through them.
+  'storage.',
   // D-205 #5 — selective CRM promotion. Pulling a stranger out of a 10k-row CRM
   // and into the personal contact graph is a judgement about WHO YOU KNOW — the
   // same class of decision as a merge, and the exact judgement `hydrate_on_match`

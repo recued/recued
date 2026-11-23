@@ -22,6 +22,7 @@ import {
 } from './start-pre-listener-runtime.js';
 import { composeArchiveRpcDeps } from '../archive/archive-runtime.js';
 import { createUploadSessionStore } from '../storage/upload-session-store.js';
+import { createApprovalRestartContinuationStore } from '../storage/approval-restart-continuation-store.js';
 
 /** The upload-session lookup the boot reclaim wants, when this composition can
  *  actually provide one. Returns an empty object rather than throwing: the
@@ -33,6 +34,19 @@ const uploadSessionsForReclaim = (
   if (!db) return {};
   try {
     return { uploadSessions: createUploadSessionStore(db as never) };
+  } catch {
+    return {};
+  }
+};
+/** D-201 Slice 10R (10Q finding 17) — what restarts kept for approved runs,
+ *  so the boot can drop rows whose checkpoint is gone. Best-effort, as above:
+ *  without it the rows simply wait for the next boot that has a db. */
+const restartContinuationsForSweep = (
+  db: unknown,
+): { approvalRestartContinuations?: import('../storage/approval-restart-continuation-store.js').ApprovalRestartContinuationStore } => {
+  if (!db) return {};
+  try {
+    return { approvalRestartContinuations: createApprovalRestartContinuationStore(db as never) };
   } catch {
     return {};
   }
@@ -153,6 +167,7 @@ export const startLifecycleRecoveryPreListenerRuntime = async (
     // reclaim already treats an absent lookup as "skip the upload tree", which
     // is the fail-safe answer rather than deleting a resumable session's file.
     ...(uploadSessionsForReclaim(options.lifecycle.db)),
+    ...(restartContinuationsForSweep(options.lifecycle.db)),
   });
 
   options.bootTrace?.mark('boot-recovery-complete');

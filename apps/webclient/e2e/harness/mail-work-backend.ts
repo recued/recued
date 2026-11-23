@@ -93,6 +93,7 @@ export const createMailWorkFixture = (options: {
       }, args as unknown as MailMessageRef);
       if (method === 'collection.mail.list') return { instances: [] };
       if (method === 'collection.contract.session_grant.list') return { grants: [] };
+      if (method === 'collection.contract.listChainRules') return { rules: [] };
       if (method === 'mail.drafts.list') return { drafts: [], next_cursor: null };
       if (method === 'chat.plans.pending.list') return { plans: [] };
       return chat.rpc(method, args);

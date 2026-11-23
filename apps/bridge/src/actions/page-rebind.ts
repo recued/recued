@@ -78,15 +78,35 @@ export const rebindPageRef = (ref: string, act?: boolean | null)
     refs.byRef.set(ref, element);
     if (!refs.byElement.has(element)) refs.byElement.set(element, ref);
   };
+  // A site's platform shortcut decoration can arrive after the read: Wikipedia
+  // changes "Search Wikipedia [f]" to "Search Wikipedia [ctrl-option-f]".
+  // Only a trailing hint for the recorded access key is decoration; keep the
+  // rest of the title, and compare accesskey itself as part of the identity.
+  const shortcutTitle = (title: string, accessKey: string | undefined): string => {
+    const key = accessKey?.trim().toLowerCase();
+    if (key === undefined || !/^[a-z0-9]$/.test(key) || !title.endsWith(']')) return title;
+    const start = title.lastIndexOf(' [');
+    if (start <= 0 || title.length - start > 64) return title;
+    const parts = title.slice(start + 2, -1).toLowerCase().split(/[+-]/).map(part => part.trim());
+    if (parts.length > 5 || parts.at(-1) !== key) return title;
+    const modifiers = parts.slice(0, -1).map(part => part === 'control' ? 'ctrl' : part === 'option' ? 'alt'
+      : part === 'cmd' || part === 'command' ? 'meta' : part);
+    if (modifiers.some(part => !['ctrl', 'alt', 'shift', 'meta'].includes(part))
+      || new Set(modifiers).size !== modifiers.length) return title;
+    return title.slice(0, start);
+  };
   if (old.isConnected) {
     const seen = act === true ? refs.seen?.get(old) : undefined;
     const printOf = refs.print;
     if (seen === undefined || printOf === undefined) return { kept: true };
-    const KEYS = ['tag', 'type', 'name', 'role', 'label', 'placeholder', 'title', 'text', 'value', 'href', 'form', 'row', 'links'];
+    const KEYS = ['tag', 'type', 'name', 'accesskey', 'role', 'label', 'placeholder', 'title', 'text', 'value', 'href', 'form', 'row', 'links'];
     const LOOSE = new Set(['label', 'title', 'text', 'value', 'row']);
     const loose = (text: string) => text.replace(/\d+(?:[.,:]\d+)+/g, '#');
-    const alike = (a: Print, b: Print, exact: boolean) => KEYS.every((key) => (exact || !LOOSE.has(key)
-      ? a[key] === b[key] : loose(a[key] ?? '') === loose(b[key] ?? '')));
+    const alike = (a: Print, b: Print, exact: boolean) => KEYS.every((key) => {
+      const left = key === 'title' ? shortcutTitle(a.title ?? '', a.accesskey) : a[key];
+      const right = key === 'title' ? shortcutTitle(b.title ?? '', b.accesskey) : b[key];
+      return exact || !LOOSE.has(key) ? left === right : loose(left ?? '') === loose(right ?? '');
+    });
     const now = printOf(old);
     if (alike(now, seen, false)) return { kept: true };
     const moved = findShown(seen.tag ?? old.localName, (element) => alike(printOf(element), seen, true));
@@ -106,6 +126,7 @@ export const rebindPageRef = (ref: string, act?: boolean | null)
       tag: element.localName,
       type: norm(element.getAttribute('type')),
       name: element.getAttribute('name') ?? '',
+      accesskey: element.getAttribute('accesskey') ?? '',
       role: norm(element.getAttribute('role')),
       label: norm(element.getAttribute('aria-label')),
       placeholder: norm(element.getAttribute('placeholder')),
@@ -120,11 +141,14 @@ export const rebindPageRef = (ref: string, act?: boolean | null)
     };
   };
   const was = print(old);
+  const readAccessKey = refs.seen?.get(old)?.accesskey;
+  if (readAccessKey !== undefined && was.accesskey !== readAccessKey) return { stale: true };
   const same = (element: Element) => {
     if (element.id !== '' && old.id !== '' && element.id !== old.id) return false;
     const now = print(element);
-    for (const key of ['tag', 'type', 'name', 'role', 'label', 'placeholder', 'title', 'text', 'value', 'href'] as const) {
-      if (now[key] !== was[key]) return false;
+    for (const key of ['tag', 'type', 'name', 'accesskey', 'role', 'label', 'placeholder', 'title', 'text', 'value', 'href'] as const) {
+      if (key === 'title' ? shortcutTitle(now.title, readAccessKey) !== shortcutTitle(was.title, readAccessKey)
+        : now[key] !== was[key]) return false;
     }
     // Surroundings that left with it say where it was; ones that did not are not known.
     if (was.form !== null && now.form !== was.form) return false;

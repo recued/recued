@@ -48,6 +48,7 @@ const ACTION_RUN_NOW_CANCEL = 'housekeeping-run-now-cancel';
 const ACTION_RECLAIM = 'maintenance-storage-reclaim';
 const ACTION_STATUS_RETRY = 'maintenance-status-retry';
 const READ_FOCUS_ATTR = 'data-recued-maintenance-read-focus';
+const RECLAIM_PROGRESS_ATTR = 'data-recued-maintenance-reclaim-progress';
 
 /** Stable hook for the storage section. */
 export const MAINTENANCE_STORAGE_ATTR = 'data-recued-maintenance-storage';
@@ -174,7 +175,8 @@ export const mountMaintenancePanel = (
         // button, on a row whose header promised "Last reclaim".
         + `<td class="maintenance-storage-receipt" role="cell">${cellLabel('Last reclaim')}`
         + `${escapeHtml(receipt ?? row.lastReclaim)}</td>`
-        + `<td class="maintenance-storage-action" role="cell">${button}</td>`
+        + `<td class="maintenance-storage-action" role="cell">${button}`
+        + `${busy ? `<span class="maintenance-reclaim-progress" role="status" aria-atomic="true" tabindex="-1" ${RECLAIM_PROGRESS_ATTR}="${escapeHtml(row.surface)}">Reclaiming space…</span>` : ''}</td>`
         + `</tr>`;
     }).join('');
     return `
@@ -274,6 +276,15 @@ export const mountMaintenancePanel = (
       querySelector?: (selector: string) => HTMLElement | null;
     }).querySelector?.('.housekeeping-runnow-dialog') ?? null;
 
+  const reclaimProgress = (surface: string): HTMLElement | null => {
+    const nodes = opts.host.querySelectorAll?.<HTMLElement>(`[${RECLAIM_PROGRESS_ATTR}]`);
+    if (!nodes) return null;
+    for (const node of Array.from(nodes)) {
+      if (node.getAttribute(RECLAIM_PROGRESS_ATTR) === surface) return node;
+    }
+    return null;
+  };
+
   const focusElement = (element: HTMLElement | null): void => {
     (element as (HTMLElement & {
       focus?: (options?: FocusOptions) => void;
@@ -291,6 +302,9 @@ export const mountMaintenancePanel = (
       || active.getAttribute('data-action') === ACTION_STATUS_RETRY) {
       return { kind: 'status' };
     }
+    const progress = active.closest?.(`[${RECLAIM_PROGRESS_ATTR}]`);
+    const surface = progress?.getAttribute(RECLAIM_PROGRESS_ATTR);
+    if (surface != null) return { kind: 'action', action: ACTION_RECLAIM, taskId: surface };
     const actionElement = active.closest?.('[data-action]');
     const action = actionElement?.getAttribute('data-action');
     if (action) {
@@ -321,6 +335,8 @@ export const mountMaintenancePanel = (
     focusElement(
       intent.kind === 'dialog'
         ? dialogElement()
+        : intent.action === ACTION_RECLAIM && intent.taskId === state.reclaiming
+          ? reclaimProgress(intent.taskId)
         : findAction(intent.action, intent.taskId),
     );
   };
@@ -328,7 +344,20 @@ export const mountMaintenancePanel = (
   const render = (focusIntent?: MaintenanceFocusIntent): void => {
     if (disposed) return;
     const intent = focusIntent ?? focusIntentFromActiveElement();
+    // WebKit can clamp an ancestor's scroll offset while the visible markup
+    // is replaced. Restore it before returning focus to the current owner.
+    const scrollOffsets: Array<{ node: HTMLElement; top: number; left: number }> = [];
+    for (let node: HTMLElement | null = opts.host; node; node = node.parentElement) {
+      if (typeof node.scrollTop === 'number' && typeof node.scrollLeft === 'number'
+        && (node.scrollTop !== 0 || node.scrollLeft !== 0)) {
+        scrollOffsets.push({ node, top: node.scrollTop, left: node.scrollLeft });
+      }
+    }
     opts.host.innerHTML = renderPanel();
+    for (const { node, top, left } of scrollOffsets) {
+      node.scrollTop = top;
+      node.scrollLeft = left;
+    }
     applyFocusIntent(intent);
   };
 
@@ -408,6 +437,7 @@ export const mountMaintenancePanel = (
       { reclaiming: surface },
       { kind: 'action', action: ACTION_RECLAIM, taskId: surface },
     );
+    reclaimProgress(surface)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     try {
       const result = await opts.runReclaim({ surface });
       if (disposed) return;
@@ -418,27 +448,27 @@ export const mountMaintenancePanel = (
       const receipt = result.ran
         ? `freed ${formatPressureBytes(result.bytes_freed)}`
         : 'already ran recently';
-      setState(
-        {
-          reclaiming: null,
-          reclaimResult: { ...state.reclaimResult, [surface]: receipt },
-        },
-        { kind: 'action', action: ACTION_RECLAIM, taskId: surface },
-      );
+      setState({
+        reclaiming: null,
+        reclaimResult: { ...state.reclaimResult, [surface]: receipt },
+      });
       await doRefreshStorage();
     } catch (err) {
       if (disposed) return;
-      setState(
-        {
-          reclaiming: null,
-          reclaimResult: {
-            ...state.reclaimResult,
-            [surface]: humanizeRpcError(err),
-          },
+      setState({
+        reclaiming: null,
+        reclaimResult: {
+          ...state.reclaimResult,
+          [surface]: humanizeRpcError(err),
         },
-        { kind: 'action', action: ACTION_RECLAIM, taskId: surface },
-      );
+      });
     }
+  };
+
+  const runNowOwnsFocus = (): boolean => {
+    const intent = focusIntentFromActiveElement();
+    return intent?.kind === 'dialog' || (intent?.kind === 'action'
+      && (intent.action === ACTION_RUN_NOW_CONFIRM || intent.action === ACTION_RUN_NOW_CANCEL));
   };
 
   const doRunNow = async (taskId: string): Promise<void> => {
@@ -452,7 +482,7 @@ export const mountMaintenancePanel = (
       if (disposed) return;
       setState(
         { runNow: { task_id: null, running: false, error: null } },
-        { kind: 'action', action: ACTION_RUN_NOW_OPEN, taskId },
+        runNowOwnsFocus() ? { kind: 'action', action: ACTION_RUN_NOW_OPEN, taskId } : undefined,
       );
       await doRefreshStatus();
     } catch (err) {
@@ -465,7 +495,7 @@ export const mountMaintenancePanel = (
             error: humanizeRpcError(err),
           },
         },
-        { kind: 'action', action: ACTION_RUN_NOW_CONFIRM },
+        runNowOwnsFocus() ? { kind: 'action', action: ACTION_RUN_NOW_CONFIRM } : undefined,
       );
     }
   };
@@ -492,7 +522,7 @@ export const mountMaintenancePanel = (
         pendingLoad = doLoad();
         return;
       case ACTION_RUN_NOW_OPEN: {
-        if (!opts.runRunNow) return;
+        if (!opts.runRunNow || state.runNow.running) return;
         const taskId = actionEl.getAttribute('data-task-id');
         if (!taskId) return;
         setState(

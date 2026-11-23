@@ -83,7 +83,12 @@ export type WidgetType =
    *  (`mailbox-variable.ts`). Never declared: a text setting becomes one when
    *  the server says its steps read or send mail through it
    *  (`ServerRecipeListEntry.mailbox_settings`, `asMailboxWidget`). */
-  | 'mailbox';
+  | 'mailbox'
+  /** D-402 slice H2b — one of the owner's paired browsers, chosen from a list of them by name
+   *  (`browser-variable.ts`), holding its lasting id. Never declared: a text setting becomes one when the
+   *  server says a browser step takes it as its browser (`ServerRecipeListEntry.browser_settings`,
+   *  `asBrowserWidget`). */
+  | 'browser';
 
 export interface WidgetShape {
   key: string;
@@ -167,6 +172,9 @@ export interface VariableWidgetRenderOptions {
    *  setting instead of the fallback text box; the host fills it
    *  (`wireMailboxVariables`). */
   mailboxPicker?: boolean;
+  /** D-402 slice H2b — render a list of the owner's paired browsers for a `browser` setting instead of
+   *  the fallback text box; the host fills it (`wireBrowserVariables`). */
+  browserPicker?: boolean;
   /** Unique scope when the same variable widgets coexist in nested overlays. */
   idPrefix?: string;
 }
@@ -182,6 +190,19 @@ export const MAIL_TEMPLATE_ACTION_ATTR = 'data-recued-mail-template-action';
  *  names (`mail` | `calendar`), and, present or absent, whether a step sends
  *  from it and whether it may be left empty. */
 export const MAILBOX_VARIABLE_ATTR = 'data-recued-mailbox-variable';
+/** D-402 slice H2b — marker on a `browser` row (value = the setting's key). */
+export const BROWSER_VARIABLE_ATTR = 'data-recued-browser-variable';
+/** What a `browser` row's list says with nothing chosen. */
+export const BROWSER_PLACEHOLDER = 'Choose a browser';
+
+/** D-402 slice H2b — a text setting the server says names one of the owner's browsers
+ *  (`ServerRecipeListEntry.browser_settings`), as a `browser` widget; any other shape as it is. */
+export const asBrowserWidget = (
+  shape: WidgetShape,
+  settings: ReadonlyArray<{ readonly key: string }> | undefined,
+): WidgetShape => (shape.type === 'text' && shape.list === undefined && settings?.some((setting) => setting.key === shape.key) === true
+  ? { ...shape, type: 'browser' }
+  : shape);
 export const MAILBOX_COLLECTION_ATTR = 'data-recued-mailbox-collection';
 export const MAILBOX_SENDS_ATTR = 'data-recued-mailbox-sends';
 export const MAILBOX_OPTIONAL_ATTR = 'data-recued-mailbox-optional';
@@ -657,6 +678,24 @@ export const renderVariableWidget = (
     `;
   }
 
+  if (w.type === 'browser' && options.browserPicker === true) {
+    // D-402 slice H2b — the held browser is its own option until the host lists the owner's browsers:
+    // a pure string renderer, and a value is never lost to a list that has not loaded. It holds a
+    // lasting id, which says nothing to the owner, so it waits under a line that says so.
+    const held = typeof w.value === 'string' ? w.value.trim() : '';
+    return `
+      <div class="var-row" ${BROWSER_VARIABLE_ATTR}="${e(w.key)}">
+        <label for="${e(id)}">${e(w.label)}</label>
+        ${help}
+        <select id="${e(id)}" data-var-key="${e(w.key)}" data-var-type="browser">
+          ${held === ''
+            ? `<option value="" selected>${e(BROWSER_PLACEHOLDER)}</option>`
+            : `<option value="${e(held)}" selected>Loading your browsers…</option>`}
+        </select>
+      </div>
+    `;
+  }
+
   if (w.type === 'mailbox' && w.mailbox !== undefined && options.mailboxPicker === true) {
     // The saved name is its own option until the host lists the owner's
     // mailboxes: a pure string renderer, and a value is never lost to a list
@@ -946,7 +985,7 @@ export const validateWidgetValue = (
   if (
     w.type === 'text' || w.type === 'textarea' || w.type === 'secret'
     || w.type === 'file_ref' || w.type === 'datetime' || w.type === 'date'
-    || w.type === 'mailbox'
+    || w.type === 'mailbox' || w.type === 'browser'
   ) {
     if (typeof value !== 'string' || value.trim() === '') return 'Required';
     return null;

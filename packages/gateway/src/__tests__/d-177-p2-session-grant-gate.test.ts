@@ -184,9 +184,11 @@ describe('wrapWithCommitGateway D-177 P2 session-grant ask branch', () => {
     expect(sessionGrants.consume).toHaveBeenCalledTimes(1);
     // D-177 P5a — the proceed-point consume carries the envelope hash so
     // a `grant_mode: 'batch'` consumption can claim its member (exact
-    // rows ignore it).
+    // rows ignore it). N.15 — and the op the lookup named, which a `'kind'`
+    // row re-verifies (a single-op ingredient: its slug).
     expect(sessionGrants.consume).toHaveBeenCalledWith('grant-1', {
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
+      operation_id: 'mail.send',
     });
     expect(order).toEqual(['consume', 'use', 'pending', 'inner']);
     expect(recordDispatchUse).toHaveBeenCalledTimes(1);
@@ -246,11 +248,15 @@ describe('wrapWithCommitGateway D-177 P2 session-grant ask branch', () => {
       arg_shape_hash: withConnectionHashes.arg_shape_hash,
       canonical_payload_hash: withConnectionHashes.canonical_payload_hash,
     } satisfies SessionGrantGateCall);
+    // A recipe-forged key never binds: without the engine's surface_dispatch
+    // marker the dispatch is named by its own slug (D-177 N.15), never by
+    // the `mail.delete` it claimed.
     expect(match.mock.calls[1][0]).toEqual({
       channel: 'chat',
       actor: 'user_self',
       channel_session_id: 's',
       ingredient_slug: 'mail.forged',
+      operation_id: 'mail.forged',
       connection_name: 'gmail-primary',
       risk_tier: 'admin',
       pre_lift_approval: 'ask',
@@ -262,12 +268,30 @@ describe('wrapWithCommitGateway D-177 P2 session-grant ask branch', () => {
       actor: 'user_self',
       channel_session_id: 's',
       ingredient_slug: 'mail.no_connection',
+      operation_id: 'mail.no_connection',
       risk_tier: 'admin',
       pre_lift_approval: 'ask',
       arg_shape_hash: withoutConnectionHashes.arg_shape_hash,
       canonical_payload_hash: withoutConnectionHashes.canonical_payload_hash,
     } satisfies SessionGrantGateCall);
     expect(consume).toHaveBeenCalledTimes(3);
+  });
+
+  it('D-177 N.15 — a hold names the connection its call goes out on, as the lookup read it', async () => {
+    const executor = wrapWithCommitGateway(async () => ({ ok: true }), deps({
+      evaluateAdmission: () => askDecision(),
+      resolveArgsForHash: (slug) => (slug === 'mail.post' ? resolvedWithConnection : resolvedWithoutConnection),
+      sessionGrants: { match: vi.fn(() => null), consume: vi.fn(() => true) },
+      genCommitId: sequence(['commit-a', 'commit-b']),
+      genIdempotencyKey: sequence(['idem-a', 'idem-b']),
+      now: sequence([3_000, 3_010, 3_100, 3_110]),
+    }));
+    const posted = await expectPreflightRequired(executor('mail.post', {}));
+    expect(posted).toMatchObject({ tool_slug: 'mail.post', ingredient_slug: 'mail.post', connection_name: 'gmail-primary' });
+    // Still no operation axis: resume stays bound to the slug (D-165).
+    expect(posted.operation_id).toBeUndefined();
+    const sent = await expectPreflightRequired(executor('mail.send', {}));
+    expect(sent.connection_name).toBeUndefined();
   });
 
   it('holds when ask has no matching grant', async () => {

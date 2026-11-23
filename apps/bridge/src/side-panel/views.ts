@@ -31,9 +31,15 @@ import { renderAskCard } from '@recued/ui-shared/approval-card';
 import { approvalsBody, notificationsBody } from './mode-gates.js';
 import { isOnBlockedSite, normalizeBlockedSite } from '../permissions/site-grants.js';
 import {
+  KEEP_SIGNED_IN_DAY_NAMES as DAY_NAMES,
   KEEP_SIGNED_IN_DEFAULT_MINUTES,
   KEEP_SIGNED_IN_MAX_MINUTES,
   KEEP_SIGNED_IN_MIN_MINUTES,
+  KEEP_SIGNED_IN_WEB_STORE_SAID,
+  clockAt,
+  daysSaid,
+  isOnChromeWebStore,
+  lastedSaid,
   type KeepSignedInSite,
   type KeepSignedInWindow,
 } from '../keep-signed-in.js';
@@ -93,6 +99,10 @@ export interface SitesHandlers {
   /** D-347 follow-up 19 — Keep signed in: a site with its settings, checked as the list keeps them. */
   onAddKeep?: (entry: KeepSignedInSite) => void | Promise<void>;
   onRemoveKeep?: (site: string) => void | Promise<void>;
+  /** D-347 follow-up 30 — puts back the site the list's last removal took, where it stood (`removed`,
+   *  `keep_removed`). */
+  onUndoRemoveBlocked?: () => void | Promise<void>;
+  onUndoRemoveKeep?: () => void | Promise<void>;
   /** D-347 follow-up 22 — what a form's own check found to fix, kept in the section's state so that a redraw
    *  (Keep signed in writes its status every minute or so) does not wipe it: the list of sites never used,
    *  and Keep signed in. */
@@ -187,9 +197,17 @@ export const SIDE_PANEL_SITES_SCREENSHOTS_GRANT_ATTR = 'data-recued-side-panel-s
 export const SIDE_PANEL_KEEP_ROW_ATTR = 'data-recued-side-panel-keep-row';
 export const SIDE_PANEL_KEEP_REMOVE_ATTR = 'data-recued-side-panel-keep-remove';
 export const SIDE_PANEL_KEEP_STATUS_ATTR = 'data-recued-side-panel-keep-status';
+/** Follow-up 26 — a site's line saying a tab of it went to a sign-in page. */
+export const SIDE_PANEL_KEEP_SIGNED_OUT_ATTR = 'data-recued-side-panel-keep-signed-out';
+/** Follow-up 29 — a site's line saying it signed the owner out about as long after they signed in twice. */
+export const SIDE_PANEL_KEEP_LASTED_ATTR = 'data-recued-side-panel-keep-lasted';
 export const SIDE_PANEL_KEEP_FIELD_ATTR = 'data-recued-side-panel-keep-field';
 export const SIDE_PANEL_KEEP_ADD_ATTR = 'data-recued-side-panel-keep-add';
 export const SIDE_PANEL_KEEP_MESSAGE_ATTR = 'data-recued-side-panel-keep-message';
+/** D-347 follow-up 30 — the Undo in place of a site just removed (value = the site): from the list of sites never
+ *  used, and from Keep signed in. */
+export const SIDE_PANEL_SITES_UNDO_ATTR = 'data-recued-side-panel-sites-undo';
+export const SIDE_PANEL_KEEP_UNDO_ATTR = 'data-recued-side-panel-keep-undo';
 
 export type SectionId =
   | 'server-status'
@@ -570,6 +588,58 @@ const actionButton = (
   return button;
 };
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** D-347 follow-up 30 — a listed site's Remove, an × where the word took a 65 px button: what it does is its name and
+ *  its tooltip. Drawn in the text's colour (`currentColor`), so it follows dark mode and Windows' forced colours. A
+ *  test's DOM without SVG gets the button alone. */
+const removeButton = (
+  doc: Document,
+  attr: [string, string],
+  label: string,
+  action: (() => void | Promise<void>) | undefined,
+): HTMLButtonElement => {
+  const button = actionButton(doc, '', 'sites-remove', attr, action);
+  button.setAttribute('aria-label', label);
+  button.setAttribute('title', label);
+  if (typeof doc.createElementNS === 'function') {
+    const icon = doc.createElementNS(SVG_NS, 'svg');
+    for (const [name, value] of Object.entries({ viewBox: '0 0 12 12', width: '12', height: '12', fill: 'none',
+      stroke: 'currentColor', 'stroke-width': '1.5', 'stroke-linecap': 'round', 'aria-hidden': 'true', focusable: 'false' })) {
+      icon.setAttribute(name, value);
+    }
+    const cross = doc.createElementNS(SVG_NS, 'path');
+    cross.setAttribute('d', 'M2.5 2.5l7 7M9.5 2.5l-7 7');
+    icon.appendChild(cross);
+    button.appendChild(icon);
+  }
+  return button;
+};
+
+/** D-347 follow-up 30 — where a site just removed stood: what its removal did, and Undo, which puts it back there.
+ *  Its Undo sits where the × was, so a second click of a double click puts the site back rather than removing the
+ *  site below it. `id` names the line the Undo's description reads. */
+const undoRow = (
+  doc: Document,
+  id: string,
+  said: string,
+  attr: [string, string],
+  action: (() => void | Promise<void>) | undefined,
+): HTMLElement => {
+  const row = doc.createElement('div');
+  row.className = 'sites-row sites-undo';
+  const text = doc.createElement('span');
+  text.className = 'sites-name';
+  text.setAttribute('id', id);
+  text.textContent = said;
+  row.appendChild(text);
+  const undo = actionButton(doc, 'Undo', 'sites-button', attr, action);
+  undo.setAttribute('aria-label', `Undo removing ${attr[1]}`);
+  undo.setAttribute('aria-describedby', id);
+  row.appendChild(undo);
+  return row;
+};
+
 /** D-335 slice G — the sites this Bridge may use, and the owner's list of
  *  sites Recued must never use. The grant is Chrome's own permission; the
  *  list lives in this browser (`permissions/site-grants.ts`). */
@@ -635,7 +705,13 @@ export const renderSitesSection = (
     none.textContent = 'No sites listed. A site here, and every page under it, is never read or acted on.';
     list.appendChild(none);
   }
-  for (const site of sites.blocked) {
+  // Follow-up 30 — the site just removed, with its Undo, where it stood.
+  const removed = sites.removed;
+  const undo = removed === undefined ? undefined : undoRow(doc, 'sites-undo-said',
+    `Removed ${removed.site}. Your AI may use it again.`, [SIDE_PANEL_SITES_UNDO_ATTR, removed.site],
+    handlers.onUndoRemoveBlocked);
+  for (const [index, site] of sites.blocked.entries()) {
+    if (undo !== undefined && index === removed!.index) list.appendChild(undo);
     const row = doc.createElement('div');
     row.className = 'sites-row';
     row.setAttribute(SIDE_PANEL_SITES_ROW_ATTR, site);
@@ -643,12 +719,11 @@ export const renderSitesSection = (
     name.className = 'sites-name';
     name.textContent = site;
     row.appendChild(name);
-    const remove = actionButton(doc, 'Remove', 'sites-button', [SIDE_PANEL_SITES_REMOVE_ATTR, site],
-      handlers.onRemoveBlocked ? () => handlers.onRemoveBlocked!(site) : undefined);
-    remove.setAttribute('aria-label', `Remove ${site}`);
-    row.appendChild(remove);
+    row.appendChild(removeButton(doc, [SIDE_PANEL_SITES_REMOVE_ATTR, site], `Remove ${site}`,
+      handlers.onRemoveBlocked ? () => handlers.onRemoveBlocked!(site) : undefined));
     list.appendChild(row);
   }
+  if (undo !== undefined && removed!.index >= sites.blocked.length) list.appendChild(undo);
 
   const message = doc.createElement('p');
   message.className = 'sites-message';
@@ -696,17 +771,6 @@ export const renderSitesSection = (
   return section;
 };
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-/** A moment as this computer's clock shows it, `HH:MM`. */
-const clockAt = (at: number): string => {
-  const when = new Date(at);
-  return `${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
-};
-/** Days as a person writes them: `Mon–Fri` for a run of three or more, else each. */
-const daysSaid = (days: readonly number[]): string => {
-  const run = days.length >= 3 && days.every((day, i) => i === 0 || day === days[i - 1]! + 1);
-  return run ? `${DAY_NAMES[days[0]!]!}–${DAY_NAMES[days.at(-1)!]!}` : days.map((day) => DAY_NAMES[day]!).join(', ');
-};
 const keepWindowSaid = (window: KeepSignedInWindow | undefined): string => (window === undefined ? 'always'
   : 'until' in window ? `until ${clockAt(window.until)}` : `${daysSaid(window.days)}, ${window.from}–${window.to}`);
 
@@ -722,11 +786,18 @@ const renderKeepSignedInCard = (doc: Document, sites: SidePanelSitesState, handl
   card.appendChild(heading);
   const explain = doc.createElement('p');
   explain.className = 'sites-explain';
-  explain.textContent = 'For a site that signs you out when you are idle. While a tab shows it, the Bridge refreshes it '
-    + 'every few minutes: never while Recued is acting in the browser, and never a tab you are using. Pick fewer minutes '
-    + 'than the site lets you stay idle, since a refresh can come a little late.';
+  explain.textContent = 'For a site that signs you out when you are idle. While a tab shows it, the Bridge keeps the tab '
+    + 'from being put to sleep and refreshes it every few minutes: never while Recued is acting in the browser, and never '
+    + 'a tab you are using. Pick fewer minutes than the site lets you stay idle, since a refresh can come a little late. '
+    + 'No refresh helps a site that signs you out a set time after you signed in, whatever you do there: when a site '
+    + 'signs you out anyway, it says so here, with how long after you signed in.';
   card.appendChild(explain);
-  for (const { entry, status } of rows) {
+  // Follow-up 30 — the site just removed, with its Undo, where it stood: Undo puts it back with its settings.
+  const removed = sites.keep_removed;
+  const undo = removed === undefined ? undefined : undoRow(doc, 'keep-undo-said',
+    `Stopped keeping ${removed.site} signed in.`, [SIDE_PANEL_KEEP_UNDO_ATTR, removed.site], handlers.onUndoRemoveKeep);
+  for (const [index, { entry, status }] of rows.entries()) {
+    if (undo !== undefined && index === removed!.index) card.appendChild(undo);
     const row = doc.createElement('div');
     row.className = 'sites-row';
     row.setAttribute(SIDE_PANEL_KEEP_ROW_ATTR, entry.site);
@@ -734,16 +805,32 @@ const renderKeepSignedInCard = (doc: Document, sites: SidePanelSitesState, handl
     name.className = 'sites-name';
     name.textContent = entry.site;
     row.appendChild(name);
-    const remove = actionButton(doc, 'Remove', 'sites-button', [SIDE_PANEL_KEEP_REMOVE_ATTR, entry.site],
-      handlers.onRemoveKeep ? () => handlers.onRemoveKeep!(entry.site) : undefined);
-    remove.setAttribute('aria-label', `Stop keeping ${entry.site} signed in`);
-    row.appendChild(remove);
+    row.appendChild(removeButton(doc, [SIDE_PANEL_KEEP_REMOVE_ATTR, entry.site], `Stop keeping ${entry.site} signed in`,
+      handlers.onRemoveKeep ? () => handlers.onRemoveKeep!(entry.site) : undefined));
     card.appendChild(row);
     const how = doc.createElement('p');
     how.className = 'sites-explain';
     how.textContent = `Every ${String(entry.every_minutes)} minute${entry.every_minutes === 1 ? '' : 's'}, `
       + `${entry.mode === 'session' ? 'keeping the session' : 'reloading the page'}, ${keepWindowSaid(entry.window)}.`;
     card.appendChild(how);
+    // Follow-up 29 — twice signed out about as long after the owner signed in: said under how it is kept, which it
+    // speaks to, while it is listed.
+    const lasted = entry.off === true ? undefined : lastedSaid(status?.lasted, entry.mode);
+    if (lasted !== undefined) {
+      const note = doc.createElement('p');
+      note.className = 'sites-explain';
+      note.setAttribute(SIDE_PANEL_KEEP_LASTED_ATTR, entry.site);
+      note.textContent = lasted;
+      card.appendChild(note);
+    }
+    // Follow-up 26 — a tab of it went to a sign-in page: said above what was last done, while one is still there.
+    if (entry.off !== true && status?.signed_out !== undefined) {
+      const out = doc.createElement('p');
+      out.className = 'sites-explain sites-signed-out';
+      out.setAttribute(SIDE_PANEL_KEEP_SIGNED_OUT_ATTR, entry.site);
+      out.textContent = `${clockAt(status.signed_out.at)}: ${status.signed_out.said}`;
+      card.appendChild(out);
+    }
     const said = doc.createElement('p');
     said.className = 'sites-explain';
     said.setAttribute(SIDE_PANEL_KEEP_STATUS_ATTR, entry.site);
@@ -752,6 +839,7 @@ const renderKeepSignedInCard = (doc: Document, sites: SidePanelSitesState, handl
         + `${status?.next_at !== undefined ? ` Next at ${clockAt(status.next_at)}.` : ''}`;
     card.appendChild(said);
   }
+  if (undo !== undefined && removed!.index >= rows.length) card.appendChild(undo);
 
   const message = doc.createElement('p');
   message.className = 'sites-message';
@@ -842,6 +930,11 @@ const renderKeepSignedInCard = (doc: Document, sites: SidePanelSitesState, handl
     // The timer would leave it alone (follow-up 20): said now, not at its first refresh.
     if (isOnBlockedSite(`https://${host}/`, sites.blocked)) {
       say(`${host} is on your list of sites never to use, so the Bridge leaves it alone.`);
+      return;
+    }
+    // Follow-up 23 — the timer leaves a Chrome Web Store page alone in either way of refreshing: said now.
+    if (isOnChromeWebStore(`https://${host}/`)) {
+      say(KEEP_SIGNED_IN_WEB_STORE_SAID);
       return;
     }
     const minutes = Number(value(every));

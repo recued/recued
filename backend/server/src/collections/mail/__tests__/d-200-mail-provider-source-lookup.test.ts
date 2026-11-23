@@ -12,6 +12,7 @@ import {
 } from '../gmail-provider.js';
 import {
   createGraphProvider,
+  GRAPH_ATTACHMENT_ITEM_OVERHEAD_MAX,
   GRAPH_SEND_SCOPE,
   type GraphProviderConfig,
 } from '../graph-provider.js';
@@ -522,6 +523,73 @@ describe('D-200 Graph Sent source lookup', () => {
       },
     });
     expect(calls).toHaveLength(4);
+  });
+
+  // ⛔ 2026-11-17: Graph's `size` for an attachment is the stored item, not the file. Live on
+  // Outlook.com, files of 7,000,000, 3,000,000 and 1,000,000 bytes read 7,000,117, 3,000,117 and
+  // 1,000,166. The test above gives Graph the file's own size, which Graph never does, so an Outlook
+  // send claimed by its one file never matched, and nothing here could say so.
+  const graphSentWith = (attachment: { size: number; bytes: Buffer }) => {
+    const calls: string[] = [];
+    const fetcher: HttpFetcher = async (url) => {
+      calls.push(url);
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith('/mailFolders/sentitems/messages')) return response(200, { value: [{ id: 'graph-sent-1' }] });
+      if (parsed.pathname.endsWith('/me/messages/graph-sent-1')) {
+        return response(200, {
+          id: 'graph-sent-1', subject: SUBJECT, internetMessageId: '<graph-sent-1@example.test>',
+          internetMessageHeaders: [{ name: MAIL_RECONCILIATION_ID_HEADER, value: RECONCILIATION_ID }],
+          toRecipients: [{ emailAddress: { address: RECIPIENT } }], hasAttachments: true,
+          sentDateTime: new Date(SENT_AT).toISOString(),
+        });
+      }
+      const item = { '@odata.type': '#microsoft.graph.fileAttachment', id: 'graph-attachment-1', name: 'document.pdf',
+        contentType: 'application/pdf', size: attachment.size };
+      if (parsed.pathname.endsWith('/me/messages/graph-sent-1/attachments')) return response(200, { value: [item] });
+      if (parsed.pathname.endsWith('/me/messages/graph-sent-1/attachments/graph-attachment-1')) {
+        return response(200, { ...item, contentBytes: attachment.bytes.toString('base64') });
+      }
+      return response(404, { error: 'unmapped', url });
+    };
+    const provider = createGraphProvider({
+      slug: 'work',
+      config: () => config,
+      accountStore: makeStore({
+        'graph.work.access_token': 'token',
+        'graph.work.expires_at': String(Date.now() + 3_600_000),
+        'graph.work.refresh_token': 'refresh',
+      }),
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    return { provider, fetchedBytes: () => calls.some((url) => url.includes('/attachments/graph-attachment-1')) };
+  };
+
+  it('matches the file by its bytes, though Graph counts the stored item larger than the file', async () => {
+    const live = graphSentWith({ size: PDF_BYTES.length + 117, bytes: PDF_BYTES });
+    const result = await live.provider.lookupSentByReconciliationId!(QUERY);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: 'matched',
+      match: { source_id: 'graph-sent-1', attachment_sha256: PDF_SHA256, attachment_size_bytes: PDF_BYTES.length },
+    });
+  });
+
+  it('a different file of the same name is not the one claimed: its bytes decide', async () => {
+    const other = Buffer.from('%PDF-1.7\nanother-artifact-xx\n%%EOF', 'utf8');
+    const looked = graphSentWith({ size: other.length + 117, bytes: other });
+    const result = await looked.provider.lookupSentByReconciliationId!(QUERY);
+    expect(result.status).not.toBe('matched');
+    expect(looked.fetchedBytes()).toBe(true);
+  });
+
+  it('an item smaller than the file, or far larger, is ruled out without reading its bytes', async () => {
+    for (const size of [PDF_BYTES.length - 1, PDF_BYTES.length + GRAPH_ATTACHMENT_ITEM_OVERHEAD_MAX + 1]) {
+      const looked = graphSentWith({ size, bytes: PDF_BYTES });
+      const result = await looked.provider.lookupSentByReconciliationId!(QUERY);
+      expect(result.status, String(size)).not.toBe('matched');
+      expect(looked.fetchedBytes(), String(size)).toBe(false);
+    }
   });
 
   it('proves an identity-bearing envelope without enumerating Graph attachments', async () => {

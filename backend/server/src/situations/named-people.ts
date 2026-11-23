@@ -1,6 +1,7 @@
 import { contactExcludedFromProactive, type ContactRecord } from '@recued/contracts';
 import { PROSE_FUNCTION_WORDS } from '@recued/middleware-prompt-cache';
 import type { ContactStore } from '../storage/contact-store.js';
+import { contactIdRunsIn, pickedContacts } from '../chat-picked-contacts.js';
 import type { SituationReadContext } from './query.js';
 
 const nameWords = (value: string): string[] => value.toLocaleLowerCase('en').match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -43,3 +44,28 @@ export const createSituationPeopleFor = (contacts: ContactStore) => (entry: stri
     return tokens.every(token => words.includes(token)) ? idOf(contact) : [];
   }))];
 };
+
+/** D-406 follow-up (2026-11-20) — a contact the owner picked settles its own name (`chat-picked-contacts.ts`).
+ * For a message that carries a picked contact by its exact id, whether a person is that contact's namesake: a
+ * contact reached only through words of a picked contact's name or company, so not one the owner could mean
+ * beside the pick. The situation lookup leaves out such a person's items (`prefetch.ts`). Null when the message
+ * carries no pick, and then nothing changes. A person the owner's own words reach by any other word stays: beside
+ * a picked Priya Raman at Lumen Studio, a Priya Raman at Northgate is her namesake until the message says
+ * "Northgate". */
+export const createSituationPickSettlement = (contacts: ContactStore | undefined) =>
+  (message: string): ((personId: string) => boolean) | null => {
+    if (!contacts) return null;
+    const picked = pickedContacts(contactIdRunsIn(message), contacts);
+    if (!picked.length) return null;
+    const words = (contact: ContactRecord): string[] => [...nameWords(contact.name ?? ''), ...nameWords(contact.company ?? '')];
+    const tokens = new Set(nameWords(message).filter(token => [...token].length >= 2 && !PROSE_FUNCTION_WORDS.has(token)));
+    const explained = new Set(picked.flatMap(words));
+    const pickedIds = new Set(picked.map(contact => contact.contact_id ?? contact.email));
+    return (personId: string): boolean => {
+      if (pickedIds.has(personId)) return false;
+      const contact = contacts.getByContactIdResolved(personId) ?? contacts.get(personId);
+      if (!contact || pickedIds.has(contact.contact_id ?? contact.email)) return false;
+      const reached = words(contact).filter(word => tokens.has(word));
+      return reached.length > 0 && reached.every(word => explained.has(word));
+    };
+  };

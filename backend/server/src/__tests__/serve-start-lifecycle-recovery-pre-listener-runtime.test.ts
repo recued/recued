@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { stripSourceComments } from './helpers/source-guards.js';
 import { composeArchiveRpcDeps } from '../archive/archive-runtime.js';
+import { createApprovalRestartContinuationStore } from '../storage/approval-restart-continuation-store.js';
 
 const bridgeMocks = vi.hoisted(() => ({
   composeServeLifecycle: vi.fn(),
@@ -297,6 +299,29 @@ describe('startLifecycleRecoveryPreListenerRuntime', () => {
       }),
     );
     expect(options.publishSchedulersBundle).toHaveBeenCalledWith(returnedSchedulers);
+  });
+});
+
+describe('D-201 Slice 10BJ — the boot recovery is handed a continuation store over the database (10BF finding 11)', () => {
+  it("builds it over the server's database, so the start's settle reads the rows a held run wrote", async () => {
+    const db = new Database(':memory:');
+    let handed: { approvalRestartContinuations?: ReturnType<typeof createApprovalRestartContinuationStore> } = {};
+    bridgeMocks.composeServeLifecycle.mockResolvedValue({ tag: 'lifecycle' });
+    bridgeMocks.startBootRecoveryAndAdapters.mockImplementation(async (options) => { handed = options; });
+    bridgeMocks.startPreListenerRuntime.mockResolvedValue({ actualPort: 1, runtime: { schedulersBundle: {}, vendorRefs: {} } });
+    const options = makeOptions();
+    await startLifecycleRecoveryPreListenerRuntime({
+      ...options,
+      lifecycle: { ...options.lifecycle, db } as unknown as StartLifecycleRecoveryPreListenerRuntimeOptions['lifecycle'],
+    });
+    // Undone, the boot recovery had no store, and the settle never ran.
+    expect(handed.approvalRestartContinuations).toBeDefined();
+    const row = {
+      checkpoint_id: 'ckpt-1', run_id: 'run-1', gated_step_id: 'remove', value: null, later: [],
+    };
+    handed.approvalRestartContinuations!.put(row);
+    expect(createApprovalRestartContinuationStore(db).get('ckpt-1')).toMatchObject({ run_id: 'run-1' });
+    db.close();
   });
 });
 

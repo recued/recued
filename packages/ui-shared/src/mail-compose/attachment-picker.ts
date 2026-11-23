@@ -65,8 +65,8 @@ export interface MailComposeAttachmentPickerProps {
 }
 
 /** Bytes → a short human string. Binary units (KiB semantics, KB label) to
- *  match how the cap itself is expressed (3 * 1024 * 1024). Whole numbers
- *  below MB, one decimal above — enough to tell 2.9 MB from 3.1 MB, which is
+ *  match how the cap itself is expressed (25 * 1024 * 1024). Whole numbers
+ *  below MB, one decimal above — enough to tell 24.9 MB from 25.1 MB, which is
  *  exactly the distinction the cap mark turns on. */
 export const humanFileSize = (bytes: number): string => {
   if (!Number.isFinite(bytes) || bytes < 0) return '—';

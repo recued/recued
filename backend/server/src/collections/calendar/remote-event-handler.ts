@@ -14,7 +14,23 @@ import {
 import { normalizeCalendarMutationPatch } from './mutation-patch.js';
 import { callCalendarAdapter } from './errors.js';
 
-const fields: Array<keyof CalendarEventPatch> = ['summary', 'description', 'location', 'start_at', 'end_at'];
+const fields: Array<keyof CalendarEventPatch> = ['summary', 'description', 'location', 'start_at', 'end_at', 'marked_private', 'alert_minutes'];
+/** Whether the event already says what the patch would write: a lost acknowledgement recovered as a read. The private
+ *  marking and the one alert are read from the event as stored (`marked_private`, `reminders`).
+ *  ⛔ Never from the snapshot the owner reviews (`CalendarEventDetails`): it carries neither, so read there "not private"
+ *  and "no alert" always looked written, and taking a marking or an alert away was never sent to Google, Outlook or
+ *  CalDAV (found live on Outlook, 2026-11-21, by D-407 slice 4a.2). */
+const calendarPatchApplied = (details: object, stored: Pick<CanonicalEvent, 'marked_private' | 'reminders'>, patch: CalendarEventPatch): boolean => {
+  const event = details as Record<string, unknown>;
+  return Object.entries(patch).every(([key, value]) => {
+    if (key === 'marked_private') return (stored.marked_private === true) === value;
+    if (key === 'alert_minutes') {
+      const reminders = stored.reminders ?? [];
+      return value === null ? reminders.length === 0 : reminders.length === 1 && reminders[0]!.minutes === value;
+    }
+    return event[key] === value;
+  });
+};
 /** Owner edits and invitation responses share one in-process event write fence. */
 export const ownerCalendarWrites = new WeakMap<CalendarCollection, Set<string>>();
 const changed = (): never => { throw new RpcError('resource_changed', 'This event or calendar changed. Your draft is kept. Check the saved event before continuing.', 409); };
@@ -164,7 +180,7 @@ export const updateOwnerCalendarEvent = async (deps: CalendarDispatcherDeps, inp
     if (!fresh.context || !fresh.view.provider_verified) throw new RpcError('upstream_error', fresh.view.refresh_error ?? 'The event could not be verified.', 502);
     const row = collection.table.get(input.source_id)!;
     // Recover a lost acknowledgement as a read, without notifying guests again.
-    if (Object.entries(patch).every(([key, value]) => fresh.view.event[key as keyof CalendarEventPatch] === value)) return fresh.view;
+    if (calendarPatchApplied(fresh.view.event, row.event, patch)) return fresh.view;
     if (before.resource_version !== input.expected_version || fresh.view.resource_version !== input.expected_version) changed();
     if (!fresh.view.editable) throw new RpcError('forbidden', fresh.view.read_only_reason!, 403);
     if (Object.keys(patch).some(key => !fresh.view.editable_fields?.includes(key as keyof CalendarEventPatch))) {

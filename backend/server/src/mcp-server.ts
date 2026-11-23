@@ -1,4 +1,5 @@
 import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
+import { stoppedCount } from './stop-allowing.js';
 import { liftBrowserImages } from './mcp-browser-images.js';
 import { withMcpToolProgress, type McpProgressSink } from './mcp-tool-progress.js';
 /** MCP server — expose recued-server as tools over stdio.
@@ -17,8 +18,8 @@ import { withMcpToolProgress, type McpProgressSink } from './mcp-tool-progress.j
  *  - recued_runRecipe       — execute (by id or inline)
  *  - recued_stopRecipe      — stop this token's own attended run
  *  - recued_getAudit        — recent run history
- *  - recued_saveRecipe      — persist an MCP-authored recipe to the server's
- *                             store (extension picks it up on next pair-sync)
+ *  - recued_saveRecipe      — save an MCP-authored recipe as one of the owner's
+ *                             own (publisher `kitchen`), listed on their Recipes page
  *  - recued_dataTimeline    — chronological feed across raw collections +
  *                             (D-226) plus per-pack `rollups` for a contact —
  *                             standing aggregates, not feed entries +
@@ -37,10 +38,12 @@ import {
   runCanonicalSearchFanout,
 } from './canonical-op-tool-catalog.js';
 import { buildCanonicalOpRecipe, CANONICAL_OP_CONNECTION_VAR } from '@recued/recipes';
-import { CANONICAL_OP_TOOL_PREFIX, type ApprovalValueLabels, type HeldCallNotices } from '@recued/contracts';
+import { CANONICAL_OP_TOOL_PREFIX, KERNEL_AUTHOR, type ApprovalValueLabels, type HeldCallNotices } from '@recued/contracts';
 import { deriveChannelSessionId, planApproval } from '@recued/gateway';
 import { resolveConnectionVendor } from './storage/connection-store.js';
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
+import { withContractDispatchReservation } from './contract-dispatch-reservation.js';
+import type { ContractUseTake } from './policy-contract-overlay.js';
 import {
   approvalElsewhereMessage,
   HELD_FOR_APPROVAL_MESSAGE,
@@ -67,6 +70,11 @@ import {
 } from './raw-op-tool-catalog.js';
 import { executionSourceContractId, isExchangeEnvelopeKey } from '@recued/contracts';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
+import { browserFlows as processBrowserFlows } from './bridges/browser-flow-record.js';
+import { browserJobs as processBrowserJobs, browserJobSession } from './bridges/browser-job-registry.js';
+import { checkBrowserJobLabels, parseBrowserJobLabels } from './bridges/browser-job-labels.js';
+import { KITCHEN_DRAFT_FROM_JOB_TOOL, NO_ACTIONS_JOB_ISSUE } from './kitchen-draft-from-job.js';
+import { compilePlan } from './plan-compiler.js';
 import { PEER_RECEIVE_ANSWER_TOOL, PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
 import { checkFormContract, type FormDefinitionReader } from './form-contract-gate.js';
 import {
@@ -119,6 +127,7 @@ import {
   KERNEL_OP_REGISTRY,
   isGrantableKernelOp,
   kernelOpForMcpTool,
+  preapprovalCallerOf,
 } from '@recued/contracts';
 import {
   AUTHOR_DEFAULT_READ_GRANT_CHECKER,
@@ -227,6 +236,9 @@ const INGREDIENT_TOOL_PREFIX = 'recued_ingredient_';
  *  operations). Gate A keys on this full name. */
 const CUSTOMER_STATUS_TOOL_NAME = 'recued_customerStatus';
 const MCP_STOP_RECIPE_TOOL_NAME = 'recued_stopRecipe';
+/** D-402 slice F4 (§7.9) — an AI app gives up what it may do with a recipe without asking: its own
+ *  permissions only, its contract from the call's source, never an argument. */
+const MCP_STOP_ALLOWING_TOOL_NAME = 'recued_stopAllowing';
 const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
 /** Registry tools the MCP wire does not carry, each with the wire tool that does
  *  the same job. `recipe.stop` is chat's stop (D-259 § 7.4.3): it calls the same
@@ -238,6 +250,8 @@ const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
  *  out, as they do Tier 3. */
 const MCP_WIRE_HIDDEN_REGISTRY_TOOLS: ReadonlyMap<string, string> = new Map([
   ['recipe.stop', MCP_STOP_RECIPE_TOOL_NAME],
+  // D-402 slice F4 — the owner's chat's "Stop allowing" is the owner's alone; an AI app gives up its own.
+  ['recipe.stop_allowing', MCP_STOP_ALLOWING_TOOL_NAME],
 ]);
 /** True for a registry entry the MCP wire lists, calls and offers for a grant. */
 export const isMcpWireRegistryTool = (entry: { readonly name: string; readonly tier: number }): boolean =>
@@ -282,6 +296,7 @@ const mcpWireHiddenToolRefusal = (name: string): string | undefined => {
 const MCP_FREE_CUSTOMER_TOOL_NAMES: ReadonlySet<string> = new Set([
   MCP_ACTION_STATUS_TOOL_NAME,
   MCP_STOP_RECIPE_TOOL_NAME,
+  MCP_STOP_ALLOWING_TOOL_NAME,
   CUSTOMER_STATUS_TOOL_NAME,
   'recued_listRecipes',
   'recued_getRecipe',
@@ -409,6 +424,20 @@ const resolveMcpDoorScopeRestrictions = (deps: McpDeps): ReadonlyArray<string> =
   deps.contractOverlay?.resolveContractScopeRestrictions?.(buildMcpExecutionSource(deps))
   ?? EMPTY_SCOPE_RESTRICTIONS;
 
+/** A new request must pass both transport admission and current contract
+ *  liveness, including when this call meters no use. An earlier attempt's
+ *  reservation cannot supply authority for a new request. */
+const isBoundMcpContractLive = (deps: McpDeps): boolean => {
+  const id = deps.boundContractId;
+  if (id === undefined) return true;
+  if (deps.boundContractActive !== true) return false;
+  const overlay = deps.contractOverlay;
+  // Older embeddings without a live resolver retain their transport snapshot.
+  // The production resolver always supplies isContractLive.
+  if (overlay?.isContractLive === undefined) return true;
+  return withContractDispatchReservation(undefined, () => overlay.isContractLive(id));
+};
+
 /** D-187 AMENDMENT — resolve the door's per-dispatch READ-GRANT checker (topic +
  *  raw-collection reads as unified `contract_grant` entries) for THIS dispatch, off the
  *  bound contract through the overlay. Replaces the retired
@@ -416,14 +445,40 @@ const resolveMcpDoorScopeRestrictions = (deps: McpDeps): ReadonlyArray<string> =
  *  the native read tools query {@link ReadGrantChecker.isTopicReadGranted} /
  *  `isCollectionReadGranted` instead of AND-ing `isTopicMcpPrivate` + the scope-fence.
  *
- *  Author-default-only (every entry at its registry author default — the scope-fence ∧
+ *  Without a reservation, author-default-only (every entry at its registry author default — the scope-fence ∧
  *  the `mcp_exposed` hint) whenever no overlay is wired, the bound contract is absent /
  *  inactive, or it holds no grant rows — incl. the owner's unbound stdio / canonical-CLI
  *  path (synthetic token id, no `contract_definition` row), which reads author defaults
  *  exactly as the pre-D-187 empty `mcp_topic_visibility` table did. */
-const resolveMcpDoorReadGrantChecker = (deps: McpDeps): ReadGrantChecker =>
-  deps.contractOverlay?.resolveReadGrantChecker?.(buildMcpExecutionSource(deps))
-  ?? AUTHOR_DEFAULT_READ_GRANT_CHECKER;
+type NativeMcpDispatchUse = Extract<ContractUseTake, { kind: 'taken' }>;
+
+const resolveMcpDoorReadGrantChecker = (
+  deps: McpDeps,
+  dispatchUse?: NativeMcpDispatchUse,
+): ReadGrantChecker => {
+  const source = buildMcpExecutionSource(deps);
+  if (dispatchUse === undefined) {
+    return deps.contractOverlay?.resolveReadGrantChecker?.(source)
+      ?? AUTHOR_DEFAULT_READ_GRANT_CHECKER;
+  }
+  // Credit only this call's already-taken use during each synchronous read
+  // authorization. Re-resolve current grants and hard lifecycle checks; an
+  // invalidated reservation denies rather than falling back to owner defaults.
+  // The context ends before any native loader, provider or nested dispatch runs.
+  const check = (admit: (checker: ReadGrantChecker) => boolean): boolean =>
+    withContractDispatchReservation(dispatchUse.token, () => {
+      const overlay = deps.contractOverlay;
+      if (executionSourceContractId(source) !== dispatchUse.contract_id
+        || overlay?.isContractLive(dispatchUse.contract_id) !== true) return false;
+      const checker = overlay.resolveReadGrantChecker?.(source);
+      return checker !== undefined && admit(checker);
+    });
+  return {
+    isVerbOpGranted: op => check(checker => checker.isVerbOpGranted(op)),
+    isCollectionReadGranted: collection => check(checker => checker.isCollectionReadGranted(collection)),
+    isTopicReadGranted: topic => check(checker => checker.isTopicReadGranted(topic)),
+  };
+};
 
 /** D-234 § 234.4 — does this token's per-tool checklist admit `tool_name`?
  *
@@ -548,9 +603,11 @@ const cliReachableSlugsForSnapshot = (
  *  `allowed_tools` from the manifest registry + the existing inbound-
  *  token grants gate. Two cases:
  *
- *  - Stdio transport (single-user owner, no `inboundTokenAuthorize`):
- *    snapshot admits every loaded manifest slug. Matches the pre-
- *    P2.C semantics of "owner has full server-wide access".
+ *  - No `inboundTokenAuthorize` (stdio, or the owner's key paired as a
+ *    CLI client): snapshot admits NO slug (D-228 slice 1, "no authorizer
+ *    means no catalog", below). This said "every loaded manifest slug",
+ *    the pre-D-228 rule, until 2026-11-21: such a caller still lists every
+ *    tool but runs no recipe step, and an app connects with a contract key.
  *  - HTTP / WS transports with `inboundTokenAuthorize`: snapshot
  *    admits only slugs the per-token checklist authorises (Settings
  *    → MCP Tokens). Mirrors the substrate-level inbound-token
@@ -747,42 +804,30 @@ const buildMcpContractSnapshot = (
   });
 };
 
-/** D-171 slice-2c follow-on #1 — record ONE contract use for an inbound MCP
- *  tool call that does NOT flow through `handleExecute` (the static `recued_*`
- *  read tools + `recued_saveRecipe`). The execute-backed paths (registry
- *  dispatch, `recued_ingredient_*`, `recued_runRecipe`) already `recordUse` per
- *  ingredient dispatch inside `handleExecute`, so the caller MUST exclude them
- *  to avoid double-counting (they also return before the static switch). Without
- *  this, a bound usage cap (`max_uses`, D-171 slice 3b) would never decrement
- *  for the direct-return native tools the follow-on newly made grantable — a cap
- *  bypass for sensitive reads + the recipe-store write.
+/** Admit one contract use for a direct-return native MCP tool. Execute-backed
+ *  routes and status/stop tools remain excluded at the call site. Checklist and
+ *  approval gates run first; an inactive, in-scope contract must then refuse
+ *  before the native body, even if the transport's liveness snapshot was true.
  *
- *  No-op for an unbound token (the synthetic per-token `contract_id` names no
- *  `contract_definition`, so `shouldMeterUse` is false) or when no overlay is wired
- *  (for example a db-less harness). Mirrors `handleExecute`'s recordUse condition
- *  (`shouldMeterUse(...)` → `recordUse`) so the two layers count consistently;
- *  out-of-scope likewise falls back to the per-token grant gate, matching the
- *  execute path (which also does NOT fail-closed on out-of-scope — metering only
- *  fires in-scope).
- *
- *  Enforcement boundary: this meters the cap and — together with gate A's
- *  `boundContractDead` short-circuit — honors the grant / usage-cap / expiry /
- *  revoke limits the D-171 mcp door expresses. The op-risk × stage-trust APPROVAL
- *  decision (per-tool) is applied separately by {@link admitMcpDirectDispatch},
- *  called BEFORE this at the dispatch site — so recordUse only fires for an admitted
- *  direct-return call (a denied / approval-required tool refuses before metering). */
-const recordMcpDirectDispatchUse = (deps: McpDeps, toolName: string): void => {
+ *  The atomic take uses the existing metering scope: unbound and out-of-scope
+ *  calls remain unmetered. Keep the charge at the previous recordUse point,
+ *  including when the native body later returns an error. */
+const admitMcpDirectDispatchUse = (deps: McpDeps, toolName: string): ContractUseTake => {
   const overlay = deps.contractOverlay;
-  if (!overlay) return;
+  if (!overlay) return { kind: 'unmetered' };
   const source = buildMcpExecutionSource(deps);
-  // Grant-foundation slice 2a — no op id threaded: a direct-return NATIVE MCP
-  // tool (`recued_*`) is not a catalog op and carries no `operations`-map key,
-  // so an op-scoped standing contract fails closed here (`shouldMeterUse` false →
-  // the per-token grant gate decides), exactly as before this slice. Mirrors the
-  // omission in `admitMcpDirectDispatch` so admit + recordUse stay consistent.
+  if (overlay.takeDispatchUse !== undefined) {
+    const take = overlay.takeDispatchUse(source, toolName);
+    if (take.kind === 'refused') return take;
+    overlay.settleDispatchUse?.(take, true);
+    return take;
+  }
+  // Older overlay implementations and test doubles retain their existing meter.
+  // The production resolver always implements the atomic take above.
   if (overlay.shouldMeterUse(source, toolName)) {
     overlay.recordUse(source);
   }
+  return { kind: 'unmetered' };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -902,6 +947,14 @@ export const buildIngredientTool = (manifest: IngredientManifest) => ({
 // Tool definitions (6 total)
 // ────────────────────────────────────────────────────────────────
 
+/** 2026-11-22 (the owner) — a recipe `recued_saveRecipe` saves is the owner's own, as if made in Kitchen: the
+ *  publisher Kitchen's `recipe.save` stamps, which is the one Kitchen edits in place (`ownRecipe`); any other
+ *  publisher is copied when the owner saves it there. */
+const SAVED_RECIPE_PUBLISHER = 'kitchen';
+/** The publishers of a stored recipe `recued_saveRecipe` may change: the owner's own (Kitchen's, and the empty one
+ *  the owner's list shows as "local"), and `mcp`, this tool's own before 2026-11-22. A change restamps it `kitchen`. */
+const SAVED_RECIPE_OWN_PUBLISHERS: ReadonlySet<string> = new Set([SAVED_RECIPE_PUBLISHER, '', 'mcp']);
+
 const TOOLS = [
   {
     name: 'recued_listRecipes',
@@ -936,6 +989,23 @@ const TOOLS = [
         config: { type: 'object', description: 'Recipe variable overrides' },
         context: { type: 'object', description: 'Context namespace values (entity_id, page_url, etc.)' },
       },
+    },
+  },
+  {
+    name: MCP_STOP_ALLOWING_TOOL_NAME,
+    description:
+      'Give up what this app may do with a recipe without asking the user: every "Always" and other standing permission the user gave this app for the recipe, ended at once. Use it when the user asks you to check with them again before running it. It ends only this app\'s own permissions, never asks, and takes effect at once: a run already going asks at its next action.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recipe_id: {
+          type: 'string',
+          maxLength: 256,
+          description: 'The recipe, as `<publisher>/<slug>`.',
+        },
+      },
+      required: ['recipe_id'],
+      additionalProperties: false,
     },
   },
   {
@@ -1076,12 +1146,11 @@ const TOOLS = [
   },
   {
     name: 'recued_saveRecipe',
-    description: 'Persist a recipe into the server\'s recipe store. Useful for MCP-authored recipes — you generate the recipe JSON, validate it via runRecipe, then save it here so the paired Recued extension can pick it up on its next pair-sync and offer the user a "Keep this recipe?" prompt.',
+    description: 'Save a recipe on this Recued server as one of the owner\'s own recipes, as if they had made it in Kitchen. It is on the owner\'s Recipes page at once, where they can open, change or delete it, and it runs by id with recued_runRecipe. You can try it first by running it inline with recued_runRecipe. A recipe_id already used by a recipe that is not the owner\'s own is refused: choose another. metadata.author "recued" is refused too: it marks Recued\'s built-in recipes.',
     inputSchema: {
       type: 'object',
       properties: {
         recipe: { type: 'object', description: 'Full recipe definition' },
-        publisher_id: { type: 'string', description: 'Publisher id (default: "mcp")' },
       },
       required: ['recipe'],
     },
@@ -1177,6 +1246,50 @@ const TOOLS = [
       required: ['email'],
     },
   },
+  // D-402 slice A2 — an AI app's job: the calls it makes, kept together so they can be made into a
+  // recipe the owner runs again. Reads: starting or ending one changes nothing of the owner's.
+  {
+    name: 'recued_startJob',
+    description: 'Start recording a job: the recipe and browser calls you make next, kept together on this Recued server so they can be made into a recipe the owner runs again without you. Call it before those calls. Until you call recued_endJob or an hour passes, Recued records each recipe call you make: the recipe, its arguments, how it ended, the browser it ran in, and what it read. Nothing typed into a password, sign-in code or card field is recorded, and nothing leaves this server. You have one job at a time: starting another ends this one and drops what it recorded. To make the job into a recipe, end it with recued_endJob and draft. Returns the job_id.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  // D-402 slice A5 — ending a job with `draft` keeps it to be made into a recipe: the labels are
+  // checked here, at once, so one the record contradicts never reaches the owner's approval.
+  {
+    name: 'recued_endJob',
+    description: `End the job you started with recued_startJob. Without draft, what it recorded is dropped. To make it into a recipe, pass draft with where its values came from, then call ${KITCHEN_DRAFT_FROM_JOB_TOOL} with the job_id. Recued checks each label against what it recorded and refuses one it contradicts, with the reason; the job then stays open, so correct it and call again. Once the labels pass, the job is kept for its draft for a day and records no more calls.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        draft: {
+          type: 'object',
+          description: 'Keep the job to be made into a recipe. Leave it out to drop the job.',
+          properties: {
+            title: { type: 'string', description: 'The recipe\'s name.' },
+            inputs: { type: 'array', description: 'Values the owner gave you in their request. The recipe asks for each at every run.',
+              items: { type: 'object', additionalProperties: false, required: ['name', 'value'], properties: {
+                name: { type: 'string', description: 'A name of letters, digits and underscores.' },
+                value: { type: 'string', description: 'The value as you used it in this job.' },
+                label: { type: 'string', description: 'How the owner is asked for it.' } } } },
+            reads: { type: 'array', description: 'Values you read in this job and then used.',
+              items: { type: 'object', additionalProperties: false, required: ['value'], properties: {
+                value: { type: 'string' }, name: { type: 'string' } } } },
+            judgements: { type: 'array', description: 'Where you chose with judgement.',
+              items: { type: 'object', additionalProperties: false, required: ['kind', 'criterion'], properties: {
+                kind: { type: 'string', enum: ['pick', 'extract', 'write', 'decide'] },
+                chose: { type: 'string', description: 'What you chose: the element\'s text, the text you typed, the option you picked or the value you got. For decide, the text a page showed that you decided on, if any.' },
+                criterion: { type: 'string', description: 'How you chose, in one sentence.' } } } },
+            answer: { type: 'array', description: 'The values your answer gave.',
+              items: { type: 'object', additionalProperties: false, required: ['name', 'value'], properties: {
+                name: { type: 'string', description: 'A name of letters, digits and underscores.' },
+                value: { type: 'string' } } } },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ────────────────────────────────────────────────────────────────
@@ -1209,6 +1322,9 @@ const LEGACY_MCP_META_TOOL_CLASSIFICATION: Readonly<
   recued_enrichmentRead: 'read',
   recued_vectorSimilaritySearch: 'read',
   recued_contactEngagementsList: 'read',
+  // D-402 slice A2 — a job only turns recording on and off for the app's own calls, in memory.
+  recued_startJob: 'read',
+  recued_endJob: 'read',
 };
 
 /** Map an ingredient's `risk_tier` onto the grant-row classification. The
@@ -1333,8 +1449,8 @@ const rawOpContractGrant = (deps: McpDeps, toolName: string): boolean | null => 
  *  - `admit` ⇒ PROCEED.  - `deny` ⇒ REFUSE (unreachable for a native tool; defensive).
  *  - `ask`  ⇒ REFUSE (a synchronous direct-return tools/call can't checkpoint + resume).
  *
- *  The outbound-send LIFT does NOT engage here — it is `user_self`-scoped and the MCP
- *  source is `contracted_user`; native tools are introspection + saveRecipe anyway. */
+ *  No send asks by name here (the outbound-send lift is gone, D-177 §N.15.7); native
+ *  tools are introspection + saveRecipe anyway. */
 /** D-234 § 234.4 — the native tools that carry their OWN approval gate, and so
  *  must not also take {@link admitMcpDirectDispatch}'s.
  *
@@ -1371,6 +1487,8 @@ const rawOpContractGrant = (deps: McpDeps, toolName: string): boolean | null => 
  *  it — only the synchronous-path approval verdict is bypassed. */
 const isSelfGatedNativeMcpTool = (toolName: string): boolean =>
   toolName === MCP_STOP_RECIPE_TOOL_NAME
+  // D-402 slice F4 — giving up its own permissions only removes: never held.
+  || toolName === MCP_STOP_ALLOWING_TOOL_NAME
   || toolName === PEER_RECEIVE_ASK_TOOL
   // D-234 § 234.4 return leg — the SAME argument as the ask door, on the other
   // evidence. `recued_peerAnswer` is `write` under a delegated token's LOW
@@ -1472,6 +1590,7 @@ const admitMcpDirectDispatch = (
  *  this module. */
 export { buildRecipeOpCoverage } from './raw-op-tool-catalog.js';
 import { buildRecipeOpCoverage } from './raw-op-tool-catalog.js';
+import { withTurnDates } from './chat-clock.js';
 
 /** D-182 §8 step 7 — enumerate the installed Tier-P pack ops a door MAY expose
  *  raw, as tool descriptors. Walks the installed-pack inventory via the SAME
@@ -1574,6 +1693,7 @@ export const buildMcpGrantCatalogLegacyEntries = (
     if (
       tool.name === CUSTOMER_STATUS_TOOL_NAME
       || tool.name === MCP_STOP_RECIPE_TOOL_NAME
+      || tool.name === MCP_STOP_ALLOWING_TOOL_NAME
     ) continue;
     entries.push({
       name: tool.name,
@@ -1782,13 +1902,13 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   // that is no longer live (revoked / expired / exhausted) advertises an EMPTY
   // catalog: it can dispatch nothing, so it sees nothing — and the door's
   // configured tool names / descriptions / schemas don't leak to a defunct door.
-  // Keyed on the same deps as the dispatch guard; fail-closed (`!== true` also
-  // empties on an unresolved-liveness bound token). Unbound owner (stdio / CLI,
+  // Uses the same live check as dispatch; an unresolved or denied transport
+  // admission still empties the catalog. Unbound owner (stdio / CLI,
   // `boundContractId` undefined) is unaffected → full catalog. With this guard +
   // the dispatch guard owning liveness, the per-token `inboundTokenAuthorize`
   // callback means ONLY the token's checklist on both axes (the transport no
   // longer collapses it to `() => false` for a dead contract).
-  if (deps.boundContractId !== undefined && deps.boundContractActive !== true) {
+  if (!isBoundMcpContractLive(deps)) {
     // Revocation prevents every NEW business operation, but the authenticated
     // token must still be able to observe how an invocation accepted before
     // revocation settled (normally as a fresh-authority denial). This utility
@@ -1957,6 +2077,12 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
             deps.ownerAdmitAll === true
             || deps.mcpPrincipalActive?.() === true
           );
+      }
+      // D-402 slice F4 — an app's own permissions, under its live contract: no checklist grant, as
+      // giving one up grants nothing.
+      if (t.name === MCP_STOP_ALLOWING_TOOL_NAME) {
+        return deps.stopAllowing !== undefined
+          && (deps.ownerAdmitAll === true || deps.mcpPrincipalActive?.() === true);
       }
       // D-196 customer.status is not part of the inbound token business-tool
       // checklist. It is self-scoped and governed by the customer's contract
@@ -2564,9 +2690,19 @@ const validateMcpSchemaValue = (
   if (Array.isArray(record.enum) && !record.enum.some((candidate) => Object.is(candidate, value))) {
     return `${path} must be one of the declared enum values`;
   }
+  // JSON Schema lets `type` name several types: a value of any one of them is valid. ⛔ A list fell to "unsupported"
+  // below (found live 2026-11-21, D-407): over MCP no task could take a due date (`work.create` / `work.update`
+  // `due_at`, `["string", "number"]`) and no occasion's alert could change (`alert_minutes_before`,
+  // `["integer", "null"]`), whatever was sent, while the chat, which checks its own arguments, took both.
+  if (Array.isArray(record.type)) {
+    if (record.type.some((type) => validateMcpSchemaValue({ ...record, type }, value, path) === null)) return null;
+    return `${path} must be ${record.type.map(String).join(' or ')}`;
+  }
   switch (record.type) {
     case undefined:
       return null;
+    case 'null':
+      return value === null ? null : `${path} must be null`;
     case 'string':
       return typeof value === 'string' ? null : `${path} must be a string`;
     case 'number':
@@ -2639,6 +2775,18 @@ const validateMcpSchemaValue = (
       return `${path} uses an unsupported tool argument schema type`;
   }
 };
+
+/** D-407 (live, 2026-11-21) — a call's arguments as the door dispatches them: a work tool's `due_at` written as the day
+ *  ("2026-11-26") or the day and time on the owner's clock ("2026-11-26T17:00"), which its description asks for, as
+ *  milliseconds — what the chat does on the turn's clock (`withTurnDates`). ⛔ This door never did, so every documented
+ *  `due_at` reached the tool as text and was refused ("`due_at` is the day …"): no AI app could set a deadline. An MCP
+ *  call has no clock of its own here, so the owner's. Done before the hold, so the ask, its hash and the approved run
+ *  carry one instant. */
+export const mcpToolArguments = (name: string, args: Record<string, unknown>, deps: Pick<McpDeps, 'ownerTimeZone'>): Record<string, unknown> =>
+  withTurnDates(name, args, deps.ownerTimeZone?.()) as Record<string, unknown>;
+
+/** The MCP door's check of a tool call's arguments against the tool's advertised schema; null when they hold. */
+export const validateMcpToolArguments = (schema: unknown, args: unknown): string | null => validateMcpSchemaValue(schema, args, 'arguments');
 
 /** Only a completed business result commits seller usage. Agent-facing third
  * states are successful protocol envelopes but consume zero customer units.
@@ -2723,8 +2871,7 @@ const preflightMcpCustomerUsage = (
   if (
     params.name !== MCP_ACTION_STATUS_TOOL_NAME
     && params.name !== MCP_STOP_RECIPE_TOOL_NAME
-    && deps.boundContractId !== undefined
-    && deps.boundContractActive !== true
+    && !isBoundMcpContractLive(deps)
   ) {
     return {
       ok: false,
@@ -2749,6 +2896,13 @@ const preflightMcpCustomerUsage = (
         ok: false,
         result: err('The MCP token for this async action is no longer active.'),
       };
+    }
+  } else if (params.name === MCP_STOP_ALLOWING_TOOL_NAME) {
+    if (!deps.stopAllowing) {
+      return { ok: false, result: err('Giving up permissions is not available on this server.') };
+    }
+    if (deps.ownerAdmitAll !== true && deps.mcpPrincipalActive?.() !== true) {
+      return { ok: false, result: err('The MCP token for this request is no longer active.') };
     }
   } else if (params.name === MCP_STOP_RECIPE_TOOL_NAME) {
     if (!deps.inFlightRegistry) {
@@ -2885,7 +3039,7 @@ const handleToolCall = async (
   params: { name: string; arguments?: Record<string, unknown> },
   deps: McpDeps,
 ): Promise<unknown> => {
-  const args = params.arguments ?? {};
+  let args = params.arguments ?? {};
 
   // D-187 token-lifecycle — bound-contract liveness KILL-SWITCH. The native /
   // static `recued_*` path's structural mirror of `buildMcpContractSnapshot`'s
@@ -2906,12 +3060,13 @@ const handleToolCall = async (
   // guard (empty catalog for a dead contract), so the per-token
   // `inboundTokenAuthorize` callback is now PURELY the token's checklist on both
   // axes — the HTTP transport no longer collapses it to `() => false` for a dead
-  // contract (that conflated "contract dead" with "token grants nothing").
+  // contract (that conflated "contract dead" with "token grants nothing"). This
+  // live check is independent of metering; atomic use admission below still
+  // enforces the budgets of in-scope native calls.
   if (
     params.name !== MCP_ACTION_STATUS_TOOL_NAME
     && params.name !== MCP_STOP_RECIPE_TOOL_NAME
-    && deps.boundContractId !== undefined
-    && deps.boundContractActive !== true
+    && !isBoundMcpContractLive(deps)
   ) {
     return err(
       'The contract bound to this token is no longer live (revoked / expired / exhausted).',
@@ -2937,6 +3092,11 @@ const handleToolCall = async (
       && deps.mcpPrincipalActive?.() !== true
     ) {
       return err('The MCP token for this async action is no longer active.');
+    }
+  } else if (params.name === MCP_STOP_ALLOWING_TOOL_NAME) {
+    if (!deps.stopAllowing) return err('Giving up permissions is not available on this server.');
+    if (deps.ownerAdmitAll !== true && deps.mcpPrincipalActive?.() !== true) {
+      return err('The MCP token for this request is no longer active.');
     }
   } else if (params.name === MCP_STOP_RECIPE_TOOL_NAME) {
     if (!deps.inFlightRegistry) {
@@ -3011,6 +3171,7 @@ const handleToolCall = async (
     // be able to smuggle undeclared arguments through the registry adapter.
     const schemaIssue = validateMcpSchemaValue(registryEntry.arg_schema, args, 'arguments');
     if (schemaIssue) return err(schemaIssue);
+    args = mcpToolArguments(params.name, args, deps);
 
     // Codex P1 fold (Trio #D) — refuse Tier 3 (`connection.mcp.*`)
     // dispatches on the MCP wire even if a stale client holds onto a
@@ -3443,24 +3604,22 @@ const handleToolCall = async (
     }
   }
 
-  // D-171 slice-2c follow-on #1 — every static `recued_*` case below returns
-  // directly (no `handleExecute`, so no per-dispatch `recordUse`), EXCEPT
-  // `recued_runRecipe` which runs a recipe through `handleExecute` (recording
-  // per ingredient dispatch). Record one contract use here for the direct-return
-  // tools so a bound usage cap decrements; exclude `recued_runRecipe` to avoid
-  // double-counting. The registry + `recued_ingredient_*` paths already returned
-  // above (same reason). No-op without a bound active contract.
+  // Admit one contract use for direct-return tools before their native bodies.
+  // Execute-backed routes meter their own dispatches; registry + ingredient
+  // paths already returned above. Keep runRecipe and the status/stop exemptions.
+  let nativeDispatchUse: NativeMcpDispatchUse | undefined;
   if (
     params.name !== 'recued_runRecipe'
     && params.name !== MCP_ACTION_STATUS_TOOL_NAME
     && params.name !== MCP_STOP_RECIPE_TOOL_NAME
+    && params.name !== MCP_STOP_ALLOWING_TOOL_NAME
     && params.name !== CUSTOMER_STATUS_TOOL_NAME
   ) {
     // D-187 — apply the op-risk × stage-trust APPROVAL decision (+ the per-tool ACCESS
-    // allowlist) BEFORE metering or dispatching, so a denied / approval-required tool
-    // refuses here and `recordUse` fires only for an admitted direct-return call.
+    // allowlist) BEFORE taking a use or dispatching, so a denied / approval-required
+    // tool refuses here without consuming capacity.
     // (`recued_runRecipe` runs through `handleExecute`, which gates itself — excluded,
-    // like the recordUse below.)
+    // like the use admission below.)
     //
     // ⛔ D-234 § 234.4 — THE APPROVAL VERDICT IS SKIPPED FOR A SELF-GATED TOOL,
     // THE METER IS NOT, and the split is the point. A usage cap is an ACCESS
@@ -3473,7 +3632,11 @@ const handleToolCall = async (
       const admission = admitMcpDirectDispatch(deps, params.name);
       if (!admission.ok) return err(admission.message);
     }
-    recordMcpDirectDispatchUse(deps, params.name);
+    const use = admitMcpDirectDispatchUse(deps, params.name);
+    if (use.kind === 'refused') {
+      return err('The contract bound to this token is no longer live (revoked / expired / exhausted).');
+    }
+    if (use.kind === 'taken') nativeDispatchUse = use;
   }
 
   if (/^recued_(?:data|memory|recall|contact|search|vector|annotation|enrichment|getAudit)/u.test(params.name) && deps.situationAccess) {
@@ -3482,6 +3645,20 @@ const handleToolCall = async (
   }
   switch (params.name) {
     // ── same-token attended-run stop ───────────────────────
+    // ── D-402 slice F4 — an AI app gives up its own permissions for a recipe ──
+    case MCP_STOP_ALLOWING_TOOL_NAME: {
+      const ref = typeof args.recipe_id === 'string' ? args.recipe_id.trim() : '';
+      if (Object.keys(args).some((key) => key !== 'recipe_id') || ref === '' || ref.length > 256) {
+        return err('Pass recipe_id (at most 256 characters), and nothing else.');
+      }
+      // Its contract is the call's own: never an argument, so an app gives up its own and no other's.
+      const caller = preapprovalCallerOf(buildMcpExecutionSource(deps));
+      if (caller?.kind !== 'ai_app') return err('Only an AI app can give up its own permissions here.');
+      const recipe_id = ref.includes('/') ? ref.slice(ref.lastIndexOf('/') + 1) : ref;
+      const ended = deps.stopAllowing!({ caller, recipe_id, by: 'ai_app' });
+      return text({ status: stoppedCount(ended) > 0 ? 'stopped' : 'none', ended });
+    }
+
     case MCP_STOP_RECIPE_TOOL_NAME: {
       const keys = Object.keys(args);
       const hasRunId = typeof args.run_id === 'string'
@@ -3573,6 +3750,65 @@ const handleToolCall = async (
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e));
       }
+    }
+
+    // ── D-402 slice A2 — an AI app's job ──────────────────
+    // The app is its token and the agent id its calls carry, read off this call's own source.
+    case 'recued_startJob': {
+      const source = buildMcpExecutionSource(deps);
+      const started = (deps.browserJobs ?? processBrowserJobs).start({ mcp_token_id: source.mcp_token_id,
+        agent_id: source.agent_id });
+      // Starting another ends the one going, and what it recorded goes with it: only a draft keeps it.
+      if (started.ended_job_id !== undefined) {
+        (deps.browserFlows ?? processBrowserFlows).forget(browserJobSession(started.ended_job_id), () => true);
+      }
+      return text({ job_id: started.job_id, expires_at: new Date(started.expires_at).toISOString(),
+        ...(started.ended_job_id !== undefined ? { ended_job_id: started.ended_job_id } : {}) });
+    }
+    case 'recued_endJob': {
+      const source = buildMcpExecutionSource(deps);
+      const owner = { mcp_token_id: source.mcp_token_id, agent_id: source.agent_id };
+      const jobs = deps.browserJobs ?? processBrowserJobs;
+      const flows = deps.browserFlows ?? processBrowserFlows;
+      const draft = (args as { draft?: unknown }).draft;
+      if (draft !== undefined) {
+        // D-402 slice A5 — keep the job for its draft, once its labels hold against the record.
+        const job_id = jobs.activeFor(owner);
+        if (job_id === undefined) return text({ ended: false, note: 'You had no job going: it may have ended after an hour.' });
+        const refused = (reasons: string[]) => text({ ended: false, job_id, refused: reasons,
+          note: 'The job is still going. Correct what was refused and call recued_endJob again, or call it without draft to drop the job.' });
+        const tool = KITCHEN_DRAFT_FROM_JOB_TOOL;
+        if (deps.inboundTokenAuthorize !== undefined && !deps.inboundTokenAuthorize(tool)) {
+          return refused([`This connection may not ask for recipe drafts: the owner allows ${tool} on its contract.`]);
+        }
+        const parsed = parseBrowserJobLabels(draft);
+        if ('refusals' in parsed) return refused(parsed.refusals);
+        const session = browserJobSession(job_id);
+        const plan = { steps: flows.stepsFor(session, () => true), calls: flows.callsFor(session, () => true) };
+        if (plan.calls.length === 0) return refused(['This job recorded no calls, so there is nothing to make a recipe of.']);
+        if (compilePlan({ calls: flows.planFor(session, () => true), by: 'app' }).recipe.steps.length === 0) {
+          return refused([NO_ACTIONS_JOB_ISSUE]);
+        }
+        const checked = checkBrowserJobLabels(parsed.labels, plan);
+        if (checked.refusals.length > 0) return refused(checked.refusals);
+        const kept = jobs.keepForDraft(owner, parsed.labels);
+        if (kept === undefined) return text({ ended: false, note: 'You had no job going: it may have ended after an hour.' });
+        flows.keep(session, kept.expires_at);
+        if (kept.released_job_id !== undefined) {
+          const released = browserJobSession(kept.released_job_id);
+          flows.keep(released, undefined); flows.forget(released, () => true);
+        }
+        return text({ ended: true, job_id, calls: plan.calls.length, kept_for_draft: true,
+          expires_at: new Date(kept.expires_at).toISOString(),
+          next: `Call ${tool} with this job_id to ask the owner for the draft.`,
+          ...(kept.released_job_id !== undefined ? { released_job_id: kept.released_job_id } : {}) });
+      }
+      const ended = jobs.end(owner);
+      if (ended === undefined) return text({ ended: false, note: 'You had no job going: it may have ended after an hour.' });
+      const session = browserJobSession(ended.job_id);
+      const calls = flows.callsFor(session, () => true).length;
+      flows.forget(session, () => true);
+      return text({ ended: true, job_id: ended.job_id, calls });
     }
 
     // ── listRecipes ────────────────────────────────────────
@@ -3703,7 +3939,7 @@ const handleToolCall = async (
       // ⚠ NOT a second PROMPT, so it does not reintroduce the double-ask § 234.4
       // removed: a grant is standing config the owner sets once, not a question
       // put to them per message.
-      if (!resolveMcpDoorReadGrantChecker(deps).isVerbOpGranted('core.peer.receive-ask')) {
+      if (!resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse).isVerbOpGranted('core.peer.receive-ask')) {
         return err(
           JSON.stringify({
             code: 'bad_request',
@@ -3869,7 +4105,7 @@ const handleToolCall = async (
           message: 'recued_peerAnswer: no bound contract on this call — an answer must be attributable to a peer',
         }));
       }
-      if (!resolveMcpDoorReadGrantChecker(deps).isVerbOpGranted('core.peer.receive-answer')) {
+      if (!resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse).isVerbOpGranted('core.peer.receive-answer')) {
         return err(JSON.stringify({
           code: 'bad_request',
           message: 'recued_peerAnswer: this door is not granted to your contract',
@@ -3941,7 +4177,7 @@ const handleToolCall = async (
       // a live door reads it ONLY if explicitly granted; the owner / owner's unbound MCP /
       // contract-free callers admit by default. No per-record entry term (it's a run list),
       // so the verb-op is the gate.
-      if (!resolveMcpDoorReadGrantChecker(deps).isVerbOpGranted('core.audit.read')) {
+      if (!resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse).isVerbOpGranted('core.audit.read')) {
         return err(
           JSON.stringify({
             code: 'bad_request',
@@ -4024,7 +4260,7 @@ const handleToolCall = async (
         // resolved off the bound contract. Replaces the retired visibility map +
         // `readableCollections` + `enrichmentScopeRestrictions` (all folded into the
         // checker: the scope-fence is the entry author-default, the grant rows overlay).
-        readGrantChecker: resolveMcpDoorReadGrantChecker(deps),
+        readGrantChecker: resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse),
         // P7.G — MCP-channel always applies the read-grant gate. Recipe-channel paths
         // set this per call based on `trigger_source`.
         gateMcpPrivate: true,
@@ -4076,7 +4312,7 @@ const handleToolCall = async (
             // D-187 slice 3b — the bound door's read-grant checker gates the
             // `core.contact.engagements.read` verb-op (OWNER-default-only) ∧ the
             // `data.contact` collection, off the bound contract.
-            readGrantChecker: resolveMcpDoorReadGrantChecker(deps),
+            readGrantChecker: resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse),
           },
         );
         return text(result);
@@ -4107,7 +4343,7 @@ const handleToolCall = async (
         // (the checker folds the former `mcp_exposed` visibility AND the per-topic scope
         // fence into one grant lookup); replaces the retired visibility map +
         // `enrichmentScopeRestrictions`.
-        readGrantChecker: resolveMcpDoorReadGrantChecker(deps),
+        readGrantChecker: resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse),
         // M-ENRICH (internal planning notes) — exclude enrichment topics
         // that have no registered producer AND no agent-readable rows from
         // the agent-facing catalog, so an external agent is never told it
@@ -4174,7 +4410,7 @@ const handleToolCall = async (
         // `validateInput` rejects a topic the contract isn't read-granted (the checker
         // folds the former per-topic scope-fence — `topic_not_in_door_scope` — AND the
         // `mcp_exposed` visibility into one grant lookup, BEFORE any store read).
-        readGrantChecker: resolveMcpDoorReadGrantChecker(deps),
+        readGrantChecker: resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse),
       };
       try {
         const result = handleEnrichmentRead(erDeps, req);
@@ -4216,7 +4452,7 @@ const handleToolCall = async (
         // `validateInput` rejects a topic the contract isn't read-granted (the checker
         // folds the former per-topic scope-fence — `topic_not_in_door_scope` — AND the
         // `mcp_exposed` visibility into one grant lookup, BEFORE any store read).
-        readGrantChecker: resolveMcpDoorReadGrantChecker(deps),
+        readGrantChecker: resolveMcpDoorReadGrantChecker(deps, nativeDispatchUse),
       };
       try {
         const result = handleVectorSimilaritySearch(vsDeps, req);
@@ -4232,10 +4468,28 @@ const handleToolCall = async (
 
     // ── saveRecipe ─────────────────────────────────────────
     case 'recued_saveRecipe': {
-      const recipe = args.recipe as { recipe_id?: string; version?: number; metadata?: { name?: string } } | undefined;
+      const recipe = args.recipe as { recipe_id?: string; version?: number; metadata?: { name?: string; author?: string } } | undefined;
       if (!recipe || typeof recipe !== 'object') return err('recipe is required');
       if (!recipe.recipe_id || typeof recipe.recipe_id !== 'string') {
         return err('recipe.recipe_id is required');
+      }
+      // 2026-11-22 (the owner: "the recipe created from recued_saveRecipe should be /local and visible in the webclient
+      //   for owner to manage, so there's no hidden recipes (other than recued kernel recipes)", then publisher `kitchen`)
+      //   — a recipe saved here is the owner's own and is listed for them. Only the owner's local stdio client reaches
+      //   this tool: a remote token is refused before it (`admitMcpDirectDispatch`).
+      //   ⛔ It took its publisher from the agent's `publisher_id` (`recued-core` listed it as Recued's own), and
+      //   `metadata.author: 'recued'` hid it from the owner's list and from `recued_listRecipes` while it still ran by id.
+      if (recipe.metadata?.author === KERNEL_AUTHOR) {
+        return err(`metadata.author "${KERNEL_AUTHOR}" marks Recued's built-in recipes, which no list shows. A recipe saved `
+          + 'here is the owner\'s own and is listed for them: give another author.');
+      }
+      // ⛔ And it replaced whatever held the id: a recipe from another publisher became the owner's, and one this
+      //   process holds in memory was shadowed by the stored copy. Only the owner's own is changed here.
+      const storedRow = deps.recipeStore.getStored(recipe.recipe_id);
+      if (storedRow !== null ? !SAVED_RECIPE_OWN_PUBLISHERS.has(storedRow.publisher_id) : deps.recipeStore.get(recipe.recipe_id) !== null) {
+        return err(`recipe_id "${recipe.recipe_id}" is already used by a recipe that is not the owner's own`
+          + `${storedRow !== null ? ` (publisher "${storedRow.publisher_id}")` : ''}: a recipe saved here changes only the `
+          + 'owner\'s own. Save it under another recipe_id.');
       }
 
       // Validate against the recipe schema before accepting
@@ -4284,10 +4538,9 @@ const handleToolCall = async (
       );
       if (formContract.kind !== 'ok') return err(formContract.message);
 
-      const publisher = (args.publisher_id as string) ?? 'mcp';
       deps.recipeStore.save(
         recipeDefinition,
-        publisher,
+        SAVED_RECIPE_PUBLISHER,
         'inline',
       );
       // § 7 surfacing — disclose the saved recipe's PII posture in the tool
@@ -4303,7 +4556,8 @@ const handleToolCall = async (
         recipe_id: recipe.recipe_id,
         version: recipe.version ?? 1,
         name: recipe.metadata?.name ?? recipe.recipe_id,
-        note: 'The paired Recued extension will see this on its next pair-sync and offer to keep it.',
+        publisher_id: SAVED_RECIPE_PUBLISHER,
+        note: 'Saved as one of the owner\'s own recipes: it is on their Recipes page now, and it runs by id with recued_runRecipe.',
         ...(opCheck.warnings.length > 0 ? { op_warnings: opCheck.warnings } : {}),
         ...(pii !== null
           ? {

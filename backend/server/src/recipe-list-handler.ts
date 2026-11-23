@@ -44,6 +44,7 @@ import {
   recipeSpendsPerRun,
   recipeConsumedEnrichments,
   recipeMailboxSettings,
+  recipeBrowserSettings,
   recipeNotificationChannels,
   recipeRequiredConnections,
   spreadsheetImportOf,
@@ -51,6 +52,7 @@ import {
   type ServerRecipeFullEntry,
   type ConnectionKind,
   type MailboxSetting,
+  type BrowserSetting,
   type RecipeDefinition,
   type PackOperationIndex,
   type RecordsUsagePack,
@@ -120,6 +122,7 @@ const projections = (
   notification_channels: string[];
   consumed_enrichments: string[];
   mailbox_settings?: MailboxSetting[];
+  browser_settings?: BrowserSetting[];
   run_context_targets?: string[];
 } => ({
   ...((): { run_context_targets?: string[] } => {
@@ -157,6 +160,12 @@ const projections = (
   ...((): { mailbox_settings?: MailboxSetting[] } => {
     const settings = recipeMailboxSettings(recipe);
     return settings.length === 0 ? {} : { mailbox_settings: settings };
+  })(),
+  // D-402 slice H2 — the settings that name one of the owner's browsers, which the dish's settings offer
+  // the paired browsers for. Left off a recipe with none, as mailbox settings are.
+  ...((): { browser_settings?: BrowserSetting[] } => {
+    const settings = recipeBrowserSettings(recipe);
+    return settings.length === 0 ? {} : { browser_settings: settings };
   })(),
 });
 

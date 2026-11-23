@@ -147,13 +147,18 @@ describe('the REAL kernel manifests', () => {
     //    (`OWNER_DEFAULT_ONLY_GRANT_ENTRIES`). Discarding stays an owner act in
     //    Kitchen, on the paired-owner RPC.
     //
+    // ── D-402 slice A5, 2026-11-17 — `kitchen-draft-from-job`, a WRITE, answered here too: an AI app
+    //    asks for a recipe draft of a job Recued recorded for it. It takes no source (Recued
+    //    compiles from its own record), writes only a draft that is Recued's and that the app can
+    //    neither read nor change, never installs or runs it, is off for every door until the owner
+    //    grants it, and asks the owner at each call like every MCP write.
     // ⚠ The `preapproval.` / `mail.drafts.` RPC namespaces are the OTHER half of
     // the same decision, and they went the other way: both are in
     // `MCP_RESERVED_RPC_PREFIXES`, so the owner control plane stays unreachable
     // from this channel. An agent gets the governed kernel ops and nothing else.
     expect(flagged).toEqual([
       'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
-      'ics-read', 'kitchen-draft-get', 'kitchen-draft-import', 'kitchen-draft-list', 'kitchen-draft-update',
+      'ics-read', 'kitchen-draft-from-job', 'kitchen-draft-get', 'kitchen-draft-import', 'kitchen-draft-list', 'kitchen-draft-update',
       'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);
@@ -167,7 +172,7 @@ describe('the REAL kernel manifests', () => {
     // are reachable, not the file's layout.
     expect(reachable.map((m) => m.slug).sort()).toEqual([
       'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
-      'ics-read', 'kitchen-draft-get', 'kitchen-draft-import', 'kitchen-draft-list', 'kitchen-draft-update',
+      'ics-read', 'kitchen-draft-from-job', 'kitchen-draft-get', 'kitchen-draft-import', 'kitchen-draft-list', 'kitchen-draft-update',
       'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);

@@ -1,11 +1,11 @@
 {
   "recipe_id": "remind-me-of",
   "chat_exposed": true,
-  "version": 3,
+  "version": 4,
   "ttl": 60,
   "metadata": {
     "name": "Remind me",
-    "description": "Use “Remind me” in Recued. Set a one-time reminder: Recued tells you at that time, once, on every channel you set up. Work out the time from the current date and time in your context, on the user's clock. Pass it with its offset, and tell the user the time the answer gives.",
+    "description": "Use “Remind me” in Recued. Set a one-time reminder: Recued tells you at that time, once, on every channel you set up. Work out the time from the current date and time in your context, on the user's clock: it gives their time zone, so never ask for one. A day with no time is 9:00 AM. Pass it with its offset, and tell the user the time the answer gives.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["reminder", "notify", "personal-organizer", "pack:personal-organizer"],
@@ -20,7 +20,7 @@
     "remind_at": {
       "label": "Remind at",
       "type": "datetime",
-      "help": "When the reminder should ring, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected, and so is a time that has passed."
+      "help": "When the reminder should ring, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone, which your context gives — do NOT assume UTC, and do not ask for it. A day with no time is 9:00 AM that day. An offset-less value is rejected, and so is a time that has passed."
     }
   },
   "requires": ["notification_send"],

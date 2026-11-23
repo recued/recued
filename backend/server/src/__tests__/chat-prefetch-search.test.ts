@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { decomposeToTokens, extractEmailRuns, extractPhoneRuns } from '@recued/middleware-prompt-cache';
+
 import { createContactPrefetchSearch } from '../chat-prefetch-search.js';
 import {
   createContactStore,
@@ -412,5 +414,64 @@ describe('createContactPrefetchSearch — trigger freshness', () => {
     expect(store.delete('rae@x.com')).toBe(true);
     expect(await run(['maya'])).toEqual([]);
     expect(await run(['14155550222'])).toEqual([]);
+  });
+});
+
+describe('createContactPrefetchSearch — D-406 follow-up: a contact the owner picked settles its own name', () => {
+  // The words the webclient sends (`apps/webclient/src/chat/record-context.ts`), each block cut to its first
+  // sentence: what follows names no contact here.
+  const addRecords = (question: string, id: string, title = 'Priya Raman'): string => `${question}\n\nUse the exact owner-selected `
+    + `saved-record references below as context.\n${JSON.stringify({ kind: 'recued.records_question', version: 1,
+      records: [{ record: { kind: 'contact', id, created_at: 1 }, title }] })}`;
+  const chatAboutThis = (question: string, id: string, email: string): string => `${question}\n\nRead the current saved contact `
+    + `using the exact contact reference below before answering about them.\n${JSON.stringify({ kind: 'recued.contact_question',
+      version: 1, contact: { id, email } })}`;
+  // As the prefetch middleware reads a message (`prefetchEntities`).
+  const ask = (message: string) => search({ tokens: decomposeToTokens(message), phoneRuns: extractPhoneRuns(message),
+    emailRuns: extractEmailRuns(message), limit: 3 });
+  const LUMEN = 'priya.raman@lumen.example.test';
+  const NORTHGATE = 'p.raman@northgate.example.test';
+  const seed = (): { lumen: string; northgate: string } => {
+    upsert({ email: LUMEN, name: 'Priya Raman', company: 'Lumen Studio' });
+    upsert({ email: NORTHGATE, name: 'Priya Raman', company: 'Northgate Freight' });
+    return { lumen: store.get(LUMEN)!.contact_id!, northgate: store.get(NORTHGATE)!.contact_id! };
+  };
+  /** Each candidate's ref and flags, in code-point order (`p.raman@…` before `priya.raman@…`). */
+  const refs = (out: readonly { ref: string; pinned?: boolean; ambiguous?: boolean }[]) =>
+    out.map((c) => `${c.ref}${c.pinned === true ? ' pinned' : ''}${c.ambiguous === true ? ' ambiguous' : ''}`).sort();
+
+  it('as before, the name alone is both namesakes, each ambiguous', async () => {
+    seed();
+    expect(refs(await ask("When is Priya Raman's birthday?"))).toEqual([`${NORTHGATE} ambiguous`, `${LUMEN} ambiguous`]);
+  });
+
+  it('a contact added in "Add records" is the one the name means, and its namesake is no candidate', async () => {
+    const { lumen, northgate } = seed();
+    expect(refs(await ask(addRecords('When is their birthday, and where do they work?', lumen)))).toEqual([`${LUMEN} pinned`]);
+    expect(refs(await ask(addRecords('When is their birthday, and where do they work?', northgate)))).toEqual([`${NORTHGATE} pinned`]);
+  });
+
+  it('"Chat about this" on a contact (its id and email) lists no namesake as a confident match', async () => {
+    const { lumen } = seed();
+    // Before: the email's own words matched the namesake, and nothing contested it.
+    expect(refs(await ask(chatAboutThis('What should I know about this contact?', lumen, LUMEN)))).toEqual([`${LUMEN} pinned`]);
+  });
+
+  it('a 32-hex run that is no contact\'s id changes nothing', async () => {
+    seed();
+    expect(refs(await ask(addRecords('When is their birthday?', '0123456789abcdef0123456789abcdef'))))
+      .toEqual([`${NORTHGATE} ambiguous`, `${LUMEN} ambiguous`]);
+  });
+
+  it('a contact the owner\'s own words reach by another word stays: another Priya, or the namesake by its company', async () => {
+    const { lumen } = seed();
+    upsert({ email: 'priya.shah@example.test', name: 'Priya Shah' });
+    expect(refs(await ask(addRecords('Is Priya Shah coming too?', lumen)))).toEqual([`${LUMEN} pinned`, 'priya.shah@example.test']);
+    expect(refs(await ask(addRecords('And the Northgate one?', lumen)))).toEqual([NORTHGATE, `${LUMEN} pinned`]);
+  });
+
+  it('a picked contact is read by its id even when the message holds none of its words', async () => {
+    const { lumen } = seed();
+    expect(refs(await ask(addRecords('What do I know about them?', lumen, 'Contact')))).toEqual([`${LUMEN} pinned`]);
   });
 });

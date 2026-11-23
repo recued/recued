@@ -11,6 +11,8 @@ import type {
   ServerConfigField,
   ServerLlmPrompt,
   ServerLlmProbeResult,
+  ServerLlmSourceLastCall,
+  ServerLlmUsageResponse,
 } from '@recued/contracts';
 
 import {
@@ -75,6 +77,8 @@ import {
   AI_MODELS_INSTALL_OFFERS_ATTR,
   AI_MODELS_ROLLING_BRIEF_ATTR,
   SLOT_KEY_NOT_CARRIED_COPY,
+  AI_MODELS_LAST_CALL_ATTR,
+  lastCallText,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
 import type { AiModelsEmbeddingsSlotSetCaller, AiModelsProbeSourceCaller } from '../settings/ai-models-page.js';
@@ -555,6 +559,62 @@ describe('D-174 D14 — AI / Models initial load', () => {
   });
 });
 
+/** ⛔ A background call that failed (a recipe's AI step, an enrichment) used to leave a run-log line
+ *  and nothing else; a retired model could fail every unattended call for days unseen. Each AI card
+ *  now says how its last call ended, beside its spend. */
+describe('Each AI card says how its last call ended', () => {
+  const NOW = 1_700_000_000_000;
+  const usageWith = (lastCalls: Record<string, ServerLlmUsageResponse['sources'][number]['last_call']>) =>
+    vi.fn(async (): Promise<ServerLlmUsageResponse> => ({
+      day: '2023-11-14',
+      sources: [
+        { id: 'slot_1', kind: 'chat_slot', label: 'Slot 1: fast', model: 'local-model', tokens_today: 120,
+          over_limit: false, in_cooldown: false, ...(lastCalls.slot_1 ? { last_call: lastCalls.slot_1 } : {}) },
+        { id: 'groq', kind: 'pool_entry', label: 'Free pool: groq', model: 'llama-free', tokens_today: 0,
+          over_limit: false, in_cooldown: false, ...(lastCalls.groq ? { last_call: lastCalls.groq } : {}) },
+      ],
+      server_tokens_today: 120,
+    }));
+
+  it('on a slot card and a free-pool row, in the owner\'s words, with when', async () => {
+    const { host, mount } = mountFixture({
+      initialTab: 'providers',
+      runGetLLMUsage: usageWith({
+        slot_1: { at: NOW - 2 * 3_600_000, result: 'model_missing' },
+        groq: { at: NOW - 5 * 60_000, result: 'answered', answered_by: 'llama-free-v2' },
+      }),
+    });
+    await mount.whenLoaded();
+    const slotLine = findByAttrValue(host, AI_MODELS_LAST_CALL_ATTR, 'slot_1');
+    expect(slotLine?.textContent).toBe('Last call 2h ago: the provider does not have this model. '
+      + 'It may have been retired or renamed. Choose another model here.');
+    expect(slotLine?.getAttribute('data-last-call-result')).toBe('model_missing');
+    expect(findByAttrValue(host, AI_MODELS_LAST_CALL_ATTR, 'groq')?.textContent)
+      .toBe('Last call 5m ago: answered by llama-free-v2.');
+    mount.dispose();
+  });
+
+  it('says nothing for a source with no last call', async () => {
+    const { host, mount } = mountFixture({ initialTab: 'providers', runGetLLMUsage: usageWith({}) });
+    await mount.whenLoaded();
+    expect(findByAttr(host, AI_MODELS_LAST_CALL_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('names each ending, and says where to act on the ones the owner can fix', () => {
+    const at = NOW - 30_000;
+    const text = (result: ServerLlmSourceLastCall['result']) => lastCallText({ at, result }, NOW);
+    expect(text('answered')).toBe('Last call just now: answered.');
+    expect(text('output_limit')).toBe('Last call just now: the model used its whole output allowance before it answered, '
+      + 'most likely on thinking. If this keeps happening, turn its thinking off here.');
+    expect(text('auth')).toBe('Last call just now: the key was refused.');
+    expect(text('rate_limited')).toBe('Last call just now: they asked Recued to slow down.');
+    expect(text('provider_error')).toBe('Last call just now: they had trouble at their end.');
+    expect(text('unreachable')).toBe('Last call just now: Recued could not reach it.');
+    expect(text('rejected')).toBe('Last call just now: they refused the request.');
+  });
+});
+
 describe('Set up Chat — focused first-run journey', () => {
   it('loads only setup state, saves slot_1 + the default, then returns to Chat', async () => {
     const onChatSetupComplete = vi.fn();
@@ -787,6 +847,161 @@ describe('Set up Chat — focused first-run journey', () => {
         base_url: 'http://127.0.0.1:11434/v1',
       }),
     });
+    mount.dispose();
+  });
+
+  it('names local models and tells only them that any word stands in for a key', async () => {
+    // An owner with only Ollama or LM Studio found neither named on this list,
+    // then was refused at Save for a key their model does not have.
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+    const localKeyCopy = 'A local model that needs none takes any word, such as "none".';
+
+    const compatible = findByAttr(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR)!
+      .children.find((option) => option.value === 'openai-compatible');
+    expect(compatible?.textContent).toContain('Ollama');
+    expect(compatible?.textContent).toContain('LM Studio');
+
+    // OpenAI takes a real key, so neither its hint nor its refusal offers a word.
+    expect(hasText(host, localKeyCopy)).toBe(false);
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toBe('Type a key to connect this AI.');
+
+    // The form is not rebuilt on a provider change; the hints follow it.
+    changeSelect(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR, '', 'openai-compatible');
+    expect(hasText(host, localKeyCopy)).toBe(true);
+    expect(hasText(host, 'use the name Ollama or LM Studio shows')).toBe(true);
+    changeSelect(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR, '', 'openai');
+    expect(hasText(host, localKeyCopy)).toBe(false);
+    expect(hasText(host, 'Ollama or LM Studio shows')).toBe(false);
+
+    changeSelect(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR, '', 'openai-compatible');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR, 'llama3.2');
+    inputByAttr(
+      host,
+      AI_MODELS_CHAT_SETUP_BASE_URL_ATTR,
+      'http://127.0.0.1:11434/v1',
+    );
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)?.textContent)
+      .toBe(`Type a key to connect this AI. ${localKeyCopy}`);
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'none');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+    expect(opts.runSetLLMSlot).toHaveBeenCalledWith({
+      slot_key: 'slot_1',
+      slot: expect.objectContaining({
+        provider: 'openai-compatible',
+        model: 'llama3.2',
+        api_key: 'none',
+        base_url: 'http://127.0.0.1:11434/v1',
+      }),
+    });
+    mount.dispose();
+  });
+
+  /** ⛔ The suggested names go stale on the provider's schedule: Google refused `gemini-2.5-flash` to
+   *  new users two weeks before its shutdown date, and setup saved it untested, so the owner's first
+   *  chat failed. Setup now asks the provider first, and a definite answer stops it at the field. */
+  it('asks the provider before saving, and stops at the model field when it has no such model', async () => {
+    let answer!: (result: ServerLlmProbeResult) => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { answer = resolve; }));
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({ source_id: null, updated_at: 0 })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+      runProbeLlmSource,
+    });
+    await mount.whenLoaded();
+
+    changeSelect(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR, '', 'google');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR, 'gemini-2.5-flash');
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'AIza-test');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(findByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new')?.textContent).toBe('Checking the AI…');
+    expect(mount.hasInFlightWork()).toBe(true);
+    expect(runProbeLlmSource).toHaveBeenCalledWith({
+      target: { kind: 'slot', slot_key: 'slot_1' },
+      draft: { provider: 'google', model: 'gemini-2.5-flash', api_key: 'AIza-test' },
+    });
+
+    answer({ ok: false, diagnosis: 'model_missing', detail: 'LLM error (404): no longer available', elapsed_ms: 40 });
+    await flush();
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    expect(opts.runSetDefaultModelPref).not.toHaveBeenCalled();
+    expect(findByAttrValue(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'model')?.textContent).toBe(
+      'Google does not have a model called "gemini-2.5-flash". It may have been retired or renamed, or the name may be mistyped.');
+    const model = findByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR)!;
+    expect(model.getAttribute('aria-invalid')).toBe('true');
+    expect(model.readOnly).toBe(false);
+    expect(findByAttrValue(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'key')).toBeNull();
+    expect(mount.hasInFlightWork()).toBe(false);
+
+    // Another name, and the provider has it: saved as before.
+    runProbeLlmSource.mockImplementationOnce(async (): Promise<ServerLlmProbeResult> => ({ ok: true, diagnosis: 'ok', elapsed_ms: 40 }));
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_MODEL_ATTR, 'gemini-3.8-flash');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+    expect(opts.runSetLLMSlot).toHaveBeenCalledWith({
+      slot_key: 'slot_1',
+      slot: expect.objectContaining({ provider: 'google', model: 'gemini-3.8-flash', api_key: 'AIza-test' }),
+    });
+    expect(opts.runSetDefaultModelPref).toHaveBeenCalledWith({ source_id: 'slot_1' });
+    mount.dispose();
+  });
+
+  it('stops at the key field when the provider refuses the key', async () => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({ source_id: null, updated_at: 0 })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+      runProbeLlmSource: vi.fn(async () => ({ ok: false, diagnosis: 'auth' as const, detail: 'LLM auth failed (401)', elapsed_ms: 40 })),
+    });
+    await mount.whenLoaded();
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-wrong');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    expect(findByAttrValue(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR, 'key')?.textContent).toBe('That key was refused. Check it.');
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)?.getAttribute('aria-invalid')).toBe('true');
+    mount.dispose();
+  });
+
+  /** Only a definite answer about a field stops setup. A slow local model is still a working one,
+   *  and a chat that fails later says why. */
+  it.each([
+    ['no answer in time', { ok: false, diagnosis: 'unreachable', detail: 'LLM call timed out after 20000ms', elapsed_ms: 20_000 }],
+    ['a rate limit', { ok: false, diagnosis: 'rate_limited', detail: 'LLM rate limited (429)', elapsed_ms: 40 }],
+    ['their outage', { ok: false, diagnosis: 'provider_error', detail: 'LLM server error (503)', elapsed_ms: 40 }],
+    ['another refusal', { ok: false, diagnosis: 'rejected', detail: 'LLM error (400): max_tokens too small', elapsed_ms: 40 }],
+    ['no way to ask', new Error('Test connection is not wired on this server')],
+  ] as const)('saves anyway on %s', async (_name, outcome) => {
+    const { host, mount, opts } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({ source_id: null, updated_at: 0 })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+      runProbeLlmSource: vi.fn(async () => {
+        if (outcome instanceof Error) throw outcome;
+        return outcome as ServerLlmProbeResult;
+      }),
+    });
+    await mount.whenLoaded();
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-setup');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    await flush();
+    expect(opts.runSetLLMSlot).toHaveBeenCalledTimes(1);
+    expect(opts.runSetDefaultModelPref).toHaveBeenCalledWith({ source_id: 'slot_1' });
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_ERROR_ATTR)).toBeNull();
     mount.dispose();
   });
 
@@ -2426,6 +2641,32 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
     }
     // setChatCatalogMode still throws a clear "not wired" error if invoked.
     await expect(mount.setChatCatalogMode('slot_1', 'index')).rejects.toThrow(/not wired/);
+    mount.dispose();
+  });
+
+  /** ⛔ THE TOOL CATALOG IS A PROPERTY OF THE AI A TURN RUNS ON (the server
+   *  resolves it from the turn's own source), so the ONLY place it shows is
+   *  that AI's card on Providers. Chat behaviour on Preference says it "applies
+   *  to every chat on this server, whichever AI it uses"; a "Tool catalog:"
+   *  line under that heading contradicted the per-AI selects and was removed
+   *  (2026-11-16). */
+  it('shows the tool catalog only on each AI\'s own card, never under Chat behaviour', async () => {
+    const { host, mount } = mountFixture({
+      runGetRollingBrief: vi.fn(async () => ({ enabled: true })),
+      runGetLLMConfig: withCatalogModes({ free_pool: 'full' }),
+    });
+    await mount.whenLoaded();
+    const behaviour = findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'chat_behaviour');
+    expect(behaviour).not.toBeNull();
+    // The section RESOLVED (its running-note switch is there), so the absence
+    // below is about what it shows, not a section that never finished loading.
+    expect(findByAttrValue(behaviour!, AI_MODELS_ROLLING_BRIEF_ATTR, 'on')).not.toBeNull();
+    expect(hasText(behaviour!, 'catalog')).toBe(false);
+    const preference = findByAttrValue(host, AI_MODELS_TAB_PANEL_ATTR, 'preference')!;
+    expect(findByAttr(preference, AI_MODELS_CATALOG_MODE_SELECT_ATTR)).toBeNull();
+    const providers = findByAttrValue(host, AI_MODELS_TAB_PANEL_ATTR, 'providers')!;
+    expect(findByAttrValue(providers, AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_1')?.value).toBe('');
+    expect(findByAttrValue(providers, AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'free_pool')?.value).toBe('full');
     mount.dispose();
   });
 });
@@ -5552,6 +5793,32 @@ describe('chat behaviour switches — the rolling brief and install offers', () 
     await mount.whenLoaded();
     expect(findByAttrValue(host, AI_MODELS_ROLLING_BRIEF_ATTR, 'on')).not.toBeNull();
     expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'on')?.textContent).toBe('Stop suggesting packs');
+  });
+
+  it('says the switch also holds the hints to connect mail, a calendar or files (D-405 slice 2)', async () => {
+    const runSetInstallOffers = vi.fn(async (args: { enabled: boolean }) => ({ enabled: args.enabled }));
+    const { host, mount } = mountFixture({
+      runGetRollingBrief: vi.fn(async () => ({ enabled: true })),
+      runGetInstallOffers: vi.fn(async () => ({ enabled: true })),
+      runSetInstallOffers,
+    });
+    await mount.whenLoaded();
+    const parentOf = (root: FakeElement, target: FakeElement): FakeElement | null => {
+      for (const child of root.children) {
+        if (child === target) return root;
+        const found = parentOf(child, target);
+        if (found !== null) return found;
+      }
+      return null;
+    };
+    const words = (state: 'on' | 'off'): string => {
+      const button = findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, state)!;
+      return parentOf(host, button)!.children.map((child) => child.textContent).join('');
+    };
+    expect(words('on')).toContain('When you ask about mail, a calendar or files with none connected, it says where to connect one.');
+    clickByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'on');
+    await vi.waitFor(() => expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'off')).not.toBeNull());
+    expect(words('off')).toContain('Chat does not suggest packs from the marketplace, or where to connect mail, a calendar or files.');
   });
 
   it('turns offers off through the server, and shows what the server answered', async () => {

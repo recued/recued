@@ -1,4 +1,4 @@
-import { openBackupDisclosure } from './helpers/backup-disclosure.js';
+import { openBackupCopyDetails, openBackupDisclosure } from './helpers/backup-disclosure.js';
 import { expect, test } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
@@ -26,6 +26,12 @@ test('a confirmed restore reads current setup, keeps owner alert evidence qualif
   await expect(page.locator(`${panel} [data-restore-readiness-status]`)).toContainText('Status read');
   await expect(page.locator(`${panel} [data-restore-readiness-state="ready"]`)).toHaveCount(7);
   await expect(page.locator(item('drill'))).toContainText('not independently verified');
+  // The status contract permits age evidence without a receipt ID. Keep the
+  // evidence readable rather than interpolating an absent ID into the message.
+  await openBackupDisclosure(page, 'tools');
+  await expect(page.locator('[data-backup-health-backup]')).toContainText('Backup started');
+  await expect(page.locator('[data-backup-health-recovery]')).toContainText('Passed');
+  await expect(page.locator('[data-backup-health]')).not.toContainText('undefined');
   await page.locator('[data-restore-readiness-review="schedule"]').click();
   await expect(page.locator('[data-unattended-enabled]')).toBeFocused();
   await page.locator('[data-restore-readiness-review="monitor"]').click();
@@ -56,6 +62,29 @@ test('missing setup gives review actions and refresh preserves unsaved recovery 
   await expect(page.locator('[data-backup-watchdog-url]')).toHaveValue('https://draft.example.test/private-token');
   await expect(page.locator(panel)).not.toContainText('private-token');
   await fits(page); await noWrites(page);
+});
+
+test('saved copy selection keeps its receipt and unsubmitted recovery key through a status refresh', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open(page, 'copies');
+  const rows = page.locator('[data-remote-backup-id]'); await expect(rows).toHaveCount(3);
+  const verified = rows.filter({ has: page.getByText('Stored copy verified', { exact: false }) });
+  const uncertain = page.locator('[data-remote-backup-state="unconfirmed"]');
+  await expect(uncertain.locator('[data-remote-backup-cleanup-note]')).toContainText('Storage denied access');
+  await expect(uncertain.locator('[data-remote-backup-cleanup-connection]')).toHaveAttribute('href', '#connections/others/review-access/api/fixture-storage');
+  await openBackupCopyDetails(verified);
+  const choose = verified.locator('[data-remote-backup-drill]'); await choose.focus(); await page.keyboard.press('Enter');
+  const words = page.locator('[data-drill-words]'), selected = page.locator('[data-drill-selected]');
+  await expect(words).toBeFocused(); await words.fill('synthetic unsubmitted recovery words');
+  const id = (await verified.getAttribute('data-remote-backup-id'))!;
+  await expect(selected).toContainText(id);
+  const blocked = uncertain.locator('[data-remote-backup-drill]');
+  await expect(blocked).toHaveAttribute('aria-disabled', 'true'); await blocked.focus(); await page.keyboard.press('Enter');
+  await expect(selected).toContainText(id); await expect(words).toHaveValue('synthetic unsubmitted recovery words');
+  const refresh = page.locator('[data-remote-backups-refresh]'); await refresh.focus(); await page.keyboard.press('Enter');
+  await expect(refresh).toHaveAttribute('aria-busy', 'false'); await expect(refresh).toBeFocused();
+  await expect(selected).toContainText(id); await expect(words).toHaveValue('synthetic unsubmitted recovery words');
+  await noWrites(page);
 });
 
 test('an accepted import cannot show post-restore readiness', async ({ page }) => {

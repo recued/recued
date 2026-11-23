@@ -3570,23 +3570,35 @@ const SELLER_MESSAGE_MODAL_STYLES = `
   background: rgba(24, 33, 36, .32);
 }
 [${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal {
+  box-sizing: border-box;
   width: min(420px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--wc-radius-lg, 14px);
   background: var(--surface);
   box-shadow: 0 24px 48px rgba(24, 33, 36, .18);
-  padding: 16px 18px;
+  padding: 16px;
 }
-[${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal h4 { margin: 0 0 8px; font-size: 15px; }
+[${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal h4 { margin: 0 0 8px; font-size: 16px; font-weight: 600; line-height: 1.4; }
 [${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal-body {
   margin: 0 0 16px;
   font-size: 13px;
+  line-height: 1.5;
   color: var(--fg-muted, #555);
 }
 [${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal-footer {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+@media (max-width: 640px) {
+  [${SELLER_MESSAGE_MODAL_ATTR}] { padding: 12px; }
+  [${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal { padding: 12px; max-height: calc(100dvh - 24px); }
+  [${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal-footer { flex-direction: column; }
+  [${SELLER_MESSAGE_MODAL_ATTR}] .seller-modal-footer button { width: 100%; }
 }
 `;
 
@@ -4866,6 +4878,7 @@ export const mountSellerPage = (
   let customerLifecycleFormMessage: SellerFormMessage | null = null;
   let llmGatewayAckFormMessage: SellerFormMessage | null = null;
   let pendingLoad: Promise<void> = Promise.resolve();
+  let refreshFocusOwner: HTMLElement | null = null;
 
   const wrapper = doc.createElement('div');
   wrapper.setAttribute(SELLER_PAGE_ATTR, '');
@@ -5065,6 +5078,9 @@ export const mountSellerPage = (
   };
 
   const render = (): void => {
+    const restoreRefreshFocus = refreshFocusOwner !== null
+      && doc.activeElement === refreshFocusOwner;
+    if (!restoreRefreshFocus) refreshFocusOwner = null;
     wrapper.setAttribute(SELLER_PAGE_STATE_ATTR, phase);
     clearChildren(dynamicHost);
 
@@ -5107,11 +5123,17 @@ export const mountSellerPage = (
       toolbar,
       'Refresh',
       () => {
+        if (phase === 'loading') return;
+        refreshFocusOwner = doc.activeElement === refreshButton ? refreshButton : null;
         void refresh();
       },
       [[SELLER_REFRESH_ATTR, '']],
     );
     refreshButton.disabled = phase === 'loading';
+    if (restoreRefreshFocus && phase !== 'loading') {
+      refreshFocusOwner = null;
+      refreshButton.focus?.();
+    }
     // The section strip: every Seller area is one click away from every
     // screen, the current one marked, no trip through the directory needed.
     if (subpage !== null) {
@@ -5128,7 +5150,7 @@ export const mountSellerPage = (
       }
     }
     if (phase === 'loading') {
-      appendText(
+      const progress = appendText(
         doc,
         dynamicHost,
         'p',
@@ -5137,6 +5159,12 @@ export const mountSellerPage = (
           : `Loading ${SELLER_SUBPAGE_META[subpage].label.toLowerCase()}.`,
         'seller-empty',
       );
+      progress.setAttribute('role', 'status');
+      progress.tabIndex = -1;
+      if (restoreRefreshFocus) {
+        refreshFocusOwner = progress;
+        progress.focus?.();
+      }
       return;
     }
 
@@ -5248,7 +5276,15 @@ export const mountSellerPage = (
         if (selectedItemId !== null) {
           const order = orders?.find((row) => row.order_key === selectedItemId);
           if (order === undefined) {
-            renderMissingItem('orders', selectedItemId);
+            if (ordersError !== null) {
+              renderOrders(doc, appendCollectionHost('orders', selectedItemId), {
+                orders: null,
+                truncated: false,
+                error: ordersError,
+              });
+            } else {
+              renderMissingItem('orders', selectedItemId);
+            }
             break;
           }
           const detail = appendCollectionHost('orders', selectedItemId);
@@ -5911,6 +5947,7 @@ export const mountSellerPage = (
       if (disposed) return;
       disposed = true;
       generation += 1;
+      refreshFocusOwner = null;
       wrapper.removeEventListener('click', onCollectionClick);
       wrapper.removeEventListener('keydown', onCollectionKeyDown);
       preview.dispose();
@@ -5922,6 +5959,8 @@ export const mountSellerPage = (
 export const SELLER_PAGE_STYLES = `
 ${REFERENCE_PROVENANCE_STYLES}
 ${LIST_PREVIEW_STYLES}
+[data-recued-settings-section="seller"] { --wc-control-h: 40px; gap: 16px; font-size: 13px; line-height: 1.5; }
+[data-recued-settings-section="seller"] > h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; }
 [${SELLER_PAGE_ATTR}] {
   display: grid;
   min-width: 0;
@@ -5953,7 +5992,7 @@ ${LIST_PREVIEW_STYLES}
   gap: 16px;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--wc-radius-lg, 14px);
   background: var(--surface);
   color: var(--fg);
   padding: 12px;
@@ -6007,8 +6046,9 @@ ${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] .seller-list-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
+[${SELLER_PAGE_ATTR}] .seller-subnav { grid-column: 1 / -1; }
 [${SELLER_PAGE_ATTR}] .seller-subnav a,
 [${SELLER_PAGE_ATTR}] .seller-detail-tabs a,
 [${SELLER_PAGE_ATTR}] .seller-list-toolbar a {
@@ -6058,12 +6098,12 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_BACK_ATTR}] {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   width: fit-content;
   padding: 4px;
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
@@ -6085,7 +6125,7 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] [${SELLER_COLLECTION_ITEM_LINK_ATTR}] {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   padding: 4px 2px;
@@ -6113,12 +6153,12 @@ ${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] [${SELLER_PAGE_PREVIOUS_ATTR}],
 [${SELLER_PAGE_ATTR}] [${SELLER_PAGE_NEXT_ATTR}] {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   color: var(--fg);
   font-size: 12px;
   font-weight: 600;
@@ -6148,7 +6188,9 @@ ${LIST_PREVIEW_STYLES}
   margin: 0;
 }
 [${SELLER_PAGE_ATTR}] .seller-subpage-heading h3 {
-  font-size: 17px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 [${SELLER_PAGE_ATTR}] .seller-subpage-description,
 [${SELLER_PAGE_ATTR}] .seller-section-copy,
@@ -6163,20 +6205,24 @@ ${LIST_PREVIEW_STYLES}
   justify-content: flex-end;
   gap: 12px;
 }
+[${SELLER_PAGE_ATTR}] button,
 [${SELLER_PAGE_ATTR}] .seller-toolbar button,
 [${SELLER_PAGE_ATTR}] .seller-form-footer button,
 [${SELLER_PAGE_ATTR}] .seller-offer-actions button,
 [${SELLER_PAGE_ATTR}] .seller-readiness-meta a {
   appearance: none;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
   font-size: 12px;
   font-weight: 600;
-  min-height: 36px;
-  padding: 0 10px;
+  min-height: var(--wc-control-h, 40px);
+  padding: 6px 12px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6189,8 +6235,10 @@ ${LIST_PREVIEW_STYLES}
   opacity: 0.62;
   cursor: default;
 }
-/* A finger's height on a phone. ⛔ 36px. */
+/* Keep the shared phone control scale for buttons and the fields below. */
 @media (max-width: 640px) {
+  [data-recued-settings-section="seller"] { --wc-control-h: 44px; }
+  [${SELLER_PAGE_ATTR}] button,
   [${SELLER_PAGE_ATTR}] .seller-toolbar button,
   [${SELLER_PAGE_ATTR}] .seller-form-footer button,
   [${SELLER_PAGE_ATTR}] .seller-offer-actions button,
@@ -6200,10 +6248,12 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-section {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--wc-radius-lg, 14px);
+  background: var(--surface);
 }
 [${SELLER_PAGE_ATTR}] .seller-section > h4 {
   margin: 0;
@@ -6212,13 +6262,13 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-action-disclosure > summary {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   padding: 8px 4px;
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  list-style-position: outside;
+  list-style-position: inside;
 }
 [${SELLER_PAGE_ATTR}] .seller-action-disclosure[open] > summary {
   margin-bottom: 2px;
@@ -6228,15 +6278,15 @@ ${LIST_PREVIEW_STYLES}
   gap: 8px;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 9px 10px;
+  border-radius: var(--wc-radius, 9px);
+  padding: 12px;
   background: var(--surface);
 }
 [${SELLER_PAGE_ATTR}] .seller-lifecycle-action > summary {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   padding: 8px 4px;
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   cursor: pointer;
   color: var(--fg);
   font-size: 13px;
@@ -6272,7 +6322,7 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-related-links a {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   padding: 4px;
@@ -6302,9 +6352,9 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-offer-archive summary {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   padding: 8px 4px;
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   color: var(--danger);
   cursor: pointer;
   font-weight: 600;
@@ -6313,16 +6363,16 @@ ${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] .seller-kv-grid {
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 138px), 1fr));
+  gap: 12px;
 }
 [${SELLER_PAGE_ATTR}] .seller-stat,
 [${SELLER_PAGE_ATTR}] .seller-kv-item {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface);
-  padding: 9px 10px;
+  padding: 12px;
 }
 [${SELLER_PAGE_ATTR}] dt {
   margin: 0 0 4px;
@@ -6357,8 +6407,8 @@ ${LIST_PREVIEW_STYLES}
   gap: 12px;
   align-items: center;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
+  border-radius: var(--wc-radius, 9px);
+  padding: 12px;
   background: var(--surface);
 }
 [${SELLER_PAGE_ATTR}] .seller-readiness-main {
@@ -6398,13 +6448,15 @@ ${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] .seller-customer-form-grid,
 [${SELLER_PAGE_ATTR}] .seller-customer-lifecycle-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 12px 16px;
+  align-items: start;
   min-width: 0;
 }
 [${SELLER_PAGE_ATTR}] .seller-form-field {
   display: grid;
-  gap: 5px;
+  gap: 6px;
+  align-content: start;
   min-width: 0;
   color: var(--fg-muted);
   font-size: 12px;
@@ -6416,39 +6468,50 @@ ${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] .seller-form-field input,
 [${SELLER_PAGE_ATTR}] .seller-form-field select,
 [${SELLER_PAGE_ATTR}] .seller-form-field textarea {
-  min-height: 38px;
+  min-height: var(--wc-control-h, 40px);
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
-  padding: 7px 8px;
+  font-weight: 400;
+  line-height: 1.5;
+  padding: 6px 10px;
 }
+[${SELLER_PAGE_ATTR}] .seller-form-field select {
+  height: var(--wc-control-h, 40px);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[${SELLER_PAGE_ATTR}] .seller-form-help { font-weight: 400; line-height: 1.5; }
 [${SELLER_PAGE_ATTR}] .seller-form-field textarea {
   resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
 }
 [${SELLER_PAGE_ATTR}] .seller-form-checks,
 [${SELLER_PAGE_ATTR}] .seller-form-footer {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 [${SELLER_PAGE_ATTR}] .seller-advanced-settings {
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 9px 10px;
+  border-radius: var(--wc-radius, 9px);
+  padding: 12px;
   background: var(--surface);
 }
 [${SELLER_PAGE_ATTR}] .seller-advanced-settings summary {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   padding: 8px 4px;
-  border-radius: 6px;
+  border-radius: var(--wc-radius, 9px);
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -6458,7 +6521,7 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-form-check {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -6490,6 +6553,15 @@ ${LIST_PREVIEW_STYLES}
   accent-color: var(--accent);
   cursor: inherit;
 }
+[${SELLER_PAGE_ATTR}] .seller-section-copy,
+[${SELLER_PAGE_ATTR}] .seller-form-intro,
+[${SELLER_PAGE_ATTR}] .seller-form-status { margin: 0; }
+[${SELLER_PAGE_ATTR}] .seller-form-status:empty { display: none; }
+[${SELLER_PAGE_ATTR}] .seller-action-disclosure,
+[${SELLER_PAGE_ATTR}] .seller-lifecycle-action { gap: 0; }
+[${SELLER_PAGE_ATTR}] .seller-advanced-settings[open] > :not(summary) + :not(summary) { margin-top: 12px; }
+[${SELLER_PAGE_ATTR}] .seller-action-disclosure[open] > :not(summary),
+[${SELLER_PAGE_ATTR}] .seller-lifecycle-action[open] > :not(summary) { margin-top: 12px; }
 [${SELLER_PAGE_ATTR}] .seller-form-status {
   min-height: 18px;
   color: var(--fg-muted);
@@ -6505,7 +6577,7 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-contract-link {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   padding: 4px 2px;
@@ -6520,7 +6592,7 @@ ${LIST_PREVIEW_STYLES}
 }
 [${SELLER_PAGE_ATTR}] .seller-paid-workflow-table a {
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 40px);
   display: inline-flex;
   align-items: center;
   padding: 4px 2px;
@@ -6546,6 +6618,8 @@ ${LIST_PREVIEW_STYLES}
   outline-offset: 1px;
 }
 [${SELLER_PAGE_ATTR}] .seller-table-wrap {
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
 }
 [${SELLER_PAGE_ATTR}] table {
@@ -6570,12 +6644,24 @@ ${LIST_PREVIEW_STYLES}
   margin: 0;
   color: var(--fg-muted);
 }
+[${SELLER_PAGE_ATTR}] .seller-empty[role="status"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--wc-radius, 9px);
+}
 [${SELLER_PAGE_ATTR}] .seller-error {
   border-left: 3px solid var(--danger);
   background: var(--surface);
-  padding: 10px 12px;
+  margin: 0;
+  padding: 12px;
+  border-radius: var(--wc-radius, 9px);
   color: var(--fg);
   font-weight: 600;
+}
+@media (max-width: 640px) {
+  [${SELLER_PAGE_ATTR}] .seller-section { padding: 12px; }
+  [${SELLER_PAGE_ATTR}] :is(summary, .seller-form-check) { min-height: var(--wc-control-h, 44px); }
+  [${SELLER_PAGE_ATTR}] .seller-form-footer > button { width: 100%; }
 }
 @media (max-width: 720px) {
   [${SELLER_PAGE_ATTR}] .seller-directory-list a {

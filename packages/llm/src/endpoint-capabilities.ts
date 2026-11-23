@@ -71,7 +71,7 @@ import { createHash } from 'node:crypto';
 import type { ContentPart, LLMMessage, LLMSlot } from './types.js';
 import { LLMError } from './types.js';
 import { joinTextParts } from './adapters/content-parts.js';
-import { THINKING_SWITCH_FIELDS } from './thinking-switch.js';
+import { THINKING_SWITCH_FIELDS, thinkingStepCount } from './thinking-switch.js';
 
 /** The shapes endpoints actually use to say "not that role".
  *
@@ -140,8 +140,10 @@ export const resetEndpointCapabilities = (): void => {
   unsupported.clear();
   jsonUnsupported.clear();
   thinkingUnsupported.clear();
+  thinkingStepRefusals.clear();
   schemaUnsupported.clear();
   contextBounds.clear();
+  tokenRatios.clear();
   imageSeen.clear();
 };
 
@@ -205,12 +207,15 @@ export const forgetEndpoint = (slot: LLMSlot): void => {
   unsupported.delete(key);
   jsonUnsupported.delete(key);
   thinkingUnsupported.delete(key);
+  thinkingStepRefusals.delete(`${key} on`);
+  thinkingStepRefusals.delete(`${key} off`);
   schemaUnsupported.delete(key);
   // ⛔ The learned window is forgotten too. The module header's governing
   // constraint is CLEARABILITY, and a bound is the one learned fact here that
   // silently shrinks what the model can see — so it is the LAST thing that
   // should survive an owner asking for a re-probe.
   contextBounds.delete(key);
+  tokenRatios.delete(key);
   // ⚠ `imageSeen` is deliberately KEPT — see "Picture input" above: a proof is
   // overturned by a picture check's verdict, never by the start of a probe.
   // ⚠ ANNOUNCE THE FORGETTING TOO, or the clear lasts only until the next
@@ -385,6 +390,79 @@ export const noteThinkingSwitchUnsupported = (slot: LLMSlot): void => {
 export const thinkingSwitchUnsupported = (slot: LLMSlot): boolean =>
   thinkingUnsupported.has(endpointFingerprint(slot));
 
+// ── Which way of sending the thinking setting an endpoint takes ─────
+//
+// A provider can have several ways to say one setting, and its models take
+// different ones (`thinkingStepCount`, `thinking-switch.ts`): OpenAI's "off"
+// efforts; Claude's `disabled` / `between_tools` / lowest effort for off, and
+// `adaptive` / a token budget for on. An endpoint that refuses one is asked with
+// the next; only a refusal of the PARAMETER (a model that does not reason) drops
+// the switch at once. Remembered per direction for the process, like the switch
+// itself, and forgotten by Test connection.
+
+const thinkingStepRefusals = new Map<string, number>();
+const thinkingStepKey = (slot: LLMSlot, thinking: boolean): string =>
+  `${endpointFingerprint(slot)} ${thinking ? 'on' : 'off'}`;
+
+/** Which way of sending this setting the endpoint has not refused yet (0 is the first). */
+export const thinkingStep = (slot: LLMSlot, thinking: boolean): number =>
+  thinkingStepRefusals.get(thinkingStepKey(slot, thinking)) ?? 0;
+
+/** This endpoint refused the current way of sending the setting: ask with the next one. False when
+ *  none is left, and the switch is then dropped. */
+export const noteThinkingStepRefused = (slot: LLMSlot, thinking: boolean): boolean => {
+  const key = thinkingStepKey(slot, thinking);
+  const next = (thinkingStepRefusals.get(key) ?? 0) + 1;
+  if (next >= thinkingStepCount(slot, thinking)) return false;
+  thinkingStepRefusals.set(key, next);
+  return true;
+};
+
+/** OpenAI names a parameter a model lacks "Unsupported parameter" ("'reasoning_effort' is not
+ *  supported with this model") and a value it lacks "Unsupported value" ("'reasoning_effort' does not
+ *  support 'none' with this model"). Another value can only cure the second. */
+export const isUnsupportedParameterRejection = (e: unknown): boolean =>
+  e instanceof LLMError && /unsupported parameter/i.test(e.message);
+
+// ── A model the provider does not have ──────────────────────────────
+//
+// Not a capability: nothing is remembered. The provider is the only one that
+// knows which models it serves, and it says so at call time. A retired model
+// is refused before its announced date (`gemini-2.5-flash` answered 404 "no
+// longer available to new users" on 2026-11-16, two weeks before it), so no
+// list Recued kept could be trusted; it reads the refusal instead, the same way
+// for Test connection and for a real call.
+
+/** A 400 that some servers use instead of a 404, naming the model as missing.
+ *  ⚠ The bounded `[^.]{0,40}?` gap is load-bearing: the model's ID sits between
+ *  the word and the verdict ("model 'llama-9' does not exist"), so a pattern
+ *  demanding they be adjacent matches none of these. Bounded so it cannot reach
+ *  across a sentence and pair "model" with a later clause. */
+const MODEL_MISSING_RE = new RegExp(
+  [
+    'model[_ -]?not[_ -]?found',
+    'model_decommissioned',
+    '(?:unknown|invalid|unsupported)[_ -]model',
+    // OpenRouter: "x is not a valid model ID".
+    'not a valid model',
+    'model[^.]{0,40}?(?:does not exist|not found|is not (?:a )?valid|is invalid'
+      // Groq: "The model `x` has been decommissioned and is no longer supported."
+      + '|has been decommissioned|is decommissioned|is no longer (?:available|supported))',
+  ].join('|'),
+  'i',
+);
+
+/** Did the provider say it has no such model, whether retired, renamed or never there? A 404 that
+ *  names a model (OpenAI, Anthropic, Google and Ollama all answer a missing one so), or a 400 in the
+ *  words several OpenAI-compatible servers use instead. A 404 that names no model is more likely a
+ *  wrong address than a missing model, and is not taken for one. */
+export const isModelMissingRejection = (e: unknown): boolean => {
+  if (!(e instanceof LLMError) || e.retryable || e.code !== 'AI_LLM_UNAVAILABLE') return false;
+  const status = typeof e.details?.status === 'number' ? e.details.status : undefined;
+  if (status === 404) return /model/i.test(e.message);
+  return status === 400 && MODEL_MISSING_RE.test(e.message);
+};
+
 // ── Context window ──────────────────────────────────────────────────
 //
 // ⛔⛔ THE THIRD CAPABILITY, AND THE SAME PROBLEM A THIRD TIME. `slot
@@ -423,9 +501,56 @@ interface ContextBounds {
   accepted?: number;
   /** Total context ceiling, learned from a refusal. */
   refused?: number;
+  /** The ceiling came from our own estimate of the refused prompt, not from a limit the provider stated, so it is in
+   *  the estimator's units rather than the provider's tokens (see {@link knownContextWindow}). */
+  refusedFromEstimate?: boolean;
 }
 
 const contextBounds = new Map<string, ContextBounds>();
+
+// 2026-11-20 (the owner: "go ahead", the estimate) — how many of our estimated tokens one of the provider's is.
+//   `estimateConservativeMessagesTokens` counts two bytes a token; the JSON chat sends ran 3.7–4.4 bytes a provider
+//   token on browser task P, so a P request the provider counted at 97,300 tokens was estimated at 179,100. Against a
+//   window in the provider's tokens (one the owner typed, or one a refusal stated) every trim and fold fired at about
+//   half the real size. The ratio is learned from the endpoint's own successful calls: estimate ÷ the provider's input
+//   tokens (cache reads and writes included). The SMALLEST seen is kept, because a smaller ratio only ever shrinks the
+//   budget; a large one could only come from a provider under-reporting, and is never trusted over a smaller one.
+interface TokenRatio { min: number; samples: number }
+const tokenRatios = new Map<string, TokenRatio>();
+/** Calls an endpoint must have answered before its ratio is used. */
+export const TOKEN_RATIO_MIN_SAMPLES = 3;
+/** The ratio is held to this range: content that tokenizes denser than half a byte a token, or looser than six, is not
+ *  what an estimate of chat can be calibrated on. */
+export const TOKEN_RATIO_RANGE = { min: 0.5, max: 3 } as const;
+
+/** Record one successful call: our estimate of its prompt, and the provider's count of the same prompt. */
+export const noteTokenRatio = (slot: LLMSlot, estimatedTokens: number, providerInputTokens: number | undefined): void => {
+  if (!Number.isSafeInteger(estimatedTokens) || estimatedTokens <= 0) return;
+  if (providerInputTokens === undefined || !Number.isFinite(providerInputTokens) || providerInputTokens <= 0) return;
+  const ratio = estimatedTokens / providerInputTokens;
+  const key = endpointFingerprint(slot);
+  const prev = tokenRatios.get(key);
+  tokenRatios.set(key, { min: prev === undefined ? ratio : Math.min(prev.min, ratio), samples: (prev?.samples ?? 0) + 1 });
+};
+
+/** Our estimated tokens per provider token at this endpoint, once it has answered enough calls; otherwise none. */
+export const estimateTokenRatio = (slot: LLMSlot): number | undefined => {
+  const seen = tokenRatios.get(endpointFingerprint(slot));
+  if (seen === undefined || seen.samples < TOKEN_RATIO_MIN_SAMPLES) return undefined;
+  return Math.min(TOKEN_RATIO_RANGE.max, Math.max(TOKEN_RATIO_RANGE.min, seen.min));
+};
+
+/** The ratio safe for every candidate: the smallest, and none unless every candidate has one (a candidate not yet
+ *  calibrated could win the draw, and must not be budgeted on another endpoint's ratio). */
+export const minEstimateTokenRatio = (slots: readonly LLMSlot[]): number | undefined => {
+  let min: number | undefined;
+  for (const slot of slots) {
+    const ratio = estimateTokenRatio(slot);
+    if (ratio === undefined) return undefined;
+    min = min === undefined ? ratio : Math.min(min, ratio);
+  }
+  return min;
+};
 
 /** Did the provider refuse because the INPUT was too large?
  *
@@ -542,7 +667,7 @@ export const noteContextRefused = (
   // A second, smaller refusal is better evidence than the first — keep the
   // lowest ceiling seen, since everything above it is known to fail too.
   if (prev?.refused !== undefined && prev.refused <= candidate) return;
-  contextBounds.set(key, { ...prev, refused: candidate });
+  contextBounds.set(key, { ...prev, refused: candidate, refusedFromEstimate: statedContextLimit(error) === undefined });
 };
 
 /** The learned context window for this endpoint, or `undefined`.
@@ -585,6 +710,36 @@ export const minLearnedContextWindow = (
     const learned = learnedContextWindow(slot);
     if (learned === undefined) continue;
     if (min === undefined || learned < min) min = learned;
+  }
+  return min;
+};
+
+/** 2026-11-20 (the owner: "on the slot that knows the limit (from the api or hit the limit before) we use that") —
+ *  the window a slot is KNOWN to have: the one its owner typed (`context_window_tokens`, Settings → AI models or
+ *  `RECUED_LLM_CONTEXT_WINDOW_TOKENS`), or one a refusal taught, whichever is smaller. A refusal under a typed window
+ *  says the typed one is too high; a typed one under a learned ceiling is the owner's own limit. */
+export const knownContextWindow = (slot: LLMSlot): number | undefined => {
+  const declared = slot.context_window_tokens !== undefined && Number.isSafeInteger(slot.context_window_tokens)
+    && slot.context_window_tokens > 0 ? slot.context_window_tokens : undefined;
+  // A ceiling learned from our own estimate is in the estimator's units: in the provider's tokens it is that ÷ the
+  // endpoint's ratio, once one is known (the budget scales back by the ratio, so it lands where it was learned).
+  const bounds = contextBounds.get(endpointFingerprint(slot));
+  const ratio = bounds?.refusedFromEstimate === true ? estimateTokenRatio(slot) : undefined;
+  const learned = bounds?.refused === undefined ? undefined
+    : ratio === undefined ? bounds.refused : Math.floor(bounds.refused / ratio);
+  return declared === undefined ? learned : learned === undefined ? declared : Math.min(declared, learned);
+};
+
+/** {@link minLearnedContextWindow} over {@link knownContextWindow}: the smallest window any candidate is known to
+ *  have, declared or learned. A candidate with neither contributes nothing, as before. */
+export const minKnownContextWindow = (
+  slots: readonly LLMSlot[],
+): number | undefined => {
+  let min: number | undefined;
+  for (const slot of slots) {
+    const known = knownContextWindow(slot);
+    if (known === undefined) continue;
+    if (min === undefined || known < min) min = known;
   }
   return min;
 };

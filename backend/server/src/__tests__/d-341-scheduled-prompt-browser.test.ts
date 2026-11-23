@@ -173,7 +173,7 @@ describe('D-341 slice B5 — "Always allow browser actions for this scheduled pr
 
   it('under it, any of its runs\' browser actions run without asking, on any recipe and element, each use audited', async () => {
     const f = fixture();
-    await f.granter.grantOffer({ trigger: PROMPT, recipe_id: 'ps_1', recipe_sha256: V1, op: BROWSER, asks_ai: true });
+    await f.granter.grantOffer({ trigger: PROMPT, recipe_id: 'ps_1', recipe_sha256: V1, op: BROWSER, asks_ai: true }, { run_id: 'approved-run', checkpoint_id: 'approved-checkpoint' });
     const first = await f.run('click-a', scheduled('ps_1:3:200'));
     expect(first.awaiting_approval, JSON.stringify(first.errors)).toBeFalsy();
     const second = await f.run('click-b', scheduled('ps_1:3:200'));
@@ -192,7 +192,7 @@ describe('D-341 slice B5 — "Always allow browser actions for this scheduled pr
 
   it('covers nothing else: an edited prompt, another scheduled prompt, a scheduled recipe; an upload always asks', async () => {
     const f = fixture();
-    await f.granter.grantOffer({ trigger: PROMPT, recipe_id: 'ps_1', recipe_sha256: V1, op: BROWSER, asks_ai: true });
+    await f.granter.grantOffer({ trigger: PROMPT, recipe_id: 'ps_1', recipe_sha256: V1, op: BROWSER, asks_ai: true }, { run_id: 'approved-run', checkpoint_id: 'approved-checkpoint' });
     expect((await f.run('click-a', scheduled('ps_1:4:100', V2))).awaiting_approval).toBe(true);
     expect((await f.run('click-a', scheduled('ps_2:1:100', V1, 'ps_2'))).awaiting_approval).toBe(true);
     const recipeSchedule = { channel: 'schedule', actor: 'system', schedule_id: 'ps_1', cron: '0 7 * * *' } as ExecutionSource;

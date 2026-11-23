@@ -7,6 +7,7 @@
  *  server.
  */
 
+import { preapprovalCallerName } from './caller-preapproval-rpc.js';
 import type Database from 'better-sqlite3';
 import {
   ACTORS,
@@ -81,7 +82,10 @@ export interface ExecutionFeedRpcDeps {
   settledRunResults?: SettledRunResults;
   /** D-341 slice B1 — triggers' pre-approvals, for what a run made without asking. Absent ⇒
    *  `execution.get` carries no `preapproved`. */
-  triggerPreapprovals?: Pick<import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore, 'runWrites' | 'get'>;
+  triggerPreapprovals?: Pick<import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore, 'runWrites' | 'get'>
+    & Partial<Pick<import('./storage/trigger-preapproval-store.js').TriggerPreapprovalStore, 'getCaller'>>;
+  /** D-402 slice F5 — an AI app's name, as the owner gave its key, for a caller's pre-approval. */
+  aiAppNameOf?: (contract_id: string) => string | undefined;
 }
 
 interface ValidatedExecutionListQuery {
@@ -642,12 +646,24 @@ export const handleExecutionGet = async (
   // Records write runs through no commit, so the trace above cannot show it.
   const preapproved = deps.triggerPreapprovals?.runWrites(runId) ?? [];
   if (preapproved.length > 0) {
-    detail.preapproved = preapproved.map((write) => ({
-      preapproval_id: write.preapproval_id,
-      trigger_kind: deps.triggerPreapprovals!.get(write.preapproval_id)?.trigger.kind ?? 'unknown',
-      op: write.op,
-      writes: write.uses,
-    }));
+    detail.preapproved = preapproved.map((write) => {
+      // D-402 slice F5 — a caller's (the owner's chats, or an AI app): whose, and whether it ended
+      // with the run. A trigger's reads as before.
+      const held = deps.triggerPreapprovals!.getCaller?.(write.preapproval_id);
+      if (held !== undefined) {
+        return {
+          preapproval_id: write.preapproval_id, trigger_kind: 'caller', op: write.op, writes: write.uses,
+          caller: held.caller, caller_name: preapprovalCallerName(held.caller, deps.aiAppNameOf), recipe_id: held.recipe_id,
+          ...(held.run_id !== undefined ? { this_run: true } : {}),
+        };
+      }
+      return {
+        preapproval_id: write.preapproval_id,
+        trigger_kind: deps.triggerPreapprovals!.get(write.preapproval_id)?.trigger.kind ?? 'unknown',
+        op: write.op,
+        writes: write.uses,
+      };
+    });
   }
   // A held run the owner started from a page, now finished: what `execute`
   // would have answered, with the same receipt line under it.

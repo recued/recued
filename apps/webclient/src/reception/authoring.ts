@@ -1618,7 +1618,7 @@ export const buildIntakeFormFormModel = (
       key: 'required_visitor_fields.email',
       label: 'Visitor email',
       help: 'Whether the email box is needed, optional, or hidden.',
-      value: config?.required_visitor_fields.email ?? 'optional',
+      value: config?.required_visitor_fields?.email ?? 'optional',
       options: buildVisitorFieldRequirementOptions(['required', 'optional', 'omit']),
     },
   };

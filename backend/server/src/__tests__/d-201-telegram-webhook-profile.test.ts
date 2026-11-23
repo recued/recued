@@ -184,7 +184,8 @@ describe('D-201 Slices 7E + 9X-9AC + 9AX Telegram webhook profile adapter', () =
       event_id_field: 'update_id',
       event_id_grammar: 'positive_safe_integer.v1',
       event_id_max_value: 0x7fffffff,
-      event_type_grammar: 'ascii_identifier.v1',
+      // D-201 Slice 10G — Telegram's names are lowercase JSON member names.
+      event_type_grammar: 'lowercase_json_member_event_type.v1',
       event_type_max_bytes: 128,
     });
     expect(TELEGRAM_NORMALIZED_DELIVERY_DEDUPLICATOR_PRESET).toEqual({

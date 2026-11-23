@@ -74,6 +74,8 @@ import type { MailUpsertContext } from '../../collections/mail/mail-collection.j
 import type { CanonicalMessage } from '../../collections/mail/provider.js';
 import { settleWithin, STOP_GRACE_MS } from '../../lifecycle/settle-within.js';
 import { mailMayTrigger } from '../../mail-facts/mail-ingest.js';
+import { repliedClosingTitle } from '../../chat-closing-day.js';
+import { emailQuotedLines, type EmailClosingReply, type EmailCloseDayOutcome } from '../../email-close-day.js';
 
 /** Who sends asks and who answers them, read from the
  *  `connection.notification.email` record at each message. */
@@ -173,6 +175,10 @@ export interface ComposeInboundEmailAnswerDeps {
   /** Authenticate against enrolled notification mailboxes before loading any
    * ask. Production supplies all named email rows; legacy embedders use one. */
   resolveAccountCandidates?: () => readonly EmailAnswerAccounts[];
+  /** D-343 — a proven reply to an Agenda, evening notice or stream email that is no option's answer
+   *  closes its day in a conversation of its own (`email-close-day.ts`). Absent ⇒ such a reply is
+   *  ignored, as before. */
+  closeDay?: (reply: EmailClosingReply) => Promise<EmailCloseDayOutcome>;
   now?: () => number;
   log?: (
     level: 'info' | 'warn',
@@ -201,15 +207,46 @@ export const composeInboundEmailAnswer = (
   if (block === undefined || resolveAccounts === undefined) {
     log?.('info', 'inbound email answer funnel inert — missing deps');
   }
+  const accountCandidates = (): readonly EmailAnswerAccounts[] => deps.resolveAccountCandidates?.()
+    ?? [resolveAccounts?.()].filter((account): account is EmailAnswerAccounts => account !== null && account !== undefined);
+
+  /** D-343 — the owner's reply to a closing notice, handed on to close its day. Nothing when it
+   *  says nothing of its own. */
+  const closeDayFrom = async (msg: CanonicalMessage, title: string, ctx: MailUpsertContext): Promise<void> => {
+    const text = emailReplyText(msg.body_text).trim();
+    const rfc_message_id = msg.rfc_message_id?.trim() ?? '';
+    if (deps.closeDay === undefined || text === '' || rfc_message_id === '') return;
+    // A tagged reply may have awaited reminder recovery or lookup. Its owner must still be
+    // proven against the current accounts when the closing handoff takes ownership.
+    if (!accountCandidates().some(accounts => emailAnswerProof(msg, ctx, accounts) !== null)) return;
+    const outcome = await deps.closeDay({ title, text, quoted: emailQuotedLines(msg.body_text), rfc_message_id,
+      source: { slug: ctx.slug, record_id: ctx.record_id } });
+    log?.('info', 'inbound email reply to a closing notice', { title, outcome });
+  };
 
   const answer = async (
     msg: CanonicalMessage,
     ask_id: string,
     ctx: MailUpsertContext,
+    closing?: string,
   ): Promise<void> => {
     await block!.restoreAskDeliveries();
     const ask = await block!.getAsk(ask_id);
-    if (ask === null) return;
+    if (ask === null) {
+      // The reminder's retention does not end the day the email can close.
+      if (closing !== undefined) await closeDayFrom(msg, closing, ctx);
+      return;
+    }
+    let reply: Awaited<ReturnType<NotificationBlock['parseAskBundleReply']>> | undefined;
+    if (closing !== undefined) {
+      // A stream is both a notice and a reminder envelope. Matching is read-only until its route
+      // is known; a day report is not an unmatched reminder answer. Valid reminder answers still
+      // pass the original delivery's authentication and first-answer checks below.
+      reply = ask.delivery_group_id
+        ? await block!.parseAskBundleReply(ask.delivery_group_id, emailReplyText(msg.body_text), 'email', { record_unmatched: false })
+        : parseEmailReply({ subject: msg.subject, body_text: msg.body_text }, ask.options);
+      if (reply === null) { await closeDayFrom(msg, closing, ctx); return; }
+    }
     if (!ask.delivery_group_id && ask.status !== 'open') return;
     const destinations = ask.delivery_group_id
       ? (await block!.getAskDeliveryDestinations(ask.delivery_group_id)).filter(item => item.channel === 'email') : [];
@@ -229,7 +266,7 @@ export const composeInboundEmailAnswer = (
       return;
     }
     const { proof, destination } = authorized;
-    const reply = ask.delivery_group_id
+    if (reply === undefined) reply = ask.delivery_group_id
       ? await block!.parseAskBundleReply(ask.delivery_group_id, emailReplyText(msg.body_text), 'email')
       : parseEmailReply({ subject: msg.subject, body_text: msg.body_text }, ask.options);
     if (reply === null) return;
@@ -247,10 +284,11 @@ export const composeInboundEmailAnswer = (
     onMessageUpserted(msg, ctx): void {
       if (disposed || block === undefined || resolveAccounts === undefined) return;
       const ask_id = extractAskId(msg.subject);
-      if (ask_id === null) return;
+      // D-343 — a reply to an Agenda, evening notice or stream email, with or without an ask's tag.
+      const closing = deps.closeDay !== undefined ? repliedClosingTitle(msg.subject) : undefined;
+      if (ask_id === null && closing === undefined) return;
       if (!mailMayTrigger(msg, ctx, now())) return;
-      const accounts = deps.resolveAccountCandidates?.()
-        ?? [resolveAccounts()].filter((item): item is EmailAnswerAccounts => item !== null);
+      const accounts = accountCandidates();
       if (accounts.length === 0) return;
       if (!accounts.some(account => emailAnswerProof(msg, ctx, account) !== null)) {
         // With one address the inbox holds Recued's own notification and the
@@ -266,7 +304,7 @@ export const composeInboundEmailAnswer = (
         return;
       }
       let tracked!: Promise<void>;
-      tracked = answer(msg, ask_id, ctx).catch((error) => {
+      tracked = (ask_id !== null ? answer(msg, ask_id, ctx, closing) : closeDayFrom(msg, closing!, ctx)).catch((error) => {
         log?.('warn', 'inbound email answer funnel — answer failed', {
           error: error instanceof Error ? error.message : String(error),
         });
@@ -314,7 +352,7 @@ export const createLateEmailAnswerHook = (): LateEmailAnswerHook => {
         current(msg, ctx);
         return;
       }
-      if (extractAskId(msg.subject) === null) return;
+      if (extractAskId(msg.subject) === null && repliedClosingTitle(msg.subject) === undefined) return;
       pending.push([msg, ctx]);
       if (pending.length > LATE_HOOK_PENDING_MAX) pending.shift();
     },

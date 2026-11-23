@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
-  KITCHEN_DRAFT_MAX_COUNT, KITCHEN_DRAFT_SOURCE_MAX_BYTES, KITCHEN_OWNER_ORIGIN, KITCHEN_WORK_LIST_MAX,
+  KITCHEN_COMPILED_ORIGIN_PREFIX, KITCHEN_DRAFT_MAX_COUNT, KITCHEN_DRAFT_MAX_NOTES, KITCHEN_DRAFT_NOTE_MAX_CHARS,
+  KITCHEN_DRAFT_SOURCE_MAX_BYTES, KITCHEN_OWNER_ORIGIN, KITCHEN_WORK_LIST_MAX,
   kitchenDraftPath, RpcError, STDIO_MCP_TOKEN_ID,
   type KitchenDraftDiscardResult, type KitchenDraftImportInput, type KitchenDraftImportReceipt,
-  type KitchenDraftValidation, type KitchenImportDraft, type KitchenDraftSummary, type KitchenWorkBase,
-  type KitchenWorkItem,
+  type KitchenDraftMadeFrom, type KitchenDraftValidation, type KitchenImportDraft, type KitchenDraftSummary,
+  type KitchenWorkBase, type KitchenWorkItem,
 } from '@recued/contracts';
 import { validateRecipe } from '@recued/recipes';
 import { validateAuthoringSource } from '@recued/ingredient-authoring';
@@ -52,6 +53,12 @@ const sourceName = (kind: KitchenImportDraft['kind'], source: string): string | 
  *  its key's label, which keeps its own case. */
 export const describeKitchenDraftOrigin = (origin: string, tokenLabel?: (tokenId: string) => string | undefined): string => {
   if (origin === KITCHEN_OWNER_ORIGIN) return 'Kitchen';
+  // D-402 slice A3 — a draft Recued compiled from a chat request, or from an AI app's job.
+  if (origin === `${KITCHEN_COMPILED_ORIGIN_PREFIX}chat`) return 'your chat';
+  if (origin.startsWith(`${KITCHEN_COMPILED_ORIGIN_PREFIX}job:`)) {
+    const token = origin.slice(`${KITCHEN_COMPILED_ORIGIN_PREFIX}job:`.length);
+    return token === STDIO_MCP_TOKEN_ID ? 'a local AI app' : tokenLabel?.(token)?.trim() || 'an AI app';
+  }
   if (origin === `mcp:${STDIO_MCP_TOKEN_ID}`) return 'a local AI app';
   if (origin.startsWith('mcp:')) return tokenLabel?.(origin.slice('mcp:'.length))?.trim() || 'an AI app';
   return origin.startsWith('source:chat:') ? 'your chat' : 'a recipe';
@@ -62,13 +69,29 @@ interface Row {
   draft_id: string; kind: 'recipe' | 'pack'; title: string; source: string; source_hash: string;
   request_hash: string; revision: number; created_at: number; updated_at: number; receipt_json?: string;
   base_recipe_id?: string | null; base_version?: number | null;
+  notes_json?: string | null; made_from_json?: string | null;
 }
 const baseOf = (row: Row): { base?: KitchenWorkBase } =>
   row.base_recipe_id ? { base: { recipe_id: row.base_recipe_id, version: row.base_version ?? 1 } } : {};
+/** D-402 slice A3 — a compiled draft's notes and what it was made from; a row written before
+ *  either existed, or one whose JSON no longer reads, simply has none. */
+const compiledOf = (row: Row): { notes?: string[]; made_from?: KitchenDraftMadeFrom } => {
+  const read = (json: string | null | undefined): unknown => {
+    if (!json) return undefined;
+    try { return JSON.parse(json) as unknown; } catch { return undefined; }
+  };
+  const notes = read(row.notes_json);
+  const made_from = read(row.made_from_json);
+  return {
+    ...(Array.isArray(notes) && notes.every((note) => typeof note === 'string') ? { notes: notes as string[] } : {}),
+    ...(object(made_from) && (made_from.kind === 'chat_request' || made_from.kind === 'ai_app_job')
+      ? { made_from: made_from as unknown as KitchenDraftMadeFrom } : {}),
+  };
+};
 const draft = (row: Row): KitchenImportDraft => ({ draft_id: row.draft_id, kind: row.kind,
   title: row.title, source: row.source, source_hash: row.source_hash, revision: row.revision,
   created_at: row.created_at, updated_at: row.updated_at,
-  validation: validateKitchenDraftSource(row.kind, row.source), ...baseOf(row) });
+  validation: validateKitchenDraftSource(row.kind, row.source), ...baseOf(row), ...compiledOf(row) });
 const receipt = (row: Row, replayed: boolean): KitchenDraftImportReceipt => {
   const { source: _source, ...view } = draft(row);
   return { ...view, replayed, kitchen_path: kitchenDraftPath(row.draft_id), installed: false };
@@ -87,6 +110,12 @@ export interface KitchenDraftStore {
   /** Owner only (D-333): start new work under the owner's own origin. */
   /** `base`: changes to that saved recipe, kept as one item; a second is a conflict. */
   create(kind: KitchenImportDraft['kind'], source: string, base?: KitchenWorkBase): KitchenImportDraft;
+  /** D-402 slice A3 — a draft Recued compiled, under its own origin (`recued:chat`,
+   *  `recued:job:<token>`), with its notes and what it was made from. The import path's size,
+   *  validation and per-origin limit apply. Slice E4c — `base`: changes to that saved recipe, which
+   *  Kitchen continues on the recipe itself; a second item for it, of any origin, is a conflict. */
+  createCompiled(input: { origin: string; kind: KitchenImportDraft['kind']; source: string; title?: string;
+    notes: readonly string[]; made_from: KitchenDraftMadeFrom; base?: KitchenWorkBase }): KitchenImportDraft;
 }
 export const createKitchenDraftStore = (
   db: Database.Database,
@@ -108,6 +137,11 @@ export const createKitchenDraftStore = (
   }
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS kitchen_import_draft_base
     ON kitchen_import_draft (origin, base_recipe_id) WHERE base_recipe_id IS NOT NULL`);
+  // D-402 slice A3 — a compiled draft's notes and what it was made from.
+  if (!columns.some((column) => column.name === 'notes_json')) {
+    db.exec(`ALTER TABLE kitchen_import_draft ADD COLUMN notes_json TEXT;
+      ALTER TABLE kitchen_import_draft ADD COLUMN made_from_json TEXT`);
+  }
   const check = (origin: string, raw: unknown): { input: KitchenDraftImportInput; hash: string; existing?: Row } => {
     const input = parseKitchenDraftImport(raw);
     if (!origin) throw new RpcError('unauthorized', 'An authenticated author is required.', 401);
@@ -194,8 +228,9 @@ export const createKitchenDraftStore = (
     },
     create: db.transaction((kind: KitchenImportDraft['kind'], source: string, base?: KitchenWorkBase): KitchenImportDraft => {
       if (base !== undefined && kind !== 'recipe') return bad('Only a recipe keeps changes to a saved one.');
-      if (base !== undefined && db.prepare('SELECT 1 FROM kitchen_import_draft WHERE origin = ? AND base_recipe_id = ?')
-        .get(KITCHEN_OWNER_ORIGIN, base.recipe_id)) {
+      // One item per saved recipe, of any origin: Recued's changes to it count too (D-402 slice E4c).
+      if (base !== undefined && db.prepare('SELECT 1 FROM kitchen_import_draft WHERE base_recipe_id = ?')
+        .get(base.recipe_id)) {
         throw new RpcError('conflict', 'Changes to this recipe are already in progress. Reopen it to continue them.', 409);
       }
       // The import path, under the owner's origin: the same size, validation and limit rules.
@@ -204,6 +239,28 @@ export const createKitchenDraftStore = (
       if (base !== undefined) {
         db.prepare('UPDATE kitchen_import_draft SET base_recipe_id = ?, base_version = ? WHERE draft_id = ?')
           .run(base.recipe_id, base.version, created.draft_id);
+      }
+      return getDraft(created.draft_id)!;
+    }).immediate,
+    createCompiled: db.transaction((input: { origin: string; kind: KitchenImportDraft['kind']; source: string;
+      title?: string; notes: readonly string[]; made_from: KitchenDraftMadeFrom; base?: KitchenWorkBase }): KitchenImportDraft => {
+      if (!input.origin.startsWith(KITCHEN_COMPILED_ORIGIN_PREFIX)) return bad('Only Recued compiles a draft under its own origin.');
+      if (input.base !== undefined && input.kind !== 'recipe') return bad('Only a recipe keeps changes to a saved one.');
+      if (input.base !== undefined && db.prepare('SELECT 1 FROM kitchen_import_draft WHERE base_recipe_id = ?')
+        .get(input.base.recipe_id)) {
+        throw new RpcError('conflict', 'Changes to this recipe are already in progress. Reopen it to continue them.', 409);
+      }
+      if (input.notes.length > KITCHEN_DRAFT_MAX_NOTES
+        || input.notes.some((note) => typeof note !== 'string' || note.length > KITCHEN_DRAFT_NOTE_MAX_CHARS)) {
+        return bad(`A compiled draft keeps at most ${KITCHEN_DRAFT_MAX_NOTES} notes of ${KITCHEN_DRAFT_NOTE_MAX_CHARS} characters.`);
+      }
+      const created = importDraft(input.origin, { kind: input.kind, source: input.source, request_id: randomUUID(),
+        title: input.title ?? sourceName(input.kind, input.source) ?? (input.kind === 'recipe' ? 'New recipe' : 'New pack') });
+      db.prepare('UPDATE kitchen_import_draft SET notes_json = ?, made_from_json = ? WHERE draft_id = ?')
+        .run(JSON.stringify(input.notes), JSON.stringify(input.made_from), created.draft_id);
+      if (input.base !== undefined) {
+        db.prepare('UPDATE kitchen_import_draft SET base_recipe_id = ?, base_version = ? WHERE draft_id = ?')
+          .run(input.base.recipe_id, input.base.version, created.draft_id);
       }
       return getDraft(created.draft_id)!;
     }).immediate,

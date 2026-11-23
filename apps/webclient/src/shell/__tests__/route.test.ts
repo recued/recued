@@ -16,6 +16,7 @@ import {
   kitchenPackDraftId,
   normalizeShellHash,
   parseChatAnswerAddress,
+  parseChatCarryOnAddress,
   parseChatPlanAddress,
   parseChatSessionAddress,
   parseDataEntityVerificationAddress,
@@ -25,6 +26,7 @@ import {
   parseSourceRecordAddress,
   parseSourceRecordVerificationAddress,
   serializeChatAnswerAddress,
+  serializeChatCarryOnAddress,
   serializeChatPlanAddress,
   serializeChatSessionAddress,
   serializeDataEntityVerificationAddress,
@@ -320,6 +322,18 @@ describe('§D.shell — Chat citation round-trip routes', () => {
       parseShellRoute('#chat/session/chat-1/answer/message-1'),
     )).toBeNull();
     expect(parseChatSessionAddress(parseShellRoute('#chat/session'))).toBeNull();
+  });
+
+  it('D-402 slice E4b — round-trips a run carried on in Chat, the address the server links', () => {
+    const href = serializeChatCarryOnAddress({ runId: 'run 1/a' });
+    // The server's `carryOnLink` writes the same address (encodeURIComponent of the run id).
+    expect(href).toBe(`#chat/carry-on/${encodeURIComponent('run 1/a')}`);
+    expect(parseChatCarryOnAddress(parseShellRoute(href))).toEqual({ runId: 'run 1/a' });
+    expect(parseChatCarryOnAddress(parseShellRoute('#chat/carry-on'))).toBeNull();
+    expect(parseChatCarryOnAddress(parseShellRoute('#chat/carry-on/run-1/more'))).toBeNull();
+    expect(parseChatCarryOnAddress(parseShellRoute('#chat/session/run-1'))).toBeNull();
+    // It names a run, never a chat.
+    expect(parseChatSessionAddress(parseShellRoute(href))).toBeNull();
   });
 
   it('round-trips a durable Chat answer and rejects incomplete route tails', () => {

@@ -1,10 +1,10 @@
 /** Chrome's document ID is the dispatch target, not a tab lookup hint.
  * Functions injected below are deliberately self-contained. They do not
  * capture extension variables across Chrome's serialization boundary. */
-import { BRIDGE_REVIEW_DOCUMENT_LIMIT, isBridgeDocumentIdentity,
+import { BRIDGE_REVIEW_DOCUMENT_LIMIT, isBridgeDocumentIdentity, isBrowserClickRefusal,
   type BridgeAction, type BridgeDocumentIdentity } from '@recued/contracts';
 import type { ActionExecutorOutcome } from '../queue/dispatcher.js';
-import { clickPageElement, fillPageField, readPageField } from './page-fields.js';
+import { clickPageElement, fillPageField, readNavigationGuard, readPageField } from './page-fields.js';
 import {
   describeOutcome,
   describePageElement,
@@ -95,7 +95,8 @@ export const executeReviewedBridgeDocument = async (
     let inspected: Awaited<ReturnType<DocumentScripting['executeScript']>>;
     try {
       inspected = await (action === 'inspect'
-        ? scripting.executeScript({ target, func: inspectPage, args: [request.scope, request.limits, document.url] })
+        ? scripting.executeScript({ target, func: inspectPage, args: [request.scope, request.limits, document.url,
+          ...(args.preserve_structure === true ? [0, false, null, true, args.structure_scoped === true] : [])] })
         : scripting.executeScript({ target, func: describePageElement, args: [request.scope, document.url] }));
     } catch {
       return blocked();
@@ -121,6 +122,8 @@ export const executeReviewedBridgeDocument = async (
   const named = element && !('error' in element) ? element.scope : { selector: args.selector as string };
   // Chrome passes arguments as JSON: an undefined ref would arrive as null.
   const ref = named.ref === undefined ? [] : [named.ref];
+  const navigationGuard = readNavigationGuard(args.navigation_guard);
+  if (navigationGuard === null || navigationGuard && (action !== 'click' || !named.ref || navigationGuard.before_url !== document.url)) return blocked();
   let results: Awaited<ReturnType<DocumentScripting['executeScript']>>;
   // Read, fill and click run the field functions the ordinary executor runs,
   // with the reviewed address checked inside the same injection (`page-fields.ts`).
@@ -128,7 +131,8 @@ export const executeReviewedBridgeDocument = async (
     ? scripting.executeScript({ target, func: readPageField, args: [named.selector, document.url] })
     : action === 'fill'
       ? scripting.executeScript({ target, func: fillPageField, args: [named.selector ?? '', args.value, document.url, ...ref] })
-      : scripting.executeScript({ target, func: clickPageElement, args: [named.selector ?? '', document.url, ...ref] }));
+      : scripting.executeScript({ target, func: clickPageElement, args: [named.selector ?? '', document.url, ...ref,
+        ...(navigationGuard ? [null, navigationGuard.after_url] : [])] }));
   } catch {
     // An injection rejection can follow navigation or loss of acknowledgement.
     // Report uncertainty; neither endpoint may infer that the effect failed.
@@ -137,13 +141,17 @@ export const executeReviewedBridgeDocument = async (
   const result = results[0];
   if (result?.documentId !== document.document_id || !result.result || typeof result.result !== 'object'
     || Array.isArray(result.result)) return missingAcknowledgement();
-  const value = result.result as { blocked?: boolean; missing?: boolean; stale?: boolean; protected?: boolean;
-    not_applied?: unknown; outputs?: Record<string, unknown> };
+  const value = result.result as { blocked?: boolean; missing?: boolean; stale?: boolean; protected?: boolean; uncertain?: boolean;
+    not_applied?: unknown; outputs?: Record<string, unknown>; several?: unknown };
   // Only one canonical branch can acknowledge the injected operation. Truthy
   // flags or conflicting success/refusal fields do not prove that it settled.
   if (Object.keys(value).length !== 1) return missingAcknowledgement();
   if (value.blocked === true) return blocked();
+  if (value.uncertain === true) return unconfirmed();
   if (value.missing === true) return { status: 'error', error: { code: 'selector_not_found', message: 'The reviewed selector is missing.' } };
+  // D-402 slice G (§4 rule 4) — the reviewed selector now names several elements: none was written to.
+  if (typeof value.several === 'number') return { status: 'error', error: { code: 'selector_not_found',
+    message: `The reviewed selector now names ${String(value.several)} elements on the page, so nothing was done.` } };
   // The ref's element has gone: nothing was typed or clicked.
   if (byRef && value.stale === true) return { status: 'error', error: { code: 'selector_not_found', message: PAGE_CHANGED } };
   if (action === 'read_dom' && value.protected === true) return { status: 'error', error: { code: 'field_protected',
@@ -153,6 +161,8 @@ export const executeReviewedBridgeDocument = async (
   if ((action === 'fill' || action === 'click') && typeof value.not_applied === 'string') {
     return { status: 'error', error: { code: 'value_not_applied', message: value.not_applied } };
   }
+  if (action === 'click' && isBrowserClickRefusal(value.not_applied)) return { status: 'error', error: {
+    code: 'value_not_applied', message: value.not_applied.message, obstruction: value.not_applied.obstruction } };
   if (!value.outputs || typeof value.outputs !== 'object' || Array.isArray(value.outputs)) return missingAcknowledgement();
   if (action === 'fill' || action === 'click') {
     const key = action === 'fill' ? 'filled' : 'clicked';

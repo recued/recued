@@ -58,6 +58,7 @@ const changesOf = (result: unknown): DishWebhookDoorChange[] => {
       ...(d.reason_code === 'no_account' || d.reason_code === 'refused' || d.reason_code === 'fault'
         ? { reason_code: d.reason_code }
         : {}),
+      ...(d.choice_not_kept === true ? { choice_not_kept: true as const } : {}),
     });
   }
   return changes;
@@ -88,50 +89,77 @@ const closedText = (change: DishWebhookDoorChange): string => {
         ? sentence(`Messages coming in are refused: ${change.reason}`)
         : 'Messages coming in are refused.';
     default:
+      // D-201 Slice 10BW (10BS finding 17) — beside an owner's switch not kept,
+      // saving its settings again keeps the door closed: the owner's closing
+      // stands. Switching it on again is what opens it.
       return 'Recued could not update this webhook, so messages coming in are refused for now. '
-        + 'Save its settings again to retry.';
+        + (change.choice_not_kept === true ? 'Switch it on again to retry.' : 'Save its settings again to retry.');
   }
+};
+
+/** D-201 Slice 10BL (10BF finding 16) — the owner's switch that could not be
+ *  kept: said, for it was lost without a word. D-201 Slice 10BW (10BS finding
+ *  17) — said only where the door stays closed (10BR), so said as that: it
+ *  read as if the door were open now and might close. D-201 Slice 10CB (10BX
+ *  finding 13) — and switching it on again opens it only where nothing refuses
+ *  the door: beside a refusal it said so all the same, and switching on again
+ *  met the same refusal. Beside a fault, the fault's own words advise a retry. */
+const notKeptToast = (name: string, change: DishWebhookDoorChange): WebhookDoorToast => {
+  const refused = change.state === 'closed'
+    && (change.reason_code === 'refused' || change.reason_code === 'no_account');
+  return {
+    title: `Webhook switch not kept: ${name}`,
+    text: 'Recued could not keep your choice to open it, so it stays closed.' + (refused
+      ? ' Switch it on again once what refuses it is fixed.'
+      : change.state === 'closed' ? '' : ' Switch it on again to open it.'),
+    sticky: true,
+  };
 };
 
 /** The toasts a dish rpc's result calls for — none when it moved no door. */
 export const webhookDoorToasts = (result: unknown): WebhookDoorToast[] =>
   changesOf(result).flatMap((change): WebhookDoorToast[] => {
     const name = change.recipe_name?.trim() || change.recipe_id;
-    switch (change.state) {
-      case 'opened': {
-        const added = listOf(change.added);
-        if (!change.was_open) {
-          return [{
-            title: `Webhook on: ${name}`,
-            text: added === ''
-              ? 'Messages coming in now run with these settings.'
-              : `Messages coming in now run with these settings. They may use: ${added}.`,
-            sticky: true,
-          }];
-        }
-        const removed = listOf(change.removed);
-        const parts = ['These settings changed what messages coming in may use.'];
-        if (added !== '') parts.push(removed === '' ? `Now also: ${added}.` : `Now: ${added}.`);
-        if (removed !== '') parts.push(`No longer: ${removed}.`);
-        return [{ title: `Webhook changed: ${name}`, text: parts.join(' '), sticky: true }];
-      }
-      case 'closed':
-        return [{
-          title: change.was_open ? `Webhook off: ${name}` : `Webhook still off: ${name}`,
-          text: closedText(change),
-          sticky: true,
-        }];
-      case 'kept_revoked':
-        return [{
-          title: `Webhook still off: ${name}`,
-          text: 'Its access was turned off, and changing its settings does not turn it back on.',
-          sticky: true,
-        }];
-      default:
-        // `unchanged` is not news; the server leaves it out of the rpc anyway.
-        return [];
-    }
+    return [...doorToasts(change, name), ...(change.choice_not_kept === true ? [notKeptToast(name, change)] : [])];
   });
+
+const doorToasts = (change: DishWebhookDoorChange, name: string): WebhookDoorToast[] => {
+  switch (change.state) {
+    case 'opened': {
+      const added = listOf(change.added);
+      if (!change.was_open) {
+        return [{
+          title: `Webhook on: ${name}`,
+          text: added === ''
+            ? 'Messages coming in now run with these settings.'
+            : `Messages coming in now run with these settings. They may use: ${added}.`,
+          sticky: true,
+        }];
+      }
+      const removed = listOf(change.removed);
+      const parts = ['These settings changed what messages coming in may use.'];
+      if (added !== '') parts.push(removed === '' ? `Now also: ${added}.` : `Now: ${added}.`);
+      if (removed !== '') parts.push(`No longer: ${removed}.`);
+      return [{ title: `Webhook changed: ${name}`, text: parts.join(' '), sticky: true }];
+    }
+    case 'closed':
+      return [{
+        title: change.was_open ? `Webhook off: ${name}` : `Webhook still off: ${name}`,
+        text: closedText(change),
+        sticky: true,
+      }];
+    case 'kept_revoked':
+      return [{
+        title: `Webhook still off: ${name}`,
+        text: 'Its access was turned off, and changing its settings does not turn it back on.',
+        sticky: true,
+      }];
+    default:
+      // `unchanged` is not news; the server sends one only with
+      // `choice_not_kept`, said beside it.
+      return [];
+  }
+};
 
 /** Wrap a dish rpc so the webhook doors its result moved reach the owner. The
  *  result passes through untouched, and a failed rpc is the caller's to show.

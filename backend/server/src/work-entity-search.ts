@@ -1,5 +1,5 @@
 import {
-  RpcError, WORK_ENTITY_SEARCH_KINDS,
+  RpcError, WORK_ENTITY_SEARCH_KINDS, selectSearchPassage,
   type WorkEntity, type WorkEntitySearchGroup, type WorkEntitySearchKind,
   type WorkEntitySearchRpcRequest, type WorkEntitySearchRpcResponse,
 } from '@recued/contracts';
@@ -8,7 +8,7 @@ import type { WorkEntityResolver } from './work-entity-resolver.js';
 import { readThroughSourceIds } from './work-entity-read-resolution.js';
 
 const labels: Record<WorkEntitySearchKind, string> = {
-  task: 'Tasks', note: 'Notes', project: 'Projects', commitment: 'Commitments',
+  task: 'Tasks', note: 'Notes', project: 'Projects', commitment: 'Commitments', booking: 'Bookings',
 };
 const preview = (text: string, length: number): string => {
   const compact = text.replace(/\s+/g, ' ').trim();
@@ -20,6 +20,7 @@ const textOf = (entity: WorkEntity): { title: string; text: string } => {
     case 'note': return { title: entity.title?.trim() || 'Note', text: entity.body };
     case 'project': return { title: entity.title, text: entity.description ?? '' };
     case 'commitment': return { title: entity.statement, text: '' };
+    case 'booking': return { title: entity.title, text: '' };
     default: throw new Error('Unsupported work search kind');
   }
 };
@@ -32,7 +33,7 @@ export const handleWorkEntitySearch = (
 ): WorkEntitySearchRpcResponse => {
   if (args == null || typeof args.query !== 'string') throw new RpcError('bad_request', 'Search text must be a string.');
   if (args.kind !== undefined && !(WORK_ENTITY_SEARCH_KINDS as readonly unknown[]).includes(args.kind)) {
-    throw new RpcError('bad_request', 'Choose Tasks, Notes, Projects or Commitments.');
+    throw new RpcError('bad_request', 'Choose Tasks, Notes, Projects, Commitments or Bookings.');
   }
   const limit = args.limit ?? 5;
   const offset = args.offset ?? 0;
@@ -52,7 +53,9 @@ export const handleWorkEntitySearch = (
       const matches = entities.slice(0, limit).map(entity => {
         const { title, text } = textOf(entity);
         const state = freshness.get(entity.source_id)?.state;
-        return { id: entity.id, title: preview(title, 120), excerpt: preview(text, 180),
+        const passage = selectSearchPassage(text, query, 180);
+        const excerpt = `${passage.start > 0 ? '…' : ''}${passage.text.slice(passage.start, passage.end)}${passage.end < passage.text.length ? '…' : ''}`;
+        return { id: entity.id, title: preview(title, 120), excerpt,
           source_id: entity.source_id, source_label: deps.store.getSource(entity.source_id)?.source_label ?? 'Source unavailable',
           updated_at: entity.updated_at, stale: entity.sync_state === 'stale_unreachable'
             || state !== undefined && state !== 'local' && state !== 'fresh',

@@ -77,6 +77,8 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       // D-165 enroll-host #1 — vendor OAuth completion signal ({ flow_id }
       // only; the dialog claims the credential point-to-point).
       'connection.vendor_oauth_completed',
+      // D-348 — a rule for a request the owner repeats made, ended or used (Live control).
+      'contract.chain_rule_changed',
       // D-171 — `contract_definition` lifecycle (mint / revoke) fan-out;
       // the authoritative signal the Contracts inspector + MCP door
       // Advanced summary re-list off (replaces the token proxy).
@@ -88,6 +90,8 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       // D-177 N.13 (P6c) — the owner resolved a suggestion (accept/dismiss);
       // paired clients' "Suggested rules" panels drop/refresh the card.
       'contract.delegation_rule_suggestion_resolved',
+      // D-402 slice F5 — a pre-approval granted, used or ended.
+      'contract.preapproval_changed',
       // D-177 N.11 rule 5 (slice C) — scoped-grant proposal lifecycle.
       'contract.scoped_grant_suggested',
       'contract.scoped_grant_suggestion_resolved',

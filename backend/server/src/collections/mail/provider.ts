@@ -37,6 +37,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import {
+  CONNECTION_API_TIMEOUT_MS,
   isMailReconciliationId,
   MAIL_SENT_RECONCILIATION_MAX_WINDOW_MS,
   type MailSentAttachmentReconciliationQuery,
@@ -203,6 +204,28 @@ export const mimeFilenameParameter = (parameter: string, filename: string): stri
 export const mailHeaderText = (value: string): string =>
   // eslint-disable-next-line no-control-regex
   value.replace(/\r?\n(?=[ \t])/g, '').replace(/[\x00-\x1f\x7f]+/g, ' ');
+
+/** At most this many bytes of text per encoded word: base64 makes 60 characters of it, and with
+ *  `=?UTF-8?B?` and `?=` a word stays within RFC 2047's 75. */
+const ENCODED_WORD_BYTES = 45;
+
+/** A header's free text, safe to send: `mailHeaderText`, and, when it holds anything outside ASCII,
+ *  RFC 2047 encoded words (`=?UTF-8?B?…?=`), never a character split between two. A header is ASCII:
+ *  the raw UTF-8 of "Close the day · Sat 14 Nov" reached Gmail and Outlook as "Close the day Â· Sat
+ *  14 Nov" (live, 2026-11-14), so every notification with a "·" in its subject read wrong, and a
+ *  reply to one named no notice. `decodeMailHeaderWords` reads it back. */
+export const mailHeaderEncoded = (value: string): string => {
+  const text = mailHeaderText(value);
+  // eslint-disable-next-line no-control-regex
+  if (!/[^\x00-\x7f]/.test(text)) return text;
+  const words: string[] = []; let chunk = '';
+  for (const char of text) {
+    if (Buffer.byteLength(chunk + char, 'utf8') > ENCODED_WORD_BYTES) { words.push(chunk); chunk = ''; }
+    chunk += char;
+  }
+  if (chunk !== '') words.push(chunk);
+  return words.map((word) => `=?UTF-8?B?${Buffer.from(word, 'utf8').toString('base64')}?=`).join('\r\n ');
+};
 
 export const normalizeMailAttachmentMimeType = (raw: string | undefined): string => {
   const mime = String(raw ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
@@ -482,10 +505,21 @@ export const mailParsedHeaderMap = (parsed: {
  * Sent window. A complete scan may prove one exact accepted message; an
  * incomplete scan or provider failure can never be reinterpreted as absence. */
 export const MAIL_SENT_RECONCILIATION_MAX_SCAN = 200;
+/** The largest file whose bytes reconciliation reads back from Sent. Below the
+ * send cap (`MAIL_SEND_ATTACHMENT_MAX_BYTES`, 25 MiB since 2026-11-17): a send
+ * claim takes its one file as proof only up to here, and a larger file is
+ * proven by the envelope, as a message with several files always was. */
 export const MAIL_SENT_RECONCILIATION_MAX_ATTACHMENT_BYTES = 3 * 1_024 * 1_024;
 /** MIME/base64 framing adds overhead above the decoded 3 MiB artifact. Provider
  * adapters preflight whole-source reads against this ceiling. */
 export const MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES = 5 * 1_024 * 1_024;
+
+/** The deadline for one request that carries a message's files (2026-11-17):
+ * the ordinary API deadline, plus a second for every 125 KB, which is 1 Mbit/s
+ * up. Gmail's whole 35 MiB message gets about five and a half minutes, and one
+ * 3.3 MB range of an Outlook upload session about a minute. */
+export const mailUploadDeadlineMs = (bytes: number): number =>
+  CONNECTION_API_TIMEOUT_MS + Math.ceil(Math.max(0, bytes) / 125_000) * 1_000;
 
 /** Provider-private candidate used only while proving an unresolved outbound
  * send. `reconciliation_header_values` retains every raw occurrence so a

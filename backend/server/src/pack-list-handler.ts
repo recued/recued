@@ -94,6 +94,10 @@ export interface PackListRpcDeps {
    *  packs its recipes call that are missing (`missing_packs`). Absent ⇒ no row
    *  names any, rather than every row naming every pack. */
   installedPackRefs?: () => ReadonlySet<string>;
+  /** D-404 slice E — the types an installed pack ships that the owner has none of in Yours
+   *  (`createThingTypeQueries`). Absent ⇒ no row says so. */
+  missingThings?: (pack: { publisher: string; slug: string; recipes: readonly unknown[]; ships_recipes: boolean }) =>
+    ReadonlyArray<{ type_id: string; type_name: string }>;
   /** Per-pair recipe store. Required — the recipe-bearing `installed`
    *  join is the point of the rpc. Absent → composer returns the
    *  undefined-bundle + the rpc returns `not_configured`. */
@@ -481,19 +485,30 @@ export const listVersionExactInstalledPackManifests = (
  *  installed, each with the recipes that call it. `missingPackDependencies` is
  *  the decision, the one a run of each recipe is refused with. */
 const missingPacksOf = (
-  recipeStore: RecipeStore,
-  pack_slug: string,
+  recipes: ReadonlyArray<{ id: string; recipe: NonNullable<ReturnType<RecipeStore['get']>> }>,
   installedRefs: ReadonlySet<string>,
 ): PackMissingPack[] => {
   const byRef = new Map<string, string[]>();
-  for (const recipe_id of recipeStore.listForPack(pack_slug)) {
-    const recipe = recipeStore.get(recipe_id);
-    if (recipe === null) continue;
+  for (const { id: recipe_id, recipe } of recipes) {
     for (const ref of missingPackDependencies(recipe, installedRefs)) {
       byRef.set(ref, [...(byRef.get(ref) ?? []), recipe_id]);
     }
   }
   return [...byRef].map(([ref, recipe_ids]) => ({ ref, recipe_ids }));
+};
+
+/** An installed pack's recipes as the store holds them, each with its id: under its slug, and by the
+ *  recipe ids its manifest lists. ⛔ A Records pack's recipes are stored under its generated
+ *  `records-<hash>` id, never its slug (`records/install-coordinator.ts`), so the slug alone finds
+ *  none. Found live (D-404 slice E, 2026-11-19): Body signals read as acting on no type and never
+ *  asked for a Body, and D-321's "Needs <pack>" never showed for a Records pack; the tests had fed
+ *  recipes by hand. */
+const installedPackRecipes = (
+  recipeStore: RecipeStore,
+  manifest: { slug: string; recipes: ReadonlyArray<{ slug: string }> },
+): Array<{ id: string; recipe: NonNullable<ReturnType<RecipeStore['get']>> }> => {
+  const ids = new Set([...recipeStore.listForPack(manifest.slug), ...manifest.recipes.map((ref) => ref.slug)]);
+  return [...ids].flatMap((id) => { const recipe = recipeStore.get(id); return recipe === null ? [] : [{ id, recipe }]; });
 };
 
 export const handlePacksList = async (
@@ -518,10 +533,24 @@ export const handlePacksList = async (
       deps.sellerStore,
       deps.isConnectionSetUp,
     );
+    const packRecipes = projected.installed ? installedPackRecipes(deps.recipeStore, manifest) : [];
     const missing = projected.installed && installedRefs !== undefined
-      ? missingPacksOf(deps.recipeStore, manifest.slug, installedRefs)
+      ? missingPacksOf(packRecipes, installedRefs)
       : [];
-    const base: PackListEntry = missing.length > 0 ? { ...projected, missing_packs: missing } : projected;
+    // D-404 slice E — the types this installed pack ships that the owner has none of.
+    const things = projected.installed && deps.missingThings !== undefined
+      ? deps.missingThings({
+        publisher: manifest.publisher,
+        slug: manifest.slug,
+        recipes: packRecipes.map((entry) => entry.recipe),
+        ships_recipes: projected.recipe_count > 0,
+      })
+      : [];
+    const base: PackListEntry = {
+      ...projected,
+      ...(missing.length > 0 ? { missing_packs: missing } : {}),
+      ...(things.length > 0 ? { missing_things: things } : {}),
+    };
     if (deps.recordsStore === undefined) return base;
     // ⛔⛔ A RECORDS PACK READS AS INSTALLED ON ITS VERSION ALONE, and its recipes
     // can move without one. D-292 moved three importers' pins at the same pack

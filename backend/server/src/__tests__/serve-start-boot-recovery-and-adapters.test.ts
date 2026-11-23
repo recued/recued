@@ -234,6 +234,24 @@ describe('startBootRecoveryAndAdapters', () => {
     expect(bootRecoveryMocks.raiseInDoubtForSweptCommits).not.toHaveBeenCalled();
   });
 
+  // D-201 Slice 10AV (10AS finding 29) — a run held for the owner's try again
+  // gets no separate in-doubt ask: its dead letter is the one recovery.
+  it("hands the in-doubt raise whether a run is held for the owner's try again", async () => {
+    const sweptCommits = [{ commit_id: 'commit-3', request_id: 'run-held' }];
+    const getHeldForRun = vi.fn((runId: string) => (runId === 'run-held' ? { held: {} } : null));
+    await startBootRecoveryAndAdapters(makeOptions({
+      commitStore: {
+        sweepPendingToInDoubt: vi.fn(async () => sweptCommits),
+      } as unknown as StartBootRecoveryAndAdaptersOptions['commitStore'],
+      approvalRestartContinuations: { getHeldForRun } as unknown as StartBootRecoveryAndAdaptersOptions['approvalRestartContinuations'],
+    }));
+    const call = bootRecoveryMocks.raiseInDoubtForSweptCommits.mock.calls[0]![0] as {
+      heldForTryAgain?: (runId: string) => boolean;
+    };
+    expect(call.heldForTryAgain?.('run-held')).toBe(true);
+    expect(call.heldForTryAgain?.('run-other')).toBe(false);
+  });
+
   it('preserves recovery and in-doubt re-raise gates independently', async () => {
     const sweptCommits = [{ commit_id: 'commit-2' }];
     const options = makeOptions({

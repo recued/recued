@@ -32,6 +32,7 @@ import { createServerBackupHealthSource } from './server-backup-health.js';
 import { createBackupIntegrity } from './backup-integrity.js';
 import { createRestoreDrills } from './restore-drills.js';
 import type Database from 'better-sqlite3';
+import { FTS_KEY_MAP_SUFFIX } from '@recued/fts';
 import {
   recoveryKeyToEntropy,
   bundleToJSON,
@@ -225,6 +226,8 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   'data_repairs',
   // Transactional schema receipts contain no owner content.
   'database_schema_migrations',
+  // Only the index format marker is seeded. Saved rows and their links still count.
+  'work_entity_body_link_version',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a
@@ -277,6 +280,8 @@ export const restoreGuardUserDataTables = (
     for (const suffix of ['data', 'idx', 'docsize', 'config', 'content']) {
       ftsExcluded.add(`${name}_${suffix}`);
     }
+    // And the key map `@recued/fts` keeps beside each index: derived from the index, never data of its own.
+    ftsExcluded.add(`${name}${FTS_KEY_MAP_SUFFIX}`);
   }
 
   const tables = database

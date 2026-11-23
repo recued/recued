@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from '../string.js';
+import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64, url_encode } from '../string.js';
 import { ctx } from './helpers.js';
 
 const c = ctx();
@@ -249,4 +249,17 @@ describe('strip_html', () => {
     expect(strip_html({ input: 'x'.repeat(150_000) }, c)).toHaveLength(100_000));
   it('KNOWN LIMITATION (#2a): a > inside a quoted attribute leaves a tail fragment', () =>
     expect(strip_html({ input: '<div title="2 > 1">Hello</div>' }, c)).toBe('1">Hello'));
+});
+
+describe('url_encode (D-402 slice D3)', () => {
+  it('encodes a value for a web address, so what would end it stays part of it', () => {
+    expect(url_encode({ input: 'flights to Lisbon & Porto #2/3?' }, ctx())).toBe('flights%20to%20Lisbon%20%26%20Porto%20%232%2F3%3F');
+    expect(url_encode({ input: 'Café' }, ctx())).toBe('Caf%C3%A9');
+    expect(url_encode({ input: 42 }, ctx())).toBe('42');
+  });
+  it('is null for no value or an object', () => {
+    expect(url_encode({ input: null }, ctx())).toBeNull();
+    expect(url_encode({}, ctx())).toBeNull();
+    expect(url_encode({ input: { q: 'x' } }, ctx())).toBeNull();
+  });
 });

@@ -6,7 +6,7 @@
  *  words. `notification.pending_asks` carries it, and only when there is one. */
 
 import { describe, expect, it } from 'vitest';
-import { buildPreflightAsk } from '@recued/gateway';
+import { buildGatheredPreflightAsk, buildPreflightAsk } from '@recued/gateway';
 import type { Checkpoint } from '@recued/contracts';
 
 import { createAskActionNamer, heldActionName } from '../ask-card-action-name.js';
@@ -61,6 +61,20 @@ describe('naming the action an ask holds', () => {
     expect(namer({ ...payload, handler_kind: 'peer.ask' } as never)).toBeNull();
     expect(namer(held('mail-send', { raw_op_id: 'recued_op_x.y.z' }).payload)).toBeNull();
     expect(namer({ handler_kind: payload.handler_kind, handler_payload: { checkpoint_id: 'cp1' } })).toBeNull();
+  });
+
+  it('D-177 §N.15.9 — a round\'s gathered approval: the action its members share', () => {
+    const member = (n: number) => ({
+      checkpoint: {
+        checkpoint_id: `cp${String(n)}`, run_id: `run${String(n)}`, recipe_id: 'send-composed-mail', gated_step_id: 'send',
+        step_state: {}, created_at: n, preflight_context: { recipe_title: 'Send a composed email' },
+      } as Checkpoint,
+      context: { recipe_id: 'send-composed-mail', gated_step_id: 'send', tool_slug: 'mail-send', risk_tier: 'write' as const },
+      item: { summary: 'mail-send', args_preview: { to: [`g${String(n)}@example.test`] } },
+    });
+    const ask = buildGatheredPreflightAsk([member(1), member(2)]);
+    expect(namer({ handler_kind: ask.handler.kind, handler_payload: ask.handler.payload })).toBe('Send mail');
+    expect(namer({ handler_kind: ask.handler.kind, handler_payload: { members: [] } })).toBeNull();
   });
 
   it('a lookup that throws names nothing', () => {

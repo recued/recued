@@ -1,3 +1,5 @@
+import { SEARCH_TYPE_LABELS } from './universal-search-filter.js';
+import { REMINDER_STATUS_LABELS } from '../reminders/reminder-search.js';
 /** Server-backed named views wrap the existing Data reader; opening a link only reads. */
 import {
   SAVED_DATA_VIEW_NAME_LIMIT, parseSavedDataViewDefinition, sameSavedDataViewDefinition, savedDataViewSupportsAlerts,
@@ -68,6 +70,8 @@ const settingsSummary = (definition: SavedDataViewDefinition): string => {
   };
   const parts = [labels[definition.tab]];
   if ('query' in definition) parts.push(definition.query ? `Search: “${definition.query}”` : 'No search text');
+  if (definition.tab === 'search' && definition.result_type && definition.result_type !== 'all') parts.push(`Type: ${SEARCH_TYPE_LABELS[definition.result_type]}`);
+  if (definition.tab === 'search' && definition.reminder_state && definition.reminder_state !== 'all') parts.push(`Reminders: ${REMINDER_STATUS_LABELS[definition.reminder_state]}`);
   if ('source_id' in definition) {
     parts.push(`Source: ${definition.source_id ?? 'All sources'}`);
     if (definition.tab === 'booking') parts.push(`Lifecycle: ${definition.booking_lifecycle}`);
@@ -119,14 +123,16 @@ const alertControls = (view: SavedDataView, disabled: boolean, pendingId: string
 };
 const STYLES = `
   .saved-data-header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
-  .saved-data-header h1 { margin:0; font-size:20px; font-weight:650; }
+  .saved-data-header h1 { flex:1 0 auto; margin:0; font-size:20px; font-weight:650; }
+  .saved-data-header-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px; max-width:100%; }
   .saved-data-tools { min-width:0; max-width:var(--wc-content-max, 1080px); margin:0 auto; padding:16px 16px 0; color:var(--fg); }
   .saved-data-tools details { border:1px solid var(--border); border-radius:8px; padding:8px 12px; background:var(--surface-subtle); }
   .saved-data-tools a { color:var(--accent); overflow-wrap:anywhere; }
-  /* D-291 - the way out of Data to the saved-view list. Sized like the
-     header's button so the two read as one row, not a button with a stray
-     link. NOTE: no backticks in here - this block is a template literal. */
-  .saved-data-header .saved-data-views-link { align-content:center; min-height:44px; padding:8px 12px; }
+  /* Keep navigation beside the view actions, with the same control height. */
+  .saved-data-header .saved-data-views-link { display:inline-flex; align-items:center; justify-content:center;
+    box-sizing:border-box; min-height:var(--wc-control-h, 44px); padding:0 10px; border-radius:var(--wc-radius, 6px);
+    font-size:13px; font-weight:600; line-height:1.2; text-decoration:none; }
+  .saved-data-header .saved-data-views-link:hover { background:var(--surface-subtle); text-decoration:underline; }
   .saved-data-tools p { line-height:1.45; }
   .saved-data-tools :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
   .saved-data-tools summary { cursor:pointer; min-height:44px; display:list-item; align-content:center; }
@@ -166,6 +172,7 @@ const STYLES = `
   .saved-data-alert-help { flex-basis:100%; margin:0 0 8px; color:var(--muted); font-size:13px; }
   .saved-data-opened > .saved-data-alert-help { margin-top:0; }
   .saved-data-conflict { border:1px solid var(--border); border-radius:8px; padding:12px; overflow-wrap:anywhere; }
+  @media (max-width:640px) { .saved-data-header-actions { justify-content:flex-start; } }
   @media (max-width:600px) { .saved-data-tools li a { flex-basis:100%; } }
 `;
 
@@ -273,9 +280,11 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     listOpen = tools.querySelector?.('details')?.open ?? listOpen;
     const html = `
       <header class="saved-data-header"><h1 class="data-title" data-recued-data-route-heading tabindex="-1">${chrome === 'views' ? 'Saved views' : 'Data'}</h1>
-        ${(child === null && !createAttempt) || (createAttempt && edit?.kind === 'create') ? '' : `<button type="button" data-view-action="new" ${!busy && (createAttempt || canSave) ? '' : 'disabled'}>${createAttempt ? 'Check saved view' : selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
-        ${chrome === 'views' ? `<button type="button" data-view-action="refresh" aria-label="Refresh saved views" ${listing || busy ? 'aria-disabled="true"' : ''} ${listing ? 'aria-busy="true"' : ''}>${listing ? 'Refreshing…' : 'Refresh saved views'}</button>` : ''}
-        ${chrome === 'data' ? `<a class="saved-data-views-link" href="${e(serializeShellRoute('views'))}">Saved views</a>` : ''}</header>
+        <div class="saved-data-header-actions">
+          ${(child === null && !createAttempt) || (createAttempt && edit?.kind === 'create') ? '' : `<button type="button" class="wc-button" data-view-action="new" ${!busy && (createAttempt || canSave) ? '' : 'disabled'}>${createAttempt ? 'Check saved view' : selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
+          ${chrome === 'views' ? `<button type="button" class="wc-button" data-view-action="refresh" aria-label="Refresh saved views" ${listing || busy ? 'aria-disabled="true"' : ''} ${listing ? 'aria-busy="true"' : ''}>${listing ? 'Refreshing…' : 'Refresh saved views'}</button>` : ''}
+          ${chrome === 'data' ? `<a class="saved-data-views-link" href="${e(serializeShellRoute('views'))}">Saved views</a>` : ''}
+        </div></header>
       ${chrome !== 'views' ? '' : `${listing ? '<p role="status">Loading saved views…</p>' : ''}
         ${listError === null ? '' : `<p role="alert">${e(listError)}</p>`}
         ${views.length === 0 && !listing && listError === null ? `<p>No saved views yet. Open Data, choose your records and filters, then select “Save current view”.</p>
@@ -825,6 +834,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     whenLoaded: async () => { await pending; await child?.whenLoaded(); },
     navigateDeepLink: (hash: string): boolean => !busy && edit === null && deleting === null
       && child?.navigateDeepLink?.(hash) === true,
+    navigateDeepLinkAfterLeave: (hash: string): boolean => !busy && edit === null && deleting === null
+      && child?.navigateDeepLinkAfterLeave?.(hash) === true,
     getRunPageContext: () => child?.getRunPageContext() ?? null,
     getRecoveryContextFreshness: (): 'current' | 'unavailable' =>
       disposed || child === null || loadError !== null || listError !== null

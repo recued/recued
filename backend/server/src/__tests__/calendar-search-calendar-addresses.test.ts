@@ -19,10 +19,10 @@ import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import type { CalendarCollectionCaps } from '@recued/contracts';
 
-import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
+import { SERVER_CALENDAR_ONLY_NOTE, buildChatTier1Handlers } from '../chat-tool-handlers.js';
 import { createCalendarCollection } from '../collections/calendar/calendar-collection.js';
 import { createGraphCalProvider } from '../collections/calendar/graph-provider.js';
-import { createLocalCalendarProvider } from '../collections/calendar/local-provider.js';
+import { DEFAULT_LOCAL_CALENDAR_SLUG, createLocalCalendarProvider } from '../collections/calendar/local-provider.js';
 import { calendarAddressOf, type CalendarProvider } from '../collections/calendar/provider.js';
 import { createInstanceStore } from '../collections/instance-store.js';
 import type { HttpFetcher } from '../collections/mail/oauth.js';
@@ -49,7 +49,7 @@ const graphFetcher: HttpFetcher = async (url) => {
   return { status: 200, ok: true, json: async () => body, text: async () => JSON.stringify(body) };
 };
 
-const world = async () => {
+const world = async (opts: { outlook?: boolean; ownSlug?: string } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'calendar-addresses-'));
   const db = new Database(':memory:');
   cleanups.push(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -71,7 +71,7 @@ const world = async () => {
   });
   // A sync reads the calendar list.
   await outlook.initialScan({ backfill_days: 7, expansion_future_days: 30, expansion_past_days: 7, onEvent: async () => true });
-  const own = createLocalCalendarProvider({ slug: 'default', now: () => Date.now(), readEvent: () => null });
+  const own = createLocalCalendarProvider({ slug: opts.ownSlug ?? 'default', now: () => Date.now(), readEvent: () => null });
   const add = (provider: CalendarProvider) => {
     instances.upsert({
       platform: 'calendar', slug: provider.slug, adapter_type: provider.kind, config: {}, caps: CAPS,
@@ -87,7 +87,7 @@ const world = async () => {
     cleanups.push(() => collection.close());
     registry.register(collection as never);
   };
-  add(outlook);
+  if (opts.outlook !== false) add(outlook);
   add(own);
   const handlers = buildChatTier1Handlers({
     getContactStore: () => undefined,
@@ -130,5 +130,24 @@ describe('calendar.search names each calendar by its account', () => {
     expect(calendarAddressOf({ provider: { kind: 'caldav', accountEmail: 7 } })).toEqual({ address: '', provider: 'CalDAV' });
     // An inherited key is not a provider.
     expect(calendarAddressOf({ provider: { kind: 'toString' } }).provider).toBe('');
+  });
+});
+
+// D-405 slice 6 — the calendar every server makes for itself, read alone: the model is told it is not the
+// owner's, so an empty answer is never "you are free" (live, 3 of 3 before this note).
+describe('calendar.search with only Recued\'s own calendar', () => {
+  it('says so in the result the model reads, with or without a query', async () => {
+    const search = await world({ outlook: false, ownSlug: DEFAULT_LOCAL_CALENDAR_SLUG });
+    for (const args of [{}, { query: 'dentist' }]) {
+      const result = await search(args);
+      expect(result.collections).toEqual([DEFAULT_LOCAL_CALENDAR_SLUG]);
+      expect(result.note).toBe(SERVER_CALENDAR_ONLY_NOTE);
+    }
+    expect(SERVER_CALENDAR_ONLY_NOTE).toContain('no calendar of the owner\'s is connected');
+  });
+
+  it('⛔ not once a calendar of the owner\'s is read beside it, nor for a calendar of Recued\'s the owner made', async () => {
+    expect(await (await world({ ownSlug: DEFAULT_LOCAL_CALENDAR_SLUG }))({})).not.toHaveProperty('note');
+    expect(await (await world({ outlook: false }))({})).not.toHaveProperty('note');
   });
 });

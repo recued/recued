@@ -28,7 +28,9 @@ import {
   type AgentHeldRunResult,
 } from '../run-result-agent-projection.js';
 
-const owner: ExecutionSource = { channel: 'user', actor: 'user_self', user_id: 'owner-1', client_token_id: 'client-1' };
+/** The owner's chat, where a send asks by its approval (D-177 §N.15.6–7); run from the app it
+ *  would go without asking. */
+const owner = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-held', user_id: 'owner-1' } as ExecutionSource;
 
 const mailSendManifest = {
   slug: 'mail-send', name: 'mail-send', description: 'Test mail-send manifest',

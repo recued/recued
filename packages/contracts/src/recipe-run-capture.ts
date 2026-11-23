@@ -14,6 +14,9 @@ export interface RecipeRunCaptureSummary {
   state: 'prepared' | 'running' | 'ready' | 'unavailable';
   reason?: string; run_id?: string;
   run_outcome?: 'passed' | 'failed' | 'held' | 'waiting' | 'terminated' | 'skipped';
+  /** D-402 slice C — recorded from a trial of the recipe before it was saved ("Try it"), across its
+   *  approvals: offered as its saved test once the owner saves it. */
+  trial?: true;
 }
 export interface RecipeRunCaptureDraft {
   recipe: RecipeDefinition; recipe_digest: string; source_recipe_digest: string; case: RecipeRegressionCase;

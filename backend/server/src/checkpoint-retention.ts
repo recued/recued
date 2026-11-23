@@ -59,8 +59,11 @@ import {
   type AuditLogStore,
   type CheckpointStore,
 } from '@recued/storage';
+import { preflightAskHoldsCheckpoint } from '@recued/gateway';
+import { browserTrials } from './bridges/browser-trials.js';
 import type { GatedActionRecord, GatedActionStore } from './gated-action-store.js';
 import type { McpActionStore } from './mcp-action-store.js';
+import { runAsklessCheckpointDecision } from './checkpoint-decisions.js';
 import { carriedFromPausedRun } from './execution/paused-run-carry.js';
 
 /** Fixed grace for the garbage-collection half — generous against any
@@ -394,9 +397,8 @@ export const createCheckpointRetention = (
               if (deps.askHooks?.listUnresolvedAsks === undefined) return undefined;
               unresolved = await deps.askHooks.listUnresolvedAsks();
             }
-            return unresolved.find((ask) =>
-              ask.handler_kind === 'gateway.preflight'
-              && ask.handler_payload.checkpoint_id === checkpoint.checkpoint_id);
+            // Its own ask, or a round's gathered one that lists it (D-177 §N.15.9).
+            return unresolved.find((ask) => preflightAskHoldsCheckpoint(ask, checkpoint.checkpoint_id));
           };
 
           let action = await actionStore.getByCheckpoint(checkpoint.checkpoint_id);
@@ -531,215 +533,247 @@ export const createCheckpointRetention = (
         continue;
       }
 
-      let anchor: AuditEntry | null;
+      // The list is only a walk snapshot. Wait behind an accepted inbox
+      // decision, then reload the exact hold before reading its run/receipt.
+      const listed = checkpoint;
       try {
-        anchor = await deps.auditLog.get(checkpoint.run_id);
-      } catch (e) {
-        console.warn(
-          `[checkpoint-retention] auditLog.get(${checkpoint.run_id}) failed: `
-            + (e instanceof Error ? e.message : String(e)),
-        );
-        result.failed++;
-        continue;
-      }
-
-      // Crash recovery for the only split durability window in recipe expiry:
-      // audit append succeeded, receipt settlement or checkpoint delete did
-      // not. Repair the exact operation before generic terminal-anchor GC can
-      // discard the checkpoint that identifies it.
-      if (anchor !== null) {
-        const priorTimeout = recordedApprovalTimeout(anchor, checkpoint);
-        if (priorTimeout !== undefined) {
+        await runAsklessCheckpointDecision(deps, listed.checkpoint_id, async () => {
+          const checkpoint = await deps.checkpointStore.get(listed.checkpoint_id);
+          if (checkpoint === null || checkpoint.run_id !== listed.run_id
+            || checkpoint.recipe_id !== listed.recipe_id || checkpoint.gated_step_id !== listed.gated_step_id
+            || checkpoint.raw_op !== undefined) {
+            result.deferred++;
+            return;
+          }
+          const age = start - checkpoint.created_at;
+          let anchor: AuditEntry | null;
           try {
-            await settleExpiredGatedAction(checkpoint, priorTimeout);
+            anchor = await deps.auditLog.get(checkpoint.run_id);
+          } catch (e) {
+            console.warn(
+              `[checkpoint-retention] auditLog.get(${checkpoint.run_id}) failed: `
+                + (e instanceof Error ? e.message : String(e)),
+            );
+            result.failed++;
+            return;
+          }
+
+          // Crash recovery for the only split durability window in recipe expiry:
+          // audit append succeeded, receipt settlement or checkpoint delete did
+          // not. Repair the exact operation before generic terminal-anchor GC can
+          // discard the checkpoint that identifies it.
+          if (anchor !== null) {
+            const priorTimeout = recordedApprovalTimeout(anchor, checkpoint);
+            if (priorTimeout !== undefined) {
+              try {
+                await settleExpiredGatedAction(checkpoint, priorTimeout);
+                await deps.checkpointStore.delete(checkpoint.checkpoint_id);
+                result.expired++;
+                try {
+                  await deps.onExpired?.(anchor);
+                } catch {
+                  // The expiry is already durable. Advisory observers do not own
+                  // receipt/checkpoint convergence.
+                }
+              } catch (e) {
+                console.warn(
+                  `[checkpoint-retention] expiry recovery failed for run ${checkpoint.run_id}: `
+                    + (e instanceof Error ? e.message : String(e)),
+                );
+                result.failed++;
+              }
+              return;
+            }
+          }
+
+          // A durable owner denial may still be repairing its receipt. Its
+          // checkpoint is needed by the denial retry; terminal-anchor GC must
+          // not discard that continuation before the receipt reaches denied.
+          if (anchor?.commit_status === 'failed' && anchor.errors?.some(error =>
+            error.code === 'RECIPE_POLICY_DENIED' && error.error_id.startsWith('preflight-deny-')
+            && error.source?.step_id === checkpoint.gated_step_id && error.details?.denied_by === 'owner'
+            && error.details?.checkpoint_id === checkpoint.checkpoint_id)) {
+            const action = await exactGatedAction(checkpoint);
+            if (action !== null && action.status !== 'denied') { result.deferred++; return; }
+          }
+
+          // D-234 § 234.4 — ⛔⛔ THE PREDICATE, NOT THE LITERAL, AND THIS IS THE SITE
+          // THAT PROVES WHY THE PREDICATE EXISTS. This branch classifies a checkpoint
+          // as GARBAGE and deletes it. Comparing against `'awaiting_approval'` alone
+          // means every run held for a PEER'S answer looks like crash residue, and
+          // gets swept after the grace period — the run destroyed, silently, with no
+          // test catching it because no fixture writes the new status. `isHeld…`
+          // asks the question this branch actually means: is a live hold still
+          // pointing at this checkpoint?
+          if (
+            anchor === null
+            || !isHeldRunAnchorStatus(anchor.commit_status)
+            || (anchor.checkpoint_id !== undefined
+              && anchor.checkpoint_id !== checkpoint.checkpoint_id)
+          ) {
+            // Garbage half — orphaned (no anchor), terminal (run already
+            // completed), or superseded (a newer pause owns the anchor).
+            // All three are crash residue the resumer's at-entry guard
+            // would skip; the row is unconsumable.
+            if (age < GARBAGE_GRACE_MS) return;
+            try {
+              // Best-effort zombie-prompt close: a crash between an answer
+              // dispatch's skip and its checkpoint delete (or between this
+              // sweep's own expiry row and its delete) can leave a live
+              // card pointing at a finished run. TERMINAL anchors only —
+              // a superseded-awaiting anchor's `ask_id` belongs to the
+              // NEWER pause that rewrote the row in place (the live prompt
+              // of a live run); cancelling it would strand that run until
+              // the staleness guard, since the boot sweep skips
+              // `alreadyPaired` anchors. Idempotent; `'not_open'` is the
+              // normal outcome — in particular a terminal batch member's
+              // anchor can point at the shared batch ask, which by then is
+              // past `open` (members only resume through an answer).
+              // ⚠ ALSO THE PREDICATE, for the same reason one level down: this
+              // closes a zombie prompt on a TERMINAL anchor. A peer-held anchor is
+              // not terminal, and cancelling its ask would be cancelling a live
+              // conversation on ANOTHER server.
+              if (
+                anchor !== null
+                && !isHeldRunAnchorStatus(anchor.commit_status)
+                && anchor.ask_id !== undefined
+                && deps.askHooks !== undefined
+              ) {
+                try {
+                  await deps.askHooks.cancelAsk(anchor.ask_id);
+                } catch {
+                  // best-effort — the checkpoint delete below is the work.
+                }
+              }
+              await deps.checkpointStore.delete(checkpoint.checkpoint_id);
+              result.garbage_collected++;
+            } catch (e) {
+              console.warn(
+                `[checkpoint-retention] garbage delete failed for checkpoint `
+                  + `${checkpoint.checkpoint_id}: `
+                  + (e instanceof Error ? e.message : String(e)),
+              );
+              result.failed++;
+            }
+            return;
+          }
+
+          // Staleness-guard half — awaiting anchor, current checkpoint.
+          //
+          // D-210 Phase C — an ASK-LESS hold falls straight past every deferral
+          // below and expires. That is correct, and it is worth saying why,
+          // because Phase C made ask-less holds ROUTINE (a notify-mode reception
+          // hold is never given a durable ask; the webclient inbox owns its
+          // lifecycle) and the obvious-looking "a party owns it, so don't expire
+          // it" change is WRONG:
+          //
+          //   - every deferral below protects ASK bookkeeping — a batch member's
+          //     lifecycle, an answered-but-undispatched ask, an open-cancel race.
+          //     An ask-less hold has none of it, so there is nothing to defer TO.
+          //   - staleness is ORIGIN-INDEPENDENT product policy, not a technical
+          //     timeout: `preflight.stale_after_days` is documented as the guard
+          //     against "an approval clicked months later firing into a changed
+          //     world". A reception submission from a stranger is that risk, not
+          //     an exception to it.
+          //   - the owner already decides: `stale_after_days = 0` means wait
+          //     forever. A hard-coded never-expire rule for one party would take
+          //     that choice away AND grow checkpoints holding visitor PII without
+          //     bound — the inbox implements no expiry of its own, and an awaiting
+          //     anchor is exempt from both audit-retention passes precisely
+          //     BECAUSE this guard is what eventually makes it terminal.
+          //
+          // Pinned by the two D-210 Phase C cases in `checkpoint-retention.test.ts`.
+          if (staleAfterMs === null || age < staleAfterMs) return;
+          try {
+            if (anchor.ask_id !== undefined && deps.askHooks !== undefined) {
+              const ask = await deps.askHooks.getAsk(anchor.ask_id);
+              // codex BLOCKER 1 fold — a batch-registered hold (D-177 P5a)
+              // is NEVER expired through its member pointer. A join
+              // re-renders the batch ask: only the JOINING run's anchor
+              // gets the fresh `ask_id`; older members keep their
+              // superseded (cancelled → `handled`) ask, so this row's
+              // state says nothing about the LIVE batch ask still covering
+              // the member — expiring on it would delete a checkpoint a
+              // live prompt's approve is about to resume (a dropped
+              // decision). The batch substrate owns its members' lifecycle;
+              // defer unconditionally.
+              if (
+                ask !== null
+                && typeof ask.handler_payload.batch_id === 'string'
+                && ask.handler_payload.batch_id.length > 0
+              ) {
+                result.deferred++;
+                return;
+              }
+              if (ask !== null && ask.status === 'answered') {
+                // A real decision awaiting (or retrying) dispatch — the
+                // answer path owns this checkpoint; never drop it (D-158
+                // TR-4). The dispatch consumes the checkpoint on success.
+                result.deferred++;
+                return;
+              }
+              if (ask !== null && ask.status === 'open') {
+                const outcome = await deps.askHooks.cancelAsk(anchor.ask_id);
+                if (outcome === 'not_open') {
+                  // An answer won the serializer race this instant — its
+                  // dispatch proceeds; re-examine next tick.
+                  result.deferred++;
+                  return;
+                }
+              }
+              // `handled` / missing row / just-cancelled — no live answer
+              // path can start (`submitAnswer` no-ops past `open`).
+            }
+            // Re-check the row immediately before retiring the anchor: an
+            // answer that completed between the anchor read and here has
+            // consumed the checkpoint (delete precedes `markHandled`) — a
+            // gone row means the run finished; expiring it would overwrite
+            // a real outcome.
+            if ((await deps.checkpointStore.get(checkpoint.checkpoint_id)) === null) {
+              result.deferred++;
+              return;
+            }
+            const gatedAction = await exactGatedAction(checkpoint);
+            // A won dispatch claim is proof this is no longer an unanswered hold.
+            // Its resumer owns convergence and expiry must not overwrite it.
+            if (gatedAction?.status === 'dispatching'
+              || (gatedAction !== null && isGatedActionTerminal(gatedAction.status))) {
+              result.deferred++;
+              return;
+            }
+            const terminalEntry = buildExpiryEntry(
+              anchor,
+              checkpoint,
+              cfg.staleAfterDays as number,
+              start,
+            );
+            await deps.auditLog.append(terminalEntry);
+            await settleExpiredGatedAction(
+              checkpoint,
+              terminalEntry.errors![0]!,
+              gatedAction,
+            );
             await deps.checkpointStore.delete(checkpoint.checkpoint_id);
             result.expired++;
+            // D-402 slice C (§8.3) — a trial that expired at its hold: its saved test hears it ended.
+            if (checkpoint.trial === true) browserTrials.endedAtHold(checkpoint.run_id);
             try {
-              await deps.onExpired?.(anchor);
+              await deps.onExpired?.(terminalEntry);
             } catch {
-              // The expiry is already durable. Advisory observers do not own
-              // receipt/checkpoint convergence.
+              // The expiry is already durable. An advisory observer cannot turn it
+              // back into a failed prune or resurrect the checkpoint.
             }
           } catch (e) {
             console.warn(
-              `[checkpoint-retention] expiry recovery failed for run ${checkpoint.run_id}: `
+              `[checkpoint-retention] expiry failed for run ${checkpoint.run_id}: `
                 + (e instanceof Error ? e.message : String(e)),
             );
             result.failed++;
           }
-          continue;
-        }
-      }
-
-      // D-234 § 234.4 — ⛔⛔ THE PREDICATE, NOT THE LITERAL, AND THIS IS THE SITE
-      // THAT PROVES WHY THE PREDICATE EXISTS. This branch classifies a checkpoint
-      // as GARBAGE and deletes it. Comparing against `'awaiting_approval'` alone
-      // means every run held for a PEER'S answer looks like crash residue, and
-      // gets swept after the grace period — the run destroyed, silently, with no
-      // test catching it because no fixture writes the new status. `isHeld…`
-      // asks the question this branch actually means: is a live hold still
-      // pointing at this checkpoint?
-      if (
-        anchor === null
-        || !isHeldRunAnchorStatus(anchor.commit_status)
-        || (anchor.checkpoint_id !== undefined
-          && anchor.checkpoint_id !== checkpoint.checkpoint_id)
-      ) {
-        // Garbage half — orphaned (no anchor), terminal (run already
-        // completed), or superseded (a newer pause owns the anchor).
-        // All three are crash residue the resumer's at-entry guard
-        // would skip; the row is unconsumable.
-        if (age < GARBAGE_GRACE_MS) continue;
-        try {
-          // Best-effort zombie-prompt close: a crash between an answer
-          // dispatch's skip and its checkpoint delete (or between this
-          // sweep's own expiry row and its delete) can leave a live
-          // card pointing at a finished run. TERMINAL anchors only —
-          // a superseded-awaiting anchor's `ask_id` belongs to the
-          // NEWER pause that rewrote the row in place (the live prompt
-          // of a live run); cancelling it would strand that run until
-          // the staleness guard, since the boot sweep skips
-          // `alreadyPaired` anchors. Idempotent; `'not_open'` is the
-          // normal outcome — in particular a terminal batch member's
-          // anchor can point at the shared batch ask, which by then is
-          // past `open` (members only resume through an answer).
-          // ⚠ ALSO THE PREDICATE, for the same reason one level down: this
-          // closes a zombie prompt on a TERMINAL anchor. A peer-held anchor is
-          // not terminal, and cancelling its ask would be cancelling a live
-          // conversation on ANOTHER server.
-          if (
-            anchor !== null
-            && !isHeldRunAnchorStatus(anchor.commit_status)
-            && anchor.ask_id !== undefined
-            && deps.askHooks !== undefined
-          ) {
-            try {
-              await deps.askHooks.cancelAsk(anchor.ask_id);
-            } catch {
-              // best-effort — the checkpoint delete below is the work.
-            }
-          }
-          await deps.checkpointStore.delete(checkpoint.checkpoint_id);
-          result.garbage_collected++;
-        } catch (e) {
-          console.warn(
-            `[checkpoint-retention] garbage delete failed for checkpoint `
-              + `${checkpoint.checkpoint_id}: `
-              + (e instanceof Error ? e.message : String(e)),
-          );
-          result.failed++;
-        }
-        continue;
-      }
-
-      // Staleness-guard half — awaiting anchor, current checkpoint.
-      //
-      // D-210 Phase C — an ASK-LESS hold falls straight past every deferral
-      // below and expires. That is correct, and it is worth saying why,
-      // because Phase C made ask-less holds ROUTINE (a notify-mode reception
-      // hold is never given a durable ask; the webclient inbox owns its
-      // lifecycle) and the obvious-looking "a party owns it, so don't expire
-      // it" change is WRONG:
-      //
-      //   - every deferral below protects ASK bookkeeping — a batch member's
-      //     lifecycle, an answered-but-undispatched ask, an open-cancel race.
-      //     An ask-less hold has none of it, so there is nothing to defer TO.
-      //   - staleness is ORIGIN-INDEPENDENT product policy, not a technical
-      //     timeout: `preflight.stale_after_days` is documented as the guard
-      //     against "an approval clicked months later firing into a changed
-      //     world". A reception submission from a stranger is that risk, not
-      //     an exception to it.
-      //   - the owner already decides: `stale_after_days = 0` means wait
-      //     forever. A hard-coded never-expire rule for one party would take
-      //     that choice away AND grow checkpoints holding visitor PII without
-      //     bound — the inbox implements no expiry of its own, and an awaiting
-      //     anchor is exempt from both audit-retention passes precisely
-      //     BECAUSE this guard is what eventually makes it terminal.
-      //
-      // Pinned by the two D-210 Phase C cases in `checkpoint-retention.test.ts`.
-      if (staleAfterMs === null || age < staleAfterMs) continue;
-      try {
-        if (anchor.ask_id !== undefined && deps.askHooks !== undefined) {
-          const ask = await deps.askHooks.getAsk(anchor.ask_id);
-          // codex BLOCKER 1 fold — a batch-registered hold (D-177 P5a)
-          // is NEVER expired through its member pointer. A join
-          // re-renders the batch ask: only the JOINING run's anchor
-          // gets the fresh `ask_id`; older members keep their
-          // superseded (cancelled → `handled`) ask, so this row's
-          // state says nothing about the LIVE batch ask still covering
-          // the member — expiring on it would delete a checkpoint a
-          // live prompt's approve is about to resume (a dropped
-          // decision). The batch substrate owns its members' lifecycle;
-          // defer unconditionally.
-          if (
-            ask !== null
-            && typeof ask.handler_payload.batch_id === 'string'
-            && ask.handler_payload.batch_id.length > 0
-          ) {
-            result.deferred++;
-            continue;
-          }
-          if (ask !== null && ask.status === 'answered') {
-            // A real decision awaiting (or retrying) dispatch — the
-            // answer path owns this checkpoint; never drop it (D-158
-            // TR-4). The dispatch consumes the checkpoint on success.
-            result.deferred++;
-            continue;
-          }
-          if (ask !== null && ask.status === 'open') {
-            const outcome = await deps.askHooks.cancelAsk(anchor.ask_id);
-            if (outcome === 'not_open') {
-              // An answer won the serializer race this instant — its
-              // dispatch proceeds; re-examine next tick.
-              result.deferred++;
-              continue;
-            }
-          }
-          // `handled` / missing row / just-cancelled — no live answer
-          // path can start (`submitAnswer` no-ops past `open`).
-        }
-        // Re-check the row immediately before retiring the anchor: an
-        // answer that completed between the anchor read and here has
-        // consumed the checkpoint (delete precedes `markHandled`) — a
-        // gone row means the run finished; expiring it would overwrite
-        // a real outcome.
-        if ((await deps.checkpointStore.get(checkpoint.checkpoint_id)) === null) {
-          result.deferred++;
-          continue;
-        }
-        const gatedAction = await exactGatedAction(checkpoint);
-        // A won dispatch claim is proof this is no longer an unanswered hold.
-        // Its resumer owns convergence and expiry must not overwrite it.
-        if (gatedAction?.status === 'dispatching'
-          || (gatedAction !== null && isGatedActionTerminal(gatedAction.status))) {
-          result.deferred++;
-          continue;
-        }
-        const terminalEntry = buildExpiryEntry(
-          anchor,
-          checkpoint,
-          cfg.staleAfterDays as number,
-          start,
-        );
-        await deps.auditLog.append(terminalEntry);
-        await settleExpiredGatedAction(
-          checkpoint,
-          terminalEntry.errors![0]!,
-          gatedAction,
-        );
-        await deps.checkpointStore.delete(checkpoint.checkpoint_id);
-        result.expired++;
-        try {
-          await deps.onExpired?.(terminalEntry);
-        } catch {
-          // The expiry is already durable. An advisory observer cannot turn it
-          // back into a failed prune or resurrect the checkpoint.
-        }
-      } catch (e) {
-        console.warn(
-          `[checkpoint-retention] expiry failed for run ${checkpoint.run_id}: `
-            + (e instanceof Error ? e.message : String(e)),
-        );
+        });
+      } catch (error) {
+        console.warn(`[checkpoint-retention] decision failed for checkpoint ${listed.checkpoint_id}: `
+          + (error instanceof Error ? error.message : String(error)));
         result.failed++;
       }
     }

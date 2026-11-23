@@ -1944,3 +1944,41 @@ describe('Google Calendar reviewed writes', () => {
     expect(result.etag).toBe('"next-v2"');
   });
 });
+
+// D-407 slice 4 — an occasion's own event: private at Google (`visibility`), and its one alert as given (an empty list is
+// none; absent, the calendar's default), on create and on update.
+describe('D-407 slice 4 — GcalProvider writes the private marking and the alerts as given', () => {
+  const event = { id: 'occ-1', iCalUID: 'occ-1@google.com', summary: 'Dr. Lee', status: 'confirmed', etag: '"e1"',
+    start: { dateTime: '2026-12-12T10:30:00Z' }, end: { dateTime: '2026-12-12T11:30:00Z' }, created: '2026-11-21T00:00:00Z', updated: '2026-11-21T00:00:00Z' };
+  const writer = () => {
+    const sent: Array<{ method: string; body: Record<string, unknown> }> = [];
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'POST' || init?.method === 'PATCH') sent.push({ method: init.method, body: JSON.parse(String(init.body ?? '{}')) });
+      return { status: 200, ok: true, async json() { return event; }, async text() { return JSON.stringify(event); } };
+    };
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher, scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    return { provider, sent };
+  };
+  const base = { calendar_id: 'primary', summary: 'Dr. Lee', start_at: Date.parse('2026-12-12T10:30:00Z'), end_at: Date.parse('2026-12-12T11:30:00Z'),
+    timezone: 'UTC', is_all_day: false, status: 'confirmed' as const };
+
+  it('create: private with one alert; no alert; the calendar\'s default when none is given', async () => {
+    const { provider, sent } = writer();
+    await provider.createEvent('primary', { ...base, marked_private: true, reminders: [{ method: 'popup', minutes: 120 }] });
+    await provider.createEvent('primary', { ...base, reminders: [] });
+    await provider.createEvent('primary', base);
+    expect(sent[0]!.body).toMatchObject({ visibility: 'private', reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 120 }] } });
+    expect(sent[1]!.body).toMatchObject({ reminders: { useDefault: false, overrides: [] } });
+    expect(sent[1]!.body).not.toHaveProperty('visibility');
+    expect(sent[2]!.body).not.toHaveProperty('reminders');
+  });
+
+  it('update: the marking taken away or set, the alert changed', async () => {
+    const { provider, sent } = writer();
+    await provider.updateEvent({ calendar_id: 'primary', source_id: 'occ-1', patch: { marked_private: false, reminders: [{ method: 'popup', minutes: 30 }] } });
+    await provider.updateEvent({ calendar_id: 'primary', source_id: 'occ-1', patch: { marked_private: true } });
+    expect(sent[0]).toEqual({ method: 'PATCH', body: { visibility: 'default', reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 30 }] } } });
+    expect(sent[1]).toEqual({ method: 'PATCH', body: { visibility: 'private' } });
+  });
+});

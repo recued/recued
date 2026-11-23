@@ -930,7 +930,8 @@ const resolveRecallScanContext = (
   // `contact.search`.
   // ⚠ A FIRST ROUND STILL PAYS NOTHING: no tool results, no recall context, no
   //   index build, byte-identity fast path intact.
-  if (!hasRecallContext(packet) && !hasPriorToolCalls(packet)) return undefined;
+  if (!hasRecallContext(packet) && !hasPriorToolCalls(packet)
+    && !(packet !== null && typeof packet === 'object' && 'request_execution_context' in packet)) return undefined;
   const resolver = plan.recall.getIndex();
   if (resolver === undefined) return undefined;
   return { resolver };
@@ -1336,6 +1337,7 @@ const uniformContentScanDataFields = (
   // phrase map once per provider packet, not once per prior-call data field.
   const normalizedAliases = normalizedExecutionCaseAliases(plan);
   let changed = false;
+  if (aliasRequestEvidenceData(record, plan)) changed = true;
   const calls = record.prior_tool_calls;
   if (Array.isArray(calls)) {
     for (const call of calls) {
@@ -1354,6 +1356,16 @@ const uniformContentScanDataFields = (
     }
   }
   if (aliasLedgerFieldInPlace(record, 'correction_context', plan)) changed = true;
+  // Browser requirements copy owner prose. Alias the free text while keeping
+  // host protocol enums stable, as with the mail edit target below.
+  const browserContext = record['browser_task_context'];
+  if (browserContext && typeof browserContext === 'object' && !Array.isArray(browserContext)) {
+    const requirements = (browserContext as Record<string, unknown>)['requirements'];
+    if (Array.isArray(requirements)) for (const item of requirements) {
+      if (item && typeof item === 'object' && !Array.isArray(item)
+        && aliasLedgerFieldInPlace(item as Record<string, unknown>, 'requirement', plan)) changed = true;
+    }
+  }
   // ⛔⛔⛔ THE ROLLING BRIEF'S OWN PACKET FIELDS — ABSENT FROM THIS ENUMERATION
   //   SINCE THE FEATURE SHIPPED, SO THEY REACHED THE PROVIDER RAW.
   //
@@ -1527,6 +1539,46 @@ const aliasAssistantTurnsAgainstWarehouse = (
     }
     if (aliasRecallFieldInPlace(turn, 'content', plan, { resolver })) changed = true;
   }
+  return changed;
+};
+
+/** Evidence data shares chat's single egress pass. IDs, tool names and timestamps
+ * are bindings, so only the text, arguments and results are scanned. */
+const aliasRequestEvidenceData = (packet: Record<string, unknown>, plan: PiiEgressPlan,
+  recall?: RecallScanContext): boolean => {
+  const raw = packet['request_execution_context'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const context = raw as Record<string, unknown>;
+  let changed = false;
+  const scan = (value: unknown, field: string, warehouse: boolean): void => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const row = value as Record<string, unknown>;
+    if (warehouse && recall ? aliasRecallFieldInPlace(row, field, plan, recall) : aliasLedgerFieldInPlace(row, field, plan)) changed = true;
+  };
+  scan(context.current_request, 'text', false);
+  for (const request of Array.isArray(context.earlier_requests) ? context.earlier_requests : []) scan(request, 'text', false);
+  for (const lane of ['successful_calls_for_current_request', 'successful_actions_for_earlier_requests']) {
+    for (const call of Array.isArray(context[lane]) ? context[lane] : []) {
+      scan(call, 'args', true); scan(call, 'result', true);
+    }
+  }
+  for (const rawAttempt of Array.isArray(context.resolved_action_outcomes) ? context.resolved_action_outcomes : []) {
+    const attempt = rawAttempt as Record<string, unknown>;
+    scan(attempt.owner_request, 'text', false);
+    scan(attempt, 'args', true); scan(attempt.receipt, 'result', true);
+  }
+  const pending=context.pending_approvals as Record<string,unknown> | undefined;
+  for (const rawPlan of Array.isArray(pending?.plans) ? pending.plans : []) {
+    const pendingPlan=rawPlan as Record<string,unknown>;
+    scan(pendingPlan,'args',true);scan(pendingPlan.owner_request,'text',false);
+  }
+  const approved = context.approved_actions as Record<string, unknown> | undefined;
+  for (const rawAction of Array.isArray(approved?.actions) ? approved.actions : []) {
+    const action = rawAction as Record<string, unknown>;
+    scan(action, 'args', true); scan(action.owner_request, 'text', false);
+  }
+  for (const reply of Array.isArray(context.recorded_assistant_replies) ? context.recorded_assistant_replies : []) scan(reply, 'text', true);
+  scan(context.prepared_assistant_reply, 'text', true);
   return changed;
 };
 
@@ -1958,8 +2010,7 @@ const aliasChatAiInputData = async (
     //   `aliasLedgerFieldInPlace`. Results are CONTENT; args are a RECORD of
     //   what the model sent. This mirrors it instead of inventing a rule.
     if (recallCtx !== undefined) {
-      // Closing summaries carry the same tool records under another top-level
-      // field. They need the same warehouse scan and degraded withholding.
+      if (aliasRequestEvidenceData(target as Record<string, unknown>, plan, recallCtx)) changed = true;
       const calls = ['prior_tool_calls', 'tool_results_since'].flatMap(lane => {
         const entries = (target as Record<string, unknown>)[lane];
         return Array.isArray(entries) ? entries : [];
@@ -2386,7 +2437,8 @@ const restoreChatAiResult = (
  * failed request from publishing unseen aliases, but two overlapping clones
  * could otherwise allocate the same next alias to different people and then
  * overwrite one another at commit. Serialize the complete provider-request
- * lease per live ledger; different sessions remain fully concurrent. */
+ * lease per live ledger. A bounded batch holds one lease for all its members;
+ * different sessions remain fully concurrent. */
 const LEDGER_REQUEST_TAILS = new WeakMap<
   PiiEgressPlan['ledger'],
   Promise<unknown>
@@ -2406,6 +2458,143 @@ const withSerializedLedgerRequest = async <T>(
       LEDGER_REQUEST_TAILS.delete(ledger);
     }
   }
+};
+
+interface PreparedChatAiCall {
+  readonly input: Record<string, unknown>;
+  readonly serialized: string;
+  readonly authority: piiEgress.RequestRestoreAuthority;
+  readonly stagedLedger: SessionLedger;
+  readonly stagedPlan: PiiEgressPlan;
+}
+
+/** Preparation runs sequentially under the live ledger lease. A batch shares
+ * its allocation ledger, but every response gets its own immutable authority. */
+const prepareChatAiCall = async (
+  input: Record<string, unknown>, plan: PiiEgressPlan, stagedLedger: SessionLedger,
+  entityParts?: readonly EntityPromptPart[],
+  validateEgress?: (input: Record<string, unknown>) => void,
+): Promise<PreparedChatAiCall> => {
+  // D-326 — an address is aliased together with the contact it belongs to, asked
+  // at the moment the address is first aliased (its domain's moment), so the owner
+  // becomes known exactly when its address does: a mail sender before the contact
+  // search, a name only in a snippet, an address that does not spell the name.
+  // ⚠ Asked lazily, so a request that aliases no address builds no index; and on
+  // this staged clone only, never the session ledger (`Ledger.ownerOfEmail`).
+  // ⛔ NOT a pre-pass over the packet: learning an owner BEFORE the scan decision
+  // would alias the owner's own words in a request that otherwise sends them as
+  // written (D-315 §4.3, `d-315-ai-pass-privacy.test.ts`).
+  stagedLedger.ownerOfEmail = (email) => plan.recall?.getIndex()?.ownerOfEmail?.(email);
+  const stagedPlan: PiiEgressPlan = {
+    ...plan,
+    ledger: stagedLedger,
+    summary: { value: emptyRedactionSummary() },
+    restoreAuthority: {},
+    restoredAssistantText: {},
+    retainedCandidates: { value: [] },
+  };
+  let aliasedInput: Record<string, unknown>;
+  let serializedAliasedInput: string;
+  let authority: piiEgress.RequestRestoreAuthority;
+  try {
+    aliasedInput = dropStaleCachePrefix(
+      await aliasChatAiInput(input, stagedPlan, entityParts),
+    );
+  } catch (error) {
+    if (error instanceof ChatPiiPrivacyError) throw error;
+    if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
+      throw new ChatPiiPrivacyError(
+        'recall-bearing packet could not be protected',
+      );
+    }
+    throw error;
+  }
+  try {
+    serializedAliasedInput = JSON.stringify(aliasedInput);
+  } catch (error) {
+    if (error instanceof ChatPiiPrivacyError) throw error;
+    if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
+      throw new ChatPiiPrivacyError(
+        'recall-bearing packet could not be protected',
+      );
+    }
+    throw error;
+  }
+  // Validation errors preserve their own public contract. The callback is an
+  // enforcement observer, not a packet transformer.
+  validateEgress?.(aliasedInput);
+  try {
+    const afterValidation = JSON.stringify(aliasedInput);
+    if (afterValidation !== serializedAliasedInput) {
+      throw new Error('egress validator mutated the protected packet');
+    }
+    // This exact byte projection is both what transparency captures and what
+    // grants reverse authority.
+    serializedAliasedInput = afterValidation;
+    authority = piiEgress.deriveRequestRestoreAuthority(
+      stagedLedger,
+      serializedAliasedInput,
+    );
+  } catch (error) {
+    if (error instanceof ChatPiiPrivacyError) throw error;
+    if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
+      throw new ChatPiiPrivacyError(
+        'recall-bearing packet could not be protected',
+      );
+    }
+    throw error;
+  }
+  return { input: aliasedInput, serialized: serializedAliasedInput, authority, stagedLedger, stagedPlan };
+};
+
+const finishProtectedChatAiCall = (
+  result: ChatAiCallResult, prepared: PreparedChatAiCall, plan: PiiEgressPlan,
+  onEgress?: (prompt: string) => void,
+  onRetainedCandidates?: (candidates: readonly RetainedAliasCandidate[]) => void,
+): ChatAiCallResult => {
+  const { stagedPlan, authority, serialized: serializedAliasedInput } = prepared;
+  plan.summary.value = mergeRedactionSummary(
+    plan.summary.value,
+    stagedPlan.summary.value,
+  );
+  if (plan.restoreAuthority !== undefined) {
+    plan.restoreAuthority.value = authority;
+  }
+  if (plan.retainedCandidates !== undefined) {
+    plan.retainedCandidates.value = stagedPlan.retainedCandidates?.value ?? [];
+  }
+  if (onRetainedCandidates) {
+    try {
+      onRetainedCandidates(stagedPlan.retainedCandidates?.value ?? []);
+    } catch {
+      // Source projection capture is best-effort after a successful send;
+      // source finalization will honestly retain fewer candidates.
+    }
+  }
+  if (onEgress) {
+    try {
+      onEgress(serializedAliasedInput);
+    } catch {
+      // A transparency sink cannot invalidate a provider send that already
+      // succeeded.
+    }
+  }
+  const restoredResult = restoreChatAiResult(result, authority);
+  if (plan.restoredAssistantText !== undefined) {
+    const body = restoredResult.body;
+    const response =
+      body !== null
+      && typeof body === 'object'
+      && !Array.isArray(body)
+      && typeof (body as Record<string, unknown>).response === 'string'
+        ? (body as Record<string, unknown>).response as string
+        : undefined;
+    plan.restoredAssistantText.value = response;
+    if (response !== undefined) {
+      (plan.restoredAssistantText.responses ??= new Set()).add(response);
+    }
+  }
+  return restoredResult;
 };
 
 /** Wrap the orchestrator's `executeAiCall` with the per-call PII enactment
@@ -2444,138 +2633,17 @@ export const wrapExecuteAiCallForPii = (
   // ⚠ `opts` IS FORWARDED, AND TYPESCRIPT CANNOT CHECK THAT IT IS. A 2-arg
   //   function is assignable to a 3-arg type, so a wrapper that drops the
   //   per-call options compiles clean and the option silently never arrives.
-  return (manifest, input, opts) => withSerializedLedgerRequest(
-    plan.ledger,
-    async () => {
-    // D-167 — fix the slot ordering BEFORE anything in this request allocates:
-    // the pre-scan, the prefetch entity parts, the recall seed and the packet
-    // pass all allocate below, and whichever runs first would otherwise own slot
-    // 1. Inside the lease, so two concurrent turns cannot both seed. Writes to
-    // the LIVE ledger, not the staged clone — a reservation is not an allocation
-    // and must survive a request that never commits.
-    if (plan.seedSlotOrdering !== undefined) await plan.seedSlotOrdering();
-    const stagedLedger = piiEgress.stageLedgerForRequest(plan.ledger);
-    // D-326 — an address is aliased together with the contact it belongs to, asked
-    // at the moment the address is first aliased (its domain's moment), so the owner
-    // becomes known exactly when its address does: a mail sender before the contact
-    // search, a name only in a snippet, an address that does not spell the name.
-    // ⚠ Asked lazily, so a request that aliases no address builds no index; and on
-    // this staged clone only, never the session ledger (`Ledger.ownerOfEmail`).
-    // ⛔ NOT a pre-pass over the packet: learning an owner BEFORE the scan decision
-    // would alias the owner's own words in a request that otherwise sends them as
-    // written (D-315 §4.3, `d-315-ai-pass-privacy.test.ts`).
-    stagedLedger.ownerOfEmail = (email) => plan.recall?.getIndex()?.ownerOfEmail?.(email);
-    const stagedPlan: PiiEgressPlan = {
-      ...plan,
-      ledger: stagedLedger,
-      summary: { value: emptyRedactionSummary() },
-      restoreAuthority: {},
-      restoredAssistantText: {},
-      retainedCandidates: { value: [] },
-    };
-    let aliasedInput: Record<string, unknown>;
-    let serializedAliasedInput: string;
-    let authority: piiEgress.RequestRestoreAuthority;
-    try {
-      aliasedInput = dropStaleCachePrefix(
-        await aliasChatAiInput(input, stagedPlan, entityParts),
-      );
-    } catch (error) {
-      if (error instanceof ChatPiiPrivacyError) throw error;
-      if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
-        throw new ChatPiiPrivacyError(
-          'recall-bearing packet could not be protected',
-        );
-      }
-      throw error;
-    }
-    try {
-      serializedAliasedInput = JSON.stringify(aliasedInput);
-    } catch (error) {
-      if (error instanceof ChatPiiPrivacyError) throw error;
-      if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
-        throw new ChatPiiPrivacyError(
-          'recall-bearing packet could not be protected',
-        );
-      }
-      throw error;
-    }
-    // Validation errors preserve their own public contract. The callback is an
-    // enforcement observer, not a packet transformer.
-    validateEgress?.(aliasedInput);
-    try {
-      const afterValidation = JSON.stringify(aliasedInput);
-      if (afterValidation !== serializedAliasedInput) {
-        throw new Error('egress validator mutated the protected packet');
-      }
-      // This exact byte projection is both what transparency captures and what
-      // grants reverse authority.
-      serializedAliasedInput = afterValidation;
-      authority = piiEgress.deriveRequestRestoreAuthority(
-        stagedLedger,
-        serializedAliasedInput,
-      );
-      piiEgress.restrictStagedLedgerForRequest(
-        plan.ledger,
-        stagedLedger,
-        authority,
-      );
-    } catch (error) {
-      if (error instanceof ChatPiiPrivacyError) throw error;
-      if (plan.candidateReharvest?.hasRegisteredRecall() === true) {
-        throw new ChatPiiPrivacyError(
-          'recall-bearing packet could not be protected',
-        );
-      }
-      throw error;
-    }
-    // D-191 — aliasing-only: the wrap aliases the outbound packet + restores the
-    // returned body. Force-local routing is retired — aliasing is the sole PII
-    // protection; routing is the user's slot_1/slot_2/free_pool choice.
-    const result = await real(manifest, aliasedInput, opts);
-    piiEgress.commitLedgerForRequest(plan.ledger, stagedLedger);
-    plan.summary.value = mergeRedactionSummary(
-      plan.summary.value,
-      stagedPlan.summary.value,
-    );
-    if (plan.restoreAuthority !== undefined) {
-      plan.restoreAuthority.value = authority;
-    }
-    if (plan.retainedCandidates !== undefined) {
-      plan.retainedCandidates.value = stagedPlan.retainedCandidates?.value ?? [];
-    }
-    if (onRetainedCandidates) {
-      try {
-        onRetainedCandidates(stagedPlan.retainedCandidates?.value ?? []);
-      } catch {
-        // Source projection capture is best-effort after a successful send;
-        // source finalization will honestly retain fewer candidates.
-      }
-    }
-    if (onEgress) {
-      try {
-        onEgress(serializedAliasedInput);
-      } catch {
-        // A transparency sink cannot invalidate a provider send that already
-        // succeeded.
-      }
-    }
-    const restoredResult = restoreChatAiResult(result, authority);
-    if (plan.restoredAssistantText !== undefined) {
-      const body = restoredResult.body;
-      const response =
-        body !== null
-        && typeof body === 'object'
-        && !Array.isArray(body)
-        && typeof (body as Record<string, unknown>).response === 'string'
-          ? (body as Record<string, unknown>).response as string
-          : undefined;
-      plan.restoredAssistantText.value = response;
-      if (response !== undefined) {
-        (plan.restoredAssistantText.responses ??= new Set()).add(response);
-      }
-    }
-    return restoredResult;
-    },
-  );
+  return (manifest, input, opts) => withSerializedLedgerRequest(plan.ledger, async () => {
+    opts?.signal?.throwIfAborted();
+    // Slot reservations survive requests that never commit. Seed while the live
+    // ledger is locked, before any staged packet allocates an alias.
+    await plan.seedSlotOrdering?.();
+    const prepared = await prepareChatAiCall(input, plan, piiEgress.stageLedgerForRequest(plan.ledger), entityParts, validateEgress);
+    piiEgress.restrictStagedLedgerForRequest(plan.ledger, prepared.stagedLedger, prepared.authority);
+    opts?.signal?.throwIfAborted();
+    const result = await real(manifest, prepared.input, opts);
+    piiEgress.commitLedgerForRequest(plan.ledger, prepared.stagedLedger);
+    return finishProtectedChatAiCall(result, prepared, plan, onEgress, onRetainedCandidates);
+  });
 };
+

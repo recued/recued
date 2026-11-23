@@ -147,6 +147,7 @@ import type {
   ReceptionConfigTemplate,
   ReceptionEndpointKind,
   ReceptionPageConfig,
+  ReceptionTemplateListResult,
   ServerRpcRegistry,
 } from '@recued/contracts';
 import {
@@ -440,20 +441,30 @@ export const mountReceptionRoute = (
     }
   };
 
-  const reloadTemplates = async (): Promise<void> => {
-    try {
+  let templatesInFlight: Promise<ReceptionTemplateListResult> | null = null;
+  let templatesReloadQueued = false;
+  const loadTemplates = (): Promise<ReceptionTemplateListResult> => {
+    if (templatesInFlight) return templatesInFlight;
+    templatesInFlight = (async () => {
       const result = await opts.conn('reception.template.list');
-      if (disposed) return;
+      if (disposed) return result;
       rawTemplates = result.templates;
-      rawConfigTemplates = result.config_templates;
+      rawConfigTemplates = result.config_templates ?? [];
       rawPackTemplates = result.pack_templates ?? [];
       rawPackTemplatesUnavailable = result.pack_templates_unavailable ?? [];
-    } catch {
-      // rawTemplates / rawConfigTemplates stay at the previous value;
-      // resolveTemplateSeed / resolveConfigTemplateSeed return null for any
-      // ref not already cached, the host opens the authoring form with a
-      // blank seed (the documented "template not loaded" fallback).
-    }
+      return { ...result, config_templates: rawConfigTemplates };
+    })().finally(() => {
+      templatesInFlight = null;
+      if (templatesReloadQueued && !disposed) {
+        templatesReloadQueued = false;
+        void reloadTemplates();
+      }
+    });
+    return templatesInFlight;
+  };
+  const reloadTemplates = async (): Promise<void> => {
+    // Background failures retain the cache; an explicit gallery read exposes retry.
+    try { await loadTemplates(); } catch { /* The gallery owns its read error. */ }
   };
 
   // DD#8 — re-read the authoritative open-ask count + force a redraw when
@@ -505,6 +516,7 @@ export const mountReceptionRoute = (
     // the `resolveTemplateSeed` bridge reads — the gallery shows the cards,
     // the bridge resolves the picked ref into a seed config.
     getTemplates: () => rawTemplates,
+    onLoadTemplates: loadTemplates,
     // D-151 — the non-intake config templates (scheduling links + contact
     // pages) the same gallery renders, off the same cache.
     getConfigTemplates: () => rawConfigTemplates,
@@ -625,7 +637,8 @@ export const mountReceptionRoute = (
       await reloadPageConfig();
       if (disposed) return;
     }
-    void opts.shell.loadPage();
+    // The shell publishes the failure for the page's recovery action.
+    void opts.shell.loadPage().catch(() => {});
   })();
   void reloadTemplates();
 
@@ -671,7 +684,8 @@ export const mountReceptionRoute = (
   const packUnsubscribes: Array<() => void> = [];
   if (opts.subscribe) {
     const onPackChange = (): void => {
-      void reloadTemplates();
+      if (templatesInFlight) templatesReloadQueued = true;
+      else void reloadTemplates();
     };
     packUnsubscribes.push(opts.subscribe('pack_installed', onPackChange));
     packUnsubscribes.push(opts.subscribe('pack_uninstalled', onPackChange));

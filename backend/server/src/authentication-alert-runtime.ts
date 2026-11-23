@@ -16,6 +16,11 @@ export const authenticationRepairHash = (target?: AuthenticationRepairTarget): s
 };
 const label = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 120);
 const useKind = { pack: 'Pack', recipe: 'Recipe', dish: 'Dish', schedule: 'Schedule', mail: 'Mail', calendar: 'Calendar', file: 'Files' } as const;
+/** A use as a sentence names it: "the calendar “Home”". */
+const useWords = { pack: 'the pack', recipe: 'the recipe', dish: 'the dish', schedule: 'the schedule', mail: 'the mailbox',
+  calendar: 'the calendar', file: 'the files' } as const;
+const listWords = (parts: readonly string[]): string => parts.length <= 1 ? parts.join('')
+  : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]!}`;
 export const authenticationAlertMessage = (notice: AuthenticationAlertNotice, publicBaseUrl?: string | null): {
   message: NotificationMessage; hash: string;
 } => {
@@ -41,8 +46,19 @@ export const authenticationAlertMessage = (notice: AuthenticationAlertNotice, pu
     const date = group.issues.find(i => i.code === 'secret_expiry')?.secret_expires_on;
     text = `${label(group.label)}: the secret expiry date you recorded is ${date ?? 'unknown'}. Review usage and rotate the secret if needed. This date is a reminder; it does not prove that vendor access has stopped.`;
   } else if (notice.level === 'rejected') {
-    title = 'Connection access was rejected';
-    text = `${label(group.label)}: a saved check or background operation reported rejected sign-in or permissions. Open the account and choose Manage authentication to review and repair access.`;
+    // The owner, 2026-11-14, reading one on Telegram: in plain words, what stopped and what to do.
+    const name = label(group.label);
+    // D-343 (the owner's day audit, 2026-11-15) — each use in words ("its calendar “bench-cal”"),
+    // not a label ("Calendar: bench-cal"), and what else may be affected said plainly.
+    const stopped = uses.slice(0, 4).map(u => `${useWords[u.kind]} “${label(u.label)}”`);
+    const more = uses.length > 4 ? ` and ${uses.length - 4} more` : '';
+    title = `Recued can't sign in to ${name}`;
+    text = `${name} refused Recued's sign-in or its permissions`
+      + (stopped.length ? `, so ${listWords(stopped)}${more} can't run` : '')
+      + '. Open the account in Recued and choose Manage authentication to sign in again.'
+      + (!group.usage_available ? ' Other things that use this account may have stopped too.' : '');
+    return { hash, message: { title, text,
+      ...(publicBaseUrl ? { link_url: `${publicBaseUrl.replace(/\/+$/, '')}/${hash}` } : {}) } };
   } else {
     title = 'Connection needs attention';
     text = `${label(group.label)}: a recorded access or configuration problem has remained for at least 15 minutes. A network, service or configuration problem may be the cause; an authentication cause is unconfirmed. Open the saved account or source to review its status.`;

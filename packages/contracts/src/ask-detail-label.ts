@@ -106,6 +106,8 @@ export const approvalValueLabel = (
     return undefined;
   };
   if (typeof value === 'string') return one(value);
+  // D-343 — a number by its digits: a due date's Unix ms reads as the day and time it is.
+  if (typeof value === 'number' && Number.isFinite(value)) return one(String(value));
   if (!Array.isArray(value) || value.length === 0 || !value.every((member) => typeof member === 'string')) {
     return undefined;
   }

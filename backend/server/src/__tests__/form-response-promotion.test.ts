@@ -15,6 +15,7 @@ import {
 import { createWarehouseEventBus, type WarehouseEvent } from '@recued/warehouse-events';
 
 import { emitFormResponseCreatedEvents } from '../form-response-events.js';
+import { createGatedActionStore, type GatedActionRecord } from '../gated-action-store.js';
 import {
   createFormResponsePromotion,
   FormResponsePromotionError,
@@ -169,16 +170,153 @@ describe('owner-approved intake form response promotion', () => {
     });
   };
 
-  // ⚠ D-210 WS2 RE-AIMED THIS SUITE. The canonical log is now written at SUBMIT
-  // by the intake handler, so an approve-time promotion writes for exactly one
-  // shape: a D-200 direct-checkout pair, whose log is the paid deliverable and
-  // may not exist before payment is verified. Every write test below is
-  // therefore PAIRED — an unpaired approval is covered by its own no-write test.
+  // Paired approvals add exact paid admission to the ordinary approve-time
+  // form-response acceptance. Unpaired entity destinations verify provenance
+  // without creating a canonical response.
   const paidAdmitter = () => vi.fn(async () => ({
     kind: 'admitted' as const,
     state_revision: 3,
     verified_at: ACCEPTED_AT - 1,
   }));
+
+  const heldReceipt = async () => {
+    const store = createGatedActionStore(createInMemoryCollection<GatedActionRecord>());
+    const cp = intakeCheckpoint();
+    const action = await store.createHeld({ run_id: cp.run_id, recipe_id: cp.recipe_id,
+      gated_step_id: cp.gated_step_id!, checkpoint_id: cp.checkpoint_id });
+    return { store, action };
+  };
+
+  it.each(['dispatching', 'in_doubt'] as const)('skips a %s receipt before source or vault access', async status => {
+    await auditLog.append(intakeAnchor());
+    const { store, action } = await heldReceipt();
+    await store.claimDispatch(action.action_ref, { checkpoint_id: 'cp-1', attempt_id: 'first-attempt' });
+    if (status === 'in_doubt') await store.finish(action.action_ref, {
+      status, status_message: 'Dispatch outcome unknown', result: { uncertain: true },
+    });
+    const findById = vi.fn(() => { throw new Error('Claimed approval read its source'); });
+    const getKey = vi.fn(() => { throw new Error('Claimed approval read its key'); });
+    const promote = createFormResponsePromotion({ auditLog, gatedActionStore: store,
+      submissionStore: { findById }, formResponseStore: responseStore, getFormSubmissionPiiKey: getKey });
+    await promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT });
+    expect(findById).not.toHaveBeenCalled();
+    expect(getKey).not.toHaveBeenCalled();
+    expect(responseStore.list()).toEqual([]);
+    expect((await store.get(action.action_ref))?.status).toBe(status);
+  });
+
+  it('recognizes a superseded receipt by subject when the old checkpoint has no exact receipt', async () => {
+    await auditLog.append(intakeAnchor());
+    const { store, action } = await heldReceipt();
+    await store.markAwaiting(action.action_ref, 'newer-checkpoint');
+    const promote = createFormResponsePromotion({ auditLog, gatedActionStore: store });
+    await expect(promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT })).resolves.toBeUndefined();
+    expect((await store.get(action.action_ref))?.current_checkpoint_id).toBe('newer-checkpoint');
+    expect(responseStore.list()).toEqual([]);
+  });
+
+  it.each(['store_unavailable', 'receipt_missing'] as const)('refuses receipt-backed approval when %s', async failure => {
+    await auditLog.append(intakeAnchor());
+    const { store } = await heldReceipt();
+    const promote = createFormResponsePromotion({ auditLog,
+      ...(failure === 'receipt_missing' ? { gatedActionStore: { ...store,
+        getByCheckpoint: async () => null, getBySubject: async () => null } } : {}),
+    });
+    await expect(promote(intakeCheckpoint({ preflight_context: { gated_action_settlement_mode: 'returned_result' } }),
+      { approved_at: ACCEPTED_AT })).rejects.toMatchObject({
+        code: failure === 'store_unavailable' ? 'not_configured' : 'source_invalid',
+        message: expect.stringContaining(failure === 'store_unavailable' ? 'receipt store is unavailable' : 'no durable action'),
+      });
+    expect(responseStore.list()).toEqual([]);
+  });
+
+  it('propagates receipt lookup failures before canonical acceptance', async () => {
+    await auditLog.append(intakeAnchor());
+    const { store } = await heldReceipt();
+    const promote = createFormResponsePromotion({ auditLog, gatedActionStore: { ...store,
+      getByCheckpoint: async () => { throw new Error('Receipt storage unavailable'); } } });
+    await expect(promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT })).rejects.toThrow('Receipt storage unavailable');
+    expect(responseStore.list()).toEqual([]);
+  });
+
+  it('rejects a receipt whose run identity does not match its checkpoint', async () => {
+    await auditLog.append(intakeAnchor());
+    const { store, action } = await heldReceipt();
+    const promote = createFormResponsePromotion({ auditLog, gatedActionStore: { ...store,
+      getByCheckpoint: async () => ({ ...action, run_id: 'another-run' }) } });
+    await expect(promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT }))
+      .rejects.toThrow('approval receipt does not match the held intake');
+    expect(responseStore.list()).toEqual([]);
+  });
+
+  it('rechecks a receipt claimed during decryption before accepting data', async () => {
+    await seedSubmission(); await auditLog.append(intakeAnchor());
+    const { store, action } = await heldReceipt();
+    let claimed = false;
+    const onCreated = vi.fn();
+    const promote = createFormResponsePromotion({ auditLog,
+      gatedActionStore: { ...store, getByCheckpoint: async () => claimed
+        ? { ...action, status: 'dispatching', dispatch_attempt_id: 'concurrent-attempt' } : action },
+      submissionStore, formResponseStore: responseStore, onCreated,
+      getFormSubmissionPiiKey: () => { claimed = true; return FORM_KEY; },
+    });
+    await promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT });
+    expect(claimed).toBe(true);
+    expect(responseStore.list()).toEqual([]);
+    expect(onCreated).not.toHaveBeenCalled();
+  });
+
+  it('accepts a live approval with its exact awaiting receipt', async () => {
+    await seedSubmission(); await auditLog.append(intakeAnchor());
+    const { store, action } = await heldReceipt();
+    const promote = createFormResponsePromotion({ auditLog, gatedActionStore: store,
+      submissionStore, formResponseStore: responseStore, getFormSubmissionPiiKey: () => FORM_KEY });
+    await promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT });
+    expect(responseStore.list()).toEqual([expect.objectContaining({ submission_id: 'sub-1' })]);
+    expect((await store.get(action.action_ref))?.status).toBe('awaiting_approval');
+  });
+
+  it.each(['completed', 'failed', 'superseded', 'orphaned'] as const)(
+    'skips %s holds before source or vault access', async state => {
+      if (state !== 'orphaned') await auditLog.append(intakeAnchor(state === 'superseded'
+        ? { checkpoint_id: 'newer-checkpoint' }
+        : { commit_status: state === 'completed' ? 'succeeded' : 'failed' }));
+      const findById = vi.fn(() => { throw new Error('Stale hold accessed its source'); });
+      const getKey = vi.fn(() => { throw new Error('Stale hold accessed its vault'); });
+      const promote = createFormResponsePromotion({ auditLog, submissionStore: { findById },
+        formResponseStore: responseStore, getFormSubmissionPiiKey: getKey });
+      await expect(promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT })).resolves.toBeUndefined();
+      expect(findById).not.toHaveBeenCalled(); expect(getKey).not.toHaveBeenCalled();
+      expect(responseStore.list()).toEqual([]);
+    },
+  );
+
+  it('retains current-approval compatibility for a legacy anchor without a checkpoint pointer', async () => {
+    await seedSubmission(); const legacy = intakeAnchor(); delete legacy.checkpoint_id;
+    await auditLog.append(legacy);
+    const promote = createFormResponsePromotion({ auditLog,
+      gatedActionStore: createGatedActionStore(createInMemoryCollection<GatedActionRecord>()),
+      submissionStore, formResponseStore: responseStore,
+      getFormSubmissionPiiKey: () => FORM_KEY });
+    await promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT });
+    expect(responseStore.list()).toHaveLength(1);
+  });
+
+  it.each(['superseded', 'origin_changed'] as const)('rechecks %s after decryption before accepting data', async change => {
+    await seedSubmission(); let current = intakeAnchor();
+    const onCreated = vi.fn();
+    const promote = createFormResponsePromotion({ auditLog: { get: async () => current }, submissionStore,
+      formResponseStore: responseStore, onCreated, getFormSubmissionPiiKey: () => {
+        current = change === 'superseded' ? intakeAnchor({ checkpoint_id: 'newer-checkpoint' })
+          : intakeAnchor({ execution_source: { channel: 'reactive', actor: 'system', event_kind: 'mail.created', source_recipe: current.recipe_id } });
+        return FORM_KEY;
+      },
+    });
+    const work = promote(intakeCheckpoint(), { approved_at: ACCEPTED_AT });
+    if (change === 'superseded') await expect(work).resolves.toBeUndefined();
+    else await expect(work).rejects.toMatchObject({ code: 'source_invalid' });
+    expect(responseStore.list()).toEqual([]); expect(onCreated).not.toHaveBeenCalled();
+  });
 
   it('writes the canonical row for an UNPAIRED form_response approval — approve is the door', async () => {
     // ⚠ INVERTED 2026-07-20 (audit finding 3a). This asserted the opposite —

@@ -3,8 +3,9 @@
  *  (Phase D). The wrapper never enforces schema rules on the caller —
  *  FTS5 itself is the authority for what goes into the index.
  *
- *  The index is a contentless FTS5 virtual table with two columns
- *  (`key`, `blob_text`). Queries combine an optional dotted-prefix
+ *  The index is an FTS5 virtual table with two columns (`key`, `blob_text`),
+ *  and beside it a key map that finds a key's row without a scan
+ *  (`FTS_KEY_MAP_SUFFIX`). Queries combine an optional dotted-prefix
  *  filter (applied as a `LIKE 'prefix.%'` clause on the key BEFORE the
  *  FTS5 match, so result sets stay bounded) with a standard FTS5 match
  *  query on `blob_text`. */
@@ -194,8 +195,127 @@ const tokenizeClause = (tokenizer: string | undefined): string => {
   return `, tokenize='${tokenizer}'`;
 };
 
+/** Drop the index and its key map together: a map left beside a recreated index would point at rows it never held. */
 export const dropFtsTable = (db: Database.Database, name: string): void => {
   db.exec(`DROP TABLE IF EXISTS ${escapeIdent(name)}`);
+  db.exec(`DROP TABLE IF EXISTS ${keyMapName(name)}`);
+  keyMapWriters.get(db)?.delete(name);
+};
+
+/** ⛔⛔ AN INDEX'S `key` CANNOT BE LOOKED UP. FTS5 stores the UNINDEXED `key` column but finds a row only by MATCH or
+ *  by rowid, so the `DELETE … WHERE key = ?` every write used to make scanned the WHOLE index: loading a mailbox of
+ *  250,000 slowed to about 90 ms a row by 185,000 (quadratic), and a purge paid a scan for each record it removed
+ *  (found 2026-11-19 by D-406's benchmark). So each index keeps a map beside it, `<name>_keys` (key → its row's
+ *  rowid), and a write finds its row in a B-tree and replaces or deletes it by rowid.
+ *
+ *  The map is made the first time this module writes to an index without one, filled from the index in one read: that
+ *  is also how an existing database upgrades, and a read-only connection never makes one. Every write here keeps it.
+ *  ⛔ So write through `indexRecord` / `deleteRecord` / `deleteByPrefix` and drop through `dropFtsTable`. A row written
+ *  around them is one the map never saw, and only a replace by key would remove it. A scratch index its caller empties
+ *  wholesale (a TEMP one, say) uses `appendRecord`, which keeps no map. */
+export const FTS_KEY_MAP_SUFFIX = '_keys';
+
+const keyMapName = (name: string): string => `${escapeIdent(name)}${FTS_KEY_MAP_SUFFIX}`;
+
+interface KeyMapWriter {
+  readonly index: (key: string, text: string) => void;
+  readonly remove: (key: string) => void;
+  readonly removePrefix: (prefix: string) => number;
+}
+
+/** One writer per connection and index, its statements prepared once. Forgotten when the index is dropped, which
+ *  saves a round of `withKeyMap`'s remaking; the remaking alone would also do (a planted "keep it" passed every test). */
+const keyMapWriters = new WeakMap<Database.Database, Map<string, KeyMapWriter>>();
+
+const ensureKeyMap = (db: Database.Database, name: string): void => {
+  const index = escapeIdent(name);
+  const map = keyMapName(name);
+  if (declaredTableSql(db, map) !== null) return;
+  if (declaredTableSql(db, index) === null) {
+    // ⛔ Not an index of this database's own schema (a TEMP one, say): a map here would add a table to the owner's
+    // database for one that is not in it. An index its caller empties wholesale writes with `appendRecord`.
+    throw new Error(`@recued/fts: no index '${name}' in the main schema to keep a key map for`);
+  }
+  db.transaction(() => {
+    db.exec(`CREATE TABLE ${map} (key TEXT PRIMARY KEY, rid INTEGER NOT NULL) WITHOUT ROWID`);
+    // One row per key, its latest. A key the index holds more than once keeps that row alone, since a write here
+    // replaces EVERY row of its key, as the delete by key did. A row with no key could never be found by one.
+    db.exec(`INSERT INTO ${map} (key, rid) SELECT key, MAX(rowid) FROM ${index} WHERE key IS NOT NULL GROUP BY key`);
+    db.exec(`DELETE FROM ${index} WHERE key IS NOT NULL AND rowid NOT IN (SELECT rid FROM ${map})`);
+  })();
+};
+
+const keyMapWriter = (db: Database.Database, name: string): KeyMapWriter => {
+  let byName = keyMapWriters.get(db);
+  if (byName === undefined) {
+    byName = new Map();
+    keyMapWriters.set(db, byName);
+  }
+  const held = byName.get(name);
+  if (held !== undefined) return held;
+  ensureKeyMap(db, name);
+  const index = escapeIdent(name);
+  const map = keyMapName(name);
+  const ridOf = db.prepare(`SELECT rid FROM ${map} WHERE key = ?`);
+  const insertRow = db.prepare(`INSERT INTO ${index} (key, blob_text) VALUES (?, ?)`);
+  const insertRowAt = db.prepare(`INSERT INTO ${index} (rowid, key, blob_text) VALUES (?, ?, ?)`);
+  // By rowid AND key: a map that disagrees with its index (one rebuilt around it) can never delete another key's row.
+  const deleteRowOf = db.prepare(`DELETE FROM ${index} WHERE rowid = ? AND key = ?`);
+  // The old scan, only where the map and the index disagree, so a disagreement heals instead of leaving a stale row.
+  const deleteByKeyScan = db.prepare(`DELETE FROM ${index} WHERE key = ?`);
+  const pointKey = db.prepare(`INSERT INTO ${map} (key, rid) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET rid = excluded.rid`);
+  const dropKey = db.prepare(`DELETE FROM ${map} WHERE key = ?`);
+  const keysUnder = db.prepare(`SELECT key, rid FROM ${map} WHERE key = ? OR (key >= ? AND key < ?)`);
+  /** Remove the key's row; true when the map's rowid held it. */
+  const removeRow = (key: string, rid: number | bigint): boolean => {
+    if (deleteRowOf.run(rid, key).changes > 0) return true;
+    deleteByKeyScan.run(key);
+    return false;
+  };
+  const writer: KeyMapWriter = {
+    index: db.transaction((key: string, text: string) => {
+      const prior = ridOf.get(key) as { rid: number | bigint } | undefined;
+      // The same rowid again, so the map already says where it is.
+      if (prior !== undefined && removeRow(key, prior.rid)) {
+        insertRowAt.run(prior.rid, key, text);
+        return;
+      }
+      pointKey.run(key, insertRow.run(key, text).lastInsertRowid);
+    }),
+    remove: db.transaction((key: string) => {
+      const prior = ridOf.get(key) as { rid: number | bigint } | undefined;
+      if (prior === undefined) return;
+      removeRow(key, prior.rid);
+      dropKey.run(key);
+    }),
+    removePrefix: db.transaction((prefix: string) => {
+      // The exact key and its dotted descendants: `prefix.` ≤ key < `prefix/` (`/` follows `.`), compared exactly, as
+      // the durable shared store's own delete does, so neither a `_` nor a letter's case widens it.
+      const rows = keysUnder.all(prefix, `${prefix}.`, `${prefix}/`) as Array<{ key: string; rid: number | bigint }>;
+      for (const row of rows) {
+        removeRow(row.key, row.rid);
+        dropKey.run(row.key);
+      }
+      return rows.length;
+    }),
+  };
+  byName.set(name, writer);
+  return writer;
+};
+
+/** Run a key-map write, remaking the map once if it is gone. ⛔ A map first made inside a caller's transaction goes
+ *  when that transaction rolls back (a dry run that writes nothing, say) while this connection keeps its writer:
+ *  measured, the next write then failed "no such table: work_entity_fts_keys". Remade inside whatever transaction is
+ *  open, it rolls back with it again, consistently with the index. */
+const withKeyMap = <T>(db: Database.Database, name: string, write: (writer: KeyMapWriter) => T): T => {
+  const writer = keyMapWriter(db, name);
+  try {
+    return write(writer);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes(`no such table: ${keyMapName(name)}`)) throw error;
+    ensureKeyMap(db, name);
+    return write(writer);
+  }
 };
 
 /** Scripts that do NOT delimit words with spaces, so FTS5's `unicode61` sees a
@@ -266,17 +386,27 @@ export const segmentUnspacedForFts = (text: string): string => {
   return out;
 };
 
+/** Index `blobText` under `key`, replacing the row the key had. Found by the key map, not by a scan (`FTS_KEY_MAP_SUFFIX`). */
 export const indexRecord = (
   db: Database.Database,
   name: string,
   key: string,
   blobText: string,
 ): void => {
-  // Contentless FTS5 requires delete-then-insert to update a row.
-  db.prepare(`DELETE FROM ${escapeIdent(name)} WHERE key = ?`).run(key);
-  db.prepare(
-    `INSERT INTO ${escapeIdent(name)} (key, blob_text) VALUES (?, ?)`,
-  ).run(key, segmentUnspacedForFts(blobText));
+  const text = segmentUnspacedForFts(blobText);
+  withKeyMap(db, name, (writer) => writer.index(key, text));
+};
+
+/** Add a row WITHOUT replacing one of its key, and keep no key map: for a scratch index its caller empties wholesale,
+ *  such as a TEMP one (a map would be a table in the owner's database for one that is not). Anything else:
+ *  `indexRecord`. */
+export const appendRecord = (
+  db: Database.Database,
+  name: string,
+  key: string,
+  blobText: string,
+): void => {
+  db.prepare(`INSERT INTO ${escapeIdent(name)} (key, blob_text) VALUES (?, ?)`).run(key, segmentUnspacedForFts(blobText));
 };
 
 export const deleteRecord = (
@@ -284,27 +414,19 @@ export const deleteRecord = (
   name: string,
   key: string,
 ): void => {
-  db.prepare(`DELETE FROM ${escapeIdent(name)} WHERE key = ?`).run(key);
+  withKeyMap(db, name, (writer) => writer.remove(key));
 };
 
-/** Delete the exact-key row AND its dotted descendants —
- *  `key = prefix OR key LIKE 'prefix.%'` — matching the dotted-keyspace
- *  semantics of the durable shared store's main-table delete. A bare
- *  `LIKE 'prefix%'` would wrongly purge index rows for unrelated siblings
- *  that merely share a string prefix (`deal` → `dealer`, `deals`), leaving
- *  those records in the main table but invisible to search. LIKE wildcards
- *  in the prefix are escaped (a key may legitimately contain `_`) so the
- *  pattern matches verbatim. */
+/** Delete the exact-key row AND its dotted descendants, matching the dotted-keyspace semantics of the durable shared
+ *  store's main-table delete: a bare string prefix would wrongly purge index rows for unrelated siblings (`deal` →
+ *  `dealer`, `deals`), leaving those records in the main table but invisible to search. Read from the key map as an
+ *  exact range, so a `_` in the prefix is a `_` and case counts, as in the main table (the `LIKE` this replaced
+ *  folded ASCII case). Returns the rows removed. */
 export const deleteByPrefix = (
   db: Database.Database,
   name: string,
   prefix: string,
-): number => {
-  const res = db
-    .prepare(`DELETE FROM ${escapeIdent(name)} WHERE key = ? OR key LIKE ? ESCAPE '\\'`)
-    .run(prefix, `${escapeLike(prefix)}.%`);
-  return res.changes;
-};
+): number => withKeyMap(db, name, (writer) => writer.removePrefix(prefix));
 
 export const search = (
   db: Database.Database,

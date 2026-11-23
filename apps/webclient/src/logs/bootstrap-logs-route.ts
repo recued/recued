@@ -51,8 +51,16 @@ import type {
   SessionGrantRevokeRequest,
   SessionGrantView,
 } from '@recued/contracts';
+import { passActionNames, shownPassPermits, stopAllowingSummary } from '@recued/contracts';
+import type { PreapprovalCaller, RunPreapprovedWrite, StopAllowingResult } from '@recued/contracts';
+import { callerPreapprovalGroupKey } from '../contracts/caller-preapproval-panel.js';
 import {
   ACTORS,
+  activeEntryOriginWords,
+  executionLaneWords,
+  // Active work is named as Live control names it: "Daily brief · Summarize text"
+  // (an entry from an older server keeps its ids).
+  activeEntryTitle,
   RUN_ANCHOR_STATUSES,
   describeTestedRange,
   isCliFailureDetail,
@@ -295,6 +303,10 @@ export interface BootstrapLogsRouteOptions {
    *  drives its Revoke button (absent ⇒ the list is read-only). */
   grantsListCaller?: RunsSessionGrantListCaller;
   grantsRevokeCaller?: RunsSessionGrantRevokeCaller;
+  /** D-402 slice F5 (§7.9) — "Stop allowing" on a run that ran without asking under an "Always": ends
+   *  everything that caller may do with the recipe (`collection.contract.stopAllowing`). Absent ⇒ the
+   *  run's page says where to end it instead. */
+  stopAllowingCaller?: (args: { caller: PreapprovalCaller; recipe_id: string }) => Promise<{ ended: StopAllowingResult }>;
   /** Backs the Recipe filter combobox (★ ref-picker). */
   recipeNamesCaller?: RunsRecipeNamesCaller;
   initialRunId?: string;
@@ -1790,10 +1802,6 @@ const ACTIVE_STATE_LABELS: Record<ActiveExecutionEntry['state'], string> = {
   stopping: 'stopping…',
 };
 
-const activeEntryTitle = (entry: ActiveExecutionEntry): string =>
-  entry.step_id !== undefined && entry.step_id.length > 0
-    ? `${entry.recipe_id} · ${entry.step_id}`
-    : entry.recipe_id;
 
 const TIME_RANGE_LABELS: Record<RunsTimeRange, string> = {
   all: 'All time',
@@ -2783,7 +2791,7 @@ const renderLanes = (lanes: ReadonlyArray<LaneStatus>): string => {
     const queuedPart = lane.queued > 0
       ? `, ${lane.queued} queued, oldest ${formatWait(lane.oldest_wait_ms)}`
       : '';
-    return `<span class="logs-lane" data-lane="${e(lane.lane)}" data-saturated="${saturated}">${e(lane.lane)} ${e(String(lane.in_use))}/${e(String(lane.capacity))}${e(queuedPart)}</span>`;
+    return `<span class="logs-lane" data-lane="${e(lane.lane)}" data-saturated="${saturated}">${e(executionLaneWords(lane.lane))} ${e(String(lane.in_use))}/${e(String(lane.capacity))}${e(queuedPart)}</span>`;
   }).join('');
   return `<div ${LOGS_ROUTE_LANES_ATTR}>${chips}</div>`;
 };
@@ -2839,7 +2847,8 @@ const renderActiveEntry = (
   const elapsed = Number.isFinite(now) && now >= sinceTs
     ? `<span>${e(formatDuration(now - sinceTs))}</span>`
     : '';
-  const laneMeta = entry.lane !== undefined ? `<span>Lane: ${e(entry.lane)}</span>` : '';
+  const laneMeta = entry.lane !== undefined ? `<span>${e(executionLaneWords(entry.lane))}</span>` : '';
+  const origin = activeEntryOriginWords(entry.origin);
   const id = activeEntryId(entry);
   return `
     <li ${LOGS_ROUTE_ACTIVE_ROW_ATTR}="${e(id)}" data-stalled="${stalled}" data-entry-kind="${e(entry.entry_kind)}">
@@ -2848,7 +2857,7 @@ const renderActiveEntry = (
         <div class="logs-active-meta">
           <span class="logs-work-state">${e(ACTIVE_STATE_LABELS[entry.state])}</span>
           ${laneMeta}
-          <span>${e(entry.origin)}</span>
+          ${origin !== undefined ? `<span>${e(origin)}</span>` : ''}
           ${elapsed}
           ${stalled ? '<span>No recent progress (stalled)</span>' : ''}
         </div>
@@ -2967,6 +2976,8 @@ const PASS_MODE_LABELS: Record<SessionGrantView['grant_mode'], string> = {
   open: 'open-ended',
   scoped: 'scoped',
   raw_op: 'direct op',
+  // D-177 N.15 — "Allow in this chat": any call of one kind.
+  kind: 'one kind',
 };
 
 /** "expires in 4m" — recomputed from `expiry_at` at render time so the label
@@ -2982,13 +2993,12 @@ const formatExpiresIn = (grant: SessionGrantView, now: number): string => {
 
 /** What the pass lets through — prefer the operation(s) (most specific), else
  *  the ingredient(s); append the bound connection as "via <conn>". */
-const passPermitsSummary = (permits: SessionGrantView['permits']): string => {
+const passPermitsSummary = (grant: SessionGrantView): string => {
   const parts: string[] = [];
-  const ops = permits.operation_ids ?? [];
-  const ingredients = permits.ingredient_ids ?? [];
-  if (ops.length > 0) parts.push(ops.join(', '));
-  else if (ingredients.length > 0) parts.push(ingredients.join(', '));
-  const conns = permits.connection_names ?? [];
+  // By the names the server gave them ("Send mail"), where it printed "send-email".
+  const actions = passActionNames(grant);
+  if (actions.length > 0) parts.push(actions.join(', '));
+  const conns = shownPassPermits(grant).connection_names ?? [];
   if (conns.length > 0) parts.push(`via ${conns.join(', ')}`);
   return parts.join(' ');
 };
@@ -3023,7 +3033,7 @@ const renderPassEntry = (
   now: number,
   busyIds: ReadonlySet<string>,
 ): string => {
-  const permits = passPermitsSummary(grant.permits);
+  const permits = passPermitsSummary(grant);
   const budget = passBudgetSummary(grant);
   return `
     <li ${LOGS_ROUTE_PASS_ROW_ATTR}="${e(grant.contract_id)}" data-grant-mode="${e(grant.grant_mode)}">
@@ -3151,11 +3161,7 @@ const renderGatewayTraceRow = (trace: RunGatewayCallTraceEntry): string => `
 // The kinds' own words, so a kind added there is named here too (B4's form was missing from a copy).
 const PREAPPROVED_TRIGGER_WORDS: Readonly<Record<string, string>> = TRIGGER_PREAPPROVAL_TRIGGER_WORDS;
 
-/** D-341 slice B1 — what the run made without asking, under its trigger's standing pre-approval:
- *  each op and how many times. A Records write has no gateway row, so this is its only line.
- *  Ruling 10 — it has no end date, so where it shows acting, it says where to end it. */
-const renderPreapproved = (detail: RunDetail): string => {
-  const writes = detail.preapproved ?? [];
+const renderTriggerPreapproved = (writes: ReadonlyArray<RunPreapprovedWrite>): string => {
   if (writes.length === 0) return '';
   const trigger = PREAPPROVED_TRIGGER_WORDS[writes[0]!.trigger_kind];
   return `
@@ -3169,6 +3175,82 @@ const renderPreapproved = (detail: RunDetail): string => {
         <a class="logs-inline-link" data-trigger-preapproved-end href="${e(serializeShellRoute('contracts'))}">End it under Contracts</a></p>
     </div>
   `;
+};
+
+/** D-402 slice F5 — where "Stop allowing" stands on the run's page: the card it is on (a caller and a
+ *  recipe), and how far it got. */
+export interface RunStopAllowingView {
+  readonly key: string;
+  readonly phase: 'confirm' | 'busy' | 'done' | 'error';
+  readonly message?: string;
+}
+export const LOGS_STOP_ALLOWING_KEY_ATTR = 'data-recued-logs-stop-allowing-key';
+export const LOGS_STOP_ALLOWING_NOTE_ATTR = 'data-recued-logs-stop-allowing-note';
+
+const callerWrites = (writes: ReadonlyArray<RunPreapprovedWrite>, preapprovalAttr: string): string => `
+      <ul class="logs-detail-list" role="list">
+        ${writes.map((write) => `<li class="logs-detail-row" ${preapprovalAttr}="${e(write.preapproval_id)}">${e(write.op)} · ${
+          write.writes === 1 ? 'once' : `${String(write.writes)} times`}</li>`).join('')}
+      </ul>`;
+
+/** An "Always" that let this run's writes through: who holds it, and taking it back from here. */
+const renderAlwaysPreapproved = (
+  writes: ReadonlyArray<RunPreapprovedWrite>,
+  stop: { readonly view: RunStopAllowingView | null; readonly canStop: boolean },
+): string => {
+  const groups = new Map<string, RunPreapprovedWrite[]>();
+  for (const write of writes) {
+    const key = callerPreapprovalGroupKey(write.caller!, write.recipe_id ?? '');
+    groups.set(key, [...(groups.get(key) ?? []), write]);
+  }
+  return [...groups].map(([key, held]) => {
+    const view = stop.view?.key === key ? stop.view : null;
+    const keyAttr = `${LOGS_STOP_ALLOWING_KEY_ATTR}="${e(key)}"`;
+    const confirm = (busy: boolean) => `<p class="logs-detail-row"><span>It asks again from now on.</span>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="stop-allowing-confirm" ${keyAttr}${
+          busy ? ' aria-disabled="true" aria-busy="true"' : ''}>${busy ? 'Working…' : 'Stop allowing'}</button>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="stop-allowing-cancel" ${keyAttr}${
+          busy ? ' aria-disabled="true"' : ''}>Cancel</button></p>`;
+    const controls = !stop.canStop
+      ? `<p class="logs-detail-row">It stays on until you end it:
+        <a class="logs-inline-link" data-trigger-preapproved-end href="${e(serializeShellRoute('contracts'))}">End it under Contracts</a></p>`
+      : view?.phase === 'done'
+        ? `<p class="logs-detail-row" role="status" tabindex="-1" ${LOGS_STOP_ALLOWING_NOTE_ATTR}="${e(key)}">${e(view.message ?? '')}</p>`
+        : view?.phase === 'confirm' || view?.phase === 'busy'
+          ? confirm(view.phase === 'busy')
+          : `${view?.phase === 'error' ? `<p class="logs-detail-row" role="alert">${e(view.message ?? '')}</p>` : ''}
+      <p class="logs-detail-row">It stays on until you end it.
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="stop-allowing" ${keyAttr}>Stop allowing</button></p>`;
+    return `
+    <div data-run-preapproved-always="${e(key)}">
+      <p class="logs-detail-row">Ran without asking, as you allowed “Always” for ${e(held[0]!.caller_name ?? 'its caller')}:</p>
+      ${callerWrites(held, 'data-run-preapproved-write')}
+      ${controls}
+    </div>`;
+  }).join('');
+};
+
+/** D-341 slice B1 — what the run made without asking, under its trigger's standing pre-approval:
+ *  each op and how many times. A Records write has no gateway row, so this is its only line.
+ *  Ruling 10 — it has no end date, so where it shows acting, it says where to end it.
+ *  D-402 slice F5 — and under a caller's: this run's own "Yes, this time" (it ended with the run), or
+ *  an "Always", which "Stop allowing" ends from here. */
+const renderPreapproved = (
+  detail: RunDetail,
+  stop: { readonly view: RunStopAllowingView | null; readonly canStop: boolean } = { view: null, canStop: false },
+): string => {
+  const writes = detail.preapproved ?? [];
+  if (writes.length === 0) return '';
+  const thisRun = writes.filter((write) => write.caller !== undefined && write.this_run === true);
+  return [
+    renderTriggerPreapproved(writes.filter((write) => write.caller === undefined)),
+    thisRun.length === 0 ? '' : `
+    <div data-run-preapproved-this-run>
+      <p class="logs-detail-row">Ran without asking, as you approved this run before it started:</p>
+      ${callerWrites(thisRun, 'data-run-preapproved-write')}
+    </div>`,
+    renderAlwaysPreapproved(writes.filter((write) => write.caller !== undefined && write.this_run !== true), stop),
+  ].join('');
 };
 
 const renderGateway = (detail: RunDetail): string => {
@@ -3348,6 +3430,9 @@ const renderDetail = (
   recipeName?: string,
   technicalOpen = false,
   returnToWorkspace?: RunReviewWorkspace,
+  /** D-402 slice F5 — "Stop allowing" on the run's page. An object, last: a shifted argument is a
+   *  type error, never a silent swap. */
+  stopAllowing: { readonly view: RunStopAllowingView | null; readonly canStop: boolean } = { view: null, canStop: false },
 ): string => {
   if (error !== undefined) {
     return `<section ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
@@ -3386,7 +3471,7 @@ const renderDetail = (
             <h3 id="logs-decisions-title">Approvals and decisions</h3>
             <p class="logs-detail-row">Permission decision: ${renderPolicy(detail.gateway.policy_result)}</p>
             ${renderApprovals(detail)}
-            ${renderPreapproved(detail)}
+            ${renderPreapproved(detail, stopAllowing)}
             ${renderRunLinks({
               run_id: audit.run_id,
               recipe_id: audit.recipe_id,
@@ -3520,6 +3605,9 @@ export const bootstrapLogsRoute = (
   let runs: ReadonlyArray<RunFeedRow> = [];
   let nextCursor: ExecutionListCursor | null = null;
   let selectedRunId: string | null = opts.initialRunId ?? null;
+  // D-402 slice F5 — "Stop allowing" on the open run's page, and where focus goes once it repaints.
+  let stopAllowingView: (RunStopAllowingView & { readonly run_id: string }) | null = null;
+  let pendingStopAllowingFocus: { readonly key: string; readonly target: 'idle' | 'confirm' | 'note' } | null = null;
   let selectedRun: RunDetail | null = null;
   const initialFocusRunId = opts.initialRunId ?? null;
   let pendingInitialRunFocus = initialFocusRunId !== null;
@@ -3941,6 +4029,10 @@ export const bootstrapLogsRoute = (
               && run.recipe_id === selectedRun?.audit.recipe_id)?.name,
         technicalOpen,
         workspaceReturn,
+        {
+          view: stopAllowingView !== null && stopAllowingView.run_id === selectedRunId ? stopAllowingView : null,
+          canStop: opts.stopAllowingCaller !== undefined,
+        },
       )}
     ` : `
       ${renderLogNavigation(view, historyListAddress().hash)}
@@ -3998,6 +4090,17 @@ export const bootstrapLogsRoute = (
     }
     if (focusedTechnical) {
       focusListTarget(routeRoot.querySelector<HTMLElement>('[data-recued-logs-technical-toggle]'));
+    }
+    // D-402 slice F5 — "Stop allowing" keeps focus where the owner is: its confirm, what it ended, or its
+    // button again.
+    if (pendingStopAllowingFocus !== null) {
+      const { key, target } = pendingStopAllowingFocus;
+      pendingStopAllowingFocus = null;
+      const nodes = Array.from(routeRoot.querySelectorAll?.<HTMLElement>(target === 'note'
+        ? `[${LOGS_STOP_ALLOWING_NOTE_ATTR}]`
+        : `[${LOGS_ROUTE_ACTION_ATTR}="${target === 'confirm' ? 'stop-allowing-confirm' : 'stop-allowing'}"]`) ?? []);
+      focusListTarget(nodes.find((node) => (target === 'note'
+        ? node.getAttribute(LOGS_STOP_ALLOWING_NOTE_ATTR) : node.getAttribute(LOGS_STOP_ALLOWING_KEY_ATTR)) === key));
     }
     if (selectedRunId === null && !loadingFeed && !loadingMore
       && (historyLoaded || errors.feed !== undefined) && pendingHistoryRestore !== null) {
@@ -4648,6 +4751,27 @@ export const bootstrapLogsRoute = (
     }
   };
 
+  const stopAllowingFromRun = async (run_id: string, key: string): Promise<void> => {
+    const held = (selectedRun?.preapproved ?? []).find((write) => write.caller !== undefined && write.this_run !== true
+      && callerPreapprovalGroupKey(write.caller, write.recipe_id ?? '') === key);
+    if (opts.stopAllowingCaller === undefined || held?.caller === undefined || held.recipe_id === undefined) return;
+    stopAllowingView = { run_id, key, phase: 'busy' };
+    pendingStopAllowingFocus = { key, target: 'confirm' };
+    render();
+    try {
+      const { ended } = await opts.stopAllowingCaller({ caller: held.caller, recipe_id: held.recipe_id });
+      const summary = stopAllowingSummary(ended);
+      stopAllowingView = { run_id, key, phase: 'done',
+        message: summary !== '' ? `Ended ${summary}. It asks again from now on.` : 'Nothing was left to end.' };
+      pendingStopAllowingFocus = { key, target: 'note' };
+    } catch (error) {
+      stopAllowingView = { run_id, key, phase: 'error',
+        message: `Recued could not end it: ${error instanceof Error ? error.message.replace(/^collection\.contract\.\w+: /u, '') : String(error)}` };
+      pendingStopAllowingFocus = { key, target: 'idle' };
+    }
+    if (selectedRunId === run_id) render();
+  };
+
   const onClick = (ev: Event): void => {
     const target = targetWithAction(ev);
     if (target === null) return;
@@ -4662,6 +4786,23 @@ export const bootstrapLogsRoute = (
     }
     if (action === 'refresh-history') {
       if (!loadingFeed && !loadingMore) void loadFeed('replace', 'history-refresh');
+      return;
+    }
+    // D-402 slice F5 — "Stop allowing" from the run's page: asks once more, then ends it.
+    if (action === 'stop-allowing' || action === 'stop-allowing-cancel' || action === 'stop-allowing-confirm') {
+      const key = target.getAttribute(LOGS_STOP_ALLOWING_KEY_ATTR);
+      if (key === null || selectedRunId === null || stopAllowingView?.phase === 'busy') return;
+      if (action === 'stop-allowing') {
+        stopAllowingView = { run_id: selectedRunId, key, phase: 'confirm' };
+        pendingStopAllowingFocus = { key, target: 'confirm' };
+        render();
+      } else if (action === 'stop-allowing-cancel') {
+        stopAllowingView = null;
+        pendingStopAllowingFocus = { key, target: 'idle' };
+        render();
+      } else {
+        void stopAllowingFromRun(selectedRunId, key);
+      }
       return;
     }
     if (action === 'copy-run-summary') {

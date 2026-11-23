@@ -1,4 +1,4 @@
-/** Private attempt bindings for ordinary Commit and Chat-plan owners. These
+/** Private attempt bindings for ordinary Commit, Chat-plan and Chat-call owners. These
  * rows grant nothing; only a journal entry in the data transaction proves an
  * effect. Hashes retain identity without copying arguments or review values. */
 import { randomUUID } from 'node:crypto';
@@ -28,7 +28,7 @@ export const gatedMutationIdentity = (action: GatedActionRecord): unknown => ({
   resource_review: action.resource_review ?? null, approved_bound: action.approved_bound ?? null,
 });
 interface Attempt {
-  attempt_id: string; owner: 'ordinary_commit' | 'chat_plan'; owner_ref: string;
+  attempt_id: string; owner: 'ordinary_commit' | 'chat_plan' | 'chat_call'; owner_ref: string;
   owner_hash: string; source_hash: string; epoch: string; operation: string;
   kind: LocalMutationReceiptBinding['kind']; review_hash: string;
   action_ref: string | null; action_hash: string | null;

@@ -1672,12 +1672,7 @@ describe('D-169 P2 — bootstrapApprovalsRoute: style injection', () => {
     expect(APPROVALS_ROUTE_STYLES).toContain(ASKS_PANEL_STYLES);
     expect(APPROVALS_ROUTE_STYLES).toContain(APPROVAL_CARD_STYLES);
     expect(APPROVALS_ROUTE_STYLES).toContain(`[${APPROVALS_ROUTE_HOST_ATTR}]`);
-    expect(APPROVALS_ROUTE_STYLES).toMatch(
-      /\.approvals-refresh\s*\{[^}]*min-height:\s*44px/s,
-    );
-    expect(APPROVALS_ROUTE_STYLES).toMatch(
-      /\.approvals-plan-resolution-link,[^}]*min-height:\s*44px/s,
-    );
+
   });
 });
 

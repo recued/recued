@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { assetDateAt, calendarDayMs, dueSpan, evaluateAssetRuleClock, occasionNextDate,
-  type AssetRule, type AssetRuleClock, type Commitment, type Occasion, type OccasionInput } from '@recued/contracts';
+import { assetDateAt, calendarDayMs, dueSpan, evaluateAssetRuleClock, isOccasionAlertMinutes, occasionAlertAt, occasionIsPrivate,
+  occasionNextDate, occasionTimeOn, type AssetRule, type AssetRuleClock, type Commitment, type Occasion, type OccasionInput } from '@recued/contracts';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore, type AssetOccurrence } from '../storage/asset-occurrence-store.js';
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
@@ -12,6 +12,7 @@ import { classifyCommitmentDueStatus } from '../work-entity-due-status-sweep.js'
 import type { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import type { AdditionalClockSubjects, ClockReminderSubject } from './asset-reminder-service.js';
 import { ruleStatement } from './rule-titles.js';
+import type { OccasionCalendarSync } from './occasion-calendar-sync.js';
 
 /** `occasion` is only its id once it was deleted: its record is gone. */
 export interface OccasionClockOutcome { occurrence: AssetOccurrence; occasion: Pick<Occasion, 'id'> & Partial<Occasion>; commitment: Commitment; rule?: AssetRule }
@@ -32,7 +33,34 @@ export interface OccasionClockDeps {
    * no task, when its day has passed or moved, or its occasion or rule is gone; and a
    * task whose occasion is gone, since a close is processed only for an occasion. */
   cycleEnded?(occurrence: AssetOccurrence): void | Promise<void>;
+  /** D-407 — sends an occasion's alert before its time of day (`Occasion.alert_minutes`) on every channel the owner
+   *  set up, and says which took it. Absent: no alerts are sent. */
+  sendAlert?(message: OccasionAlertMessage): Promise<{ delivered_to: readonly string[] }>;
+  /** D-269 — the owner's quiet window: an alert waits for it to end, and is not sent once its occasion has begun. */
+  isQuiet?(at: number): boolean;
+  /** D-188 — the owner's pause holds an alert as quiet hours do. */
+  isPaused?(): boolean;
+  /** D-407 slice 4 — each occasion's own calendar event, written with it each pass (not while paused); one that carries
+   *  the alert means Recued sends none. Absent: no events are written. */
+  calendarSync?: OccasionCalendarSync;
 }
+export interface OccasionAlertMessage { title: string; text: string; ui_link_url: string }
+
+/** D-407 — when an alerted occasion is, said on the owner's clock day by day: "today at 10:30", "tomorrow at 10:30",
+ *  "on 12 December at 10:30", with its zone's short name when it is kept on another ("at 09:15 CST"). */
+export const occasionAlertWhen = (occasion: Pick<Occasion, 'time' | 'time_zone'>, on: string, today: string, ownerZone: string): string => {
+  const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  const day = on === today ? 'today' : on === tomorrow ? 'tomorrow'
+    : `on ${new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${on}T00:00:00Z`))}`;
+  let zone = '';
+  if (occasion.time_zone && occasion.time_zone !== ownerZone) {
+    try {
+      zone = ` ${new Intl.DateTimeFormat('en-US', { timeZone: occasion.time_zone, timeZoneName: 'short' })
+        .formatToParts(new Date(`${on}T12:00:00Z`)).find(part => part.type === 'timeZoneName')?.value ?? occasion.time_zone}`;
+    } catch { zone = ` ${occasion.time_zone}`; }
+  }
+  return `${day} at ${String(occasion.time)}${zone}`;
+};
 
 /** A private occasion projects only typed clock inputs. No asset record,
  * WorkEntity kind, duplicate commitment state or new delivery lifecycle. */
@@ -43,6 +71,8 @@ export const createOccasionClockService = (deps: OccasionClockDeps): AdditionalC
   const resolver = createWorkEntityResolver(deps.work);
   let running: Promise<void> | undefined;
   deps.db.exec('CREATE TABLE IF NOT EXISTS proactive_occasion_close_events (id TEXT PRIMARY KEY,payload TEXT NOT NULL,delivered INTEGER NOT NULL DEFAULT 0)');
+  // D-407 — an alert that reached a channel, once for each occasion's date.
+  deps.db.exec('CREATE TABLE IF NOT EXISTS proactive_occasion_alerts (occasion_id TEXT NOT NULL,cycle TEXT NOT NULL,sent_at INTEGER NOT NULL,delivered_to TEXT NOT NULL,PRIMARY KEY(occasion_id,cycle))');
   const all = (): Occasion[] => {
     const values: Occasion[] = [];
     for (let cursor = ''; ;) { const page = history.walkOccasions(cursor); if (!page.length) return values; values.push(...page); cursor = page.at(-1)!.id; }
@@ -57,8 +87,9 @@ export const createOccasionClockService = (deps: OccasionClockDeps): AdditionalC
   };
   const subject = (occasion: Occasion, on: string): ClockReminderSubject => ({ id: occasion.id, name: occasion.title,
     ...(occasion.class_id ? { class_id: occasion.class_id } : {}), status: 'active', audience: 'owner',
-    // Occasions involving people are private even if their title is explicit.
-    settings: { sensitive: occasion.people.length > 0 }, dates: { next_on: on }, readings: {}, observations: {} });
+    // D-407 slice 3 — an occasion's own choice, else private when it has a person in it, even if its title
+    // is explicit.
+    settings: { sensitive: occasionIsPrivate(occasion) }, dates: { next_on: on }, readings: {}, observations: {} });
   const close = async (row: AssetOccurrence): Promise<void> => {
     const commitment = row.commitment_id ? deps.work.readCommitment(row.commitment_id) : null;
     if (commitment?.lifecycle_state === 'pending') await handleWorkEntityCommitmentClose({ store: deps.work, resolver, dispatchers: deps.dispatchers }, { id: commitment.id }, 'cancelled');
@@ -164,6 +195,31 @@ export const createOccasionClockService = (deps: OccasionClockDeps): AdditionalC
     // A deleted occasion's task close is counted too (`clock.closure`), under the
     // default class: the cycle's end marks the row processed, so it was never reported.
     for (const row of rows.all()) if (row.subject_kind === 'occasion' && !seen.has(row.asset_id)) { await close(row); queueOutcome(row, { id: row.asset_id }); await endCycle(row); }
+    // D-407 slice 4 — each occasion's own calendar event, written with it. Not while the server is paused.
+    if (deps.calendarSync && deps.isPaused?.() !== true) await deps.calendarSync.sync(all(), today);
+    // D-407 — each occasion's alert before its time of day, once for its date, from its own engine: never a Data
+    // reminder. Held in quiet hours and while paused; not sent once its occasion has begun. A send no channel took
+    // is tried again the next minute, until then.
+    if (deps.sendAlert && deps.isPaused?.() !== true && deps.isQuiet?.(now()) !== true) {
+      for (const occasion of all()) {
+        if (occasion.muted || !allowed(occasion)) continue;
+        const on = occasionNextDate(occasion, today); if (!on) continue;
+        const alertAt = occasionAlertAt(occasion, on); const startsAt = occasionTimeOn(occasion, on);
+        if (alertAt === undefined || startsAt === undefined || now() < alertAt || now() >= startsAt) continue;
+        // Its event carries the alert: never both.
+        if (deps.calendarSync?.carriesAlert(occasion, on)) continue;
+        if (deps.db.prepare('SELECT 1 FROM proactive_occasion_alerts WHERE occasion_id=? AND cycle=?').get(occasion.id, on)) continue;
+        const when = occasionAlertWhen(occasion, on, today, deps.timeZone());
+        let delivered_to: readonly string[] = [];
+        try {
+          ({ delivered_to } = await deps.sendAlert({ title: 'Reminder', ui_link_url: `#yours/occasions/occasion/${encodeURIComponent(occasion.id)}`,
+            // D-407 slice 3 — a private occasion is named nowhere it is sent.
+            text: `${occasionIsPrivate(occasion) ? 'Reminder in Yours' : occasion.title}, ${when}` }));
+        } catch { delivered_to = []; }
+        if (delivered_to.length > 0) deps.db.prepare('INSERT OR IGNORE INTO proactive_occasion_alerts(occasion_id,cycle,sent_at,delivered_to) VALUES(?,?,?,?)')
+          .run(occasion.id, on, now(), JSON.stringify(delivered_to));
+      }
+    }
     if (deps.emitRule) for (const pending of rows.pendingRuleEvents()) {
       const row = rows.get(pending.occurrence_id)!; if (row.subject_kind !== 'occasion') continue;
       const occasion = history.occasion(row.asset_id); const current = read(row);
@@ -178,7 +234,8 @@ export const createOccasionClockService = (deps: OccasionClockDeps): AdditionalC
   return {
     read,
     tick() { return running ??= run().finally(() => { running = undefined; }); },
-    hasEnabledClock: () => all().some(occasion => allowed(occasion) && occasion.rules.some(rule => rule.enabled && rule.reaction.notify)),
+    hasEnabledClock: () => all().some(occasion => allowed(occasion) && (occasion.rules.some(rule => rule.enabled && rule.reaction.notify)
+      || (!occasion.muted && occasion.time !== undefined && isOccasionAlertMinutes(occasion.alert_minutes)))),
     mute(row, at) {
       const occasion = history.occasion(row.asset_id); if (!occasion) return;
       history.saveOccasion({ ...occasion, source_pinned: true,

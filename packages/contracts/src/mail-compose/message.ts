@@ -6,6 +6,8 @@ export interface MailMessageRef {
   record_id: string;
   /** Constrains a conversation selection to its original mailbox and thread. */
   conversation?: MailConversationScope;
+  /** Reopening an email from a reminder must retain its saved identity. */
+  expected_reminder_ref?: import('../reminder.js').ReminderMailReference;
 }
 export interface MailMessageAttachmentsRequest extends MailMessageRef {
   expected_incarnation?: string;
@@ -60,6 +62,7 @@ export interface MailConversationSnapshot {
 }
 /** A bounded, plain-text owner read. No provider state is changed. */
 export interface MailMessageSnapshot extends MailMessageRef {
+  reminder_ref?: import('../reminder.js').ReminderMailReference;
   from: string;
   to: string[];
   cc: string[];

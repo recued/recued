@@ -107,10 +107,13 @@ export interface SessionGrantMatchContext {
    *  Absent ⇒ delegated (fail closed — see that predicate's note). */
   readonly mcp_token_id?: string;
   readonly ingredient_slug: string;
-  /** The catalog op's SHORT `operations`-map key (e.g. `deal.read`), present
-   *  exactly when the dispatch carried a TRUSTED `surface_operation_key`
-   *  (`stepMeta.surface_dispatch === true` — same can't-forge rule as the
-   *  P1b exclusion lookup). Absent on simple-form dispatches. */
+  /** The op the dispatch is. The catalog gate: the op's declared
+   *  `operation_id`. The commit Gateway: the catalog op's SHORT
+   *  `operations`-map key (e.g. `deal.read`) when the dispatch carried a
+   *  TRUSTED `surface_operation_key` (`stepMeta.surface_dispatch === true` —
+   *  same can't-forge rule as the P1b exclusion lookup), else the dispatch's
+   *  own slug: a single-op ingredient is its op, as D-211 and D-341 name it
+   *  (D-177 N.15; a `'kind'` grant needs an op to name). */
   readonly operation_id?: string;
   /** The resolved `connection` wire arg, when the dispatch carries one. */
   readonly connection_name?: string;
@@ -122,6 +125,13 @@ export interface SessionGrantMatchContext {
    *  (`'scoped'`/`'raw_op'`) never read them. */
   readonly recipe_id?: string;
   readonly recipe_hash?: string;
+  /** D-177 N.15 — the run's recipe was handed in whole for this run
+   *  (`request.recipe`): a vendor-neutral op's one-step recipe, the AI's
+   *  direct op through `run-ingredient`, a recipe the chat's AI wrote. It
+   *  carries the AI's own call, and the arguments are in it, so its hash
+   *  moves with every call. A `'kind'` grant reads such a call as recipe-less;
+   *  every other mode ignores it. Host-supplied, beside the recipe identity. */
+  readonly recipe_inline?: boolean;
   /** The admission decision's tier (the `'ask'` verdict carries it). */
   readonly risk_tier: RiskTier;
   /** D-209 §1.7 — authorization approval before review/quality lifts. A
@@ -186,10 +196,12 @@ export interface SessionGrantMintContext extends SessionGrantMatchContext {
   readonly ttl_ms: number;
   /** Use budget from the offer — seeds `uses_remaining` (N.5). */
   readonly max_uses: number;
-  /** Audit anchor of the minting approval (D8) — the paused/resumed run's
-   *  `run_id` (the execution-request anchor; the checkpoint itself is
-   *  consumed at answer time, so the durable anchor is the audit row). */
+  /** Audit anchor of the minting approval (D8). Legacy direct mints use the
+   * run id; versioned recipe choices use their exact run/checkpoint ref. */
   readonly approved_action_ref: string;
+  /** Host-only saved recipe approval protocol. Version 1 binds the exact
+   * checkpoint and grant scope atomically; absent preserves legacy direct minting. */
+  readonly decision_version?: 1;
   /** D-177 P5b (N.11) — the mode the ask OFFERED and the human answered.
    *  `'open'` requires both projection fields below (the resolver refuses an
    *  open mint without them — fail closed); absent/`'exact'` mints today's
@@ -930,11 +942,29 @@ const matchesGateGrant = (
     return false;
   }
   const mode = grant.grant_mode ?? 'exact';
+  // D-177 N.15 — a `'kind'` grant binds the recipe only when a stored recipe
+  // made the approved call: a row naming one admits only that recipe at that
+  // version, and a row naming none admits only the AI's own call (a chat's own
+  // write, its direct op, or an inline recipe carrying it), symmetric as
+  // `'raw_op'`'s split is.
+  if (mode === 'kind') {
+    if (grant.bound_recipe !== undefined && grant.bound_recipe !== null) {
+      if (
+        !nonEmptyString(grant.bound_recipe.recipe_id)
+        || !nonEmptyString(grant.bound_recipe.recipe_hash)
+        || grant.bound_recipe.recipe_id !== ctx.recipe_id
+        || grant.bound_recipe.recipe_hash !== ctx.recipe_hash
+      ) {
+        return false;
+      }
+    } else if (ctx.recipe_inline !== true && (ctx.recipe_id !== undefined || ctx.recipe_hash !== undefined)) {
+      return false;
+    }
   // Recipe identity binds every mode EXCEPT the two RECIPE-LESS modes —
   // `'scoped'` (N.11 rule 5, utterance-derived) and `'raw_op'` (D-182 §8, a raw
   // op the LLM calls without a recipe). Neither has a minting recipe to pin, so
   // both bind on op + connection scope (the per-mode arms below) instead.
-  if (mode !== 'scoped' && mode !== 'raw_op') {
+  } else if (mode !== 'scoped' && mode !== 'raw_op') {
     // Recipe identity — both halves equal. Content drift (recipe_hash) re-asks.
     // A recipe-less dispatch (ctx.recipe_id/recipe_hash absent) never matches a
     // recipe-bound grant: the inequality against the grant's non-empty ids holds
@@ -953,8 +983,9 @@ const matchesGateGrant = (
   // Arg key-shape binds every mode EXCEPT `'scoped'` (utterance-derived — no
   // minting dispatch, so no arg shape to pin). `'raw_op'` HAS a minting dispatch
   // (the approved raw-op call) and KEEPS the key-shape pin — a reshaped payload
-  // (new/renamed/retyped keys) re-asks.
-  if (mode !== 'scoped') {
+  // (new/renamed/retyped keys) re-asks. D-177 N.15 — nor `'kind'`: any arguments
+  // to the same op are what the owner allowed.
+  if (mode !== 'scoped' && mode !== 'kind') {
     if (
       !nonEmptyString(grant.arg_shape_hash)
       || grant.arg_shape_hash !== ctx.arg_shape_hash
@@ -1108,6 +1139,31 @@ const matchesGateGrant = (
       // index. Shared verbatim with the consume arm (5.a: containment is
       // checked at match AND consume).
       return scopedContainmentAdmits(grant, ctx);
+    case 'kind':
+      // D-177 N.15 — "Allow in this chat". SESSION-ONLY: a `'kind'`
+      // delegation row is malformed → inert (the N.13 learner derives no key
+      // for it either; §N.15.6 ruling 5 gave the learner to D-348).
+      if (variant !== 'session') return false;
+      // The op is the kind: never a wildcard, and the dispatch must carry the
+      // TRUSTED operation key (a chat's own write: its D-329 rule key; a
+      // catalog op: its declared id; a single-op ingredient: its slug).
+      if (
+        ctx.operation_id === undefined
+        || !grant.scope.operation_ids?.includes(ctx.operation_id)
+      ) {
+        return false;
+      }
+      // Connection-bound when the call resolves one, never a wildcard: allowing
+      // HubSpot deal updates is no yes to Salesforce's.
+      if (
+        ctx.connection_name !== undefined
+        && !grant.scope.connection_names?.includes(ctx.connection_name)
+      ) {
+        return false;
+      }
+      // No argument pin: any arguments to that op, in this conversation, within
+      // the row's TTL and uses (the common clauses above).
+      return true;
     default:
       // Unknown future vocabulary on a JSON row — fail closed (N.4).
       return false;

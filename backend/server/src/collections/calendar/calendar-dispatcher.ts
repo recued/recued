@@ -78,6 +78,7 @@ import {
 } from './calendar-table.js';
 import type {
   CalendarMutationScope,
+  CalendarProviderPatch,
   CreateEventInput,
   ProviderEventPayload,
 } from './provider.js';
@@ -425,8 +426,8 @@ const notifiesGuests = (event: CanonicalEvent): boolean => Boolean(event.attende
  *  failed only after the owner had approved it. */
 export const checkCalendarUpdate = (
   deps: CalendarDispatcherDeps,
-  input: { slug: string; source_id: string; patch: Partial<CanonicalEvent> },
-): { collection: CalendarCollection; existing: CalendarRowSnapshot; patch: Partial<CanonicalEvent> } => {
+  input: { slug: string; source_id: string; patch: CalendarProviderPatch },
+): { collection: CalendarCollection; existing: CalendarRowSnapshot; patch: CalendarProviderPatch } => {
   const { collection } = requireWrite(deps, input.slug, 'update_event');
   const existing = collection.table.get(input.source_id);
   if (!existing) {
@@ -483,7 +484,7 @@ export const handleCalendarCreate = async (
 /** Only the built-in local provider may prepare a write for a shared commit.
  * Provider/body preparation never runs while holding the realm write lock. */
 export const prepareLocalCalendarUpdate = async (deps: CalendarDispatcherDeps,
-  input: { slug: string; source_id: string; patch: Partial<CanonicalEvent>; scope?: CalendarMutationScope }):
+  input: { slug: string; source_id: string; patch: CalendarProviderPatch; scope?: CalendarMutationScope }):
 Promise<import('../../local-transaction.js').PreparedLocalWrite> => {
   const { collection } = requireWrite(deps, input.slug, 'update_event');
   if (collection.provider.kind !== 'local' || !collection.prepareVerifiedUpsert
@@ -509,7 +510,7 @@ export const handleCalendarUpdate = async (
   input: {
     slug: string;
     source_id: string;
-    patch: Partial<CanonicalEvent>;
+    patch: CalendarProviderPatch;
     scope?: CalendarMutationScope;
   },
 ): Promise<{ source_id: string; deleted?: true }> => {
@@ -589,7 +590,7 @@ const executeThisAndFuture = async (
   input: {
     slug: string;
     source_id: string;
-    patch: Partial<CanonicalEvent>;
+    patch: CalendarProviderPatch;
   },
   existing: CanonicalEvent,
   calendar_id: string,
@@ -658,7 +659,7 @@ const encodeUntilBoundary = (event: CanonicalEvent): string => {
 
 const mergeCreateBody = (
   existing: CanonicalEvent,
-  patch: Partial<CanonicalEvent>,
+  patch: CalendarProviderPatch,
 ): CreateEventInput => {
   // Project the existing event minus identity fields, layer patch
   // on top. `recurrence_rule` keeps the pre-truncation form so the

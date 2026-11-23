@@ -86,6 +86,16 @@ export interface AutomationFailureReport {
  *  no mirror and lands on the same rules. */
 export const automationRuleLink = (unit: AutomationUnitRef): string =>
   `#automation/${encodeURIComponent(unit.recipe_id)}`;
+/** D-402 slice E4b — `#chat/carry-on/<run_id>`: the chat that carries on a run a hand-off stopped
+ *  (`chat.execution.carry_on`). The webclient's notice links admit it (`notify-toasts.ts`). */
+export const carryOnLink = (run_id: string): string => `#chat/carry-on/${encodeURIComponent(run_id)}`;
+/** D-402 slice E4b — what a hand-off's notice offers: its run carried on in Chat, the owner's
+ *  ruling (2026-11-17). Its link holds once the automation has stopped too, since re-arming it
+ *  without the way the page now needs would only hand off again. */
+const handOffFix = (code: string | undefined, run_id: string | undefined): AutomationFix | undefined =>
+  code === 'RECIPE_HAND_OFF' && run_id !== undefined && run_id !== ''
+    ? { text: 'Open it to carry on in Chat.', link_url: carryOnLink(run_id), stopped_too: true }
+    : undefined;
 
 const unitLabel = (unit: AutomationUnitRef): string =>
   unit.name !== undefined && unit.name !== '' ? unit.name : unit.recipe_id;
@@ -107,10 +117,19 @@ const trimReason = (message: string): string => {
  *  fix it: the pack's page (its sign-in, its programs, its Access tab). The first need that
  *  names its pack; none ⇒ undefined, and the notice keeps the rules link alone. The owner's
  *  ruling: the notice should carry the fix, not only the automation's rules. */
+export interface AutomationFix {
+  readonly text: string;
+  readonly link_url: string;
+  /** Link it on the stopped notice too, in place of the automation's rules (a hand-off). */
+  readonly stopped_too?: true;
+}
 export const automationFixFor = (
   needs: readonly RunNeed[] | undefined,
-): { readonly text: string; readonly link_url: string } | undefined => {
+): AutomationFix | undefined => {
   for (const need of needs ?? []) {
+    // D-402 slice H3c — a browser to use instead is chosen in the dish's settings, which the notice's own
+    // link opens (`automationRuleLink`), and its reason says so: no second link to the same page.
+    if (need.kind === 'browser') continue;
     if (need.pack_slug === undefined || need.pack_slug === '') continue;
     const link_url = `#packs/${encodeURIComponent(need.pack_slug)}`;
     switch (need.kind) {
@@ -144,8 +163,9 @@ export const describeAutomationFailureNotice = (input: {
   readonly consecutive_failures: number;
   readonly stopped: boolean;
   readonly threshold: number;
-  /** What the run needed and where to fix it (`automationFixFor`), when it named one. */
-  readonly fix?: { readonly text: string; readonly link_url: string } | undefined;
+  /** What the run needed and where to fix it (`automationFixFor`), when it named one; for a
+   *  hand-off, its run carried on in Chat. */
+  readonly fix?: AutomationFix | undefined;
 }): NotificationMessage => {
   const label = unitLabel(input.unit);
   const reason = trimReason(input.reason);
@@ -160,7 +180,7 @@ export const describeAutomationFailureNotice = (input: {
       text:
         `Recued turned this automation off ${times}. ${reason} ${fix}`
         + 'It will not run again until you re-arm it.',
-      link_url: automationRuleLink(input.unit),
+      link_url: input.fix?.stopped_too === true ? input.fix.link_url : automationRuleLink(input.unit),
     };
   }
   return {
@@ -192,6 +212,9 @@ export const decideAutomationFailure = (input: {
   /** D-346 follow-up — what the run needed (`ServerExecuteResponse.run_needs`), so its
    *  notice says how to fix it. */
   readonly needs?: readonly RunNeed[] | undefined;
+  /** D-402 slice E4b — the failing run's id (`ServerExecuteResponse.run_id`, or a thrown failure's),
+   *  so a hand-off's notice can carry that run on in Chat. */
+  readonly run_id?: string | undefined;
 }): AutomationFailureReport => {
   const disposition = classifyAutomationFailure({
     code: input.code,
@@ -224,7 +247,7 @@ export const decideAutomationFailure = (input: {
           consecutive_failures,
           stopped: disarm,
           threshold: input.threshold,
-          fix: automationFixFor(input.needs),
+          fix: handOffFix(input.code, input.run_id) ?? automationFixFor(input.needs),
         }),
       }
       : {}),

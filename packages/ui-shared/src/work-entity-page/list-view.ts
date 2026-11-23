@@ -25,7 +25,9 @@ import {
   type WorkEntityListViewProps,
 } from '@recued/contracts';
 import { e, timeAgo } from '../template.js';
+import { renderActionIcon } from '../icon-render.js';
 import { commitmentCounterpartyLabel, commitmentDeadlineLabel, commitmentDirectionLabel, commitmentStatusLabel } from './commitment-reader.js';
+import { renderTaskBlockers } from './task-blockers.js';
 
 /** YYYY-MM-DD — locale-stable for list rendering.
  *
@@ -193,8 +195,16 @@ export interface TaskListSelection {
   busy: boolean;
 }
 
+export interface TaskListTools {
+  filters_open: boolean;
+  scope_filter_html: string;
+  scope_label: string;
+  active_scope_filters: number;
+  source_html: string;
+}
+
 export const renderWorkEntityListView = (
-  props: WorkEntityListViewProps & { opening_entity_id?: string; task_selection?: TaskListSelection; toolbar_html?: string },
+  props: WorkEntityListViewProps & { opening_entity_id?: string; task_selection?: TaskListSelection; note_selection?: TaskListSelection; toolbar_html?: string; task_tools?: TaskListTools },
 ): string => {
   const search = renderSearchInput(
     props.search_query,
@@ -214,17 +224,51 @@ export const renderWorkEntityListView = (
           props.rows,
           props.show_source_label,
           props.opening_entity_id,
-          props.task_selection,
+          props.kind === 'note' ? props.note_selection : props.task_selection,
           props.counterparty_labels,
         );
   return `
     <div class="work-entity-list-view" data-kind="${e(props.kind)}">
-      ${search}
-      ${filters}
-      ${props.toolbar_html ?? ''}
+      ${props.kind === 'task' && props.task_filters && props.task_tools
+        ? renderTaskTools(props.search_query, props.task_filters, props.task_tools, props.toolbar_html ?? '')
+        : `${search}${filters}${props.toolbar_html ?? ''}`}
       ${body}
     </div>
   `;
+};
+
+const renderTaskTools = (query: string, filters: NonNullable<WorkEntityListViewProps['task_filters']>, tools: TaskListTools, selection: string): string => {
+  const active = [
+    filters.completion === 'all' ? '' : filters.completion === 'open' ? 'Open tasks' : 'Completed tasks',
+    filters.due === 'all' ? '' : { overdue: 'Overdue', today: 'Due today', next_7_days: 'Next seven days' }[filters.due],
+    tools.scope_label,
+  ].filter(Boolean);
+  const count = Number(filters.completion !== 'all') + Number(filters.due !== 'all') + tools.active_scope_filters;
+  return `<div class="work-entity-task-tools" role="group" aria-label="Task filters">
+    <div class="work-entity-task-search-row">
+      ${renderSearchInput(query, 'task', 'all')}
+      <button type="button" class="work-entity-task-filter-toggle" data-action="toggle-task-filters"
+        aria-label="Task filters" aria-expanded="${tools.filters_open}" aria-controls="work-entity-task-filter-panel">
+        ${renderActionIcon('settings')}<span>Filters${count ? ` (${count})` : ''}</span>
+      </button>
+      <label class="work-entity-task-sort"><span>Sort tasks</span><select class="work-entity-list-filter" data-action="filter-task-sort" aria-label="Sort tasks">
+        <option value="default"${filters.sort === 'default' ? ' selected' : ''}>Open first</option>
+        <option value="due_asc"${filters.sort === 'due_asc' ? ' selected' : ''}>Due date</option>
+      </select></label>
+    </div>
+    <div class="work-entity-task-filter-panel" id="work-entity-task-filter-panel"${tools.filters_open ? '' : ' hidden'}>
+      ${tools.scope_filter_html}
+      <label class="work-entity-list-filter-label">Task status<select class="work-entity-list-filter" data-action="filter-task-completion" aria-label="Task status">
+        ${[['all', 'All tasks'], ['open', 'Open'], ['completed', 'Completed']].map(([value, label]) => `<option value="${value}"${filters.completion === value ? ' selected' : ''}>${label}</option>`).join('')}
+      </select></label>
+      <label class="work-entity-list-filter-label">Due date<select class="work-entity-list-filter" data-action="filter-task-due" aria-label="Due date">
+        ${[['all', 'Any time'], ['overdue', 'Overdue'], ['today', 'Today'], ['next_7_days', 'Next seven days']].map(([value, label]) => `<option value="${value}"${filters.due === value ? ' selected' : ''}>${label}</option>`).join('')}
+      </select></label>
+      ${filters.due === 'all' ? '' : '<p class="work-entity-list-date-hint">Dates use your local time. Next seven days includes today; overdue shows unfinished tasks.</p>'}
+    </div>
+    ${active.length ? `<p class="work-entity-task-active-filters">${e(active.join(' · '))}</p>` : ''}
+  </div>
+  <div class="work-entity-task-context">${tools.source_html}${selection}</div>`;
 };
 
 const renderSearchInput = (
@@ -391,8 +435,8 @@ const renderRow = (
     : '';
   return `
     <li class="work-entity-list-row">
-      ${selection && row.entity._kind === 'task' ? `<label class="work-entity-task-select"${selection.unavailable.has(row.entity.id) ? ` title="${e(selection.unavailable.get(row.entity.id)!)}"` : ''}>
-        <input type="checkbox" data-action="task-bulk-toggle" data-task-id="${e(row.entity.id)}" data-task-bulk-focus="select:${e(row.entity.id)}"
+      ${selection && (row.entity._kind === 'task' || row.entity._kind === 'note') ? `<label class="work-entity-${row.entity._kind}-select"${selection.unavailable.has(row.entity.id) ? ` title="${e(selection.unavailable.get(row.entity.id)!)}"` : ''}>
+        <input type="checkbox" data-action="${row.entity._kind}-bulk-toggle" data-${row.entity._kind}-id="${e(row.entity.id)}" data-${row.entity._kind}-bulk-focus="select:${e(row.entity.id)}"
           ${selection.selected_ids.has(row.entity.id) ? 'checked' : ''} ${selection.busy || selection.unavailable.has(row.entity.id) ? 'disabled' : ''}>
         <span>Select ${e(text.primary)}${selection.unavailable.has(row.entity.id) ? ` — ${e(selection.unavailable.get(row.entity.id)!)}` : ''}</span>
       </label>` : ''}
@@ -414,6 +458,7 @@ const renderRow = (
           ${openingStatus}
         </div>
       </button>
+      ${row.entity._kind === 'task' ? renderTaskBlockers(row.entity.id, row.entity.blocks_task_ids, row.entity.sync_state !== 'live' || row.entity.pending_write !== undefined) : ''}
     </li>
   `;
 };

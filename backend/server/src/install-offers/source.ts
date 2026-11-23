@@ -7,7 +7,9 @@
  *  is not on MCP at all. So an MCP client or a door never reaches this (D-153's
  *  "trusted-channel routing"); nothing here re-decides it. */
 
-import type { InstallOffer } from '@recued/contracts';
+import { chatHintKeyOfOffer, type ChatDispatchContext, type InstallOffer } from '@recued/contracts';
+
+import type { CarriedHintKeys } from '../next-steps/carried-hints.js';
 
 import type { MarketplaceCatalogue } from './catalogue.js';
 import { installedHoldsRequest, matchInstallOffers, type InstalledMatchText } from './match.js';
@@ -30,17 +32,23 @@ export interface InstallOfferSourceDeps {
   readonly installedPackSlugs: () => ReadonlySet<string>;
   /** Whether a recipe is installed (the recipe store's `get`). */
   readonly hasRecipe: (recipe_id: string) => boolean;
+  /** D-405 slice 3 — whether the owner said "Not now" to this hint (`chatHintKeyOfOffer`): never offered then. */
+  readonly hidden?: (key: string) => boolean;
+  /** D-405 slice 8 — the hint keys earlier answers of the search's conversation carried: an offer one of
+   *  them made is not made again in that conversation (ruling P3). Absent, or failing: none left out. */
+  readonly carried?: CarriedHintKeys;
   readonly waitMs?: number;
 }
 
-/** The offers for one search: its query, and what it found installed. */
+/** The offers for one search: its query, what it found installed, and the call (its conversation). */
 export type InstallOfferSource = (
   query: string,
   installed: ReadonlyArray<InstalledMatchText>,
+  ctx?: ChatDispatchContext,
 ) => Promise<InstallOffer[]>;
 
 export const createInstallOfferSource = (deps: InstallOfferSourceDeps): InstallOfferSource =>
-  async (query, installed) => {
+  async (query, installed, ctx) => {
     if (!deps.enabled()) return [];
     // ⛔ EVERY SEARCH WAITS for a new server's first download, not only one that
     // found nothing installed. A new server's first request is the moment the
@@ -52,8 +60,14 @@ export const createInstallOfferSource = (deps: InstallOfferSourceDeps): InstallO
     if (catalogue === null) return [];
     // Ruling P2: something installed that does it is the answer.
     if (installedHoldsRequest(catalogue, query, installed)) return [];
+    const carried = ctx === undefined || deps.carried === undefined
+      ? undefined
+      : await deps.carried(ctx).catch(() => undefined);
     return matchInstallOffers(catalogue, query, {
       packSlugs: deps.installedPackSlugs(),
       hasRecipe: deps.hasRecipe,
+    }).filter((offer) => {
+      const key = chatHintKeyOfOffer(offer);
+      return deps.hidden?.(key) !== true && carried?.has(key) !== true;
     });
   };

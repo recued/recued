@@ -56,6 +56,9 @@ it.each(['length', 'provider'] as const)('preserves the %s failure when file-sel
   expect(answerOutputAttachments('self', run.final_ai_output, run.tool_results)).toEqual([]);
   expect(emit.mock.calls.some(([event]) => event.event?.termination_reason === (failure === 'provider' ? 'aborted' : 'output_unreadable'))).toBe(true);
   expect(run.assistant_content).not.toContain('could not select a verified output');
+  expect(run.assistant_content).toBe(failure === 'provider'
+    ? 'The AI provider failed partway through this turn, after some tools had already run. Check those results before trying again.'
+    : 'The model reached its output limit before it could finish a valid response.');
   if (failure === 'provider') expect(run.tool_loop_failure?.detail).toContain('simulated repair provider failure');
 });
 

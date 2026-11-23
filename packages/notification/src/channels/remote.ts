@@ -51,7 +51,7 @@ import type {
   InboundReply,
   NotificationMessage,
 } from '../types.js';
-import { isChannelName, type AskOption } from '../types.js';
+import { forChatChannel, forTextChannel, isChannelName, type AskOption } from '../types.js';
 import { receivesOnly, type AskDeliveryDestination, type AskDeliveryEnvelope, type AskDeliveryOutcome, type AskDeliveryReceipt } from '../ask-delivery-store.js';
 
 /** The BYO credential a remote channel sends with — resolved fresh per
@@ -105,7 +105,38 @@ export interface RemoteChannel extends Channel {
    *  the reply-null fall-through anyway so a press is never
    *  double-classified). Delegates to `transport.parseInbound`. */
   parseInboundMessage(payload: unknown): ParsedInbound | null;
+  /** D-335 slice Z — a secret typed in this chat for one of `asks`, as `valueOf` reads it from the
+   *  message (null: conversation, which passes on). Only an ask this channel delivered to this
+   *  conversation, typed by the owner its connection names (D-238: a connection that names none
+   *  takes no typed secret, and another person in the chat is not the owner). Optional: a channel
+   *  without it takes none. */
+  parseInboundSecret?(
+    payload: unknown,
+    asks: ReadonlyMap<string, SecretAskState>,
+    valueOf: (text: string) => string | null,
+  ): InboundSecret | null;
+  /** D-335 slice Z follow-up (2026-11-17) — delete from the chat the owner's message this payload
+   *  carries: a sign-in code `parseInboundSecret` took. Only the message of the owner its
+   *  connection names, in the conversation it sends to. */
+  deleteInboundMessage?(payload: unknown): Promise<InboundMessageRemoval>;
 }
+
+/** What became of the owner's message with a code: deleted from the chat, a chat app whose bot may
+ *  not delete the owner's message (Slack), or a deletion that failed. */
+export type InboundMessageRemoval = 'deleted' | 'unsupported' | 'failed';
+
+/** D-335 slice Z — an ask a typed secret may answer: still waiting for it, or ended a short while
+ *  ago, so a secret typed late is still kept out of the chat. */
+export type SecretAskState = 'waiting' | 'ended';
+
+/** D-335 slice Z — what a message typed in a chat app is to the asks that wait for a typed secret. */
+export type InboundSecret =
+  /** The secret, for the ask it answers. */
+  | { readonly kind: 'secret'; readonly ask_id: string; readonly value: string }
+  /** A secret for an ask that waits no longer: taken all the same, so it reaches no chat. */
+  | { readonly kind: 'late' }
+  /** A secret with several asks waiting here and no reply to one of them: taken, given to none. */
+  | { readonly kind: 'ambiguous' };
 
 export interface RemoteChannelDeps {
   /** The vendor transport. `InteractiveTransport` for an `inline` channel —
@@ -248,6 +279,10 @@ export const createRemoteChannel = (
        *  options a typed reply may name; a button delivery is answered by the
        *  vendor's authenticated press, never by matching chat text. */
       presentation?: 'buttons' | 'text' | 'notice';
+      /** D-335 slice Z — where a secret typed for this ask is taken: the conversation it went to,
+       *  from the owner its connection names (D-238 `expected_sender`). Absent when the connection
+       *  names none. This process's alone, never kept, as the wait for the secret is. */
+      typed_secret?: { readonly recipient: string; readonly owner: string };
     }
   >();
 
@@ -356,7 +391,8 @@ export const createRemoteChannel = (
     const titleRoom = Math.min(72, Math.max(24, Math.floor(room / 3)));
     return [
       envelope.repeat ? 'Repeat — the previous delivery could not be confirmed.' : undefined,
-      ...envelope.asks.map((ask, index) => envelope.closed_ask_ids?.includes(ask.ask_id) ? `${index + 1}. Closed`
+      ...envelope.asks.map(({ ask_id, message }) => ({ ask_id, message: forTextChannel(message) }))
+        .map((ask, index) => envelope.closed_ask_ids?.includes(ask.ask_id) ? `${index + 1}. Closed`
         : envelope.asks.length === 1
         ? composeCloseText(ask.message)
         : `${index + 1}. ${clip(ask.message.title ?? 'Reminder', titleRoom)}\n${clip(ask.message.text, Math.max(40, room - titleRoom))}`),
@@ -414,12 +450,20 @@ export const createRemoteChannel = (
       }
     },
 
-    async deliverAsk(ask_id, message, options) {
+    async deliverAsk(ask_id, held, options) {
       // Idempotency — the boot re-delivery sweep, or any double call, must not
       // post a second prompt for an ask already delivered, by this process or
       // (D-158 P3) by an earlier one whose record the store kept.
       await loaded;
       if (delivered.has(ask_id)) return;
+      const credential = await credentialOrThrow('deliverAsk');
+      const { token, recipient } = credential;
+      // D-343 — an approval in its plain words, when it has them (`forTextChannel`). D-335 slice Z —
+      // a chat app's own words, which invite a reply typed here, only where the connection names the
+      // owner: no other reply is taken (`parseInboundSecret`), so no other chat is told to send one.
+      const message = credential.expected_sender !== undefined ? forChatChannel(held) : forTextChannel(held);
+      const typed_secret = credential.expected_sender !== undefined
+        ? { typed_secret: { recipient, owner: credential.expected_sender } } : {};
 
       // D-163 N.3 / I-2 — the block MUST NOT route an ask here when the channel
       // is not ask-capable, so reaching this on a non-`inline` channel means a
@@ -428,8 +472,6 @@ export const createRemoteChannel = (
       // strand the ask. Throwing would strand it (the fan-out catches), and
       // returning would strand it more quietly still.
       if (!isInteractive(transport)) {
-        const credential = await credentialOrThrow('deliverAsk');
-        const { token, recipient } = credential;
         // BOTH answer paths in one body: the link for anyone who can reach it,
         // and the option list so the owner can simply type one back. Neither is
         // a fallback for the other — a public deployment gets a structured form,
@@ -458,11 +500,11 @@ export const createRemoteChannel = (
           options,
           closed: false,
           expected_sender: credential.expected_sender,
+          ...typed_secret,
         });
         await keep(ask_id);
         return;
       }
-      const { token, recipient } = await credentialOrThrow('deliverAsk');
       const result = await transport.sendPrompt({
         recipient,
         token,
@@ -492,11 +534,12 @@ export const createRemoteChannel = (
         // Unused on an interactive channel: a button press is authenticated by
         // the vendor's own callback, not by matching a sender.
         expected_sender: undefined,
+        ...typed_secret,
       });
       await keep(ask_id);
     },
 
-    async closeAsk(ask_id) {
+    async closeAsk(ask_id, note) {
       // D-158 P3 — a prompt an earlier process sent is known by its record.
       await loaded;
       const entry = delivered.get(ask_id);
@@ -525,7 +568,8 @@ export const createRemoteChannel = (
         recipient: credential.recipient,
         token: credential.token,
         vendor_message_id: entry.vendor_message_id,
-        text: entry.close_text,
+        // D-343 — why it closed with no answer, beneath what the owner was asked.
+        text: note !== undefined && note.trim() !== '' ? `${entry.close_text}\n\n${note.trim()}` : entry.close_text,
       });
     },
 
@@ -689,6 +733,57 @@ export const createRemoteChannel = (
 
     parseInboundMessage(payload) {
       return transport.parseInbound(payload);
+    },
+
+    parseInboundSecret(payload, asks, valueOf) {
+      // Every message in the chat passes here: nothing is read while no secret is awaited.
+      if (asks.size === 0) return null;
+      const message = transport.parseInbound(payload);
+      if (message === null) return null;
+      const value = valueOf(message.text);
+      if (value === null) return null;
+      const recipient = transport.parseConversationId(payload);
+      if (recipient === null) return null;
+      const sender = message.from.trim();
+      // The asks this channel delivered to this conversation, whose owner typed this. ⛔ D-238: an
+      // ask whose connection named no owner has no `typed_secret`, so nobody's typing answers it.
+      const here = [...asks].flatMap(([ask_id, state]) => {
+        const entry = delivered.get(ask_id);
+        return entry?.typed_secret !== undefined && entry.typed_secret.recipient === recipient
+          && entry.typed_secret.owner === sender
+          ? [{ ask_id, waiting: state === 'waiting' && !entry.closed, vendor_message_id: entry.vendor_message_id }] : [];
+      });
+      if (here.length === 0) return null;
+      // A reply to the ask's own message names it, whatever else waits here.
+      const quoted = message.reply_to_message_id === undefined ? undefined
+        : here.find((ask) => ask.vendor_message_id !== '' && ask.vendor_message_id === message.reply_to_message_id);
+      if (quoted !== undefined) return quoted.waiting ? { kind: 'secret', ask_id: quoted.ask_id, value } : { kind: 'late' };
+      // ⛔ Otherwise one waiting ask, or none taken: nothing in a chat message says which of two it
+      // answers (D-238), and a secret typed for the wrong step is typed into the wrong field.
+      const waiting = here.filter((ask) => ask.waiting);
+      if (waiting.length === 1) return { kind: 'secret', ask_id: waiting[0]!.ask_id, value };
+      return waiting.length > 1 ? { kind: 'ambiguous' } : { kind: 'late' };
+    },
+
+    async deleteInboundMessage(payload) {
+      if (transport.deleteMessage === undefined) return 'unsupported';
+      const message = transport.parseInbound(payload);
+      const recipient = transport.parseConversationId(payload);
+      let credential: RemoteChannelCredential | null;
+      try { credential = await resolveCredential(); } catch { return 'failed'; }
+      // ⛔ The owner's own message, in the conversation this channel sends to: never another
+      // person's, and never a message in another chat, whatever the payload says.
+      if (message === null || message.vendor_message_id === undefined || recipient === null || credential === null
+        || recipient !== credential.recipient || credential.expected_sender === undefined
+        || message.from.trim() !== credential.expected_sender) return 'failed';
+      try {
+        const result = await transport.deleteMessage({
+          recipient, token: credential.token, vendor_message_id: message.vendor_message_id,
+        });
+        return result.ok ? 'deleted' : 'failed';
+      } catch {
+        return 'failed';
+      }
     },
   };
 };

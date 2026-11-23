@@ -242,6 +242,24 @@ describe('D-325 actual clock reminder caller', () => {
     for (const ask_id of [first, f.currentAsk(asset)]) expect(extractAskId(`Re: Recued reminders [#${ask_id}]`)).toBe(ask_id);
   });
 
+  it('offers only answers that do something: another day or time is chosen in Yours, which the ask names', async () => {
+    const f = fixture(); const asset = f.put({ name: 'Passport', dates: { expires_on: '2026-11-17' }, rules: [rule()] });
+    const boiler = f.put({ name: 'Boiler', dates: { serviced_on: null }, rules: [rule({ when: {
+      kind: 'interval', field: 'serviced_on', every: { amount: 12, unit: 'months' } } })] });
+    const b = f.boot(); await b.service.tick();
+    await b.block.submitAnswer({ ask_id: f.currentAsk(asset), option: 'later', via: 'ui' }); await b.service.tick();
+    const choice = (await b.block.getAsk(f.currentAsk(asset)))!;
+    expect(choice.options.map(option => option.label)).toEqual(['Tomorrow', 'A week', 'A month']);
+    expect(choice.message.text).toContain('open the item in Yours to pick a day and time');
+    const question = (await b.block.getAsk(f.currentAsk(boiler)))!;
+    expect(question.options.map(option => option.label)).toEqual(['Today', 'I don’t know']);
+    expect(question.message.text).toContain('open this item in Yours to give the date');
+    // Yours sets any time within a year (`occurrence.later`), which the next reminder then keeps.
+    await b.service.setLater(f.occurrence(asset).id, Date.parse('2026-10-20T08:30Z'));
+    expect(createOccurrenceReminderStore(f.db).control(f.occurrence(asset).id).later_until).toBe(Date.parse('2026-10-20T08:30Z'));
+    await expect(b.service.setLater(f.occurrence(asset).id, Date.parse('2028-01-01T00:00Z'))).rejects.toThrow('Choose a future reminder time within a year');
+  });
+
   it('snoozes only the next reminder and lets its follow-up choose tomorrow without changing the rule or deadline', async () => {
     const f = fixture(); const asset = f.put({ name: 'Passport', dates: { expires_on: '2026-11-17' }, rules: [rule()] });
     const b = f.boot(); await b.service.tick(); const original = f.work.readAsset(asset.id)!.rules;

@@ -251,7 +251,7 @@ test('completes the original task in Today and keeps the confirmed result throug
   await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
   await expect(page).toHaveURL(/#data\/today$/);
   expect(await mutations(page)).toEqual([{ method: 'work_entity.task.mark_done', args: { id: 'late/task', done: true } }]);
-  await page.locator('.today-refresh').click();
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
   await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
   await page.reload();
@@ -376,7 +376,7 @@ test('keeps a pending completion explicit when the locally changed row disappear
   await page.getByRole('button', { name: 'Complete Send the proposal', exact: true }).click();
   await expect(page.locator('[data-today-task-error]')).toContainText('the source has not confirmed it yet');
   await expect(page.locator('[data-today-task-notice]')).toHaveCount(0);
-  await page.locator('.today-refresh').click();
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
   await expect(page.getByRole('link', { name: 'Send the proposal', exact: true })).toHaveCount(0);
   await expect(page.locator('[data-today-task-editor]')).toBeVisible();
@@ -458,7 +458,7 @@ test('original task, commitment, and source-qualified calendar details return to
 
 test('Refresh and the minute clock advance deadlines without losing keyboard focus', async ({ page }) => {
   await boot(page);
-  const refresh = page.locator('.today-refresh');
+  const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
   await refresh.click();
   await expect(refresh).toHaveAttribute('aria-disabled', 'false');
   await expect(refresh).toBeFocused();
@@ -493,7 +493,7 @@ test('refresh keeps keyboard focus in Today when the focused record disappears',
     document.querySelector<HTMLButtonElement>('.today-refresh')!.click();
   });
   await expect(page.getByRole('link', { name: 'Review the brief', exact: true })).toHaveCount(0);
-  await expect(page.locator('.today-refresh')).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeFocused();
 });
 
 /** ⛔ "Today can be saved and reopens the relative view after reload" WAS HERE.

@@ -160,6 +160,9 @@ export interface GcalEvent {
   id: string;
   iCalUID?: string;
   status?: 'confirmed' | 'cancelled' | 'tentative';
+  /** D-407 Q8 — absent means `default` (the calendar's own setting); `private` and `confidential`
+   *  (an older name for private) hide the event's details from those the calendar is shared with. */
+  visibility?: 'default' | 'public' | 'private' | 'confidential';
   summary?: string;
   description?: string;
   location?: string;
@@ -313,6 +316,7 @@ export const canonicalizeGcalEvent = (
     ...(organizer ? { organizer } : {}),
     ...(attendees && attendees.length > 0 ? { attendees } : {}),
     status,
+    ...(event.visibility === 'private' || event.visibility === 'confidential' ? { marked_private: true as const } : {}),
     ...(event.recurrence && event.recurrence.length > 0
       ? { recurrence_rule: event.recurrence[0] }
       : {}),
@@ -915,7 +919,9 @@ export const createGcalProvider = (
       }));
     }
     if (input.recurrence_rule) body.recurrence = [input.recurrence_rule];
-    if (input.reminders && input.reminders.length > 0) {
+    // D-407 slice 4 — private at Google, and its alerts as given: an empty list is none, absent the calendar's default.
+    if (input.marked_private) body.visibility = 'private';
+    if (input.reminders !== undefined) {
       body.reminders = {
         useDefault: false,
         overrides: input.reminders.map((r) => ({
@@ -961,6 +967,11 @@ export const createGcalProvider = (
     }
     if (patch.recurrence_rule !== undefined) {
       body.recurrence = patch.recurrence_rule ? [patch.recurrence_rule] : [];
+    }
+    // D-407 slice 4 — the private marking set or taken away, and its alerts as given.
+    if (patch.marked_private !== undefined) body.visibility = patch.marked_private ? 'private' : 'default';
+    if (patch.reminders !== undefined) {
+      body.reminders = { useDefault: false, overrides: patch.reminders.map((r) => ({ method: r.method, minutes: r.minutes })) };
     }
     return body;
   };
@@ -1154,7 +1165,7 @@ export const createGcalProvider = (
         : current.organizer?.self !== true && current.guestsCanModify !== true ? 'The organizer has not allowed changes to this event.' : undefined;
       const notify_attendees = Boolean(current.attendees?.length) && current.privateCopy !== true;
       return { payload: await payloadOf(current, calendar_id, calendar?.summary),
-        editable_fields: reason ? [] : ['summary', 'description', 'location', 'start_at', 'end_at'],
+        editable_fields: reason ? [] : ['summary', 'description', 'location', 'start_at', 'end_at', 'marked_private', 'alert_minutes'],
         ...(reason ? { read_only_reason: reason } : {}),
         notify_attendees,
         edit_notice: current.privateCopy ? 'Changes are saved to this private event copy.'

@@ -16,6 +16,8 @@ interface Entry {
   pending?: { id: string; digest: string; encrypted: string };
 }
 const unavailable = (message: string): never => { throw new RpcError('not_found',message,404); };
+/** D-402 slice C (§8.3) — why a trial that stopped, failed or was declined is no saved test. */
+export const TRIAL_NOT_FINISHED = 'The trial did not finish, so it is no saved test. Try the recipe again once it works.';
 export const createRecipeRunCaptureStore = (codec: PreapprovalCodec,suites: RecipeRegressionStore,now = Date.now) => {
   const entries = new Map<string,Entry>(); let active = 0;
   const purge = (): void => { for (const [id,entry] of entries) if (entry.summary.expires_at <= now()) { clearTimeout(entry.expiry); entries.delete(id); } };
@@ -106,6 +108,67 @@ export const createRecipeRunCaptureStore = (codec: PreapprovalCodec,suites: Reci
         entry.encrypted = ''; entry.summary.state = 'unavailable'; entry.summary.reason = 'The run did not return a capture. It may have run; check Logs before starting another run.';
         throw error;
       } finally { clearInterval(recordingWatch); active--; input = undefined; observed = undefined; }
+    },
+    /** D-402 slice C (§8.3) — a trial of a draft (`recipe.try`), recorded as it runs and across its
+     *  approvals. A held run reports the steps before its hold, and each resume the steps from the
+     *  held one on (the resumer hands each the same recorder, kept by `browser-trials.ts`). Once the
+     *  run settles, the parts are joined, each step's latest log kept in the order steps first ran,
+     *  into one capture of the recipe the owner tried, for the owner to keep as its saved test once
+     *  the recipe is saved. Only a trial that worked is one: a stopped or failed one tests nothing the
+     *  owner wants. Not counted against the captured runs that may run at once, since a trial waits
+     *  on the owner, not on work; kept while it waits, and for the capture's time once it settles. */
+    trial(recipe_id: string,actor: string,owner: () => void) {
+      check(owner); purge(); if (entries.size >= LIMIT.entries) throw new RpcError('capture_limit','Keep at most 32 temporary captures.',409);
+      const created_at = now(), entry: Entry = { actor,encrypted: '',summary: { capture_id: randomUUID(),recipe_id,
+        created_at,expires_at: created_at + LIMIT.ttl_ms,state: 'running',trial: true } };
+      const keep = (): void => {
+        clearTimeout(entry.expiry); entry.summary.expires_at = now() + LIMIT.ttl_ms;
+        entry.expiry = setTimeout(() => { if (entries.get(entry.summary.capture_id) === entry) entries.delete(entry.summary.capture_id); },LIMIT.ttl_ms); entry.expiry.unref();
+      };
+      entries.set(entry.summary.capture_id,entry); keep();
+      let input: RecipeRunCaptureInput | undefined, reason = ''; const parts: ExecutionResult[] = [];
+      let settle!: (capture: RecipeRunCaptureSummary) => void;
+      const done = new Promise<RecipeRunCaptureSummary>(resolve => { settle = resolve; });
+      const unavailable = (why: string): void => {
+        entry.encrypted = ''; entry.summary.state = 'unavailable'; entry.summary.reason = why; settle(summary(entry));
+      };
+      const finish = async (): Promise<void> => {
+        if (entries.get(entry.summary.capture_id) !== entry) { settle(summary(entry)); return; }
+        const last = parts.at(-1);
+        if (reason || !input || !last) { unavailable(reason || 'The recipe did not reach the capture boundary.'); return; }
+        if (!last.success) { unavailable(TRIAL_NOT_FINISHED); return; }
+        const logs = new Map<string,ExecutionResult['steps'][number]>();
+        for (const part of parts) for (const log of part.steps) logs.set(log.id,log);
+        const abort = new AbortController();
+        const timeout = setTimeout(() => abort.abort(new Error('Capture replay exceeded 10 seconds.')),10_000); timeout.unref();
+        try {
+          const draft = await buildRecipeRunCaptureDraft(entry.summary.capture_id,input,{ ...last,steps: [...logs.values()] },abort.signal);
+          live(entry,owner); const encrypted = await codec.seal(draft); live(entry,owner);
+          retain(entry,encrypted); entry.summary.state = 'ready'; keep(); settle(summary(entry));
+        } catch (error) { unavailable(error instanceof Error ? error.message : 'Capture replay failed.'); }
+        finally { clearTimeout(timeout); }
+      };
+      const recorder: NonNullable<InternalExecuteOverrides['regression_capture']> = {
+        input: value => {
+          if (input !== undefined || reason) return;
+          try { input = copyRecipeCaptureJson(value); } catch (error) { reason = error instanceof Error ? error.message : 'Capture unavailable.'; }
+        },
+        result: value => {
+          try { parts.push(copyRecipeCaptureJson({ ...value,output: { render: [],sidebar: [] } })); }
+          catch (error) { reason = error instanceof Error ? error.message : 'Capture unavailable.'; }
+          entry.summary.run_outcome = value.awaiting_approval ? 'held' : value.awaiting_peer ? 'waiting'
+            : value.trigger_skipped ? 'skipped' : value.success ? 'passed' : 'failed';
+          if (value.awaiting_approval || value.awaiting_peer) { keep(); return; }
+          void finish();
+        },
+        // Ended at its hold (declined, its approval unable to act, or expired): no part reports again.
+        ended: () => {
+          if (entry.summary.state !== 'running') return;
+          entry.summary.run_outcome = 'failed'; unavailable(TRIAL_NOT_FINISHED);
+        },
+      };
+      return { capture: summary(entry),current: (): RecipeRunCaptureSummary => summary(entry),recorder,done,
+        bind: (run_id: string): void => { entry.summary.run_id = run_id; } };
     },
     async import(request: RecipeRunCaptureImport,actor: string,owner: () => void): Promise<RecipeRegressionRead> {
       request = copyRecipeCaptureJson(request); const entry = current(request.capture_id,actor,owner), intent = capturedRecipeDigest(request);

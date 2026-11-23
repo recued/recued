@@ -36,6 +36,7 @@ import {
 import { BLOCKED_SITE_MESSAGE, SCREENSHOTS_GRANT } from '../permissions/site-grants.js';
 import type { ActionExecutorOutcome } from '../queue/dispatcher.js';
 import { formatPageHandle, PAGE_CHANGED, PAGE_GONE, type PageInspectScope } from './page-inspect.js';
+import { pageIdentity } from './page-tabs.js';
 
 /** How long a screenshot over Chrome's two-a-second quota waits before its one retry. */
 export const PAGE_CAPTURE_QUOTA_WAIT_MS = 1_000;
@@ -102,9 +103,14 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
   // Slice S — what is scrolled is noted before it moves, once per screenshot (two measures share a
   // token), so it can all be put back.
   type Kept = { at: Element | Window; x: number; y: number };
-  const world = globalThis as typeof globalThis & { recuedScreenshotScroll?: { token: string; kept: Kept[] } };
-  if (token != null && world.recuedScreenshotScroll?.token !== token) world.recuedScreenshotScroll = { token, kept: [] };
+  const world = globalThis as typeof globalThis & { recuedScreenshotScroll?: { token: string; kept: Kept[]; scrolled: boolean } };
+  if (token != null && world.recuedScreenshotScroll?.token !== token) world.recuedScreenshotScroll = { token, kept: [], scrolled: false };
   let scrolled = false;
+  const noteScroll = () => {
+    // Record before the call: a failed measurement can lose its scroll receipt.
+    scrolled = true;
+    if (token != null && world.recuedScreenshotScroll?.token === token) world.recuedScreenshotScroll.scrolled = true;
+  };
   const keep = (at: Element | Window) => {
     const record = world.recuedScreenshotScroll;
     if (token == null || record === undefined || record.token !== token || record.kept.some((kept) => kept.at === at)) return;
@@ -147,8 +153,8 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
   const to = (at: Element | Window, top: number) => {
     const now = typeof (at as Window).scrollY === 'number' ? (at as Window).scrollY : (at as Element).scrollTop;
     if (Math.abs(now - top) < 1) return;
+    noteScroll();
     at.scrollTo({ top, behavior: 'instant' });
-    scrolled = true;
   };
   const answer = (area: PageArea, at: { screen: number; screens: number }): PageMeasureAnswer =>
     ({ outputs: { url: location.href, title, area, viewport, screen: at.screen, screens: at.screens, ...(scrolled ? { scrolled: true as const } : {}) } });
@@ -234,31 +240,31 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
       to(element, startOf(at.screen, element.scrollHeight, shown));
     }
     if (box.top < 0 || box.left < 0 || box.bottom > own.innerHeight || box.right > own.innerWidth) {
+      noteScroll();
       element.scrollIntoView({ block: box.height > own.innerHeight ? 'start' : 'center', inline: 'nearest', behavior: 'instant' });
-      scrolled = true;
     }
   } else if (box.height > portShown + 1) {
     // Slice S — an element taller than what shows: its top, or the screen of it asked for.
     const screens = count(box.height, portShown);
     at = { screen: Math.min(screen ?? 1, screens), screens };
+    noteScroll();
     element.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
-    scrolled = true;
     const offset = startOf(at.screen, box.height, portShown);
     if (offset > 0) {
       if (port === null) own.scrollBy({ top: offset, behavior: 'instant' });
       else port.scrollBy({ top: offset, behavior: 'instant' });
     }
   } else if (box.top < 0 || box.left < 0 || box.bottom > own.innerHeight || box.right > own.innerWidth) {
+    noteScroll();
     element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-    scrolled = true;
   }
   for (let view: Window = own; view !== window && view.frameElement; view = view.frameElement.ownerDocument.defaultView ?? window) {
     const holder = view.frameElement;
     const shown = holder.getBoundingClientRect();
     const outer = holder.ownerDocument.defaultView ?? window;
     if (shown.top < 0 || shown.left < 0 || shown.bottom > outer.innerHeight || shown.right > outer.innerWidth) {
+      noteScroll();
       holder.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-      scrolled = true;
     }
   }
   box = element.getBoundingClientRect();
@@ -306,10 +312,11 @@ export const measurePageArea = (scope: PageInspectScope, expectedUrl?: string | 
  *  screenshot's token: the page is left where it was. Injected, so self-contained. */
 export const restorePageScroll = (token: string): boolean => {
   const world = globalThis as typeof globalThis & {
-    recuedScreenshotScroll?: { token: string; kept: Array<{ at: Element | Window; x: number; y: number }> } };
+    recuedScreenshotScroll?: { token: string; kept: Array<{ at: Element | Window; x: number; y: number }>; scrolled: boolean } };
   const record = world.recuedScreenshotScroll;
   if (record === undefined || record.token !== token) return false;
   delete world.recuedScreenshotScroll;
+  if (record.scrolled !== true) return false;
   for (const { at, x, y } of [...record.kept].reverse()) {
     try {
       at.scrollTo({ left: x, top: y, behavior: 'instant' });
@@ -374,6 +381,9 @@ export interface PageCaptureChrome {
 const failure = (code: BridgeErrorCode, message: string): ActionExecutorOutcome =>
   ({ status: 'error', error: { code, message } });
 
+const cancelled = (): ActionExecutorOutcome => ({ status: 'cancelled',
+  error: { code: 'unknown', message: 'bridge: cooperative cancel observed mid-execution' } });
+
 export const measured = (answer: unknown):
   | { url: string; title: string; area: PageArea; viewport: { width: number; height: number };
     screen?: number; screens?: number; scrolled: boolean }
@@ -388,10 +398,13 @@ export const measured = (answer: unknown):
   if (reply.stale === true) return { error: failure('selector_not_found', PAGE_CHANGED) };
   if (reply.unseen === true) return { error: failure('selector_not_found', 'The element is not shown on the page, so it cannot be pictured.') };
   const outputs = reply.outputs as Record<string, unknown> | undefined;
-  const area = outputs?.area as Record<string, unknown> | undefined;
-  const viewport = outputs?.viewport as Record<string, unknown> | undefined;
-  const numbers = (value: Record<string, unknown> | undefined, keys: string[]) => value !== undefined
-    && keys.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]));
+  const area = outputs?.area;
+  const viewport = outputs?.viewport;
+  const numbers = (value: unknown, keys: string[]) => value !== null && typeof value === 'object' && !Array.isArray(value)
+    && keys.every(key => {
+      const field = (value as Record<string, unknown>)[key];
+      return typeof field === 'number' && Number.isFinite(field);
+    });
   if (!outputs || typeof outputs.url !== 'string' || typeof outputs.title !== 'string'
     || !numbers(area, ['x', 'y', 'width', 'height']) || !numbers(viewport, ['width', 'height'])) return unproven;
   // Slice S — which screen, of how many: both, or neither.
@@ -409,7 +422,7 @@ export const measured = (answer: unknown):
 };
 
 type CaptureRequest = { page: { tab_id: number; document_id: string }; scope: PageInspectScope; pattern: string;
-  blocked: (url: string) => boolean; screen?: number; screens?: boolean };
+  blocked: (url: string) => boolean; screen?: number; screens?: boolean; cancel?: { readonly signalled: boolean } };
 
 /** One `screenshot_page`, on the document `page` names. `pattern` is the grant
  *  the command runs under; `blocked` is the owner's list.
@@ -419,15 +432,22 @@ type CaptureRequest = { page: { tab_id: number; document_id: string }; scope: Pa
  *  before slice S asks for neither, and refuses a key it did not ask for). Whatever the screenshot
  *  scrolled is put back once it is taken, after the owner's tab, so the page is left as it was. */
 export const capturePage = async (chrome: PageCaptureChrome, request: CaptureRequest): Promise<ActionExecutorOutcome> => {
+  if (request.cancel?.signalled) return cancelled();
   // Before anything: a screenshot the owner has not allowed moves no tab.
-  if (!(await chrome.screenshotsAllowed().catch(() => false))) return failure('capacity_gap_permission_missing', SCREENSHOTS_OFF);
+  const allowed = await chrome.screenshotsAllowed().catch(() => false);
+  if (request.cancel?.signalled) return cancelled();
+  if (!allowed) return failure('capacity_gap_permission_missing', SCREENSHOTS_OFF);
   // What this screenshot scrolls is noted in the page under its own token.
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const moved = { scrolled: false };
   try {
     return await capture(chrome, request, token, moved);
   } finally {
-    if (moved.scrolled) await chrome.executeInDocument(request.page, restorePageScroll, [token]).catch(() => null);
+    // The first measurement can scroll and then refuse or lose its reply.
+    // Its in-page record decides whether this request has scroll work to undo.
+    if (moved.scrolled || request.scope.ref !== undefined || request.scope.selector !== undefined || request.screen !== undefined) {
+      await chrome.executeInDocument(request.page, restorePageScroll, [token]).catch(() => null);
+    }
   }
 };
 
@@ -435,15 +455,38 @@ const capture = async (chrome: PageCaptureChrome, request: CaptureRequest, token
   Promise<ActionExecutorOutcome> => {
   const { page, scope, pattern } = request;
   const measure = async () => {
+    if (request.cancel?.signalled) return { error: cancelled() };
+    // A measurement can scroll before it answers. Check the document's current
+    // URL first, and bind just this measurement to it so retries can refresh it.
+    let identified: { document_id: string; result: unknown } | null;
+    try { identified = await chrome.executeInDocument(page, pageIdentity, []); } catch { identified = null; }
+    if (request.cancel?.signalled) return { error: cancelled() };
+    if (!identified || identified.document_id !== page.document_id) return { error: failure('selector_not_found', PAGE_GONE) };
+    const identity = identified.result && typeof identified.result === 'object' && !Array.isArray(identified.result)
+      ? identified.result as Record<string, unknown> : null;
+    const keys = identity === null ? [] : Object.keys(identity);
+    if (identity && keys.length === 1 && identity.blocked === true) {
+      return { error: failure('tab_navigation_blocked', 'The owner client cannot be pictured.') };
+    }
+    if (!identity || keys.length !== 2 || !keys.every(key => key === 'url' || key === 'title')
+      || typeof identity.url !== 'string' || typeof identity.title !== 'string') {
+      return { error: failure('unknown', 'bridge: no readable answer from the page') };
+    }
+    if (!isPatternWithinGrantedOrigins(identity.url, [pattern])) {
+      return { error: failure('tab_navigation_blocked', 'The page is no longer on a site this step may read.') };
+    }
+    if (request.blocked(identity.url)) return { error: failure('tab_navigation_blocked', BLOCKED_SITE_MESSAGE) };
     let ran: { document_id: string; result: unknown } | null;
     try {
-      ran = await chrome.executeInDocument(page, measurePageArea, [scope, null, request.screen ?? null, token, PAGE_SCREEN_STEP]);
+      ran = await chrome.executeInDocument(page, measurePageArea, [scope, identity.url, request.screen ?? null, token, PAGE_SCREEN_STEP]);
     } catch {
       ran = null;
     }
     if (!ran || ran.document_id !== page.document_id) return { error: failure('selector_not_found', PAGE_GONE) };
     const read = measured(ran.result);
-    if ('error' in read) return read;
+    if ('error' in read) return read.error.error?.code === 'tab_navigation_blocked'
+      && (ran.result as { blocked?: unknown } | null)?.blocked === true
+      ? { error: failure('tab_navigation_blocked', 'The page moved or cannot be pictured, so it was not captured.') } : read;
     if (read.scrolled) moved.scrolled = true;
     if (!isPatternWithinGrantedOrigins(read.url, [pattern])) {
       return { error: failure('tab_navigation_blocked', 'The page is no longer on a site this step may read.') };
@@ -454,41 +497,62 @@ const capture = async (chrome: PageCaptureChrome, request: CaptureRequest, token
 
   // 1. Refuse before any tab moves.
   const before = await measure();
+  // Keep the measure's scroll receipt so cleanup can undo it after cancellation.
+  if (request.cancel?.signalled) return cancelled();
   if ('error' in before) return before.error;
   const tab = await chrome.getTab(page.tab_id);
+  if (request.cancel?.signalled) return cancelled();
   if (!tab) return failure('selector_not_found', PAGE_GONE);
-  if (await chrome.windowMinimized(tab.window_id)) {
+  const minimized = await chrome.windowMinimized(tab.window_id);
+  if (request.cancel?.signalled) return cancelled();
+  if (minimized) {
     return failure('capacity_gap_tab_unavailable',
       'Chrome\'s window with this page is minimized, so it cannot be pictured: restore the window and try again.');
   }
 
   // 2–4. Bring it forward, picture it, and put the owner's tab back.
   const owners = tab.active ? null : await chrome.activeTab(tab.window_id);
-  let shot: string;
-  let at: Exclude<Awaited<ReturnType<typeof measure>>, { error: ActionExecutorOutcome }>;
-  try {
-    if (!tab.active) await chrome.activate(page.tab_id);
+  if (request.cancel?.signalled) return cancelled();
+  // Every capture attempt needs current document, geometry and foreground proof.
+  const prepare = async (): Promise<Awaited<ReturnType<typeof measure>>> => {
+    if (request.cancel?.signalled) return { error: cancelled() };
     await chrome.executeInDocument(page, waitForPaint, []).catch(() => null);
+    if (request.cancel?.signalled) return { error: cancelled() };
     const now = await measure();
-    if ('error' in now) return now.error;
-    at = now;
+    if (request.cancel?.signalled) return { error: cancelled() };
+    if ('error' in now) return now;
+    let at = now;
     // An element scrolled into view, or a screen scrolled to, needs the frame that shows it; and
     // (slice S) the pictures it brought into view, measured again once they have loaded.
     if (scope.ref !== undefined || scope.selector !== undefined || request.screen !== undefined) {
       await chrome.executeInDocument(page, waitForPaint, []).catch(() => null);
+      if (request.cancel?.signalled) return { error: cancelled() };
     }
     if (moved.scrolled) {
       const loaded = await chrome.executeInDocument(page, waitForPictures, []).catch(() => null);
+      if (request.cancel?.signalled) return { error: cancelled() };
       if (loaded?.result === true) {
         const again = await measure();
-        if ('error' in again) return again.error;
+        if (request.cancel?.signalled) return { error: cancelled() };
+        if ('error' in again) return again;
         at = again;
       }
     }
     const front = await chrome.activeTab(tab.window_id);
+    if (request.cancel?.signalled) return { error: cancelled() };
     if (front?.tab_id !== page.tab_id || !isPatternWithinGrantedOrigins(front.url, [pattern]) || request.blocked(front.url)) {
-      return failure('tab_navigation_blocked', 'The page could not be brought to the front, so it was not pictured.');
+      return { error: failure('tab_navigation_blocked', 'The page could not be brought to the front, so it was not pictured.') };
     }
+    return at;
+  };
+  let shot: string;
+  let at: Exclude<Awaited<ReturnType<typeof measure>>, { error: ActionExecutorOutcome }>;
+  try {
+    if (!tab.active) await chrome.activate(page.tab_id);
+    const first = await prepare();
+    if ('error' in first) return first.error;
+    if (request.cancel?.signalled) return cancelled();
+    at = first;
     // Chrome takes at most two screenshots a second: one over it waits a second
     // and is tried once more.
     const quota = (error: unknown) => /MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND/.test(error instanceof Error ? error.message : String(error));
@@ -497,7 +561,13 @@ const capture = async (chrome: PageCaptureChrome, request: CaptureRequest, token
         shot = await chrome.captureVisible(tab.window_id);
       } catch (error) {
         if (!quota(error)) throw error;
+        if (request.cancel?.signalled) return cancelled();
         await new Promise(resolve => setTimeout(resolve, PAGE_CAPTURE_QUOTA_WAIT_MS));
+        if (request.cancel?.signalled) return cancelled();
+        const retry = await prepare();
+        if ('error' in retry) return retry.error;
+        if (request.cancel?.signalled) return cancelled();
+        at = retry;
         shot = await chrome.captureVisible(tab.window_id);
       }
     } catch (error) {
@@ -509,7 +579,7 @@ const capture = async (chrome: PageCaptureChrome, request: CaptureRequest, token
     if (owners && owners.tab_id !== page.tab_id) await chrome.activate(owners.tab_id).catch(() => undefined);
   }
 
-  // 5. Cut, scale, encode.
+  // 5. Encode the confirmed read even if cancellation arrived during capture.
   const encoded = await chrome.encode(shot, at.area, at.viewport).catch(() => null);
   if (!encoded) return failure('unknown', 'bridge: the picture could not be encoded');
   return {

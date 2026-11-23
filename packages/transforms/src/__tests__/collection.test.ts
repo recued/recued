@@ -10,7 +10,25 @@ const deals = [
   { name: 'C', stage: 'won', amount: 50 },
 ];
 
+it('first/last retain observed order, whole rows and missing final fields rather than numeric extrema', () => {
+  const rows = [{ category: 'A', label: 'Zulu', number: 99 }, { category: 'B', label: 'Other', number: 4 },
+    { category: 'A', label: 'Alpha', number: 2 }, { category: 'B', number: 1 }];
+  expect(group_by({ array: rows, field: 'category', aggregate: { count: { operator: 'count' },
+    first: { operator: 'first', field: 'label' }, last: { operator: 'last', field: 'label' },
+    row: { operator: 'last' } } }, c)).toEqual([
+    { category: 'A', count: 2, first: 'Zulu', last: 'Alpha', row: rows[2] },
+    { category: 'B', count: 2, first: 'Other', last: null, row: rows[3] }]);
+  expect(reduce({ array: [], operator: 'last' }, c)).toBeNull();
+  expect(reduce({ array: [3, 1], operator: 'first' }, c)).toBe(3);
+});
+
 describe('filter', () => {
+  it('uses exact membership for array fields and substring matching for strings', () => {
+    const rows = [{ tags: ['news'] }, { tags: ['newsletter'] }, { tags: [] }];
+    expect(filter({ array: rows, field: 'tags', operator: 'contains', value: 'news' }, c)).toEqual([rows[0]]);
+    expect(filter({ array: rows, field: 'tags', operator: 'not_contains', value: 'news' }, c)).toEqual(rows.slice(1));
+    expect(filter({ array: [{ name: 'newsletter' }], field: 'name', operator: 'contains', value: 'news' }, c)).toHaveLength(1);
+  });
   it('filters by equality', () => {
     const r = filter({ array: deals, field: 'stage', operator: 'equal', value: 'won' }, c) as unknown[];
     expect(r).toHaveLength(2);
@@ -209,7 +227,10 @@ describe('project', () => {
 
 describe('reduce', () => {
   it('sums', () => expect(reduce({ array: deals, field: 'amount', operator: 'sum', initial: 0 }, c)).toBe(350));
-  it('counts', () => expect(reduce({ array: deals, field: 'amount', operator: 'count' }, c)).toBe(3));
+  it('counts, including an empty result without applying an unrelated initial value', () => {
+    expect(reduce({ array: deals, field: 'amount', operator: 'count' }, c)).toBe(3);
+    expect(reduce({ array: [], operator: 'count', initial: 99 }, c)).toBe(0);
+  });
   it('averages', () => {
     const r = reduce({ array: deals, field: 'amount', operator: 'avg' }, c) as number;
     expect(Math.round(r)).toBe(117);

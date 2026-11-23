@@ -40,10 +40,11 @@ import type { ExecutionSource } from '../index.js';
 /** The kernel ingredient backing `core.peer.ask` (`kernel-op-registry.ts`). */
 const PEER_ASK_SLUG = 'peer-ask';
 
-/** The attended owner running their own recipe — the one cell the lift fires in.
- *  Contract-less, so `resolveTrustCeiling` gives `admin` and a `write` op-risk
- *  RELAXES to admit: without the lift there is no prompt at all, which is
- *  precisely the state § 234.4o was ruled on. */
+/** The owner running their own recipe from the app. Contract-less, so
+ *  `resolveTrustCeiling` gives `admin` and a `write` op-risk RELAXES to admit. Until
+ *  2026-11-10 a by-name lift raised a peer ask back to `ask` here; D-177 §N.15.6
+ *  removed it (every op follows its approval; what the owner runs from the app
+ *  relaxes), so the asker's side is asked where the AI runs it: the owner's chat. */
 const OWNER: ExecutionSource = {
   channel: 'user',
   actor: 'user_self',
@@ -51,8 +52,9 @@ const OWNER: ExecutionSource = {
   client_token_id: 't',
 };
 
-/** The owner asking through their own AI — a SEEDED session-grant cell, which is
- *  where `allow_session` is actually offered. */
+/** The owner asking through their own AI — the `read` ceiling since D-177 §N.15.6,
+ *  so a `write` asks by its approval, and a SEEDED session-grant cell, which is where
+ *  `allow_session` is actually offered. */
 const CHAT: ExecutionSource = {
   channel: 'chat',
   actor: 'user_self',
@@ -95,15 +97,16 @@ describe('§ 234.4o — asking a peer is an outbound send', () => {
     expect(isOutboundSendSlug('core-peer-ask')).toBe(true);
   });
 
-  it('the owner is asked — on a run that would otherwise admit silently', () => {
-    const d = admit(OWNER);
+  it('the owner is asked in their chat, by the op\'s approval; from the app it runs', () => {
+    expect(admit(OWNER).verdict).toBe('admit');
+    const d = admit(CHAT);
     // ⚠ `AdmissionDecision` is a DISCRIMINATED UNION and `expect().toBe()` does
     // not narrow it, so this needs the guard rather than a cast. A whole-object
     // `as` would silence exactly the check that catches a verdict that came back
     // `admit` — the failure this test exists for.
     if (d.verdict !== 'ask') throw new Error(`expected ask, got ${d.verdict}`);
     expect(d.risk_tier).toBe('write');
-    expect(d.authorization_provenance?.lift_reason).toBe('review_send');
+    expect(d.authorization_provenance).toEqual({ pre_lift_approval: 'ask' });
   });
 
   it('⛔ and it says WHOSE SCREEN, not "outside this server"', () => {
@@ -112,26 +115,25 @@ describe('§ 234.4o — asking a peer is an outbound send', () => {
     // about is an interruption of another PERSON. The distinction is the whole
     // reason peer-ask keeps its own `detail` branch instead of taking the
     // send-set default.
-    const d = admit(OWNER);
+    const d = admit(CHAT);
     if (d.verdict !== 'ask') throw new Error('expected ask');
     expect(d.detail).toContain('another server owner\'s screen');
     expect(d.detail).not.toContain('outside this server');
     // …and a real send still gets the generic wording.
-    const send = admit(OWNER, 'mail-send');
+    const send = admit(CHAT, 'mail-send');
     if (send.verdict !== 'ask') throw new Error('expected ask');
     expect(send.detail).toContain('outside this server');
   });
 });
 
 describe('§ 234.4o — the ask is LEARNABLE', () => {
-  it('carries `pre_lift_approval: never`, which is what session eligibility reads', () => {
-    // 🔑 THE LIFT IS WHY IT IS LEARNABLE, NOT AN OBSTACLE TO IT. `mintRawOp` /
-    // `mint` (`session-grant-resolver.ts`) refuse to absorb anything whose
-    // PRE-LIFT approval was not `never` / `ask` — an `always` ruling can never
-    // become repeatable. A lifted peer-ask records the relaxed `never`
-    // underneath, so `allow_session` may absorb it like any other op-step.
-    const d = admit(OWNER);
-    expect(d.authorization_provenance?.pre_lift_approval).toBe('never');
+  it('carries `pre_lift_approval: ask`, which is what session eligibility reads', () => {
+    // `mintRawOp` / `mint` (`session-grant-resolver.ts`) refuse to absorb anything whose
+    // PRE-LIFT approval was not `never` / `ask` — an `always` ruling can never become
+    // repeatable. In the chat a peer ask is an `ask` by its approval, so `allow_session`
+    // may absorb it like any other op-step.
+    const d = admit(CHAT);
+    expect(d.authorization_provenance?.pre_lift_approval).toBe('ask');
   });
 
   it('`allow_session` is OFFERED on the seeded attended cells', () => {
@@ -159,11 +161,11 @@ describe('§ 234.4o — the ask is LEARNABLE', () => {
     })).toBeUndefined();
   });
 
-  it('⚠ `never_ask` is NOT offered, and an owner override does NOT survive — as for EVERY send', () => {
+  it('⚠ `never_ask` is NOT offered, and an owner override does NOT silence it in the chat — as for EVERY write', () => {
     // 🔑 THE HONEST HALF OF "LEARNABLE", PINNED SO IT CANNOT CHANGE BY ACCIDENT.
     // `admitByOpRisk` mints an override offer only at `effective_risk_tier ===
-    // 'read'`, and every review lift fires on the RELAXED verdict regardless of
-    // a stored owner override.
+    // 'read'`, and a `write` is never below `ask` (D-209 §1.3), so in the chat a
+    // stored "never" cannot silence it.
     //
     // ⛔ KEEPING IT THAT WAY IS THE POINT, NOT AN OVERSIGHT. A suppressible lift
     // means one settings row restores "zero prompts for a question put on
@@ -175,8 +177,8 @@ describe('§ 234.4o — the ask is LEARNABLE', () => {
       const d = admitByOpRisk({
         slug,
         risk_tier: 'write',
-        ceiling: resolveTrustCeiling(OWNER),
-        source: OWNER,
+        ceiling: resolveTrustCeiling(CHAT),
+        source: CHAT,
         owner_override: { approval: 'never' },
       });
       if (d.verdict !== 'ask') throw new Error(`${slug}: expected ask, got ${d.verdict}`);

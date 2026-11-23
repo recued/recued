@@ -33,6 +33,9 @@ export interface MountDiscoverySurfaceOptions {
    *  most once, on first Discover activation. */
   mountDiscover: (host: HTMLElement) => DiscoverySurfaceChildMount;
   initialTab?: DiscoveryTab;
+  /** D-404 slice B2 (D-323's P6) — the chat answer whose install offer opened this surface, as its
+   *  address: a "Back to chat" link above the tabs, so after the install the owner returns to it. */
+  backToChatHref?: string;
   installedLabel?: string;
   discoverLabel?: string;
   /** Fired after a tab switch (host can sync a hash / analytics). */
@@ -99,6 +102,14 @@ export const mountDiscoverySurface = (
   const discoverTab = makeTab('discover', opts.discoverLabel ?? 'Discover');
   tabBar.appendChild(installedTab);
   tabBar.appendChild(discoverTab);
+  if (opts.backToChatHref !== undefined) {
+    const back = doc.createElement('a');
+    back.className = 'discovery-back-to-chat';
+    back.setAttribute('data-discovery-back-to-chat', '');
+    back.href = opts.backToChatHref;
+    back.textContent = 'Back to chat';
+    root.appendChild(back);
+  }
   root.appendChild(tabBar);
 
   // ── Panes ─────────────────────────────────────────────────────────
@@ -231,6 +242,8 @@ export const DISCOVERY_SURFACE_STYLES = `
    pads its own root (max-width + margin:auto + 16px), so wrapping it must add
    no second container — zero width regression on the Installed tab. The tab bar
    + Discover pane get the matching centered treatment themselves. */
+.discovery-back-to-chat { display: inline-block; margin: 12px 16px 0; font-size: 13px; font-weight: 600; text-decoration: none; }
+.discovery-back-to-chat:hover, .discovery-back-to-chat:focus-visible { text-decoration: underline; }
 [${DISCOVERY_SURFACE_HOST_ATTR}] .discovery-tabbar {
   display: flex; gap: 4px; width: fit-content; margin: 14px auto 8px; padding: 4px;
   max-width: var(--wc-content-max, 1080px);

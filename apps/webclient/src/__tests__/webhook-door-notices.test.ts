@@ -115,6 +115,59 @@ describe('webhookDoorToasts — one notice per door a save moved', () => {
   });
 });
 
+describe('D-201 Slice 10BL — an owner\'s switch the server could not keep is said (10BF finding 16)', () => {
+  // D-201 Slice 10BW (10BS finding 17) — said only where the door stays closed
+  // (10BR), so said as that: it read as if the door were open and might close.
+  const NOT_KEPT = {
+    title: 'Webhook switch not kept: Refunds',
+    text: 'Recued could not keep your choice to open it, so it stays closed. Switch it on again to open it.',
+    sticky: true,
+  };
+
+  it('beside what its door did, and alone for a door the step left as it was', () => {
+    // D-201 Slice 10BW (10BS finding 17) — beside it, a door step's fault advises
+    // switching it on again: saving its settings keeps it closed.
+    // D-201 Slice 10CB (10BX finding 13) — and the switch's own toast leaves the
+    // retry to it.
+    expect(webhookDoorToasts({ webhook_doors: [{
+      recipe_id: 'refunds', recipe_name: 'Refunds', state: 'closed', was_open: false,
+      reason: 'database is locked', reason_code: 'fault', choice_not_kept: true,
+    }] })).toEqual([expect.objectContaining({
+      title: 'Webhook still off: Refunds',
+      text: expect.stringContaining('refused for now. Switch it on again to retry.'),
+    }), { ...NOT_KEPT, text: 'Recued could not keep your choice to open it, so it stays closed.' }]);
+    expect(webhookDoorToasts({ webhook_doors: [{
+      recipe_id: 'refunds', recipe_name: 'Refunds', state: 'unchanged', was_open: false, choice_not_kept: true,
+    }] })).toEqual([NOT_KEPT]);
+  });
+
+  // D-201 Slice 10CB (10BX finding 13) — beside a door the step refused,
+  // switching it on again meets the same refusal: it said that opens it.
+  it('beside a refused door, it says to switch it on again once what refuses it is fixed', () => {
+    for (const refused of [
+      { reason: "step 'pick' chooses what to run at runtime", reason_code: 'refused' },
+      { reason_code: 'no_account' },
+    ]) {
+      const toasts = webhookDoorToasts({ webhook_doors: [{
+        recipe_id: 'refunds', recipe_name: 'Refunds', state: 'closed', was_open: false, choice_not_kept: true,
+        ...refused,
+      }] });
+      expect(toasts.at(-1)).toEqual({
+        ...NOT_KEPT,
+        text: 'Recued could not keep your choice to open it, so it stays closed. Switch it on again once what '
+          + 'refuses it is fixed.',
+      });
+      expect(toasts[0]?.text).toMatch(/^Messages coming in are refused/);
+    }
+  });
+
+  it('never for a door whose choice was kept, nor a malformed flag', () => {
+    expect(webhookDoorToasts({ webhook_doors: [{
+      recipe_id: 'refunds', recipe_name: 'Refunds', state: 'unchanged', was_open: true, choice_not_kept: 'yes',
+    }] })).toEqual([]);
+  });
+});
+
 describe('announcingWebhookDoors — the dish rpc, with its door news told', () => {
   it('passes the result through and presents each change', async () => {
     const shown: WebhookDoorToast[] = [];
@@ -188,6 +241,10 @@ describe('withWebhookDoorNotices — the app\'s one connection tells every door 
       // D-320 phase 3 (3b) — a door follows its pack's connections too.
       'packs.connections.add', 'packs.connections.add_many', 'packs.connections.remove', 'packs.connections.set_default',
       'schedules.create', 'triggers.create',
+      // D-201 Slice 10AF — and opening one recipe's door on its card.
+      'webhook.ingress.door.set',
+      // D-201 Slice 10AC (10AA finding 19) — switching a webhook on opens doors.
+      'webhook.ingress.enable',
     ]);
   });
 });

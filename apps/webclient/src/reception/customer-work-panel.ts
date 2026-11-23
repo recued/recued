@@ -1,3 +1,4 @@
+import { CUSTOMER_FOLLOWUP_WORKSPACE_STYLES } from './followups-abuse-styles.js';
 import { CUSTOMER_JOB_FILTERS } from '@recued/contracts';
 import { parseShellRoute } from '../shell/route.js';
 import { parseReceptionAddress, receptionCustomerJobAddress, CUSTOMER_JOB_TABS, type ReceptionAddress, receptionInboxTargetAddress, receptionHierarchicalAddress } from './navigation.js';
@@ -91,13 +92,15 @@ export const mountCustomerWorkPanel = (opts: CustomerJobsPanelOptions & {
     };
     const openJob = (id: string, tab: import('./navigation.js').CustomerJobTab) => { returnJob = id; save(); opts.navigate(receptionCustomerJobAddress(id, tab).hash); };
     const followups = (): Panel => {
+        const followupHost = doc.createElement('section');followupHost.setAttribute('data-customer-followups-workspace','');detailHost.appendChild(followupHost);
+        const style = doc.createElement('style');style.textContent = CUSTOMER_FOLLOWUP_WORKSPACE_STYLES;followupHost.appendChild(style);
         const heading = doc.createElement('h2');
         heading.textContent = 'Customer follow-ups';
-        detailHost.appendChild(heading);
+        followupHost.appendChild(heading);
         if (!opts.reminders) {
             const p = doc.createElement('p');
             p.textContent = 'Connect Mail to prepare follow-up emails.';
-            detailHost.appendChild(p);
+            followupHost.appendChild(p);
             return { dispose: () => { } };
         }
         const panels: Array<Pick<ReturnType<typeof mountQuoteSignoffReminders>, 'dispose' | 'update' | 'hasOpenEmail' | 'hasUnsavedChanges' | 'hasInFlightWork'>> = [];
@@ -105,7 +108,7 @@ export const mountCustomerWorkPanel = (opts: CustomerJobsPanelOptions & {
         const addPanel = (label:string,mount: (options: Omit<Parameters<typeof mountQuoteSignoffReminders>[0], 'conn'> & {
             conn: CustomerJobsPanelOptions['conn'];
         }) => ReminderPanel) => {
-            const group=doc.createElement('details');group.setAttribute('data-customer-followup-group','');const summary=doc.createElement('summary');summary.textContent=label;group.appendChild(summary);detailHost.appendChild(group);
+            const group=doc.createElement('details');group.setAttribute('data-customer-followup-group','');const summary=doc.createElement('summary');summary.textContent=label;group.appendChild(summary);followupHost.appendChild(group);
             let initialized=false;
             let panel: ReminderPanel;
             panel = mount({ ...opts.reminders!, document: doc, host: group, conn: opts.conn,

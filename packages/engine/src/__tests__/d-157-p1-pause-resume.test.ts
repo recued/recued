@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   executeRecipe,
+  loopAskedBeforeAnyItemRan,
   resumeFromApproval,
   type ExecutionContext,
   type IngredientExecutor,
@@ -708,5 +709,476 @@ describe('D-157 P1 slice 3 — foreach resume guards apply to the gated step onl
       resumeFrom: { gated_step_id: 'second', foreach_progress: { ...pausedAgain.awaiting_approval!.foreach_progress! } },
     });
     expect(foreign.errors[0]).toMatchObject({ details: { reason: 'checkpoint_foreach_progress_mismatch' } });
+  });
+});
+
+describe('D-201 Slice 10N — a gated step a restart stopped after it returned', () => {
+  const pausedAtGate = async () => {
+    const paused = await executeRecipe(makeCtx(makeRecipe(fullSteps), async (slug) => {
+      if (slug === 'gated-action') throw new PreflightRequiredSignal();
+      return null;
+    }));
+    expect(paused.awaiting_approval).toBeDefined();
+    return paused;
+  };
+  const resumeWith = (
+    paused: Awaited<ReturnType<typeof executeRecipe>>,
+    replayed: { value: unknown } | undefined,
+    steps: RecipeStep[] = fullSteps,
+  ) => {
+    const calls: string[] = [];
+    const stores = baseStores();
+    (stores.step as Record<string, unknown>) = structuredClone(paused.awaiting_approval!.step_state);
+    const ctx: ExecutionContext = {
+      recipe: makeRecipe(steps),
+      stores,
+      ingredientExecutor: async (slug) => { calls.push(slug); return { echo: 'sent again' }; },
+      resumeFrom: {
+        gated_step_id: 'gated_call',
+        ...(replayed !== undefined ? { replayed_result: replayed } : {}),
+      },
+    };
+    return { calls, stores, run: executeRecipe(ctx) };
+  };
+
+  it('the recorded value stands in for the call: nothing is sent, and the run goes on from it', async () => {
+    const { calls, stores, run } = resumeWith(await pausedAtGate(), { value: { echo: 'kept' } });
+    const resumed = await run;
+    expect(resumed.errors).toEqual([]);
+    expect(resumed.success).toBe(true);
+    expect(calls).toEqual([]);
+    expect(resumed.steps.map((s) => s.id)).toEqual(['gated_call', 's4']);
+    expect((stores.step as Record<string, unknown>).gated_call).toEqual({ echo: 'kept' });
+    expect((stores.step as Record<string, unknown>).s4).toBe('done:kept');
+  });
+
+  it('without one, the approved call is made, as before', async () => {
+    const { calls, run } = resumeWith(await pausedAtGate(), undefined);
+    expect((await run).success).toBe(true);
+    expect(calls).toEqual(['gated-action']);
+  });
+
+  it("the step's own stop_when and fail_on still read the recorded value", async () => {
+    const stopping = [
+      ...headSteps,
+      ...asSteps([
+        { id: 'gated_call', ingredient: 'gated-action', input: '{{step.dispatch_payload}}', stop_when: '{{step.gated_call.echo}} equal kept' },
+        { id: 's4', transform: 'concat', values: ['done:', '{{step.gated_call.echo}}'] },
+      ]),
+    ];
+    const stopped = resumeWith(await pausedAtGate(), { value: { echo: 'kept' } }, stopping);
+    const result = await stopped.run;
+    expect(result.success).toBe(true);
+    expect(result.stopped).toMatchObject({ step_id: 'gated_call' });
+    expect(result.steps.map((s) => s.id)).toEqual(['gated_call']);
+    const failing = [
+      ...headSteps,
+      ...asSteps([
+        { id: 'gated_call', ingredient: 'gated-action', input: '{{step.dispatch_payload}}', fail_on: '{{step.gated_call.echo}} equal kept' },
+        { id: 's4', transform: 'concat', values: ['done:', '{{step.gated_call.echo}}'] },
+      ]),
+    ];
+    const failed = await resumeWith(await pausedAtGate(), { value: { echo: 'kept' } }, failing).run;
+    expect(failed.success).toBe(false);
+    expect(failed.errors[0]).toMatchObject({ code: 'RECIPE_FAIL_ON_TRIGGERED' });
+    expect(stopped.calls).toEqual([]);
+  });
+
+  it('a null value stands in too, distinct from no value', async () => {
+    const { calls, stores, run } = resumeWith(await pausedAtGate(), { value: null });
+    await run;
+    expect(calls).toEqual([]);
+    expect((stores.step as Record<string, unknown>).gated_call).toBeNull();
+  });
+
+  // D-201 Slice 10BH — a loop resumed mid-way is refused; one asked for from its
+  // first item that finished stands in (below).
+  it('a foreach step resumed mid-way is refused rather than run: a value cannot stand in for its items', async () => {
+    const fan = asSteps([
+      { id: 'fan', ingredient: 'gated-action', foreach: '{{config.items}}', input: '{{item}}' },
+    ]);
+    const calls: string[] = [];
+    const stores = baseStores();
+    (stores.config as Record<string, unknown>) = { items: ['a', 'b'] };
+    const result = await executeRecipe({
+      recipe: makeRecipe(fan),
+      stores,
+      ingredientExecutor: async (slug) => { calls.push(slug); return null; },
+      resumeFrom: {
+        gated_step_id: 'fan',
+        foreach_progress: {
+          step_id: 'fan', next_index: 1, source_length: 2,
+          source_hash: hashForeachCheckpointSource(['a', 'b']), results: [{ ok: true, result: null, item: 'a' }],
+        },
+        replayed_result: { value: [] },
+      },
+    }).catch((error: unknown) => error);
+    expect(calls).toEqual([]);
+    expect(String(result)).toMatch(/foreach: a recorded value cannot stand in/);
+  });
+
+  it('D-201 Slice 10BH — a loop asked for from its first item that finished stands in as it came out: no item runs again', async () => {
+    const fan = asSteps([
+      { id: 'fan', ingredient: 'gated-action', foreach: '{{config.items}}', input: '{{item}}' },
+      { id: 'after', ingredient: 'after-action', input: '{{step.fan}}' },
+    ]);
+    const calls: Array<{ slug: string; input: unknown }> = [];
+    const stores = baseStores();
+    (stores.config as Record<string, unknown>) = { items: ['a', 'b'] };
+    const kept = [{ ok: true, result: { done: 'a' }, item: 'a' }, { ok: false, error: 'gone', item: 'b' }];
+    const result = await executeRecipe({
+      recipe: makeRecipe(fan),
+      stores,
+      ingredientExecutor: async (slug, input) => { calls.push({ slug, input }); return null; },
+      resumeFrom: {
+        gated_step_id: 'fan',
+        foreach_progress: {
+          step_id: 'fan', next_index: 0, source_length: 2,
+          source_hash: hashForeachCheckpointSource(['a', 'b']), results: [],
+        },
+        replayed_result: { value: kept },
+      },
+    });
+    expect(result.success).toBe(true);
+    // Only the step after it ran, reading the loop as it came out.
+    expect(calls.map((call) => call.slug)).toEqual(['after-action']);
+    expect((stores.step as Record<string, unknown>).fan).toEqual(kept);
+    // Bound to an egress budget, it is still refused.
+    const bound = await executeRecipe({
+      recipe: makeRecipe(fan),
+      stores: (() => { const fresh = baseStores(); (fresh.config as Record<string, unknown>) = { items: ['a', 'b'] }; return fresh; })(),
+      ingredientExecutor: async () => null,
+      resumeFrom: { gated_step_id: 'fan', egress_bound: { requests: 1, total_bytes: 10 }, replayed_result: { value: kept } },
+    }).catch((error: unknown) => error);
+    expect(String(bound)).toMatch(/foreach: a recorded value cannot stand in/);
+  });
+});
+
+// D-201 Slice 10BN (10BM findings 1 and 3) — a loop that finished stands in as
+// `runForeach` returned it. Down a plain step's path its items' `skip_when`
+// and `fail_on` were read once with no item: a filter on its items read it as
+// skipped, its value null, and a per-item `fail_on` failed the run.
+describe('D-201 Slice 10BN — a replayed loop stands in as it came out', () => {
+  const kept = [
+    { ok: true, result: { done: 'a' }, item: { id: 'a', should_notify: true } },
+    { ok: true, skipped: true, result: null, item: { id: 'b', should_notify: false } },
+    { ok: false, error: 'gone', item: { id: 'c', should_notify: true } },
+  ];
+  const items = kept.map((entry) => entry.item);
+  const askedAtTheFirst = {
+    step_id: 'fan', next_index: 0, source_length: items.length,
+    source_hash: hashForeachCheckpointSource(items), results: [],
+  };
+  const replayTheLoop = async (fan: Record<string, unknown>, progress: unknown = askedAtTheFirst) => {
+    const steps = asSteps([
+      { id: 'fan', ingredient: 'gated-action', foreach: '{{config.items}}', input: '{{item}}', ...fan },
+      // The closure-watcher's shape: a step that loops over the loop's results.
+      { id: 'after', ingredient: 'after-action', foreach: '{{step.fan}}', input: '{{item.item.id}}' },
+    ]);
+    const calls: Array<{ slug: string; input: unknown }> = [];
+    const stores = baseStores();
+    (stores.config as Record<string, unknown>) = { items };
+    const result = await executeRecipe({
+      recipe: makeRecipe(steps),
+      stores,
+      ingredientExecutor: async (slug, input) => { calls.push({ slug, input }); return { sent: input }; },
+      resumeFrom: {
+        gated_step_id: 'fan',
+        ...(progress !== undefined ? { foreach_progress: progress as never } : {}),
+        replayed_result: { value: kept },
+      },
+    });
+    return { result, calls, stores };
+  };
+
+  it('an approved loop with a filter on its items: not skipped, its value as it came out, and the loop over it runs', async () => {
+    const { result, calls, stores } = await replayTheLoop({ skip_when: '{{item.should_notify}} not_equal true' });
+    // Before 10BN: skipped, its value null, and "foreach expected array, got null".
+    expect(result.errors).toEqual([]);
+    expect(result.success).toBe(true);
+    expect(result.steps.find((s) => s.id === 'fan')).toMatchObject({
+      skipped: false, result: kept, error: null, foreach: { items: 3, failed: 1 },
+    });
+    expect((stores.step as Record<string, unknown>).fan).toEqual(kept);
+    // Nothing of the loop is sent again; the loop after it runs once per entry.
+    expect(calls.map((call) => call.slug)).toEqual(['after-action', 'after-action', 'after-action']);
+    expect(result.steps.find((s) => s.id === 'after')).toMatchObject({ foreach: { items: 3, failed: 0 } });
+  });
+
+  it('a per-step filter reading the other way now is not read again either: the loop ran', async () => {
+    const { result, calls } = await replayTheLoop({ skip_when: '{{config.leave_the_fan}} is_null' });
+    expect(result.success).toBe(true);
+    expect(calls.map((call) => call.slug)).toEqual(['after-action', 'after-action', 'after-action']);
+  });
+
+  it('an approved loop with a per-item fail_on: not failed again with no item', async () => {
+    const { result, calls } = await replayTheLoop({ fail_on: '{{item}} is_empty' });
+    // Before 10BN: RECIPE_FAIL_ON_TRIGGERED, read over the whole value.
+    expect(result.errors).toEqual([]);
+    expect(result.success).toBe(true);
+    expect(calls.map((call) => call.slug)).toEqual(['after-action', 'after-action', 'after-action']);
+  });
+
+  it("its stop_when reads the whole value once, as after the loop: the run ends there", async () => {
+    const { result, calls } = await replayTheLoop({ stop_when: '{{step.fan}} is_not_empty' });
+    expect(result.success).toBe(true);
+    expect(result.stopped).toMatchObject({ step_id: 'fan' });
+    expect(calls).toEqual([]);
+  });
+
+  it('a loop whose filter skipped the items before its ask stands in, as one asked for from its first item that ran', async () => {
+    const skippedFirst = {
+      step_id: 'fan', next_index: 1, source_length: items.length, source_hash: hashForeachCheckpointSource(items),
+      results: [{ ok: true, skipped: true, result: null, item: items[0] }],
+    };
+    const { result, calls } = await replayTheLoop({ skip_when: '{{item.id}} equal x' }, skippedFirst);
+    // Before 10BN: refused, read as resumed mid-way.
+    expect(result.success).toBe(true);
+    expect(calls.map((call) => call.slug)).toEqual(['after-action', 'after-action', 'after-action']);
+    // One an item of which ran before the ask is still refused.
+    const ranFirst = { ...skippedFirst, results: [{ ok: true, result: { done: 'a' }, item: items[0] }] };
+    await expect(replayTheLoop({}, ranFirst)).rejects.toThrow(/foreach: a recorded value cannot stand in/);
+  });
+
+  it('a later loop that replays is not filtered or failed again: it stands in as it came out', async () => {
+    const steps = [
+      ...headSteps,
+      ...asSteps([
+        { id: 'gated_call', ingredient: 'gated-action', input: '{{step.dispatch_payload}}' },
+        {
+          id: 'later_fan', ingredient: 'fan-action', foreach: '{{config.items}}', input: '{{item}}',
+          skip_when: '{{item.should_notify}} not_equal true', fail_on: '{{item}} is_empty',
+        },
+        { id: 'last', ingredient: 'last-action', foreach: '{{step.later_fan}}', input: '{{item.item.id}}' },
+      ]),
+    ];
+    const calls: string[] = [];
+    const stores = baseStores();
+    (stores.config as Record<string, unknown>) = { items };
+    (stores.step as Record<string, unknown>) = { s1: 'hello-x', s2: 'hello-x-after', dispatch_payload: { who: 'hello-x-after', tag: 'p3' } };
+    const result = await executeRecipe({
+      recipe: makeRecipe(steps),
+      stores,
+      ingredientExecutor: async (slug) => { calls.push(slug); return { sent: slug }; },
+      resumeFrom: {
+        gated_step_id: 'gated_call',
+        replayed_result: { value: { echo: 'kept' } },
+        replayed_steps: [{ step_id: 'later_fan', skipped: false, value: kept }],
+      },
+    });
+    // Before 10BN: its per-item fail_on, read with no item, failed the run.
+    expect(result.errors).toEqual([]);
+    expect(result.success).toBe(true);
+    expect((stores.step as Record<string, unknown>).later_fan).toEqual(kept);
+    expect(calls).toEqual(['last-action', 'last-action', 'last-action']);
+  });
+});
+
+// D-201 Slice 10BU (10BS finding 2) — the approved step skipped before the stop
+// (at the answer) stays skipped, as a later step's recorded skip does: a loop
+// was replayed as one that ran, its `stop_when` read over the null the skip
+// left, and a plain step's filter was read again over what had changed since.
+describe('D-201 Slice 10BU — an approved step skipped before the stop stays skipped', () => {
+  const runSkipped = async (gated: Record<string, unknown>, config: Record<string, unknown> = {}) => {
+    const steps = asSteps([
+      { id: 'fan', ingredient: 'gated-action', input: 'x', ...gated },
+      { id: 'after', ingredient: 'after-action', input: 'y' },
+    ]);
+    const calls: string[] = [];
+    const stores = baseStores();
+    (stores.config as Record<string, unknown>) = { items: ['a', 'b'], ...config };
+    const result = await executeRecipe({
+      recipe: makeRecipe(steps),
+      stores,
+      ingredientExecutor: async (slug) => { calls.push(slug); return { sent: slug }; },
+      resumeFrom: { gated_step_id: 'fan', replayed_result: { value: null, skipped: true } },
+    });
+    return { result, calls, stores };
+  };
+
+  it('a loop skipped as a whole, its stop_when reading it as empty: skipped, unread, and the run goes on', async () => {
+    const { result, calls } = await runSkipped({
+      foreach: '{{config.items}}', input: '{{item}}',
+      skip_when: '{{config.charge}} is_null', stop_when: '{{step.fan}} is_empty',
+    });
+    // Before 10BU: replayed as a loop that ran, its stop_when ended the run.
+    expect(result.success).toBe(true);
+    expect(result.stopped).toBeUndefined();
+    expect(result.steps.find((s) => s.id === 'fan')).toMatchObject({ skipped: true, result: null });
+    expect(calls).toEqual(['after-action']);
+  });
+
+  it("a plain step whose filter reads the other way now: still skipped, as it was", async () => {
+    const { result, calls } = await runSkipped(
+      { skip_when: '{{config.charge}} is_null', stop_when: '{{step.fan}} is_null' },
+      { charge: 'ch_now_there' },
+    );
+    // Before 10BU: its filter read again, its null stood in as a step that ran,
+    // and its stop_when ended the run.
+    expect(result.success).toBe(true);
+    expect(result.stopped).toBeUndefined();
+    expect(result.steps.find((s) => s.id === 'fan')).toMatchObject({ skipped: true, result: null });
+    expect(calls).toEqual(['after-action']);
+  });
+});
+
+// D-201 Slice 10BZ (10BX finding 6, the review's gaps) — a plain approved step
+// that ran stands in with its value, its filter unread: read again over what
+// had changed since, it was skipped, and the steps after it read null. One that
+// returned null ran, and is no skip.
+describe('D-201 Slice 10BZ — an approved step that ran stands in with its value, its filter unread', () => {
+  const runReplayed = async (gated: Record<string, unknown>, value: unknown) => {
+    const steps = asSteps([
+      { id: 'fan', ingredient: 'gated-action', input: 'x', ...gated },
+      { id: 'after', ingredient: 'after-action', input: '{{step.fan}}' },
+    ]);
+    const calls: Array<{ slug: string; input: Record<string, unknown> }> = [];
+    const result = await executeRecipe({
+      recipe: makeRecipe(steps),
+      stores: baseStores(),
+      ingredientExecutor: async (slug, input) => { calls.push({ slug, input }); return { sent: slug }; },
+      resumeFrom: { gated_step_id: 'fan', replayed_result: { value } },
+    });
+    return { result, calls };
+  };
+
+  it('its filter reading true now: it stands in with what it returned, and the step after reads that', async () => {
+    const { result, calls } = await runReplayed({ skip_when: '{{config.charge}} is_null' }, { id: 7 });
+    // Before 10BZ: skipped, its value null, and the step after read nothing.
+    expect(result.success).toBe(true);
+    expect(result.steps.find((s) => s.id === 'fan')).toMatchObject({ skipped: false, result: { id: 7 } });
+    expect(calls).toEqual([{ slug: 'after-action', input: expect.objectContaining({ id: 7 }) }]);
+  });
+
+  it('one that returned null ran: not skipped, and its stop_when is read', async () => {
+    const { result, calls } = await runReplayed({ stop_when: '{{step.fan}} is_null' }, null);
+    expect(result.success).toBe(true);
+    expect(result.steps.find((s) => s.id === 'fan')).toMatchObject({ skipped: false, result: null });
+    expect(result.stopped).toMatchObject({ step_id: 'fan' });
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('D-201 Slice 10BN — loopAskedBeforeAnyItemRan', () => {
+  const progress = (next_index: number, results: unknown[]) =>
+    ({ step_id: 'fan', next_index, source_length: 3, source_hash: 'h', results }) as never;
+  it('no item reached, or each one before the ask skipped by its own filter', () => {
+    expect(loopAskedBeforeAnyItemRan(progress(0, []))).toBe(true);
+    expect(loopAskedBeforeAnyItemRan(progress(2, [
+      { ok: true, skipped: true, result: null, item: 'a' },
+      { ok: true, skipped: true, result: null, item: 'b' },
+    ]))).toBe(true);
+  });
+  it('an item that ran, or failed, before the ask: resumed mid-way', () => {
+    expect(loopAskedBeforeAnyItemRan(progress(1, [{ ok: true, result: 'x', item: 'a' }]))).toBe(false);
+    expect(loopAskedBeforeAnyItemRan(progress(1, [{ ok: false, error: 'gone', item: 'a' }]))).toBe(false);
+    expect(loopAskedBeforeAnyItemRan(progress(1, [{ ok: false, skipped: true, error: 'gone', item: 'a' }]))).toBe(false);
+    expect(loopAskedBeforeAnyItemRan(progress(2, [
+      { ok: true, skipped: true, result: null, item: 'a' },
+      { ok: true, result: 'x', item: 'b' },
+    ]))).toBe(false);
+  });
+  it('a progress whose index does not match its results is not read as one', () => {
+    expect(loopAskedBeforeAnyItemRan(progress(1, []))).toBe(false);
+    expect(loopAskedBeforeAnyItemRan(progress(0, [{ ok: true, skipped: true, result: null, item: 'a' }]))).toBe(false);
+  });
+});
+
+// D-201 Slice 10R (10Q finding 1) — the resume starts at the gated step's
+// checkpoint, so each step after it that the stopped run had finished stands in
+// as it came out; the run goes on from the first that had not.
+describe('D-201 Slice 10R — the steps after it that had finished, too', () => {
+  const laterSteps = asSteps([
+    { id: 'create', ingredient: 'create-action', input: '{{step.gated_call.echo}}' },
+    { id: 'fan', ingredient: 'fan-action', foreach: '{{config.items}}', input: '{{item}}' },
+    { id: 'tail', transform: 'concat', values: ['made:', '{{step.create.id}}'] },
+    { id: 'last', ingredient: 'last-action', input: '{{step.tail}}' },
+  ]);
+  const resumeFrom = (steps: RecipeStep[], replayedSteps: ReadonlyArray<{ step_id: string; skipped: boolean; value?: unknown }>) => {
+    const calls: Array<{ slug: string; input: unknown }> = [];
+    const stores = baseStores();
+    (stores.config as Record<string, unknown>) = { items: ['a', 'b'] };
+    (stores.step as Record<string, unknown>) = { s1: 'hello-x', s2: 'hello-x-after', dispatch_payload: { who: 'hello-x-after', tag: 'p3' } };
+    const ctx: ExecutionContext = {
+      recipe: makeRecipe(steps),
+      stores,
+      ingredientExecutor: async (slug, input) => { calls.push({ slug, input }); return { sent: slug }; },
+      resumeFrom: {
+        gated_step_id: 'gated_call',
+        replayed_result: { value: { echo: 'kept' } },
+        replayed_steps: replayedSteps,
+      },
+    };
+    return { calls, stores, run: executeRecipe(ctx) };
+  };
+
+  it('each finished step stands in as it came out, a loop whole; the run sends only what had not started', async () => {
+    const fanned = [{ ok: true, result: { sent: 'a' } }, { ok: true, result: { sent: 'b' } }];
+    const { calls, stores, run } = resumeFrom([...headSteps, ...tailSteps.slice(0, 1), ...laterSteps], [
+      { step_id: 'create', skipped: false, value: { id: 'deal-2' } },
+      { step_id: 'fan', skipped: false, value: fanned },
+    ]);
+    const resumed = await run;
+    expect(resumed.errors).toEqual([]);
+    expect(resumed.success).toBe(true);
+    // Neither the create nor any item of the loop is sent again.
+    expect(calls.map((call) => call.slug)).toEqual(['last-action']);
+    expect(resumed.steps.map((s) => s.id)).toEqual(['gated_call', 'create', 'fan', 'tail', 'last']);
+    const step = stores.step as Record<string, unknown>;
+    expect(step.create).toEqual({ id: 'deal-2' });
+    expect(step.fan).toEqual(fanned);
+    // What runs after reads the replayed values.
+    expect(step.tail).toBe('made:deal-2');
+    expect(step.last).toEqual({ sent: 'last-action' });
+  });
+
+  it("a replayed step's skip_when is not asked again: one that ran stands in, one that was skipped stays skipped", async () => {
+    const steps = [
+      ...headSteps,
+      ...tailSteps.slice(0, 1),
+      ...asSteps([
+        // Both conditions now read the other way from when the stopped run met them.
+        { id: 'create', ingredient: 'create-action', input: 'x', skip_when: '{{step.s1}} is_not_empty' },
+        { id: 'notify', ingredient: 'notify-action', input: 'x', skip_when: '{{step.s1}} is_empty' },
+        { id: 'tail', transform: 'concat', values: ['made:', '{{step.create.id}}'] },
+      ]),
+    ];
+    const { calls, stores, run } = resumeFrom(steps, [
+      { step_id: 'create', skipped: false, value: { id: 'deal-2' } },
+      { step_id: 'notify', skipped: true },
+    ]);
+    const resumed = await run;
+    expect(resumed.success).toBe(true);
+    expect(calls).toEqual([]);
+    expect(resumed.steps.find((s) => s.id === 'create')).toMatchObject({ skipped: false, result: { id: 'deal-2' } });
+    expect(resumed.steps.find((s) => s.id === 'notify')).toMatchObject({ skipped: true, result: null });
+    expect((stores.step as Record<string, unknown>).tail).toBe('made:deal-2');
+  });
+
+  it("a replayed step's stop_when still reads its value: the run ends there", async () => {
+    const steps = [
+      ...headSteps,
+      ...tailSteps.slice(0, 1),
+      ...asSteps([
+        { id: 'create', ingredient: 'create-action', input: 'x', stop_when: '{{step.create.id}} equal deal-2' },
+        { id: 'last', ingredient: 'last-action', input: 'x' },
+      ]),
+    ];
+    const { calls, run } = resumeFrom(steps, [{ step_id: 'create', skipped: false, value: { id: 'deal-2' } }]);
+    const resumed = await run;
+    expect(resumed.success).toBe(true);
+    expect(resumed.stopped).toMatchObject({ step_id: 'create' });
+    expect(calls).toEqual([]);
+  });
+
+  it('an entry naming the gated step itself is ignored: its own replayed value governs it', async () => {
+    const { calls, stores, run } = resumeFrom([...headSteps, ...tailSteps], [
+      { step_id: 'gated_call', skipped: true },
+    ]);
+    const resumed = await run;
+    expect(resumed.success).toBe(true);
+    expect(calls).toEqual([]);
+    expect((stores.step as Record<string, unknown>).gated_call).toEqual({ echo: 'kept' });
+    expect((stores.step as Record<string, unknown>).s4).toBe('done:kept');
   });
 });

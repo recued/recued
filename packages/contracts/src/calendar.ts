@@ -89,6 +89,14 @@ export interface CanonicalEvent {
 
   status: 'confirmed' | 'cancelled' | 'tentative';
 
+  /** D-407 Q8 — the event's own calendar marks it private: Google's `visibility` `private` or
+   *  `confidential`, Outlook's `sensitivity` `private` or `confidential`, CalDAV's `CLASS` `PRIVATE`
+   *  or `CONFIDENTIAL`. Absent otherwise, and on Recued's own calendar, which has no marking.
+   *  Recued keeps such an event private as it keeps a private occasion: messages call it
+   *  "Reminder in Yours", and a model reading it is told it is private. Read only: nothing Recued
+   *  writes sets it (D-407 slice 4 writes the marking). */
+  marked_private?: true;
+
   /** Raw RRULE string, if the event is an instance of a series.
    *  Preserved for inspection; never used by the engine for expansion. */
   recurrence_rule?: string;

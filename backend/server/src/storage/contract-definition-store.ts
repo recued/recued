@@ -44,6 +44,8 @@ import {
   CONTRACT_DEFINITION_SCOPE,
   DELEGATION_RULE_MAX_USES,
   DELEGATION_RULE_RISK_TIERS,
+  KIND_GRANT_MAX_USES,
+  KIND_GRANT_TTL_MS,
   DELEGATION_RULE_TTL_MS,
   SCOPED_GRANT_MAX_USES_CEILING,
   SCOPED_GRANT_SOURCES,
@@ -377,6 +379,45 @@ export class RawOpGrantMintError extends Error {
   }
 }
 
+/** D-177 N.15 — caller-supplied fields for {@link ContractDefinitionStore.mintKindGrant}. The
+ *  store stamps `contract_id` / `minted_at` / `grant_kind: 'session'` / `grant_mode: 'kind'`. A
+ *  kind grant is "Allow in this chat": minted from the owner's answer on their own
+ *  attended ask, it binds the conversation, the op (exactly one ingredient and one operation) and
+ *  the connection when the call had one, and the recipe's version when a recipe made the call. It
+ *  carries no argument hash: any arguments to that op are what the owner allowed. */
+export interface MintKindGrantInput {
+  /** Provenance — the owner, who answered the ask (N.5). */
+  minted_by: string;
+  /** Human-facing label for the Contracts row ("Allowed in this chat — Add a task"). */
+  display_name: string;
+  /** Binding scope: exactly one ingredient and one operation (never wildcards), and exactly one
+   *  connection when present. */
+  scope: ContractScope;
+  /** The conversation the grant is bound to (D6). */
+  channel_session_id: string;
+  /** Writes only (N.15 ruling Q5). */
+  risk_tier: RiskTier;
+  /** The recipe that made the approved call, at its version, when one did. Absent ⇒ the grant
+   *  admits recipe-less calls only (a chat's own write, an AI's direct op). */
+  bound_recipe?: { recipe_id: string; recipe_hash: string };
+  /** Checkpoint/audit anchor of the minting approval (D8). REQUIRED. */
+  approved_action_ref: string;
+  /** Epoch-ms expiry — at most {@link KIND_GRANT_TTL_MS} away. */
+  expiry_at: number;
+  /** Use budget — at most {@link KIND_GRANT_MAX_USES}. */
+  max_uses: number;
+}
+
+/** D-177 N.15 — a kind-grant mint input that cannot produce a matchable, bounded grant (an unbound
+ *  or multi-valued op axis, a tier other than `write`, bounds past the ruled ceilings). Same
+ *  fail-loud posture as the other mint primitives. */
+export class KindGrantMintError extends Error {
+  constructor(detail: string) {
+    super(`kind_grant_mint_invalid: ${detail}`);
+    this.name = 'KindGrantMintError';
+  }
+}
+
 /** D-202 — caller-supplied fields for
  *  {@link ContractDefinitionStore.mintQualityDelegation}. The store stamps
  *  `contract_id` / `minted_at` / `grant_kind: 'quality_delegation'`.
@@ -428,6 +469,21 @@ export class QualityDelegationMintError extends Error {
   }
 }
 
+/** Host-only evidence of the budget charged by one reservation. */
+export interface ContractUseRefund {
+  readonly contract_id: string;
+  readonly budget_version: string;
+  readonly max_uses: number;
+  readonly use_period: UsageCapPeriod;
+  readonly use_period_start: number | null;
+}
+
+export interface ContractDispatchUseReservation {
+  readonly before: ContractDefinition;
+  readonly after: ContractDefinition;
+  readonly refund?: ContractUseRefund;
+}
+
 /** The contract-lifecycle write/read surface over `contract.contract_definition.*`.
  *  Every mutator returns the resulting {@link ContractDefinition} (or `null` when
  *  the `contract_id` names no row), so a caller sees the post-write state without a
@@ -450,7 +506,7 @@ export interface ContractDefinitionStore {
    *  revocation — the use-resolution slice gates on `isContractActive` first. */
   recordUse(contract_id: string): ContractDefinition | null;
   /** Atomic admission and reservation for a deferred in-flight attempt. */
-  reserveDispatchUse?(contract_id: string): { before: ContractDefinition; after: ContractDefinition } | null;
+  reserveDispatchUse?(contract_id: string): ContractDispatchUseReservation | null;
   /** Give back a unit taken by {@link reserveDispatchUse} when the attempt never
    *  crossed the boundary — held for approval, refused downstream, or failed
    *  before any effect.
@@ -463,18 +519,17 @@ export interface ContractDefinitionStore {
    *  deliberately relocated to the proceed point to close an UNDERCOUNT.
    *  Reserving early without this arm would swing the same field the other way.
    *
-   *  ⛔ CLAMPED AT `max_uses`, WHICH IS THE SAFETY PROPERTY. A release can only
-   *  ever restore what the owner authorised, so a double-release — a bug, a
-   *  retry, a settle running twice — cannot inflate a budget past its cap. The
-   *  caller also spends its token once (see the overlay), so this clamp is the
-   *  backstop, not the only guard.
+   *  The refund must belong to the current budget version and UTC window.
+   *  Missing or foreign evidence, a replaced budget, or a later window returns
+   *  false without crediting the current counter. The caller settles its token
+   *  once; `max_uses` remains the ceiling beneath that guard.
    *
    *  ⚠ UNBOUNDED CONTRACTS TOOK NOTHING, so releasing one is a no-op rather than
    *  a free credit: `reserveDispatchUse` leaves `after === before` when there is
    *  no counter, and this mirrors that exactly.
    *
    *  Returns true iff a unit was actually given back. */
-  releaseDispatchUse?(contract_id: string): boolean;
+  releaseDispatchUse?(contract_id: string, refund?: ContractUseRefund): boolean;
   /** Revoke the contract: stamp `revoked_at = now()` + `revocation_reason`.
    *  Idempotent — a re-revoke leaves the FIRST revocation's `revoked_at` / reason
    *  intact (a revoked contract is already inert). Returns the resulting
@@ -536,6 +591,11 @@ export interface ContractDefinitionStore {
    *  per-mode identity field). Reuses the standing lifecycle verbatim —
    *  `recordUse` / `revoke` / `list` / `get` all operate on session rows. */
   mintSessionGrant(input: MintSessionGrantInput): ContractDefinition;
+  /** Commit a recipe's exact/open grant and immutable checkpoint decision together.
+   * Replays retain the original grant, including revoked or exhausted rows. */
+  mintSessionGrantForDecision(input: MintSessionGrantInput, scope_sha256: string): {
+    definition: ContractDefinition; created: boolean;
+  };
   /** D-177 P2 — the session index: every `grant_kind: 'session'` row bound to
    *  `channel_session_id`, soonest-expiring first (the resolver consumes the
    *  first match, so the grant closest to expiry burns first — preserving the
@@ -596,6 +656,18 @@ export interface ContractDefinitionStore {
    *  lifecycle verbatim (`consumeSessionGrant` / `revoke` / `recordUse` /
    *  `listSessionGrants`). */
   mintRawOpGrant(input: MintRawOpGrantInput): ContractDefinition;
+  /** D-177 N.15 — mint a KIND session grant from the owner's "Allow in this chat":
+   *  a `contract_definition` row with `grant_kind: 'session'` + `grant_mode: 'kind'`, exactly one
+   *  ingredient and operation (+ connection when the call had one), the conversation, and the
+   *  recipe's version when a recipe made the call — no argument hash. Throws
+   *  {@link KindGrantMintError} on every refusal. The N.4 `'kind'` matcher arm +
+   *  `consumeSessionGrant`'s kind re-verify operate on the minted row. */
+  mintKindGrant(input: MintKindGrantInput): ContractDefinition;
+  /** Bind a versioned approval to its immutable offer and newly minted kind grant
+   * in one transaction. Replay returns the original grant in its current state. */
+  mintKindGrantForDecision(input: MintKindGrantInput, offer_sha256: string): {
+    definition: ContractDefinition; created: boolean;
+  };
   /** D-202 — the quality-delegation index: every
    *  `grant_kind: 'quality_delegation'` row (the coarse (recipe, op)-grain
    *  quality-axis grants — scope-bound, no channel session, standing). Global
@@ -632,9 +704,8 @@ export interface ContractDefinitionStore {
    *  falls back to hold — fail closed. A grant row with NO `uses_remaining` is
    *  malformed (the mints require `max_uses` — bounded by construction) and
    *  also returns `false`: consuming it would admit an unmetered auto-approve
-   *  loop. Synchronous read-check-write with no interleaving point
-   *  (better-sqlite3), so two concurrent dispatches can't both consume a
-   *  final use.
+   *  loop. The read, liveness checks and update share one store transaction,
+   *  so independent processes cannot both consume a final use.
    *
    *  D-177 P5a — per-mode consumption (N.4): an `'exact'` row decrements as
    *  before (`call` ignored); a `'batch'` row requires
@@ -671,6 +742,9 @@ export interface ContractDefinitionStore {
        *  (the matcher's door clause, re-verified — a resolver bug can never
        *  spend a door grant's use on another door's dispatch). */
       source_contract_id?: string;
+      /** D-177 N.15 — `'kind'` rows: the dispatch's operation, re-verified against the row's
+       *  op at this write. Absent ⇒ a kind consumption refuses. */
+      operation_id?: string;
     },
   ): boolean;
   /** D-177 P5a (N.10) — claim a SPECIFIC batch member at the proceed point
@@ -740,6 +814,36 @@ export const createContractDefinitionStore = (
 ): ContractDefinitionStore => {
   const now = opts?.now ?? ((): number => Date.now());
   const newId = opts?.newId ?? ((): string => `ct_${randomUUID()}`);
+  const db = store.realmDatabase;
+  db?.exec(`CREATE TABLE IF NOT EXISTS kind_grant_decisions (
+    approval_ref TEXT PRIMARY KEY,
+    offer_sha256 TEXT NOT NULL,
+    contract_id TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS session_grant_decisions (
+    approval_ref TEXT PRIMARY KEY,
+    scope_sha256 TEXT NOT NULL,
+    contract_id TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS contract_use_budget_versions (
+    contract_id TEXT PRIMARY KEY,
+    budget_version TEXT NOT NULL
+  )`);
+
+  // Internal accounting state: changing it must not change the definition
+  // material used by approval/recheck identities. Keep replacements durable so
+  // another process changing a count back cannot revive an earlier refund.
+  const readBudgetVersion = db?.prepare('SELECT budget_version FROM contract_use_budget_versions WHERE contract_id = ?');
+  const writeBudgetVersion = db?.prepare(`INSERT INTO contract_use_budget_versions (contract_id, budget_version) VALUES (?, ?)
+    ON CONFLICT (contract_id) DO UPDATE SET budget_version = excluded.budget_version`);
+  const budgetVersion = (id: string): string | undefined =>
+    (readBudgetVersion?.get(id) as { budget_version: string } | undefined)?.budget_version;
+  const replaceBudgetVersion = (id: string): string | undefined => {
+    if (writeBudgetVersion === undefined) return undefined;
+    const version = randomUUID();
+    writeBudgetVersion.run(id, version);
+    return version;
+  };
 
   // Every contract DATA row at this scope is a validated `contract_definition`
   // value (writes go through `store.put`), so the narrowing from `unknown` is
@@ -749,7 +853,15 @@ export const createContractDefinitionStore = (
     return row ? (row.value as ContractDefinition) : null;
   };
 
-  return {
+  // Keep the read, eligibility checks and write under the same store lock.
+  // Native stores take BEGIN IMMEDIATE; nested callers use a savepoint.
+  const withTransaction = <T>(operation: () => T): T => {
+    let result!: T;
+    store.transaction(() => { result = operation(); });
+    return result;
+  };
+
+  const definitions: ContractDefinitionStore = {
     mint(input) {
       const contract_id = newId();
       // D-187 AMENDMENT 3b — a minted door / standing contract may NEVER carry the
@@ -848,7 +960,7 @@ export const createContractDefinitionStore = (
     },
 
     reserveDispatchUse(contract_id) {
-      let reservation: { before: ContractDefinition; after: ContractDefinition } | null = null;
+      let reservation: ContractDispatchUseReservation | null = null;
       store.transaction(() => {
         const stored = read(contract_id);
         if (!stored) return;
@@ -866,31 +978,38 @@ export const createContractDefinitionStore = (
         if (after !== before || before !== stored) {
           store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], after);
         }
-        reservation = { before, after };
+        let refund: ContractUseRefund | undefined;
+        if (typeof before.max_uses === 'number' && typeof before.uses_remaining === 'number') {
+          const version = budgetVersion(contract_id) ?? replaceBudgetVersion(contract_id);
+          if (version !== undefined) {
+            const period = contractUsePeriod(before);
+            refund = Object.freeze({ contract_id, budget_version: version, max_uses: before.max_uses,
+              use_period: period, use_period_start: period === 'total' ? null : before.use_period_start ?? null });
+          }
+        }
+        reservation = { before, after, ...(refund !== undefined ? { refund } : {}) };
       });
       return reservation;
     },
-    releaseDispatchUse(contract_id) {
+    releaseDispatchUse(contract_id, refund) {
+      if (refund === undefined || refund.contract_id !== contract_id || db === undefined) return false;
       let released = false;
       store.transaction(() => {
-        const stored = read(contract_id);
-        if (!stored) return;
-        // ⚠ A release that lands AFTER the window rolled credits the NEW window —
-        //   which is correct and harmless: the refill already restored the full
-        //   budget, so the `max_uses` clamp below turns this into a no-op rather
-        //   than a unit carried across a boundary it never belonged to.
-        const current = rolledContractUses(stored, now());
-        // Unbounded took nothing — mirror `reserveDispatchUse`'s own no-op arm
-        // rather than crediting a counter that does not exist.
-        if (typeof current.uses_remaining !== 'number') return;
+        const current = read(contract_id);
+        if (!current || !isStandingContractDefinition(current)
+          || typeof current.uses_remaining !== 'number'
+          || typeof current.max_uses !== 'number'
+          || budgetVersion(contract_id) !== refund.budget_version
+          || current.max_uses !== refund.max_uses) return;
+        const period = contractUsePeriod(current);
+        const window = period === 'total' ? null : current.use_period_start ?? null;
+        if (period !== refund.use_period || window !== refund.use_period_start
+          || usageCapWindowStart(period, now()) !== refund.use_period_start) return;
         // ⛔ NEVER ABOVE THE AUTHORISED CAP. `max_uses` is the ceiling the owner
         //   set; a release that could exceed it would turn a settle bug into a
         //   bigger budget than anyone granted.
-        const ceiling = typeof current.max_uses === 'number'
-          ? current.max_uses
-          : current.uses_remaining;
-        const next = Math.min(ceiling, current.uses_remaining + 1);
-        if (next === current.uses_remaining && current === stored) return;
+        const next = Math.min(current.max_uses, current.uses_remaining + 1);
+        if (next === current.uses_remaining) return;
         store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], {
           ...current,
           uses_remaining: next,
@@ -922,118 +1041,129 @@ export const createContractDefinitionStore = (
     },
 
     revoke(contract_id, reason) {
-      const def = read(contract_id);
-      if (!def) return null;
-      // Preserve the first revocation — a revoked contract is already inert, so a
-      // re-revoke must not move `revoked_at` or overwrite the original reason. Only
-      // a REAL timestamp short-circuits: `revoked_at: null` (admitted by the
-      // `datetime?` value_shape) means NOT-yet-revoked per `contractLifecycleState`,
-      // so guarding `undefined` alone would no-op a genuine revoke of such a row.
-      if (def.revoked_at !== undefined && def.revoked_at !== null) return def;
-      const updated: ContractDefinition = {
-        ...def,
-        revoked_at: now(),
-        revocation_reason: reason,
-      };
-      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-      return updated;
+      return withTransaction(() => {
+        const def = read(contract_id);
+        if (!def) return null;
+        // Preserve the first revocation — a revoked contract is already inert, so a
+        // re-revoke must not move `revoked_at` or overwrite the original reason. Only
+        // a REAL timestamp short-circuits: `revoked_at: null` (admitted by the
+        // `datetime?` value_shape) means NOT-yet-revoked per `contractLifecycleState`,
+        // so guarding `undefined` alone would no-op a genuine revoke of such a row.
+        if (def.revoked_at !== undefined && def.revoked_at !== null) return def;
+        const updated: ContractDefinition = {
+          ...def,
+          revoked_at: now(),
+          revocation_reason: reason,
+        };
+        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+        return updated;
+      });
     },
 
     setReadSpheres(contract_id, spheres) {
-      const def = read(contract_id);
-      if (!def || (!isStandingContractDefinition(def) && def.grant_kind !== 'customer_template')) return null;
-      const updated = { ...def };
-      delete (updated as Record<string, unknown>).read_spheres;
-      if (spheres !== null) (updated as { read_spheres?: readonly import('@recued/contracts').Sphere[] }).read_spheres = [...new Set(spheres)];
-      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-      return updated;
+      return withTransaction(() => {
+        const def = read(contract_id);
+        if (!def || (!isStandingContractDefinition(def) && def.grant_kind !== 'customer_template')) return null;
+        const updated = { ...def };
+        delete (updated as Record<string, unknown>).read_spheres;
+        if (spheres !== null) (updated as { read_spheres?: readonly import('@recued/contracts').Sphere[] }).read_spheres = [...new Set(spheres)];
+        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+        return updated;
+      });
     },
 
     setDoorTypes(contract_id, door_types) {
-      const def = read(contract_id);
-      if (!def) return null;
-      // Door types are editable for ordinary standing doors and for D-196
-      // customer templates (the template defines which customer surfaces an
-      // issued instance may back). Customer instances and gate-consumed grants
-      // remain server-owned / inert on this generic authoring surface.
-      if (
-        !isStandingContractDefinition(def)
-        && def.grant_kind !== 'customer_template'
-      ) return null;
-      // Start from a shallow copy with `door_types` removed, then re-add only when
-      // non-empty: an empty array CLEARS (sparse wildcard — matches `mint`, so a
-      // minted-without and a cleared contract share one stored shape). The
-      // string-indexed cast drops the readonly field on the COPY (the stored `def`
-      // is untouched); the value_shape gate validates the array on `put`.
-      const base = { ...def };
-      delete (base as Record<string, unknown>).door_types;
-      const updated: ContractDefinition =
-        door_types.length === 0 ? base : { ...base, door_types: [...door_types] };
-      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-      return updated;
+      return withTransaction(() => {
+        const def = read(contract_id);
+        if (!def) return null;
+        // Door types are editable for ordinary standing doors and for D-196
+        // customer templates (the template defines which customer surfaces an
+        // issued instance may back). Customer instances and gate-consumed grants
+        // remain server-owned / inert on this generic authoring surface.
+        if (
+          !isStandingContractDefinition(def)
+          && def.grant_kind !== 'customer_template'
+        ) return null;
+        // Start from a shallow copy with `door_types` removed, then re-add only when
+        // non-empty: an empty array CLEARS (sparse wildcard — matches `mint`, so a
+        // minted-without and a cleared contract share one stored shape). The
+        // string-indexed cast drops the readonly field on the COPY (the stored `def`
+        // is untouched); the value_shape gate validates the array on `put`.
+        const base = { ...def };
+        delete (base as Record<string, unknown>).door_types;
+        const updated: ContractDefinition =
+          door_types.length === 0 ? base : { ...base, door_types: [...door_types] };
+        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+        return updated;
+      });
     },
 
     setLimits(contract_id, limits) {
-      const def = read(contract_id);
-      if (!def || !isStandingContractDefinition(def) || derivedDoorType(def.door_types) !== null) {
-        return null;
-      }
-      const base = { ...def } as Record<string, unknown>;
-      for (const field of ['max_uses', 'uses_remaining', 'use_period', 'use_period_start', 'expiry_at']) {
-        delete base[field];
-      }
-      if (limits.max_uses !== null) {
-        const sameBudget = def.max_uses === limits.max_uses
+      return withTransaction(() => {
+        const def = read(contract_id);
+        if (!def || !isStandingContractDefinition(def) || derivedDoorType(def.door_types) !== null) {
+          return null;
+        }
+        const base = { ...def } as Record<string, unknown>;
+        for (const field of ['max_uses', 'uses_remaining', 'use_period', 'use_period_start', 'expiry_at']) {
+          delete base[field];
+        }
+        const sameBudget = (def.max_uses ?? null) === limits.max_uses
           && contractUsePeriod(def) === limits.use_period;
-        base.max_uses = limits.max_uses;
-        if (sameBudget) {
-          // Keep what has been spent, and the window it was spent in.
-          if (def.uses_remaining !== undefined) base.uses_remaining = def.uses_remaining;
-          if (def.use_period !== undefined) base.use_period = def.use_period;
-          if (def.use_period_start !== undefined) base.use_period_start = def.use_period_start;
-        } else {
-          base.uses_remaining = limits.max_uses;
-          if (limits.use_period !== 'total') {
-            base.use_period = limits.use_period;
-            const start = usageCapWindowStart(limits.use_period, now());
-            if (start !== null) base.use_period_start = start;
+        if (limits.max_uses !== null) {
+          base.max_uses = limits.max_uses;
+          if (sameBudget) {
+            // Keep what has been spent, and the window it was spent in.
+            if (def.uses_remaining !== undefined) base.uses_remaining = def.uses_remaining;
+            if (def.use_period !== undefined) base.use_period = def.use_period;
+            if (def.use_period_start !== undefined) base.use_period_start = def.use_period_start;
+          } else {
+            base.uses_remaining = limits.max_uses;
+            if (limits.use_period !== 'total') {
+              base.use_period = limits.use_period;
+              const start = usageCapWindowStart(limits.use_period, now());
+              if (start !== null) base.use_period_start = start;
+            }
           }
         }
-      }
-      if (limits.expiry_at !== null) base.expiry_at = limits.expiry_at;
-      const updated = base as unknown as ContractDefinition;
-      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-      return updated;
+        if (limits.expiry_at !== null) base.expiry_at = limits.expiry_at;
+        const updated = base as unknown as ContractDefinition;
+        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+        if (!sameBudget) replaceBudgetVersion(contract_id);
+        return updated;
+      });
     },
 
     revokeSessionGrant(grant_id) {
-      const def = read(grant_id);
-      if (!def) return null;
-      // Fail-closed session guard (D-186 Slice C): the live-control "Active
-      // passes" surface only ever revokes session grants. A standing contract
-      // or an N.13 delegation rule reaching here (wrong id, or a UI bug) is
-      // NOT revoked — it returns `null` exactly like a missing row, so the
-      // grant-control path can never tear down a standing contract. Those are
-      // revoked from Settings → Privacy → Contracts via `revoke`.
-      if (def.grant_kind !== 'session') return null;
-      // Same idempotent expire-early as `revoke`: a real `revoked_at`
-      // short-circuits (a session grant is already inert once revoked), but
-      // `null` (admitted by the `datetime?` value_shape) means not-yet-revoked.
-      if (def.revoked_at !== undefined && def.revoked_at !== null) return def;
-      // Active-only: this surface expires a LIVE pass EARLY. An already-inert
-      // (expired / exhausted) row returns `null` (→ handler `not_found`) rather
-      // than rewriting its natural lifecycle cause to `revoked` — preserving
-      // provenance and matching the "revoke an active pass" contract. The
-      // cosmetic expire-between-list-and-click race resolves to "no active
-      // session grant" + a re-list (the row was already gone), the correct UX.
-      if (!isContractActive(def, now())) return null;
-      const updated: ContractDefinition = {
-        ...def,
-        revoked_at: now(),
-        revocation_reason: 'Revoked from live-control',
-      };
-      store.put(CONTRACT_DEFINITION_SCOPE, [grant_id], updated);
-      return updated;
+      return withTransaction(() => {
+        const def = read(grant_id);
+        if (!def) return null;
+        // Fail-closed session guard (D-186 Slice C): the live-control "Active
+        // passes" surface only ever revokes session grants. A standing contract
+        // or an N.13 delegation rule reaching here (wrong id, or a UI bug) is
+        // NOT revoked — it returns `null` exactly like a missing row, so the
+        // grant-control path can never tear down a standing contract. Those are
+        // revoked from Settings → Privacy → Contracts via `revoke`.
+        if (def.grant_kind !== 'session') return null;
+        // Same idempotent expire-early as `revoke`: a real `revoked_at`
+        // short-circuits (a session grant is already inert once revoked), but
+        // `null` (admitted by the `datetime?` value_shape) means not-yet-revoked.
+        if (def.revoked_at !== undefined && def.revoked_at !== null) return def;
+        // Active-only: this surface expires a LIVE pass EARLY. An already-inert
+        // (expired / exhausted) row returns `null` (→ handler `not_found`) rather
+        // than rewriting its natural lifecycle cause to `revoked` — preserving
+        // provenance and matching the "revoke an active pass" contract. The
+        // cosmetic expire-between-list-and-click race resolves to "no active
+        // session grant" + a re-list (the row was already gone), the correct UX.
+        if (!isContractActive(def, now())) return null;
+        const updated: ContractDefinition = {
+          ...def,
+          revoked_at: now(),
+          revocation_reason: 'Revoked from live-control',
+        };
+        store.put(CONTRACT_DEFINITION_SCOPE, [grant_id], updated);
+        return updated;
+      });
     },
 
     mintSessionGrant(input) {
@@ -1188,6 +1318,36 @@ export const createContractDefinitionStore = (
       };
       store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], def);
       return def;
+    },
+
+    mintSessionGrantForDecision(input, scope_sha256) {
+      if (db === undefined) throw new SessionGrantMintError('durable approval decisions require the realm database');
+      if (!input.approved_action_ref || !/^[a-f0-9]{64}$/.test(scope_sha256)) {
+        throw new SessionGrantMintError('invalid session approval decision');
+      }
+      let result!: { definition: ContractDefinition; created: boolean };
+      store.transaction(() => {
+        const prior = db.prepare('SELECT scope_sha256, contract_id FROM session_grant_decisions WHERE approval_ref = ?')
+          .get(input.approved_action_ref) as { scope_sha256: string; contract_id: string } | undefined;
+        if (prior !== undefined) {
+          if (prior.scope_sha256 !== scope_sha256) {
+            throw new SessionGrantMintError('session approval identity was reused with a different scope');
+          }
+          const definition = read(prior.contract_id);
+          if (definition === null || definition.grant_kind !== 'session'
+            || (definition.grant_mode !== undefined && definition.grant_mode !== 'exact' && definition.grant_mode !== 'open')
+            || definition.approved_action_ref !== input.approved_action_ref) {
+            throw new SessionGrantMintError('recorded approval refers to a missing or changed session grant');
+          }
+          result = { definition, created: false };
+          return;
+        }
+        const definition = definitions.mintSessionGrant(input);
+        db.prepare('INSERT INTO session_grant_decisions (approval_ref, scope_sha256, contract_id) VALUES (?, ?, ?)')
+          .run(input.approved_action_ref, scope_sha256, definition.contract_id);
+        result = { definition, created: true };
+      });
+      return result;
     },
 
     listSessionGrants(channel_session_id) {
@@ -1690,105 +1850,350 @@ export const createContractDefinitionStore = (
       return def;
     },
 
+    mintKindGrant(input) {
+      // Same enforcement-point rationale as the other gate-grant mints: every clause mirrors a
+      // fail-closed matcher clause, so a row violating one would be inert at the `'kind'` arm.
+      if (input.channel_session_id.length === 0) {
+        throw new KindGrantMintError('channel_session_id must be non-empty (D6 — session-bound)');
+      }
+      // One answer allows one kind: exactly one ingredient and one operation, never a wildcard
+      // nor a set (the matcher admits via `.includes`, so a set would widen one answer to many).
+      if (!input.scope.ingredient_ids || input.scope.ingredient_ids.length !== 1) {
+        throw new KindGrantMintError('scope.ingredient_ids must name EXACTLY one ingredient (one answer allows one kind)');
+      }
+      if (!input.scope.operation_ids || input.scope.operation_ids.length !== 1) {
+        throw new KindGrantMintError('scope.operation_ids must name EXACTLY one operation (one answer allows one kind)');
+      }
+      if (input.scope.connection_names !== undefined && input.scope.connection_names.length !== 1) {
+        throw new KindGrantMintError('scope.connection_names, when present, must name EXACTLY one connection');
+      }
+      // N.15 ruling Q5 — writes only: admin and a held read keep the exact answer.
+      if (input.risk_tier !== 'write') {
+        throw new KindGrantMintError(`risk_tier '${input.risk_tier}' cannot carry a kind grant (writes only)`);
+      }
+      if (input.bound_recipe !== undefined
+        && (input.bound_recipe.recipe_id.length === 0 || input.bound_recipe.recipe_hash.length === 0)) {
+        throw new KindGrantMintError('bound_recipe, when present, must name a recipe and its version');
+      }
+      if (input.approved_action_ref.length === 0) {
+        throw new KindGrantMintError('approved_action_ref must be non-empty');
+      }
+      // The ruled ceilings, held here whatever the caller asks: an hour and 100 uses.
+      const minted_at = now();
+      if (!Number.isFinite(input.expiry_at) || input.expiry_at <= minted_at
+        || input.expiry_at > minted_at + KIND_GRANT_TTL_MS) {
+        throw new KindGrantMintError(
+          `expiry_at must be within the next ${String(KIND_GRANT_TTL_MS)} ms (got ${String(input.expiry_at)})`,
+        );
+      }
+      if (!Number.isInteger(input.max_uses) || input.max_uses < 1 || input.max_uses > KIND_GRANT_MAX_USES) {
+        throw new KindGrantMintError(
+          `max_uses must be a whole number from 1 to ${String(KIND_GRANT_MAX_USES)} (got ${String(input.max_uses)})`,
+        );
+      }
+      const contract_id = newId();
+      const def: ContractDefinition = {
+        contract_id,
+        minted_at,
+        minted_by: input.minted_by,
+        display_name: input.display_name,
+        scope: input.scope,
+        grant_kind: 'session',
+        grant_mode: 'kind',
+        channel_session_id: input.channel_session_id,
+        risk_tier: input.risk_tier,
+        ...(input.bound_recipe !== undefined ? { bound_recipe: input.bound_recipe } : {}),
+        approved_action_ref: input.approved_action_ref,
+        expiry_at: input.expiry_at,
+        max_uses: input.max_uses,
+        uses_remaining: input.max_uses,
+      };
+      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], def);
+      return def;
+    },
+
+    mintKindGrantForDecision(input, offer_sha256) {
+      if (db === undefined) throw new KindGrantMintError('durable approval decisions require the realm database');
+      if (!input.approved_action_ref || !/^[a-f0-9]{64}$/.test(offer_sha256)) {
+        throw new KindGrantMintError('invalid kind approval decision');
+      }
+      let result!: { definition: ContractDefinition; created: boolean };
+      store.transaction(() => {
+        const prior = db.prepare('SELECT offer_sha256, contract_id FROM kind_grant_decisions WHERE approval_ref = ?')
+          .get(input.approved_action_ref) as { offer_sha256: string; contract_id: string } | undefined;
+        if (prior !== undefined) {
+          if (prior.offer_sha256 !== offer_sha256) {
+            throw new KindGrantMintError('kind approval identity was reused with a different offer');
+          }
+          const definition = read(prior.contract_id);
+          if (definition === null || definition.grant_kind !== 'session' || definition.grant_mode !== 'kind'
+            || definition.approved_action_ref !== input.approved_action_ref) {
+            throw new KindGrantMintError('recorded approval refers to a missing or changed kind grant');
+          }
+          // Revocation, expiry and spent uses outlive retries. A fresh checkpoint
+          // has a different approval ref and can grant again.
+          result = { definition, created: false };
+          return;
+        }
+        const definition = definitions.mintKindGrant(input);
+        db.prepare('INSERT INTO kind_grant_decisions (approval_ref, offer_sha256, contract_id) VALUES (?, ?, ?)')
+          .run(input.approved_action_ref, offer_sha256, definition.contract_id);
+        result = { definition, created: true };
+      });
+      return result;
+    },
+
     consumeSessionGrant(contract_id, call) {
-      const def = read(contract_id);
-      // Fail closed on every non-consumable shape: absent row, a standing
-      // contract's id (gate-grant consumption must never burn a standing
-      // use), or a row that is no longer live (revoked / expired / exhausted
-      // since the match). The caller treats `false` as "fall back to hold"
-      // (N.4 step 4). N.13 (P6a): `'delegation'` rows consume through the
-      // same arms — they share the bounded-by-construction lifecycle.
-      if (!def || (def.grant_kind !== 'session' && def.grant_kind !== 'delegation')) {
-        return false;
-      }
-      if (!isContractActive(def, now())) return false;
-      // codex HIGH fold — session grants are bounded by construction (the mint
-      // requires `max_uses`, seeding `uses_remaining`). A session row with no
-      // use counter is malformed/hand-shaped; consuming it would admit an
-      // UNMETERED auto-approve loop, so fail closed rather than free-pass.
-      if (def.uses_remaining === undefined || def.uses_remaining === null) return false;
-      // D-177 N.14 — the door binding re-verify (defense in depth,
-      // mirroring the matcher's asymmetric clause): a row carrying
-      // `bound_contract_id` spends ONLY for a call supplying the same id,
-      // so a resolver bug can never burn a door grant's use on another
-      // door's (or the owner's) dispatch. A present-but-empty binding is
-      // malformed → inert (same posture as the matcher).
-      const boundContract = def.bound_contract_id ?? undefined;
-      if (boundContract !== undefined) {
-        if (
-          typeof boundContract !== 'string'
-          || boundContract.length === 0
-          || call?.source_contract_id !== boundContract
-        ) {
+      return withTransaction(() => {
+        const def = read(contract_id);
+        // Fail closed on every non-consumable shape: absent row, a standing
+        // contract's id (gate-grant consumption must never burn a standing
+        // use), or a row that is no longer live (revoked / expired / exhausted
+        // since the match). The caller treats `false` as "fall back to hold"
+        // (N.4 step 4). N.13 (P6a): `'delegation'` rows consume through the
+        // same arms — they share the bounded-by-construction lifecycle.
+        if (!def || (def.grant_kind !== 'session' && def.grant_kind !== 'delegation')) {
           return false;
         }
-      }
-      // D-177 P5a — per-mode consumption (N.4). `'batch'` claims a member
-      // (the claim IS the consumption); `'open'` (P5b) is hash-verified
-      // against the fire's recomputed projection before the decrement;
-      // `'exact'` (and the absent⇒exact default) is the plain decrement
-      // below.
-      const mode = def.grant_mode ?? 'exact';
-      // N.13 (P6a, codex MEDIUM fold) — the store re-refuses the delegation
-      // VOCABULARY the matcher pins, so a hand-shaped delegation row whose id
-      // somehow reaches consumption directly stays inert (defense in depth —
-      // the matcher never returns one): no session binding (scope replaces
-      // it), `write`-only tier (DELEGATION_RULE_RISK_TIERS, fork 2), and
-      // exact/open modes only (a member set is one approval's enumeration —
-      // batch is session-only; unknown future modes refuse the same way
-      // rather than falling through to the exact decrement).
-      if (def.grant_kind === 'delegation') {
-        if (def.channel_session_id !== undefined && def.channel_session_id !== null) {
-          return false;
+        if (!isContractActive(def, now())) return false;
+        // codex HIGH fold — session grants are bounded by construction (the mint
+        // requires `max_uses`, seeding `uses_remaining`). A session row with no
+        // use counter is malformed/hand-shaped; consuming it would admit an
+        // UNMETERED auto-approve loop, so fail closed rather than free-pass.
+        if (def.uses_remaining === undefined || def.uses_remaining === null) return false;
+        // D-177 N.14 — the door binding re-verify (defense in depth,
+        // mirroring the matcher's asymmetric clause): a row carrying
+        // `bound_contract_id` spends ONLY for a call supplying the same id,
+        // so a resolver bug can never burn a door grant's use on another
+        // door's (or the owner's) dispatch. A present-but-empty binding is
+        // malformed → inert (same posture as the matcher).
+        const boundContract = def.bound_contract_id ?? undefined;
+        if (boundContract !== undefined) {
+          if (
+            typeof boundContract !== 'string'
+            || boundContract.length === 0
+            || call?.source_contract_id !== boundContract
+          ) {
+            return false;
+          }
         }
-        if (
-          typeof def.risk_tier !== 'string'
-          || !(DELEGATION_RULE_RISK_TIERS as readonly string[]).includes(def.risk_tier)
-        ) {
-          return false;
+        // D-177 P5a — per-mode consumption (N.4). `'batch'` claims a member
+        // (the claim IS the consumption); `'open'` (P5b) is hash-verified
+        // against the fire's recomputed projection before the decrement;
+        // `'exact'` (and the absent⇒exact default) is the plain decrement
+        // below.
+        const mode = def.grant_mode ?? 'exact';
+        // N.13 (P6a, codex MEDIUM fold) — the store re-refuses the delegation
+        // VOCABULARY the matcher pins, so a hand-shaped delegation row whose id
+        // somehow reaches consumption directly stays inert (defense in depth —
+        // the matcher never returns one): no session binding (scope replaces
+        // it), `write`-only tier (DELEGATION_RULE_RISK_TIERS, fork 2), and
+        // exact/open modes only (a member set is one approval's enumeration —
+        // batch is session-only; unknown future modes refuse the same way
+        // rather than falling through to the exact decrement).
+        if (def.grant_kind === 'delegation') {
+          if (def.channel_session_id !== undefined && def.channel_session_id !== null) {
+            return false;
+          }
+          if (
+            typeof def.risk_tier !== 'string'
+            || !(DELEGATION_RULE_RISK_TIERS as readonly string[]).includes(def.risk_tier)
+          ) {
+            return false;
+          }
+          if (mode !== 'exact' && mode !== 'open') return false;
         }
-        if (mode !== 'exact' && mode !== 'open') return false;
-      }
-      if (mode === 'open') {
-        // D-177 P5b — the caller must supply the FIRE's recomputed
-        // `pinned_projection_hash` and it must equal the row's (the
-        // matcher already required this; re-verifying at the write means
-        // a resolver bug can never spend an open use on a divergent
-        // fire — same defense-in-depth as the batch claim). A row missing
-        // its own hash is malformed → inert.
-        if (
-          call?.pinned_projection_hash === undefined
-          || call.pinned_projection_hash.length === 0
-          || typeof def.pinned_projection_hash !== 'string'
-          || def.pinned_projection_hash.length === 0
-          || def.pinned_projection_hash !== call.pinned_projection_hash
-        ) {
-          return false;
+        if (mode === 'open') {
+          // D-177 P5b — the caller must supply the FIRE's recomputed
+          // `pinned_projection_hash` and it must equal the row's (the
+          // matcher already required this; re-verifying at the write means
+          // a resolver bug can never spend an open use on a divergent
+          // fire — same defense-in-depth as the batch claim). A row missing
+          // its own hash is malformed → inert.
+          if (
+            call?.pinned_projection_hash === undefined
+            || call.pinned_projection_hash.length === 0
+            || typeof def.pinned_projection_hash !== 'string'
+            || def.pinned_projection_hash.length === 0
+            || def.pinned_projection_hash !== call.pinned_projection_hash
+          ) {
+            return false;
+          }
+          const updated: ContractDefinition = {
+            ...def,
+            uses_remaining: def.uses_remaining - 1,
+          };
+          store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+          return true;
         }
+        if (mode === 'batch') {
+          // (Delegation rows never reach here — the vocabulary block above
+          // refused every non-exact/open delegation mode.)
+          if (
+            call === undefined
+            || call.canonical_payload_hash === undefined
+            || call.canonical_payload_hash.length === 0
+          ) {
+            return false;
+          }
+          const members = def.batch_members ?? [];
+          const idx = members.findIndex(
+            (m) =>
+              (m.consumed_at === undefined || m.consumed_at === null)
+              && m.canonical_payload_hash === call.canonical_payload_hash,
+          );
+          if (idx === -1) return false;
+          const claimed = members.map((m, i) =>
+            i === idx ? { ...m, consumed_at: now() } : m,
+          );
+          const updated: ContractDefinition = {
+            ...def,
+            batch_members: claimed,
+            uses_remaining: def.uses_remaining - 1,
+          };
+          store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+          return true;
+        }
+        if (mode === 'scoped') {
+          // D-177 N.11 rule 5 (5.a build constraint) — consumption RE-VERIFIES
+          // the 5.d containment the matcher checked: every destination email
+          // equal to a candidate sender contributed within the grant window.
+          // Session-only (the delegation vocabulary block above refused every
+          // non-exact/open delegation mode, so only session rows reach here);
+          // an absent call / missing fields / a hand-shaped row without
+          // `scoped_source` all refuse — never the plain decrement.
+          if (def.grant_kind !== 'session') return false;
+          if (call === undefined || !scopedContainmentAdmits(def, call)) {
+            return false;
+          }
+          const updated: ContractDefinition = {
+            ...def,
+            uses_remaining: def.uses_remaining - 1,
+          };
+          store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+          return true;
+        }
+        if (mode === 'raw_op') {
+          // D-182 §8 — recipe-less EXACT: RE-VERIFY the exact payload hash the
+          // matcher pinned (defense in depth — mirrors the scoped/open/batch
+          // re-verify, so a resolver bug can never spend a raw-op use on a
+          // divergent call) then decrement. Session-only (a raw-op grant is never
+          // a delegation row — the vocabulary block above refused every non-
+          // exact/open delegation mode anyway); an absent call / missing fields /
+          // a row without its own payload hash all refuse — never the plain
+          // decrement. The matcher also pins `arg_shape_hash`, but re-verifying it
+          // here is REDUNDANT: `canonical_payload_hash` is the hash of the full
+          // canonical payload, so payload-hash equality IMPLIES key-shape equality
+          // (a different shape is a different payload). Re-verifying the payload
+          // therefore subsumes the arg-shape re-verify (codex MEDIUM — checked,
+          // not folded: the consume `call` carries no `arg_shape_hash` and adding
+          // it would gain nothing).
+          if (def.grant_kind !== 'session') return false;
+          if (
+            call === undefined
+            || call.canonical_payload_hash === undefined
+            || call.canonical_payload_hash.length === 0
+            || typeof def.canonical_payload_hash !== 'string'
+            || def.canonical_payload_hash.length === 0
+            || def.canonical_payload_hash !== call.canonical_payload_hash
+          ) {
+            return false;
+          }
+          const updated: ContractDefinition = {
+            ...def,
+            uses_remaining: def.uses_remaining - 1,
+          };
+          store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+          return true;
+        }
+        if (mode === 'kind') {
+          // D-177 N.15 — re-verify the op the matcher bound (defense in depth, as the other modes
+          // re-verify theirs), then decrement. Session-only (the delegation vocabulary block above
+          // refused every non-exact/open delegation mode); an absent call or an op the row does not
+          // name refuses — never the plain decrement.
+          if (def.grant_kind !== 'session') return false;
+          if (
+            call?.operation_id === undefined
+            || call.operation_id.length === 0
+            || !def.scope.operation_ids?.includes(call.operation_id)
+          ) {
+            return false;
+          }
+          const updated: ContractDefinition = {
+            ...def,
+            uses_remaining: def.uses_remaining - 1,
+          };
+          store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+          return true;
+        }
+        // D-177 rule-5 fold (the spec's own warning, 5.a) — the plain
+        // decrement is the EXACT arm, not a default: an unknown future
+        // `grant_mode` on a JSON row must refuse here exactly as the matcher
+        // does, never fall through to an unmetered-semantics decrement.
+        if (mode !== 'exact') return false;
+        // `isContractActive` already excluded `<= 0`; decrement and persist
+        // while the transaction still owns the grant's write lock.
         const updated: ContractDefinition = {
           ...def,
           uses_remaining: def.uses_remaining - 1,
         };
         store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
         return true;
-      }
-      if (mode === 'batch') {
-        // (Delegation rows never reach here — the vocabulary block above
-        // refused every non-exact/open delegation mode.)
-        if (
-          call === undefined
-          || call.canonical_payload_hash === undefined
-          || call.canonical_payload_hash.length === 0
-        ) {
+      });
+    },
+
+    claimBatchMember(contract_id, member_id, call) {
+      return withTransaction(() => {
+        const def = read(contract_id);
+        // Same fail-closed posture as `consumeSessionGrant`, plus the mode +
+        // member-identity pins: only a live, bounded, `'batch'` session row
+        // with THIS member still unconsumed claims. A member an agent replay
+        // already consumed returns `false` — the resume re-holds and the
+        // approved budget holds exact.
+        if (!def || def.grant_kind !== 'session') return false;
+        if ((def.grant_mode ?? 'exact') !== 'batch') return false;
+        if (!isContractActive(def, now())) return false;
+        if (def.uses_remaining === undefined || def.uses_remaining === null) return false;
+        // D-177 N.14.6 — the door binding re-verify, BYTE-FOR-BYTE the rule
+        // `consumeSessionGrant` applies above and for the same stated reason: a
+        // resolver bug must never burn a door grant on another door's (or the
+        // owner's) dispatch. This is the OTHER spend path — it decrements
+        // `uses_remaining` and burns a member — so without this the invariant "a
+        // bound row spends only for its own door" held on consume and said nothing
+        // here. (Upstream, `approval-resume-authority` already denies a resume whose
+        // bearer rebound — `bearer_binding_changed`. That fence lives in the mcp /
+        // llm_gateway resume authority; this one is the store's own, so the
+        // invariant does not depend on a distant caller getting it right.)
+        // A present-but-empty binding is malformed → inert (same posture as the matcher).
+        const boundContract = def.bound_contract_id ?? undefined;
+        if (boundContract !== undefined) {
+          if (
+            typeof boundContract !== 'string'
+            || boundContract.length === 0
+            || call.source_contract_id !== boundContract
+          ) {
+            return false;
+          }
+        }
+        // codex HIGH fold — the claim re-verifies the CURRENT envelope
+        // against what was approved: arg key-shape at the grant, exact
+        // payload at the member. A resumed dispatch whose recipe/args
+        // drifted while the ask was outstanding mismatches and re-asks —
+        // the member never authorizes unreviewed content.
+        if (call.arg_shape_hash.length === 0 || call.canonical_payload_hash.length === 0) {
           return false;
         }
+        if (def.arg_shape_hash !== call.arg_shape_hash) return false;
         const members = def.batch_members ?? [];
-        const idx = members.findIndex(
-          (m) =>
-            (m.consumed_at === undefined || m.consumed_at === null)
-            && m.canonical_payload_hash === call.canonical_payload_hash,
-        );
+        const idx = members.findIndex((m) => m.member_id === member_id);
         if (idx === -1) return false;
+        const target = members[idx];
+        if (target.canonical_payload_hash !== call.canonical_payload_hash) {
+          return false;
+        }
+        if (target.consumed_at !== undefined && target.consumed_at !== null) {
+          return false;
+        }
         const claimed = members.map((m, i) =>
           i === idx ? { ...m, consumed_at: now() } : m,
         );
@@ -1799,137 +2204,8 @@ export const createContractDefinitionStore = (
         };
         store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
         return true;
-      }
-      if (mode === 'scoped') {
-        // D-177 N.11 rule 5 (5.a build constraint) — consumption RE-VERIFIES
-        // the 5.d containment the matcher checked: every destination email
-        // equal to a candidate sender contributed within the grant window.
-        // Session-only (the delegation vocabulary block above refused every
-        // non-exact/open delegation mode, so only session rows reach here);
-        // an absent call / missing fields / a hand-shaped row without
-        // `scoped_source` all refuse — never the plain decrement.
-        if (def.grant_kind !== 'session') return false;
-        if (call === undefined || !scopedContainmentAdmits(def, call)) {
-          return false;
-        }
-        const updated: ContractDefinition = {
-          ...def,
-          uses_remaining: def.uses_remaining - 1,
-        };
-        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-        return true;
-      }
-      if (mode === 'raw_op') {
-        // D-182 §8 — recipe-less EXACT: RE-VERIFY the exact payload hash the
-        // matcher pinned (defense in depth — mirrors the scoped/open/batch
-        // re-verify, so a resolver bug can never spend a raw-op use on a
-        // divergent call) then decrement. Session-only (a raw-op grant is never
-        // a delegation row — the vocabulary block above refused every non-
-        // exact/open delegation mode anyway); an absent call / missing fields /
-        // a row without its own payload hash all refuse — never the plain
-        // decrement. The matcher also pins `arg_shape_hash`, but re-verifying it
-        // here is REDUNDANT: `canonical_payload_hash` is the hash of the full
-        // canonical payload, so payload-hash equality IMPLIES key-shape equality
-        // (a different shape is a different payload). Re-verifying the payload
-        // therefore subsumes the arg-shape re-verify (codex MEDIUM — checked,
-        // not folded: the consume `call` carries no `arg_shape_hash` and adding
-        // it would gain nothing).
-        if (def.grant_kind !== 'session') return false;
-        if (
-          call === undefined
-          || call.canonical_payload_hash === undefined
-          || call.canonical_payload_hash.length === 0
-          || typeof def.canonical_payload_hash !== 'string'
-          || def.canonical_payload_hash.length === 0
-          || def.canonical_payload_hash !== call.canonical_payload_hash
-        ) {
-          return false;
-        }
-        const updated: ContractDefinition = {
-          ...def,
-          uses_remaining: def.uses_remaining - 1,
-        };
-        store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-        return true;
-      }
-      // D-177 rule-5 fold (the spec's own warning, 5.a) — the plain
-      // decrement is the EXACT arm, not a default: an unknown future
-      // `grant_mode` on a JSON row must refuse here exactly as the matcher
-      // does, never fall through to an unmetered-semantics decrement.
-      if (mode !== 'exact') return false;
-      // `isContractActive` already excluded `<= 0`; decrement and persist. The
-      // read-check-write runs synchronously with no interleaving point
-      // (better-sqlite3), so a concurrent dispatch can't double-spend the
-      // final use.
-      const updated: ContractDefinition = {
-        ...def,
-        uses_remaining: def.uses_remaining - 1,
-      };
-      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-      return true;
-    },
-
-    claimBatchMember(contract_id, member_id, call) {
-      const def = read(contract_id);
-      // Same fail-closed posture as `consumeSessionGrant`, plus the mode +
-      // member-identity pins: only a live, bounded, `'batch'` session row
-      // with THIS member still unconsumed claims. A member an agent replay
-      // already consumed returns `false` — the resume re-holds and the
-      // approved budget holds exact.
-      if (!def || def.grant_kind !== 'session') return false;
-      if ((def.grant_mode ?? 'exact') !== 'batch') return false;
-      if (!isContractActive(def, now())) return false;
-      if (def.uses_remaining === undefined || def.uses_remaining === null) return false;
-      // D-177 N.14.6 — the door binding re-verify, BYTE-FOR-BYTE the rule
-      // `consumeSessionGrant` applies above and for the same stated reason: a
-      // resolver bug must never burn a door grant on another door's (or the
-      // owner's) dispatch. This is the OTHER spend path — it decrements
-      // `uses_remaining` and burns a member — so without this the invariant "a
-      // bound row spends only for its own door" held on consume and said nothing
-      // here. (Upstream, `approval-resume-authority` already denies a resume whose
-      // bearer rebound — `bearer_binding_changed`. That fence lives in the mcp /
-      // llm_gateway resume authority; this one is the store's own, so the
-      // invariant does not depend on a distant caller getting it right.)
-      // A present-but-empty binding is malformed → inert (same posture as the matcher).
-      const boundContract = def.bound_contract_id ?? undefined;
-      if (boundContract !== undefined) {
-        if (
-          typeof boundContract !== 'string'
-          || boundContract.length === 0
-          || call.source_contract_id !== boundContract
-        ) {
-          return false;
-        }
-      }
-      // codex HIGH fold — the claim re-verifies the CURRENT envelope
-      // against what was approved: arg key-shape at the grant, exact
-      // payload at the member. A resumed dispatch whose recipe/args
-      // drifted while the ask was outstanding mismatches and re-asks —
-      // the member never authorizes unreviewed content.
-      if (call.arg_shape_hash.length === 0 || call.canonical_payload_hash.length === 0) {
-        return false;
-      }
-      if (def.arg_shape_hash !== call.arg_shape_hash) return false;
-      const members = def.batch_members ?? [];
-      const idx = members.findIndex((m) => m.member_id === member_id);
-      if (idx === -1) return false;
-      const target = members[idx];
-      if (target.canonical_payload_hash !== call.canonical_payload_hash) {
-        return false;
-      }
-      if (target.consumed_at !== undefined && target.consumed_at !== null) {
-        return false;
-      }
-      const claimed = members.map((m, i) =>
-        i === idx ? { ...m, consumed_at: now() } : m,
-      );
-      const updated: ContractDefinition = {
-        ...def,
-        batch_members: claimed,
-        uses_remaining: def.uses_remaining - 1,
-      };
-      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
-      return true;
+      });
     },
   };
+  return definitions;
 };

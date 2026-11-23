@@ -85,6 +85,25 @@ vi.mock('../server.js', () => ({
   createServerHandlerSet: listenerMocks.createServerHandlerSet,
 }));
 
+/** D-201 Slice 10Z — the sweep of unsettled webhook creates, as composed. */
+const sweepMocks = vi.hoisted(() => {
+  const runtime = {
+    start: vi.fn(),
+    stop: vi.fn(async () => undefined),
+    runOnce: vi.fn(async () => undefined),
+  };
+  return { runtime, create: vi.fn(() => runtime) };
+});
+vi.mock('../webhook-unsettled-create-sweep.js', () => ({
+  createWebhookUnsettledCreateSweepRuntime: sweepMocks.create,
+}));
+// D-201 Slice 10AN — what the sweep's pass is given.
+const refusalMocks = vi.hoisted(() => ({ setAgain: vi.fn(async () => 0) }));
+vi.mock('../webhook-refusal-run.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../webhook-refusal-run.js')>()),
+  setRefusedSecretsAgain: refusalMocks.setAgain,
+}));
+
 vi.mock('../network/resolve-lan-address.js', () => ({
   resolveLanAddress: listenerMocks.resolveLanAddress,
 }));
@@ -123,6 +142,7 @@ import {
   type ComposeListenersOptions,
 } from '../serve/compose-listeners.js';
 import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
+import { browserSecrets } from '../bridges/browser-secrets.js';
 import { D165_CONTRACT_SCHEMA, type RecipeDefinition } from '@recued/contracts';
 import { createContractStore } from '../storage/contract-store.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
@@ -134,6 +154,9 @@ import { createWebhookConsumerStore } from '../storage/webhook-consumer-store.js
 import { createConnectionStore } from '../storage/connection-store.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatTurnQueueStore } from '../storage/chat-turn-queue-store.js';
+import { createNoticeConversationOpener } from '../chat-notices.js';
+import { createEmailCloseDay } from '../email-close-day.js';
+import { createVaultStateBus } from '../vault-state-bus.js';
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import type { Lifecycle } from '../lifecycle/index.js';
 import { createLifecycleStateMachine, type LifecycleStateMachine } from '../lifecycle/lifecycle-state.js';
@@ -278,6 +301,9 @@ const makeOptions = (
     }),
     checkpointStore: undefined,
     eventBus: undefined,
+    // D-348 — the rule store whose changes composition fans onto the bus for Live control.
+    // Recording, as above: composition registers its listener once.
+    chainRuleStore: { onChange: vi.fn(() => () => undefined) },
   },
   app: {
     authDeps: undefined,
@@ -409,7 +435,7 @@ describe('composeListeners', () => {
       await vi.advanceTimersByTimeAsync(60_000); expect(events).toEqual([]);
       locked = false; await vi.advanceTimersByTimeAsync(60_000);
       expect(events).toHaveLength(1); expect(events[0]).toMatchObject({ kind: 'notification.notify',
-        message: expect.objectContaining({ title: 'Connection access was rejected', link_url: '#connections/others/review-access/api/work-api' }) });
+        message: expect.objectContaining({ title: expect.stringMatching(/^Recued can't sign in to /), link_url: '#connections/others/review-access/api/work-api' }) });
       const config = listenerMocks.createServerHandlerSet.mock.calls[0] as unknown as [{ connectionDeps: import('../connection-handler.js').ConnectionRpcDeps }];
       const history = await config[0].connectionDeps.authenticationHistory!({ scope: { kind: 'connection', name: 'work-api' } });
       expect(history.incidents).toHaveLength(1); expect(history.incidents[0]).toMatchObject({ status: 'open', group: { connection_names: ['work-api'] } });
@@ -949,6 +975,15 @@ describe('composeListeners', () => {
         body: { response_type: 'ephemeral', replace_original: false, text: 'This reminder is already closed.' } }]);
   });
 
+  it('D-335 slice Z — hands the dispatcher the browser\'s waiting secrets, so a sign-in code typed in a chat app is taken', async () => {
+    // ⛔ The dispatcher's own tests hand it the secrets; this is the composition that must. Without them
+    // a code typed in Telegram is a chat message, kept and handed to the model.
+    const result = await composeListeners(makeOptions());
+    try {
+      expect(vi.mocked(composeInboundAnswerDispatcher).mock.calls.at(-1)![0].typedSecrets).toBe(browserSecrets);
+    } finally { await result.server.close(); }
+  });
+
   it('D-318 step 2 — starts the Sent-record proof after binding the owner’s notice, and stops it at close', async () => {
     const notify = vi.fn(async () => undefined);
     const base = makeOptions();
@@ -1008,6 +1043,36 @@ describe('composeListeners', () => {
     } finally {
       await result.server.close().catch(() => undefined);
     }
+  });
+
+  it('D-343 — starts email handoff recovery from the saved local mailbox reference and binds its owner controls', async () => {
+    ensureChatSchema(storageDb);
+    const store = createChatStore(storageDb), journal = createChatTurnQueueStore(storageDb);
+    const opener = createNoticeConversationOpener({ chatStore: store, signature: { server_kind: 'recued', version: '1', instance_id: 'server-instance-1' } });
+    const queue = { submit: journal.admit, routing: () => undefined, close: vi.fn() };
+    const earlier = createEmailCloseDay({ db: storageDb, openNoticeConversation: () => opener, queue: () => queue,
+      canRun: () => false, readReply: async () => null });
+    await earlier({ title: 'Your day · Fri 13 Nov', text: 'Did the run.', quoted: 'Your day · Fri 13 Nov\n07:00 Run 5 km',
+      rfc_message_id: '<closing@example.test>', source: { slug: 'alerts', record_id: 'alerts:1' } });
+    await earlier.stop();
+    const base = makeOptions(), bus = createVaultStateBus();
+    const bindEmailCloseDay = vi.fn();
+    const get = vi.fn(() => ({ get: () => ({ hot_fields: { rfc_message_id: 'closing@example.test', subject: 'Re: Your day · Fri 13 Nov' },
+      body_inline: 'Did the run.\n\n> Your day · Fri 13 Nov\n> 07:00 Run 5 km' }) }));
+    const result = await composeListeners(makeOptions({
+      app: { ...base.app, chatOrchestratorRef: { turnQueue: queue }, chatStoreRef: store,
+        openNoticeConversationRef: opener, isVaultUnlocked: () => true, vaultStateBus: bus },
+      collection: { ...base.collection, collectionRegistry: { get, list: () => [] },
+        yours: { bindEmailCloseDay, bindRecipes: vi.fn(), bindWriters: vi.fn(), isHouseholdConnection: () => false } },
+    }));
+    try {
+      await vi.waitFor(() => expect(storageDb.prepare('SELECT count(*) AS n FROM chat_turn_queue').get()).toEqual({ n: 1 }));
+      expect(get).toHaveBeenCalledWith('mail', 'alerts');
+      expect(bindEmailCloseDay).toHaveBeenCalledOnce();
+      expect(storageDb.prepare('SELECT state,payload FROM email_close_day_replies').get()).toEqual({ state: 'accepted', payload: null });
+    } finally { await result.server.close(); }
+    bus.emit('unlocked', 'locked');
+    expect(storageDb.prepare('SELECT count(*) AS n FROM chat_turn_queue').get()).toEqual({ n: 1 });
   });
 
   it('D-318 step 5 — owes each email turn’s answer by email, over the server’s own database', async () => {
@@ -1112,6 +1177,74 @@ describe('composeListeners', () => {
       .toBeLessThan(
         listenerMocks.createProductionPathListenerCoordinator.mock.invocationCallOrder[0],
       );
+  });
+
+  it('D-201 Slice 10Z — sweeps unsettled webhook creates with the registration service it gives Settings: started, stopped at close, only while it can', async () => {
+    sweepMocks.create.mockClear();
+    sweepMocks.runtime.start.mockClear();
+    sweepMocks.runtime.stop.mockClear();
+    const base = makeOptions();
+    let locked = false;
+    let paused = false;
+    const options = {
+      ...base,
+      app: {
+        ...base.app,
+        webhookIngressStoreRef: { tag: 'webhook-ingress-store' },
+        webhookDeliveryStoreRef: { tag: 'webhook-delivery-store' },
+        webhookConsumerStoreRef: { listBindings: vi.fn(() => []) },
+        connectionStoreRef: { get: vi.fn(() => null) },
+        keys: {
+          state: vi.fn(() => 'uninitialized'),
+          keyProvider: vi.fn(() => () => new Uint8Array(32).fill(9)),
+        },
+        isVaultUnlocked: () => !locked,
+        serverState: { isPaused: () => paused },
+      },
+    } as unknown as typeof base;
+    const result = await composeListeners(options);
+    try {
+      const serverConfig = (
+        listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[{
+          webhookIngressDeps?: { managedRegistration?: unknown };
+        }]>
+      ).at(-1)?.[0];
+      const managedRegistration = serverConfig?.webhookIngressDeps?.managedRegistration;
+      expect(managedRegistration).toBeDefined();
+      expect(sweepMocks.create).toHaveBeenCalledTimes(1);
+      const deps = (sweepMocks.create.mock.calls as unknown as Array<[{
+        service: unknown;
+        canRun: () => boolean;
+        afterSweep?: (options: { isStopping: () => boolean; canRun: () => boolean }) => Promise<unknown>;
+      }]>)[0]![0];
+      expect(deps.service).toBe(managedRegistration);
+      // D-201 Slice 10AN — and after each, the webhooks whose messages are
+      // refused, over the stores and the service the server runs.
+      refusalMocks.setAgain.mockClear();
+      const isStopping = () => false;
+      // D-201 Slice 10AR (10AM finding 29) — and what the sweep reads before
+      // each ingress, before each webhook.
+      const canRun = () => true;
+      await deps.afterSweep!({ isStopping, canRun });
+      expect(refusalMocks.setAgain).toHaveBeenCalledWith(expect.objectContaining({
+        ingresses: options.app.webhookIngressStoreRef,
+        deliveries: options.app.webhookDeliveryStoreRef,
+        service: managedRegistration,
+        isStopping,
+        canRun,
+      }));
+      expect(sweepMocks.runtime.start).toHaveBeenCalledTimes(1);
+      expect(deps.canRun()).toBe(true);
+      locked = true;
+      expect(deps.canRun()).toBe(false);
+      locked = false;
+      paused = true;
+      expect(deps.canRun()).toBe(false);
+      expect(sweepMocks.runtime.stop).not.toHaveBeenCalled();
+    } finally {
+      await result.server.close();
+    }
+    expect(sweepMocks.runtime.stop).toHaveBeenCalledTimes(1);
   });
 
   it('threads live D-201 stores and binding-count retirement authority into WS', async () => {
@@ -1484,7 +1617,9 @@ describe('composeListeners', () => {
       expect(remoteSecret).toBeNull();
       await expect(ingressStore.readActiveCredentialVersions(ingress.ingress_id))
         .resolves.toEqual([]);
-      expect(fetchImpl).toHaveBeenCalledTimes(14);
+      // D-201 Slice 10G — 14 before, plus one read-back of what Telegram kept
+      // after each of the create's and the update's setWebhook.
+      expect(fetchImpl).toHaveBeenCalledTimes(16);
     } finally {
       globalThis.fetch = originalFetch;
       if (originalBase === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
@@ -2018,9 +2153,12 @@ describe('composeListeners', () => {
     });
     const auditLog = { get: vi.fn(async () => null) };
     const availableConnections = new Set<string>();
+    // D-201 Slice 10AW — and the notification connections (a Telegram bot).
+    const notificationConnections = new Set<string>();
     const connectionStore = {
       get: vi.fn((kind: string, name: string) =>
-        kind === 'api' && availableConnections.has(name) ? { kind, name } : null),
+        (kind === 'api' && availableConnections.has(name))
+          || (kind === 'notification' && notificationConnections.has(name)) ? { kind, name } : null),
     };
     process.env.RECUED_PUBLIC_BASE_URL = 'https://hooks.example.test';
     process.env.RECUED_PUBLIC_REACHABLE = 'true';
@@ -2161,6 +2299,44 @@ describe('composeListeners', () => {
         operationBound,
         webhookProfile(operationBound.profile_id)!,
       )).resolves.toMatchObject({ paired_connection_available: true });
+      // D-201 Slice 10AW (10AS finding 8) — a managed Telegram webhook's bot is
+      // a notification connection, which readiness looked up as an API one:
+      // it registered at Telegram and could never be switched on
+      // (`paired_connection_unavailable`), unless an API connection of the
+      // bot's name happened to stand, which its registration never reads.
+      const managedTelegram = ingressStore.create({
+        display_name: 'Managed Telegram webhook',
+        profile_id: 'telegram.bot-webhook.v1',
+        environment: 'live',
+        paired_connection_id: 'telegram-bot',
+        registration_mode: 'managed_endpoint',
+        selected_event_types: ['message'],
+      });
+      availableConnections.add('telegram-bot');
+      await expect(runtimeReadiness(
+        managedTelegram,
+        webhookProfile(managedTelegram.profile_id)!,
+      )).resolves.toMatchObject({ paired_connection_available: false });
+      availableConnections.delete('telegram-bot');
+      notificationConnections.add('telegram-bot');
+      await expect(runtimeReadiness(
+        managedTelegram,
+        webhookProfile(managedTelegram.profile_id)!,
+      )).resolves.toMatchObject({ paired_connection_available: true });
+      notificationConnections.add('provider-api');
+      availableConnections.delete('provider-api');
+      await expect(runtimeReadiness(
+        operationBound,
+        webhookProfile(operationBound.profile_id)!,
+      )).resolves.toMatchObject({ paired_connection_available: false });
+      availableConnections.add('provider-api');
+      // And the operation-bound recovery's own lookup, handed to the handler.
+      const pairedConnectionAvailable = (
+        config.webhookIngressDeps as { pairedConnectionAvailable: (id: string, kind: string) => boolean }
+      ).pairedConnectionAvailable;
+      expect(pairedConnectionAvailable('telegram-bot', 'notification')).toBe(true);
+      expect(pairedConnectionAvailable('telegram-bot', 'api')).toBe(false);
+      expect(pairedConnectionAvailable('provider-api', 'api')).toBe(true);
       await expect(runtimeReadiness(
         { ...raw, environment: 'test' },
         webhookProfile(raw.profile_id)!,
@@ -3180,6 +3356,60 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
     } finally {
       if (original === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
       else process.env.RECUED_PUBLIC_BASE_URL = original;
+      logSpy.mockRestore();
+    }
+  });
+
+  it('D-348 — fans each change to a rule for a request onto the bus, for Live control', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let changed: ((change: { op: 'mint' | 'revoke' | 'use'; rule_id: string }) => void) | undefined;
+    const chainRuleStore = {
+      onChange: vi.fn((listener: (change: { op: 'mint' | 'revoke' | 'use'; rule_id: string }) => void) => {
+        changed = listener;
+        return () => undefined;
+      }),
+    };
+    const eventBus = { subscribe: vi.fn(() => ({ cursor: 0, replayed: 0 })), unsubscribe: vi.fn(), emit: vi.fn() };
+    const base = makeOptions();
+    try {
+      const composed = await composeListeners(makeOptions({ storage: { ...base.storage, chainRuleStore, eventBus } }));
+      expect(chainRuleStore.onChange).toHaveBeenCalledTimes(1);
+      changed!({ op: 'use', rule_id: 'cr_1' });
+      changed!({ op: 'revoke', rule_id: 'cr_1' });
+      expect(eventBus.emit.mock.calls.map(([event]) => event)
+        .filter((event: { kind?: string }) => event.kind === 'contract.chain_rule_changed')).toEqual([
+        { kind: 'contract.chain_rule_changed', op: 'use', rule_id: 'cr_1' },
+        { kind: 'contract.chain_rule_changed', op: 'revoke', rule_id: 'cr_1' },
+      ]);
+      await composed.server.close();
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('D-402 slice F5 — fans each change to a pre-approval onto the bus, for the owner\'s pages', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    type Change = { change: 'granted' | 'used' | 'ended'; id: string; holder: 'trigger' | 'caller' };
+    let changed: ((change: Change) => void) | undefined;
+    const triggerPreapprovalStore = {
+      onChange: vi.fn((listener: (change: Change) => void) => { changed = listener; return () => undefined; }),
+    };
+    const eventBus = { subscribe: vi.fn(() => ({ cursor: 0, replayed: 0 })), unsubscribe: vi.fn(), emit: vi.fn() };
+    const base = makeOptions();
+    try {
+      const composed = await composeListeners(makeOptions({ storage: { ...base.storage, triggerPreapprovalStore, eventBus } }));
+      expect(triggerPreapprovalStore.onChange).toHaveBeenCalledTimes(1);
+      changed!({ change: 'granted', id: 'p1', holder: 'caller' });
+      changed!({ change: 'used', id: 'p1', holder: 'caller' });
+      changed!({ change: 'ended', id: 't1', holder: 'trigger' });
+      expect(eventBus.emit.mock.calls.map(([event]) => event)
+        .filter((event: { kind?: string }) => event.kind === 'contract.preapproval_changed')).toEqual([
+        { kind: 'contract.preapproval_changed', change: 'granted', id: 'p1', holder: 'caller' },
+        { kind: 'contract.preapproval_changed', change: 'used', id: 'p1', holder: 'caller' },
+        { kind: 'contract.preapproval_changed', change: 'ended', id: 't1', holder: 'trigger' },
+      ]);
+      await composed.server.close();
+    } finally {
       logSpy.mockRestore();
     }
   });

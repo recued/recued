@@ -46,7 +46,9 @@ export const createRecipeRunCapturePanel = (options: { document: Document; recip
       button('Reload captured runs',() => { void reload(); })); body.append(actions);
     const list = node('ul'); list.style.cssText = 'min-width:0;padding-inline-start:20px';
     for (const capture of captures) {
-      const row = node('li'); row.append(node('span',`${new Date(capture.created_at).toLocaleTimeString()} · ${capture.state} `));
+      const row = node('li'); row.append(node('span',`${new Date(capture.created_at).toLocaleTimeString()} · ${capture.state}`
+        + `${capture.trial === true ? ' · from your trial before you saved it' : ''} `));
+      if (capture.trial === true) row.setAttribute('data-capture-trial',capture.state);
       row.append(button('Review capture',() => { void load(capture.capture_id); }));
       if (capture.state === 'prepared') row.append(button('Run prepared capture',() => { if (discard()) void run(capture.capture_id); }));
       if (capture.state !== 'running') row.append(button('Remove capture',() => { void remove(capture.capture_id); }));
@@ -54,6 +56,11 @@ export const createRecipeRunCapturePanel = (options: { document: Document; recip
     }
     body.append(list);
     if (selected) {
+      // D-402 slice C — the run the owner tried before saving, as its saved test once they keep it.
+      if (selected.capture.trial === true) {
+        const offer = node('p','From your trial before you saved this recipe: review it, then import it as its saved test.');
+        offer.setAttribute('data-capture-trial-offer',''); body.append(offer);
+      }
       body.append(node('p',`Capture ${selected.capture.capture_id}. Expires ${new Date(selected.capture.expires_at).toLocaleTimeString()}.`));
       if (selected.capture.run_outcome) {
         body.append(node('p',`Live run outcome: ${selected.capture.run_outcome}. This is separate from whether a test draft was captured.`));
@@ -150,6 +157,16 @@ export const createRecipeRunCapturePanel = (options: { document: Document; recip
   };
   root.ontoggle = () => { if (root.open && !loaded && !busy) void reload(); };
   render();
+  // D-402 slice C (§8.3) — a recipe saved after a trial ("Try it") is offered that trial as its saved
+  // test: the panel opens on it, once, when the trial left a capture ready to keep, and loads it for review.
+  void options.caller.list({ recipe_id: options.recipeId }).then((value) => {
+    if (disposed || loaded || busy) return;
+    const trial = value.captures.find((item) => item.trial === true && item.state === 'ready');
+    if (trial === undefined) return;
+    captures = value.captures; loaded = true;
+    root.open = true; render();
+    void load(trial.capture_id);
+  }).catch(() => undefined);
   return { element: root,refreshAvailability,hasUnsavedChanges: () => requestDirty || draftDirty,hasInFlightWork: () => busy,
     dispose() { disposed = true; if (expiry) clearTimeout(expiry); root.remove(); } };
 };

@@ -205,6 +205,7 @@ export const MCP_DISPATCH_ERROR_MESSAGES: Readonly<Record<
   not_implemented: 'Tool not implemented yet on this server.',
   unknown_tool: 'Tool not found in the registry.',
   invalid_args: 'Tool args failed validation.',
+  identifier_evidence_missing: 'The identifier needs source evidence. Retrieve the original request or look it up before retrying.',
   channel_denied: 'Dispatch channel rejected the request.',
   kind_gated: 'Tool gated by the server-side per-kind catalog scope.',
   classification_blocked: 'Tool classification gate blocked the call.',
@@ -223,6 +224,8 @@ export const MCP_DISPATCH_ERROR_MESSAGES: Readonly<Record<
   // D-337 slice K — a chat's own turn only (a conversation that carries on); an MCP
   // call never meets it. Kept so the mapping stays exhaustive.
   not_asked_yet: 'Not asked yet: a call before it in the same turn waits for the owner\'s approval.',
+  // A chat's own turn only (it reads the chat's held writes); kept so the mapping stays exhaustive.
+  unconfirmed_attempt: 'Not proposed: an earlier attempt of this exact action has no confirmed result. Read the record\'s current state first.',
 } as const;
 
 /** Map a failed `ChatDispatchResult` to the MCP error message shape.

@@ -98,7 +98,7 @@ const buildReq = (opts: {
   return request;
 };
 
-const makeHarness = (over: { ask?: PendingAsk | null } = {}) => {
+const makeHarness = (over: { ask?: PendingAsk | null; maxBodyBytes?: number } = {}) => {
   let current: PendingAsk | null = over.ask !== undefined ? over.ask : buildAsk();
   const submitAnswer = vi.fn(async (reply: InboundReply) => {
     // Simulate the block: first-answer-wins flip on a matching open ask.
@@ -119,9 +119,10 @@ const makeHarness = (over: { ask?: PendingAsk | null } = {}) => {
     nonceStore,
     now: () => NOW,
     abuse: allowingAskLandingAbuseDeps(),
+    ...(over.maxBodyBytes !== undefined ? { maxBodyBytes: over.maxBodyBytes } : {}),
   };
   const handler = createAskLandingPortHandler(deps);
-  return { handler, nonceStore, submitAnswer, currentAsk: () => current };
+  return { handler, nonceStore, submitAnswer, deps, currentAsk: () => current };
 };
 
 const postBody = (fields: Record<string, string>): string =>
@@ -325,11 +326,15 @@ describe('D-158 P2b-ii — ask-landing POST', () => {
     expect(res.ended.toLowerCase()).toContain('already been answered');
   });
 
-  it('rejects a replayed nonce (single-use) without calling submitAnswer', async () => {
-    const { handler, nonceStore, submitAnswer } = makeHarness();
+  it('rejects a replayed nonce with recovery HTML and no private reads or new nonce', async () => {
+    const { handler, nonceStore, submitAnswer, deps } = makeHarness();
     const nonce = nonceStore.issue('ask-test-1', NOW);
     // Consume it once out-of-band → the handler's consume now fails.
     nonceStore.consume('ask-test-1', nonce, NOW);
+    const issue = vi.spyOn(nonceStore, 'issue');
+    const getAsk = vi.spyOn(deps, 'getAsk');
+    const getPhrase = vi.spyOn(deps, 'getVerificationPhrase');
+    deps.resolveDetails = vi.fn(async () => ({ details: [{ label: 'Private', value: 'held-operation-secret' }] }));
     const res = makeRes();
     await handler(
       buildReq({
@@ -341,7 +346,37 @@ describe('D-158 P2b-ii — ask-landing POST', () => {
       res as unknown as ServerResponse,
     );
     expect(res.statusCode).toBe(403);
+    expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.ended).toContain('http-equiv="Content-Security-Policy"');
+    expect(res.ended).toContain("default-src 'none'");
+    expect(res.ended).toContain('This form is no longer current');
+    expect(res.ended).toContain('href="/ask/ask-test-1?via=email"');
+    expect(res.ended).not.toContain('held-operation-secret');
+    expect(res.ended).not.toContain('river-stone-velvet');
+    expect(res.ended).not.toContain('name="form_nonce"');
     expect(submitAnswer).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
+    expect(getAsk).not.toHaveBeenCalled();
+    expect(getPhrase).not.toHaveBeenCalled();
+    expect(deps.resolveDetails).not.toHaveBeenCalled();
+  });
+
+  it('builds a local recovery URL from the escaped ask id and validated body channel', async () => {
+    const id = '//evil.example/a?b="<svg onload=alert(1)>';
+    const h = makeHarness({ ask: buildAsk({ ask_id: id }) });
+    const res = makeRes();
+    await h.handler(buildReq({ method: 'POST',
+      url: `/ask/${encodeURIComponent(id)}?via=email&next=https://evil.example/`,
+      headers: sameOriginHeaders(),
+      body: postBody({ ask_id: id, option: 'yes', form_nonce: 'never-issued', via: 'telegram' }),
+    }), res as unknown as ServerResponse);
+    expect(res.statusCode).toBe(403);
+    expect(res.ended).toContain(`href="/ask/${encodeURIComponent(id)}?via=telegram"`);
+    expect(res.ended).not.toContain('<svg');
+    expect(res.ended).not.toContain('https://evil.example/');
+    expect(h.submitAnswer).not.toHaveBeenCalled();
   });
 
   it('rejects a cross-origin POST (no Origin/Referer) before reading the body', async () => {
@@ -358,7 +393,9 @@ describe('D-158 P2b-ii — ask-landing POST', () => {
       res as unknown as ServerResponse,
     );
     expect(res.statusCode).toBe(403);
+    expect(res.ended).toBe('forbidden');
     expect(submitAnswer).not.toHaveBeenCalled();
+    expect(nonceStore.consume('ask-test-1', nonce, NOW)).toBe(true);
   });
 
   it('rejects a body ask_id that disagrees with the path (tampered form) → 400', async () => {
@@ -376,6 +413,70 @@ describe('D-158 P2b-ii — ask-landing POST', () => {
     );
     expect(res.statusCode).toBe(400);
     expect(submitAnswer).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured encoded-body budget and keeps the full oversized prefill readable', async () => {
+    const h = makeHarness({ maxBodyBytes: 512 });
+    const text = 'é'.repeat(80);
+    h.deps.resolveDetails = async () => ({ details: [{ label: 'Body', value: 'Clipped preview',
+      edit: { key: 'body', control: 'textarea', value: text },
+    }] });
+    const res = makeRes();
+    await h.handler(buildReq({ method: 'GET', url: '/ask/ask-test-1?via=telegram' }), res as unknown as ServerResponse);
+    expect(res.statusCode).toBe(200);
+    expect(res.ended).toContain('too large to edit here');
+    expect(res.ended).toContain(text);
+    expect(res.ended).toContain('readonly');
+    expect(res.ended).not.toContain('name="edit.');
+    expect(res.ended).not.toContain('name="edit_form"');
+    expect(res.ended).toContain('action="/ask/ask-test-1?via=telegram"');
+    const nonce = res.ended.match(/name="form_nonce" value="([^"]+)"/)?.[1];
+    expect(nonce).toBeTruthy();
+    const answer = makeRes();
+    await h.handler(buildReq({ method: 'POST', url: '/ask/ask-test-1?via=telegram', headers: sameOriginHeaders(),
+      body: postBody({ ask_id: 'ask-test-1', option: 'yes', form_nonce: nonce!, via: 'telegram' }),
+    }), answer as unknown as ServerResponse);
+    expect(h.submitAnswer).toHaveBeenCalledExactlyOnceWith({ ask_id: 'ask-test-1', option: 'yes', via: 'telegram' });
+    expect(h.currentAsk()?.status).toBe('answered');
+  });
+
+  it('keeps an oversized POST rejected with local recovery and no private reads or nonce consumption', async () => {
+    const h = makeHarness({ maxBodyBytes: 256 });
+    const nonce = h.nonceStore.issue('ask-test-1', NOW);
+    const issue = vi.spyOn(h.nonceStore, 'issue'), getAsk = vi.spyOn(h.deps, 'getAsk');
+    const getPhrase = vi.spyOn(h.deps, 'getVerificationPhrase');
+    h.deps.resolveDetails = vi.fn(async () => ({ details: [] }));
+    h.deps.submitEditedApproval = vi.fn(async () => ({ ok: true }));
+    const res = makeRes();
+    await h.handler(buildReq({ method: 'POST',
+      url: '/ask/ask-test-1?via=telegram&next=https://evil.example/', headers: sameOriginHeaders(),
+      body: postBody({ ask_id: 'ask-test-1', option: 'yes', form_nonce: nonce, via: 'telegram', 'edit.body': 'PRIVATE_EDIT'.repeat(200) }),
+    }), res as unknown as ServerResponse);
+    expect(res.statusCode).toBe(413);
+    expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers.connection).toBe('close');
+    expect(res.ended).toContain('This form is too large');
+    expect(res.ended).toContain('href="/ask/ask-test-1?via=telegram"');
+    expect(res.ended).not.toContain('PRIVATE_EDIT');
+    expect(res.ended).not.toContain('https://evil.example/');
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(h.deps.submitEditedApproval).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled(); expect(getAsk).not.toHaveBeenCalled();
+    expect(getPhrase).not.toHaveBeenCalled(); expect(h.deps.resolveDetails).not.toHaveBeenCalled();
+    expect(h.nonceStore.consume('ask-test-1', nonce, NOW)).toBe(true);
+  });
+
+  it('keeps cross-origin oversized submissions on the generic rejection path', async () => {
+    const h = makeHarness({ maxBodyBytes: 256 });
+    const nonce = h.nonceStore.issue('ask-test-1', NOW), res = makeRes();
+    await h.handler(buildReq({ method: 'POST', url: '/ask/ask-test-1?via=telegram', headers: { host: HOST },
+      body: postBody({ ask_id: 'ask-test-1', option: 'yes', form_nonce: nonce, 'edit.body': 'x'.repeat(2000) }),
+    }), res as unknown as ServerResponse);
+    expect(res.statusCode).toBe(403); expect(res.ended).toBe('forbidden');
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(h.nonceStore.consume('ask-test-1', nonce, NOW)).toBe(true);
   });
 
   it('rejects a malformed body (missing fields) → 400', async () => {

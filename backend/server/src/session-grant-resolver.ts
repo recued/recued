@@ -37,9 +37,15 @@
  *
  *  Spec: D-177 § N.4 / N.9; landing order P2. */
 
+import { createHash } from 'node:crypto';
+import { canonicalJSONStringify } from '@recued/crypto';
+
 import {
   BATCH_GRANT_TTL_MS,
   SESSION_GRANT_RISK_TIERS,
+  kindGrantDisplayName,
+  readKindGrantOffer,
+  type KindGrantOffer,
   matchesDelegationRule,
   matchesSessionGrant,
   type Actor,
@@ -158,6 +164,8 @@ export interface SessionGrantResolver {
        *  row carrying `bound_contract_id` consumes only against equality
        *  (store-re-verified, mirroring the matcher's door clause). */
       source_contract_id?: string;
+      /** D-177 N.15 — a `'kind'` row consumes only for the op it names (store-re-verified). */
+      operation_id?: string;
     },
   ): boolean;
   /** D-177 P5a (N.10) — claim a SPECIFIC batch member at a batch-approved
@@ -193,6 +201,17 @@ export interface SessionGrantResolver {
    *  or `undefined` on refusal. The recipe-bound `mint` REFUSES a recipe-less
    *  ctx (it requires recipe identity), so the raw-op path mints here. */
   mintRawOp(ctx: SessionGrantRawOpMintContext): string | undefined;
+  /** D-177 N.15 — mint the KIND grant the owner chose ("Allow in this chat") from the
+   *  offer its hold carried, for the approval `approved_action_ref`. A versioned saved
+   *  choice names its exact run/checkpoint and pins the offer atomically. NEVER throws
+   *  (same posture as `mint`): a refusal degrades to a warn and the approved call proceeds as a
+   *  plain approve. One approval mints one grant, however often its answer is told. Returns the
+   *  minted (or already-minted) `contract_id`, or `undefined` on refusal. */
+  mintKind(offer: KindGrantOffer, approved_action_ref: string,
+    decision?: { readonly version: 1 }): string | undefined;
+  /** D-177 N.15 — the uses a grant has left, for the record of one it let through. Optional: a
+   *  double without it reports none. */
+  usesRemaining?(contract_id: string): number | undefined;
   /** D-177 P3 (N.5) — mint a session grant from a resume-admitted dispatch's
    *  envelope (the `allow_session` answer). NEVER throws: the mint is the
    *  convenience half of an already-human-approved dispatch, so every
@@ -222,10 +241,12 @@ export interface CreateSessionGrantResolverDeps {
   /** D-177 P3 — the `contract.contract_definition_changed` broadcast seam
    *  (same event the `collection.contract.*` rpc emits), so a gateway-side
    *  mint re-lists the contracts inspector on every paired client live.
-   *  Optional; emit failures are swallowed (observability-only). */
+   *  D-177 N.15 — and a spent use (`'update'`), so the uses left that Active
+   *  passes and Contracts show do not go stale. Optional; emit failures are
+   *  swallowed (observability-only). */
   readonly broadcast?: (event: {
     kind: 'contract.contract_definition_changed';
-    op: 'mint' | 'revoke';
+    op: 'mint' | 'revoke' | 'update';
     contract_id: string;
   }) => void;
 }
@@ -236,6 +257,15 @@ export interface CreateSessionGrantResolverDeps {
 export const createSessionGrantResolver = (
   deps: CreateSessionGrantResolverDeps,
 ): SessionGrantResolver => {
+  // D-177 N.15 — a spent use changes the uses left a list of passes shows; every subscriber
+  // re-lists on any op. A 100-use grant spent 19 times read "100/100 uses left" without it.
+  const announceUse = (contract_id: string): void => {
+    try {
+      deps.broadcast?.({ kind: 'contract.contract_definition_changed', op: 'update', contract_id });
+    } catch {
+      /* observability-only — never unwind a spent use */
+    }
+  };
   const now = deps.now ?? ((): number => Date.now());
   return {
     match(ctx): string | null {
@@ -254,10 +284,14 @@ export const createSessionGrantResolver = (
       return null;
     },
     consume(contract_id, call): boolean {
-      return deps.definitionStore.consumeSessionGrant(contract_id, call);
+      const spent = deps.definitionStore.consumeSessionGrant(contract_id, call);
+      if (spent) announceUse(contract_id);
+      return spent;
     },
     claimBatchMember(contract_id, member_id, call): boolean {
-      return deps.definitionStore.claimBatchMember(contract_id, member_id, call);
+      const claimed = deps.definitionStore.claimBatchMember(contract_id, member_id, call);
+      if (claimed) announceUse(contract_id);
+      return claimed;
     },
     mintBatch(ctx): string | undefined {
       try {
@@ -511,8 +545,94 @@ export const createSessionGrantResolver = (
         return undefined;
       }
     },
+    usesRemaining(contract_id): number | undefined {
+      return deps.definitionStore.get(contract_id)?.uses_remaining ?? undefined;
+    },
+    mintKind(sourceOffer, approved_action_ref, decision): string | undefined {
+      try {
+        const offer = decision === undefined ? sourceOffer : readKindGrantOffer(sourceOffer);
+        if (offer === undefined || (decision !== undefined && decision.version !== 1)) {
+          throw new Error('invalid versioned kind grant offer');
+        }
+        // DURABLE idempotence — the answered-ask resume is at-least-once: one approval mints one
+        // grant. Matched against every row, live or not, so a retry never revives a grant the
+        // owner ended.
+        if (decision === undefined) {
+          const twin = deps.definitionStore
+            .listSessionGrants(offer.channel_session_id)
+            .find((row) => row.approved_action_ref === approved_action_ref && row.grant_mode === 'kind');
+          if (twin !== undefined) return twin.contract_id;
+        }
+        const minted_at = now();
+        const input = {
+          minted_by: 'owner',
+          display_name: kindGrantDisplayName(offer.name),
+          scope: {
+            channels: [offer.channel],
+            actors: [offer.actor],
+            ingredient_ids: [offer.ingredient_slug],
+            operation_ids: [offer.operation_id],
+            ...(offer.connection_name !== undefined ? { connection_names: [offer.connection_name] } : {}),
+          },
+          channel_session_id: offer.channel_session_id,
+          risk_tier: offer.risk_tier,
+          ...(offer.recipe !== undefined ? { bound_recipe: offer.recipe } : {}),
+          approved_action_ref,
+          expiry_at: minted_at + offer.ttl_ms,
+          max_uses: offer.max_uses,
+        };
+        // readKindGrantOffer returns the closed offer in a stable field order,
+        // including the recipe version, connection, name, TTL and original use budget.
+        const { definition: def, created } = decision === undefined
+          ? { definition: deps.definitionStore.mintKindGrant(input), created: true }
+          : deps.definitionStore.mintKindGrantForDecision(input,
+            createHash('sha256').update(JSON.stringify(offer)).digest('hex'));
+        if (!created) return def.contract_id;
+        // D-120 — audited as the other modes' mints are: a bounded loosening of the ask gate.
+        if (deps.auditLog !== undefined) {
+          void deps.auditLog
+            .logActivity({
+              activity_id: '',
+              timestamp: minted_at,
+              action: 'session_grant_minted',
+              target: def.contract_id,
+              detail: JSON.stringify({
+                grant_mode: 'kind',
+                ingredient_slug: offer.ingredient_slug,
+                operation_id: offer.operation_id,
+                ...(offer.connection_name !== undefined ? { connection_name: offer.connection_name } : {}),
+                ...(offer.recipe !== undefined ? { recipe_id: offer.recipe.recipe_id } : {}),
+                risk_tier: offer.risk_tier,
+                channel: offer.channel,
+                channel_session_id: offer.channel_session_id,
+                expiry_at: def.expiry_at,
+                max_uses: offer.max_uses,
+                approved_action_ref,
+              }),
+            })
+            .catch(() => {
+              /* best-effort — the grant row is the durable record */
+            });
+        }
+        try {
+          deps.broadcast?.({ kind: 'contract.contract_definition_changed', op: 'mint', contract_id: def.contract_id });
+        } catch {
+          /* observability-only — never unwind the mint */
+        }
+        return def.contract_id;
+      } catch (e) {
+        console.warn(
+          `[session-grant-resolver] kind mint failed for '${sourceOffer.operation_id}' on '${sourceOffer.ingredient_slug}' `
+            + `(run ${approved_action_ref}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return undefined;
+      }
+    },
     mint(ctx): void {
       try {
+        if (ctx.decision_version !== undefined && ctx.decision_version !== 1) {
+          throw new Error('unsupported recipe session-grant decision version');
+        }
         // D-209 §1.7 — an in-the-moment session grant must never turn an
         // `always` ruling into a repeatable approval. Unknown/missing runtime
         // provenance fails the same way; the one-shot human resume still runs.
@@ -578,7 +698,9 @@ export const createSessionGrantResolver = (
           );
           return;
         }
-        // DURABLE idempotence (codex MEDIUM fold) — the answered-ask resume
+        // Legacy direct-mint idempotence (codex MEDIUM fold). Versioned
+        // checkpoint choices commit their exact decision below instead.
+        // The answered-ask resume
         // is at-least-once: a crash between the mint and the checkpoint
         // delete re-dispatches the same answer through a FRESH execution,
         // whose in-memory once-flag knows nothing of the first attempt.
@@ -592,7 +714,7 @@ export const createSessionGrantResolver = (
         // already revoked or the session already exhausted. P5b: an open
         // retry twins on the projection hash (its per-mode identity) where
         // an exact retry twins on the payload hash.
-        const twin = deps.definitionStore
+        const twin = ctx.decision_version === 1 ? undefined : deps.definitionStore
           .listSessionGrants(ctx.channel_session_id)
           .find(
             (row) =>
@@ -613,7 +735,7 @@ export const createSessionGrantResolver = (
           return;
         }
         const minted_at = now();
-        const def = deps.definitionStore.mintSessionGrant({
+        const input = {
           // N.5 — the owner is the only approver in the single-user model;
           // the answer reaches the resolver channel-stripped (D-158 I-10),
           // so the row's provenance is the role, not a device name.
@@ -668,7 +790,17 @@ export const createSessionGrantResolver = (
           approved_action_ref: ctx.approved_action_ref,
           expiry_at: minted_at + ctx.ttl_ms,
           max_uses: ctx.max_uses,
-        });
+        };
+        // Pin authority and offered bounds, excluding the moving expiry timestamp.
+        // In open mode the projection is the scope; riding payload values may vary.
+        const { expiry_at: _expiry, approved_action_ref: _approval, canonical_payload_hash: payload, ...scope } = input;
+        const scope_sha256 = createHash('sha256').update(canonicalJSONStringify({ ...scope,
+          ttl_ms: ctx.ttl_ms, ...(grant_mode === 'exact' ? { canonical_payload_hash: payload } : {}),
+        })).digest('hex');
+        const { definition: def, created } = ctx.decision_version === 1
+          ? deps.definitionStore.mintSessionGrantForDecision(input, scope_sha256)
+          : { definition: deps.definitionStore.mintSessionGrant(input), created: true };
+        if (!created) return;
         // D-120 — the mint is audited. Reserve-class: a session grant is a
         // bounded loosening of the ask gate (an access-surface change, the
         // same forensic posture as inbound-token issuance), so the row

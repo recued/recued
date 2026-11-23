@@ -7,6 +7,315 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.11.22 — 2026-11-22
+
+Webhooks hold through restarts, long runs and failures, and a message that could not reach its
+recipe waits for you to try it again or close it. Work your chat did in web pages can become a
+recipe that you try before you keep it. A calendar event can become an occasion, and an occasion
+can keep its own event in your calendar. Your chat asks once for several changes of one kind, and
+can suggest letting a request you repeat run without asking. A Body takes Oura and more of Apple
+Health, a Set up page shows what is missing, and the web app keeps unfinished work and finds more.
+
+### Before you update
+
+- **Update Recued before installing or updating Browser Toolkit.** Its new version needs this
+  release; an older server refuses it and keeps the version it has.
+- **Some browser improvements need Browser Bridge 0.0.14**, which is being submitted to the Chrome
+  Web Store. They include reads that wait for the page to stop changing; reading a dialog, or
+  something covering the page, that the page marks hidden while it sits on top; finding an
+  element by the card or row it sits in; waits of up to 30 seconds; the pair form asking for the
+  browser's name; and the Keep signed in changes below. Until your Bridge updates, those steps
+  say to update it or work as before. Publishing Recued does not update your installed Bridge.
+- **Passwords and PINs you let Recued remember are asked for once more.** They are now kept for
+  each browser, so the ones remembered before this update are forgotten, and each sign-in step
+  asks again the next time it runs.
+- **Update these packs in order.** Body signals before Body signals from Apple Health and Body
+  signals from Oura, and Billable Hours before Invoice Book: the second of each pair writes rows
+  at a newer version of the first.
+- **Then bring each Body up to date.** In Yours → Proposals, accept the Body's preset update, and
+  choose "Set up the summary" on the Body's page if it asks. Add the new Apple Health readings to
+  your Shortcut only after that, and have it send a weight only on the day it was taken.
+- **Your day and Your week now arrive when they are ready.** The time you set is when Recued
+  starts preparing the message. With AI suggestions on, it arrives once they are ready, usually
+  within a minute or two, with the suggestions inside. To have it by a particular time, set it a
+  little earlier.
+- **The hosted app's new controls need this release.** On an older server some do not appear,
+  such as a calendar event's Occasion tick, and others say to update your server, such as
+  searching bookings or reminder history.
+
+### Added
+
+- **Turn your chat's work in web pages into a recipe.** A chat answer whose request worked in web
+  pages offers "Make a recipe" for an hour, and the draft opens in Kitchen with notes. What you
+  typed in your request becomes a setting asked at each run, a date such as tomorrow's is worked
+  out again at each run, page turns become a loop of up to 20 pages, and AI steps appear only
+  where the job used judgement, such as picking from a list or writing text. Passwords you typed
+  are never kept in it. An AI app can ask for a draft of a job it did, which asks you first.
+- **Try a draft, and carry on in Chat.** "Try it" in Kitchen runs a draft as a trial that asks
+  before each change ("Do it" or "Stop the trial") and ends with "It worked." or "It stopped.";
+  a trial that worked can be kept as the recipe's test. When a page shows something such a
+  recipe has not met, the run stops and you are told. "Open it to carry on in Chat." opens its
+  chat with a drafted message, and "Make a recipe" there adds the new path to the same recipe.
+- **One question before a recipe runs.** When your chat or an AI app starts a recipe that would
+  stop to ask, Recued asks once, before the first step: "Run “…”?" names who is asking and what
+  would run without asking. Answer "Yes, this time", "Always, for this recipe", "Ask me at each
+  step" or "No". "Stop allowing" ends what your chats, or one AI app, may run that way, from the
+  run in Logs, its line in the chat, or "Recipes that run without asking" in Contracts.
+- **Name your browsers.** Renaming a paired browser on Devices renames it everywhere, and with
+  Bridge 0.0.14 the pair form asks for its name. A recipe made from browser work has a setting
+  for each browser it uses, chosen from your paired browsers. A run whose browser is not
+  connected, not allowed on that site or too old is refused before it starts, and the run dialog
+  offers another. An "Always" for such a recipe covers only the browser it was given in.
+- **"Allow in this chat."** Any change your chat asks about offers "Allow in this chat": your
+  chat then makes that kind of change without asking, in that conversation, for an hour and up
+  to 100 times. Your AI decides what each one says and whom it is for, and the request says so.
+  It replaces "Allow this session" in your chats, Telegram and Slack included; AI apps, forms
+  and scheduled runs keep "Allow this session".
+- **One approval for several changes of one kind.** When your AI makes several changes of the
+  same kind together, such as an email to each guest, you are asked once, and the approval lists
+  each one with its values. An AI app's batch of the same action lists each one's values too.
+- **Requests you repeat.** When you ask your chats the same thing on three days within a month
+  and approve what it does each time, Recued suggests letting it run without asking. Contracts
+  lists these requests in your words, with what each does and whom it reaches: accept one for the
+  days and times you choose, dismiss it, or end it, and Live control shows the uses left. A
+  delete is suggested only after five such days, on its own. Undoing a change a rule made ends
+  the rule.
+- **Undo after you approve.** A change Recued can undo keeps its Undo when your chat made it with
+  your approval, or when a permission or rule let it through: on its line in the chat ("Review
+  undo") or in Logs. Undo asks "Undo this change?" first and says whether it worked.
+- **Messages that did not reach their recipes.** Settings → Connections → Webhooks lists each
+  webhook message whose recipe could not run it, such as after every retry failed, including any
+  left stuck before this release. Try one again or close it with a reason; "Show the closed ones"
+  says when, by whom and why. They no longer count against the intake limit, and up to 1,000 are
+  kept before the oldest is closed.
+- **Webhook health you can act on.** A webhook that refuses every message no longer reads
+  healthy: after three refusals since its last verified message, its card says how many, since
+  when and what to do. For a Telegram or GitHub webhook Recued set up, Recued sets it up again
+  with the secret it holds, at most once an hour. An endpoint an edit or move left at the other
+  service is removed when it lands; one Recued cannot remove is listed on the card, and "I
+  removed it" clears it.
+- **Choose which recipes a webhook may start.** A webhook's card lists "Recipes it starts". With
+  several, each recipe has its own switch; with one, the webhook's switch decides. A closed
+  recipe's messages wait to be tried again, and opening it runs none of them. A pack update never
+  opens one you closed or closes one you opened, and an update from another publisher asks you.
+- **Type a webhook's event names.** Making a webhook offers "Another event at the service" beside
+  the known events, checked against that service's own naming. "Change the events it takes"
+  edits them later and marks a name the service never sends.
+- **Occasions that repeat when the last one says.** An occasion can be once, every year, or "When
+  the last one says": after each visit Recued asks "When is the next one?" in Today, Yours and
+  your messages. It can have a time of day and an alert minutes before. Each is "Private" or
+  "Shown by name" in its reminders, the Agenda, Coming up and what your AI reads, and an event
+  your own calendar marks private stays private in Recued. Your AI can add, find and change
+  occasions.
+- **An occasion's own calendar event.** Choose one calendar on Yours → Occasions, and an occasion
+  marked "In my calendar" keeps its own event there, private and alerted as the occasion is. Move
+  the event on your phone and the occasion follows; delete it there and the occasion stays in
+  Recued only. Today shows the two as one line.
+- **Turn a calendar event into an occasion.** An event in Data → Calendar offers "Occasion": tick
+  it to make an occasion that holds the event, or to make it the next visit of one waiting for
+  its date. Recued never does this by itself and never changes that event. A booking made from
+  the same emailed invite joins it, as one line in Today.
+- **Oura, and more of Apple Health, in a Body.** The new Body signals from Oura pack pulls a
+  ring's readings each morning through your own Oura developer app, once you switch on "Pull Oura
+  readings" for a Body. "Connect Apple Health" on a Body's page makes the webhook for your
+  Shortcut, which can now send 27 readings, such as height, body fat, blood pressure and blood
+  sugar, and measurements sent late still reach the Body. Adding a Body sets up its summary, and
+  a watch or ring that has not synced for two days asks you to check it is charged and synced.
+- **Ask with the numbers, goals and ranges.** "Ask with the numbers" on a Body's page sends the
+  readings you pick to Chat with what you want, such as "Suggest a workout", and asks only for
+  what the Body lacks; it sends an age, never a birth date. "Set a goal" keeps a weight, body fat
+  or waist goal as a pursuit, and "Set your range" shows a reading outside it on Today, without
+  the number. Readings read in words, with a 30-day line, their usual, trend and average, and BMI.
+- **A Set up page, and next steps under answers.** "Set up" shows what is connected, what is
+  still empty and what each pack needs. When chat finds nothing to work on, its answer offers the
+  next step, such as "Connect your mail", "Add a Passport" or "Add a Body", and "Ask again" once
+  it is done. "Not now" hides a hint for 30 days, and "Back to chat" brings you back.
+- **See what takes space.** Settings → Server → Storage lists your data by kind, with its size,
+  oldest item and last 30 days, and the database's free space. "Delete older than…" removes old
+  records, run history or reading history after a preview and an export; nothing deletes on its
+  own.
+- **Add records to a chat message.** "Add records" attaches contacts, tasks, notes, emails and
+  calendar events to a message, and the first three emails and events are read before the AI
+  starts. Pasting a record's link offers "Attach record". "Chat about this" on an email in Data →
+  Mail opens a new chat with it added, and a contact you pick is the one your AI uses, even
+  beside someone with the same name.
+- **Search finds more.** Search everything finds chat messages, saved mail drafts, reminders and
+  their history, bookings and decisions waiting for you, and filters by type. A result opens at
+  the matching text, and search keeps your recent searches, recently opened records and pinned
+  ones.
+- **Links between your records.** While you write a note or task, insert a link to a task, note,
+  contact, email or event, previewing it first. "Linked from" shows what links to a record, and
+  you can copy a link to any of them.
+- **Find and act in what you read.** Find text in an email, note, task, PDF or spreadsheet, and go
+  to a page or a cell. Select text in an email or note to make a task, ask about it or save it to
+  a note. Notes show their formatting, with an outline of their headings.
+- **Unfinished work is kept.** Mail, notes, tasks, projects, events, reminders and scheduled
+  prompts you have not saved survive a reload in that browser tab, ready to resume, and a save
+  whose answer was lost is checked rather than sent twice.
+- **Calendar.** A Month view, and search by title or place. "Find a time" suggests free times
+  while you plan an event, and "Find another time" moves one. Duplicate an event, make one from
+  an email or a task, join its meeting, and make a follow-up task or a note from it.
+- **Tasks and projects.** Tasks show what blocks them, in Tasks and Today, and take their project,
+  contact and dependencies by name. Change several at once: priority, deadlines (previewed
+  first), project or contact. A project lists what needs attention and can draft a status email.
+- **Reminders.** Today lists one-off reminders with "In 15 minutes", "In 1 hour" and "Tomorrow at
+  9am". "Remind me about this" links a reminder to a task or commitment, an email can have its
+  own reminders, and you can move or cancel several after reviewing them.
+- **Scheduled prompts.** Run one every month or on selected weekdays, pause it until a time, or
+  skip its next run and undo that before it is due. "Recent runs" opens each run's conversation,
+  several prompts can be paused or resumed together, and search finds them by title, time or
+  time zone.
+- **Contacts, mail, commitments and bookings.** "New contact" takes a name alone, and a contact
+  offers "Call", "Draft email", "View activity" and "Download contact (.vcf)". The inbox filters
+  by unread, starred, received or sent, and "Tidy mail together" marks or stars several. A
+  commitment can draft a follow-up email, and a booking opens its customer and history.
+- **Sign-in codes from Telegram or Slack.** When a browser step asks for a sign-in code, you can
+  send it from Telegram or Slack as a message on its own. It goes only to that step and is kept
+  nowhere; Telegram deletes your message, and Slack asks you to. Passwords and PINs are never
+  taken this way.
+- **Tell a booking's visitor about a change.** Reception — Scheduling adds a recipe your chat can
+  use to send your message to a booking's visitor once you approve it, and a booking your chat
+  changes says the visitor was not told.
+- **AI apps can do more.** An AI app can give a task's due date as a day, or a day and time on
+  your clock, and can add or change occasions once you turn on "Add an occasion" or "Change an
+  occasion".
+- **See how each AI model's last call went.** Each card in Settings → AI / Models shows how its
+  last call ended and which model answered. Chat says when the provider does not have the model
+  you chose, or when a model used its whole output allowance before answering. First-run setup
+  tests the model and key before saving them.
+- **More from Browser Toolkit.** Your AI can list your paired browsers and read tabs across them,
+  collect a list across a site's pages in one go, read a PDF it opens with a click, and read a
+  page's dropdowns, checkboxes and radio buttons with their state.
+- **Keep signed in, with Bridge 0.0.14.** It keeps the session in each tab of a site, such as two
+  Gmail accounts, and keeps Chrome from putting a listed site's tabs to sleep. It says when a site
+  signed you out anyway, and how long after you signed in, and when a site ends every sign-in
+  after a set time, which no refresh helps. It leaves Chrome Web Store pages alone, never reloads
+  a page it cannot check for something typed, and removing a site leaves an Undo.
+
+### Changed
+
+- **Webhook runs hold through restarts, long runs and retries.** A recipe a webhook starts runs as
+  long as it needs instead of 10 seconds. Each recipe takes its messages one at a time, in order,
+  and one waiting to retry or for your approval lets later ones go first. A failed run is retried
+  over about an hour instead of two minutes. A run a restart interrupts runs again after it, and
+  an approved run finishes without repeating its approved step. When Recued cannot tell whether
+  a step went through, the message waits for you, and trying it again carries on from that step.
+- **Saving or updating a recipe keeps its webhook messages.** A save that reads no more than
+  before keeps waiting and failed messages for the saved version; any other save, an uninstall or
+  a retire closes them with a record of why. Saving a recipe whose webhook is on asks "Keep it on
+  for the version you save?" and says what the new version could do that the old one could not.
+- **A trigger's "Always allow" covers the whole recipe.** For a webhook, schedule, event trigger,
+  auto-run or form, it now lets every change of that recipe version run without asking, with no
+  count, and says what still asks: deletes, reviews and anything set to ask every time.
+  Permissions you gave before stay as they were.
+- **In your chat, every change follows its own setting.** A change set to ask now asks in your
+  chat too, such as updating a HubSpot record, writing a file or marking mail read; before, your
+  chat ran them at once. A recipe you run yourself from the app no longer stops to ask before it
+  sends or clicks.
+- **One morning message, with its suggestions inside.** AI suggestions no longer arrive as a
+  second message after Your day or Your week. If they cannot be made, the message says why, and
+  suggestions that finish later are in Today. Suggested times fit around your day's events.
+- **Today shows how your morning message went.** Under Last sent, the Daily and Weekly cards say
+  how long after it started preparing the message went and whether its AI suggestions were
+  included, so you can set "Starts preparing at" to suit you. Today also lists every condition
+  that holds.
+- **Close the day in one approval.** Your AI asks about what your reply left out, then records the
+  day and ticks off the tasks you did in one approval; a newer record of the day replaces one
+  still waiting. "Let's wrap up yesterday" closes a day without its notice, a reply to the day's
+  email closes it too, and a late close counts tasks done on their day. In the app, the day's
+  messages and Close the day share one "Your day" conversation.
+- **Approvals and notices in plain words.** On Telegram, Slack and email an approval says what is
+  asked, such as "Your Telegram chat wants to tick off 2 tasks", with no tool names, and ends with
+  how it was answered. Notices start with their title, and a sign-in alert says "Recued can't
+  sign in to" the account and how to fix it. In the app, a change to review reads field by field
+  ("Title: Team sync → Team meeting") in your time zone, and chat lines, Live control and
+  Contracts name each action and recipe as you know them.
+- **Longer chat turns, and Continue.** Past 10 rounds, a turn earns another each time it reaches a
+  new page or makes a new call, up to 20. A turn that stops at its limit names the pages it
+  reached, and Continue under it carries on.
+- **A quick follow-up no longer waits** about 30 seconds for the previous reply's summary, and a
+  reply goes out before its summary is written.
+- **Your chat is careful with changes it cannot confirm.** An answer says when an action ended in
+  an error without confirming it happened, and the same change is not proposed again until the
+  record has been checked. After you decline a change, "Continue." does not bring it back. An
+  answer that says something is missing without having looked says "This answer was not checked
+  with a tool."
+- **A Body's numbers stay out of your AI's general reads.** Chats and AI apps see a Body's
+  readings and states by name only. "Body numbers in your chats", on any Body's page, sets
+  whether your chats may read the values: "Off", "Ask" (the default) or "Allow". AI apps always
+  ask. A weight or height you type is kept until a newer reading replaces it.
+- **Browser reading copes with covers and ads.** A page under a full-screen ad reads as covered,
+  with how to close it; a page nothing could be read from says so instead of reading as empty;
+  once a cover has gone, the next answer says so; and a click on a link from a page the tab has
+  since left follows the link instead of failing.
+- **An AI tool's switches say what they unlock.** In Contracts, each AI tool shows which switches
+  every call needs, which kind of item each one covers, and "Works for:" what it can do now.
+- **Codex Pack** describes Codex 0.169's change: write access no longer marks a repository as
+  trusted, so one you have not trusted in Codex runs without its own settings and MCP servers.
+- **Steadier screens.** Pages share one layout on phones, keep keyboard focus after slow actions,
+  and offer Retry where a failed load used to look empty.
+
+### Fixed
+
+- **Replies after an approval arrive in Telegram, Slack and other messenger chats again.** Since
+  26.8.1, when your chat in a messenger asked you to approve something and you approved it, the
+  change was made but the reply that should have followed could fail to save, so it never
+  arrived, even after the automatic retries. Recued now saves and sends it. If you approved
+  something in a messenger and heard nothing back, the change was still made: you can see it
+  where it was recorded, such as Today, Yours or Contracts.
+- **A Mac server with a watched folder starts again.** Since 26.10.20 it could exit at boot
+  without a word and stay down.
+- **Webhooks that could not work now do.** A Telegram webhook Recued sets up can be switched on,
+  and deleting the bot's connection closes it. An event name its service spells differently, such
+  as `Push` on GitHub, is refused when you pick it, instead of setting up a webhook that rejects
+  every message of that event; one already saved keeps working for its other events. A retired
+  webhook whose clean-up failed is listed again, with "Try the clean-up again".
+- **A recipe that runs another no longer fails partway** when the inner one would stop to ask.
+  Your chat or AI app is asked once for both, and the question says "It also runs" the inner one.
+- **Email.** Files up to 25 MB go with an email; a file over 3 MB was left out and the email sent
+  without it. Subjects with characters such as "·" arrive intact from Gmail and SMTP mailboxes,
+  where Recued's own notices read "Close the day Â· Sat 14 Nov".
+- **Calendars.** An Outlook event made from an emailed invite matches the invite, so the same
+  invite in a Google and an Outlook calendar is no longer two events. Events Recued made on a
+  CalDAV calendar can be changed and removed on servers such as Radicale, which refused them as
+  not writable. With only Recued's own calendar connected, chat no longer says you are free.
+- **The Thinking setting reaches more models.** It now works with Claude 5.x models and with
+  OpenAI's current reasoning models, and Thinking Off takes effect on them.
+- **Large mailboxes load much faster**, and replacing or purging email no longer slows as the
+  mailbox grows.
+- **A task due "5 pm today" is due today**, and approvals show a task's due date on your clock.
+- **Answers no longer call people by placeholders such as "m1".**
+- **Uses left on Active passes and Contracts count down** as they are spent.
+- **A reminder's Later no longer offers "Choose time" or "Choose date"**, which did nothing. In
+  Yours, "Remind me again on" sets another day and time.
+- **Body summaries stay right after the clocks go back**, and a baseline of 50 days or more no
+  longer stops "Recovery low" and "Short sleep" being written.
+- **Records packs say what they need.** A Records pack shows "Needs" and the pack it is missing,
+  and Chat no longer offers to install one you already have.
+- **Photo Attribution stops a scan that cannot work** instead of reporting success with nothing
+  found, and says how to fix the face matcher: on macOS and Linux, run
+  `pipx inject face_recognition "setuptools<81"`.
+- **Approval pages opened from email or a messenger keep your edits.** Clearing the last
+  checkbox no longer discards the others, Deny works with required fields empty, and a date and
+  time you leave alone keeps its seconds and the right hour around a clock change.
+- **Reception links refuse cleanly** when they close or reach their limit while a visitor
+  submits. A one-time upload link works once, a visitor whose new time was taken gets a fresh
+  choice, and a failed upload keeps what they entered.
+- **AI apps stay within what you allow.** A revoked or expired contract is refused on every call,
+  permissions you end stay ended even if the server stops while applying an approval, and an AI
+  app on your own computer that saves a recipe saves it as yours, without hiding or overwriting
+  another.
+- **Kitchen keeps your recovery copy** through "Restore as draft", "Reload saved draft" and
+  activation, and asks before "Restore as draft" replaces a draft never activated. A recipe saved
+  without settings runs instead of failing every time.
+- **Notices that an automation failed offer "Open"**, which opens the automation or the pack that
+  needs fixing.
+- **An approval for a step that runs a program on your server** no longer ends "on .".
+- **The Browser Bridge checks more before it acts.** Cancel works at every stage; sites you never
+  allow are checked before scrolling, screenshots and downloads, including where a download
+  lands; uploads, downloads and tab moves it cannot confirm are reported as uncertain; and a
+  control whose tooltip gains a shortcut hint is still found. Needs Browser Bridge 0.0.14.
+
 ## 26.11.9 — 2026-11-09
 
 Approve changes ahead for scheduled and triggered work, while every proposed commitment still

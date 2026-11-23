@@ -73,29 +73,53 @@ export const runKeepaliveTick = async (ctx: KeepaliveTickContext): Promise<Keepa
 export interface ChromeAlarmsApi {
   create(name: string, opts: { periodInMinutes: number }): void;
   clear(name: string): void;
-  onAlarm: { addListener(handler: (alarm: { name: string }) => void): void };
+  onAlarm: {
+    addListener(handler: (alarm: { name: string }) => void): void;
+    removeListener(handler: (alarm: { name: string }) => void): void;
+  };
 }
 
 export interface ChromeRuntimeInfoApi {
   getPlatformInfo(): Promise<unknown>;
 }
 
+const keepaliveCleanup = new WeakMap<ChromeAlarmsApi, () => void>();
+
+/** Returns cleanup owned by this installation. Replacing an installation
+ *  retires its listener; its old cleanup cannot clear the replacement alarm. */
 export const installKeepaliveAlarm = (
   alarms: ChromeAlarmsApi,
   runtime: ChromeRuntimeInfoApi,
   tickRunner: () => Promise<KeepaliveTickReport>,
-): void => {
-  alarms.create(KEEPALIVE_ALARM_NAME, { periodInMinutes: KEEPALIVE_PERIOD_MINUTES });
-  alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name !== KEEPALIVE_ALARM_NAME) return;
+): (() => void) => {
+  keepaliveCleanup.get(alarms)?.();
+  let active = true;
+  const onAlarm = (alarm: { name: string }): void => {
+    // A callback already queued by Chrome can arrive after listener removal.
+    if (!active || alarm.name !== KEEPALIVE_ALARM_NAME) return;
     // Force SW wake via a no-op call before running the tick logic.
     void runtime.getPlatformInfo().catch(() => undefined);
     // Storage maintenance can fail (for example, quota or a blocked database).
     // The next alarm may retry; do not turn it into an unhandled SW rejection.
     void tickRunner().catch(() => undefined);
-  });
+  };
+  const stop = (): void => {
+    if (!active) return;
+    active = false;
+    alarms.onAlarm.removeListener(onAlarm);
+    if (keepaliveCleanup.get(alarms) === stop) {
+      keepaliveCleanup.delete(alarms);
+      alarms.clear(KEEPALIVE_ALARM_NAME);
+    }
+  };
+  alarms.create(KEEPALIVE_ALARM_NAME, { periodInMinutes: KEEPALIVE_PERIOD_MINUTES });
+  alarms.onAlarm.addListener(onAlarm);
+  keepaliveCleanup.set(alarms, stop);
+  return stop;
 };
 
 export const removeKeepaliveAlarm = (alarms: ChromeAlarmsApi): void => {
-  alarms.clear(KEEPALIVE_ALARM_NAME);
+  const stop = keepaliveCleanup.get(alarms);
+  if (stop) stop();
+  else alarms.clear(KEEPALIVE_ALARM_NAME);
 };

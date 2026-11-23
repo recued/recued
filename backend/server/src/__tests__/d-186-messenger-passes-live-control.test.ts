@@ -224,6 +224,24 @@ describe('D-186 — messenger /recued passes', () => {
     expect(text).toContain('expires in 15m');
   });
 
+  it('D-177 N.15 — a kind pass reads as its words, never as its internal op or "any op"', async () => {
+    const kind = (permits: SessionGrantView['permits']) => grantView({
+      display_name: 'Allowed in this chat — Add a task', grant_mode: 'kind', permits,
+      uses_remaining: 80, max_uses: 100, member_count: undefined,
+    });
+    const tasks = { ingredient_ids: ['recued:tier1'], operation_ids: ['work.create:task'] };
+    for (const [permits, line] of [
+      [tasks, '• Allowed in this chat — Add a task — one kind · expires in 15m · 80/100 uses'],
+      [{ ...tasks, connection_names: ['hubspot'] }, '• Allowed in this chat — Add a task — one kind · hubspot · expires in 15m · 80/100 uses'],
+    ] as const) {
+      const { control, fetchImpl } = compose({ passes: stubPasses({ grants: [kind(permits)] }).passes });
+      await control.handleCommand('slack', 'slack', slackText('/recued passes'));
+      const text = sectionText(bodyOf(fetchImpl.mock.calls[0]![1]));
+      expect(text).toContain(line);
+      expect(text).not.toContain('work.create');
+    }
+  });
+
   it('accepts the grants / access aliases', async () => {
     const { control, fetchImpl } = compose({ passes: stubPasses({ grants: [grantView()] }).passes });
     expect(await control.handleCommand('slack', 'slack', slackText('/recued grants'))).toBe(true);
@@ -254,10 +272,22 @@ describe('D-186 — messenger /recued passes', () => {
     await control.handleCommand('slack', 'slack', slackText('/recued passes'));
 
     const text = sectionText(bodyOf(fetchImpl.mock.calls[0]![1]));
-    expect(text).toContain('2 ops');
+    expect(text).toContain('2 actions');
     expect(text).toContain('deal-reader-hubspot');
     expect(text).toContain('2 connections');
-    expect(text).toContain('any op');
+    expect(text).toContain('any action');
+  });
+
+  it('names a pass\'s action as the server named it, never its id', async () => {
+    const grants = [
+      grantView({ contract_id: 'ct_a', display_name: 'A', permits: { operation_ids: ['send-email'], connection_names: ['gmail'] },
+        permit_names: ['Send mail'] }),
+    ];
+    const { control, fetchImpl } = compose({ passes: stubPasses({ grants }).passes });
+    await control.handleCommand('slack', 'slack', slackText('/recued passes'));
+    const text = sectionText(bodyOf(fetchImpl.mock.calls[0]![1]));
+    expect(text).toContain('Send mail');
+    expect(text).not.toContain('send-email');
   });
 
   it('falls to the usage note for /recued passes when the passes seam is unwired', async () => {

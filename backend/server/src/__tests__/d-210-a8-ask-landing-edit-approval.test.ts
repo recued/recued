@@ -189,11 +189,14 @@ describe('D-210 A.8 3d-2c — buildEditsFromSubmission', () => {
     buildEditsFromSubmission(it, raw, PARIS);
 
   it('emits ONLY the fields the owner actually changed', () => {
+    const precise = item({ ...SCHEDULING_ITEM,
+      args: { ...SCHEDULING_ITEM.args, start_at: SUMMER_MS + 45_123 },
+    });
     const out = build({
       title: 'Table for four',
       body: 'Window seat',
       start_at: '2026-07-20T20:00',
-    });
+    }, precise);
     expect(out).toEqual({ ok: true, edits: { start_at: Date.UTC(2026, 6, 20, 18, 0) } });
   });
 
@@ -207,6 +210,59 @@ describe('D-210 A.8 3d-2c — buildEditsFromSubmission', () => {
         start_at: '2026-07-20T19:30',
       }),
     ).toEqual({ ok: true, edits: {} });
+  });
+
+  it('keeps the original string when native line endings change and another field is edited', () => {
+    const original = ' \nFirst\r\nSecond\rLast\n ';
+    const held = item({ ...SCHEDULING_ITEM, args: { ...SCHEDULING_ITEM.args, body: original } });
+    expect(build({ body: ' \r\nFirst\r\nSecond\r\nLast\r\n ', title: 'Changed title' }, held)).toStrictEqual({
+      ok: true, edits: { title: 'Changed title' },
+    });
+    expect(held.args.body).toBe(original);
+  });
+
+  it('still emits intentional content and whitespace changes verbatim', () => {
+    const held = item({ ...SCHEDULING_ITEM, args: { ...SCHEDULING_ITEM.args, body: 'First\nSecond' } });
+    expect(build({ body: ' First\r\nChanged ' }, held)).toStrictEqual({
+      ok: true, edits: { body: ' First\r\nChanged ' },
+    });
+    expect(build({ body: 'First\r\nSecond ' }, held)).toStrictEqual({
+      ok: true, edits: { body: 'First\r\nSecond ' },
+    });
+  });
+
+  it('keeps untouched optional blank text while allowing an explicit clear', () => {
+    const held = item({ ...SCHEDULING_ITEM, args: { ...SCHEDULING_ITEM.args, body: ' \n ' } });
+    expect(build({ body: ' \r\n ' }, held)).toStrictEqual({ ok: true, edits: {} });
+    expect(build({ body: '' }, held)).toStrictEqual({ ok: true, edits: { body: undefined } });
+  });
+
+  it('does not bypass required validation for matching normalized blank text', () => {
+    const held = item({ ...SCHEDULING_ITEM, args: { ...SCHEDULING_ITEM.args, title: ' \n ' } });
+    expect(build({ title: ' \r\n ' }, held)).toStrictEqual({ ok: false, message: 'Summary is required.' });
+  });
+
+  it('preserves datetime precision when its control is unchanged and another field changes', () => {
+    const exact = SUMMER_MS + 45_123;
+    const held = item({ ...SCHEDULING_ITEM, args: { ...SCHEDULING_ITEM.args, start_at: exact } });
+    const rendered = buildAskLandingDetails(held, { timeZone: PARIS, editable: true });
+    const control = rendered.details.find(row => row.edit?.key === 'start_at')!.edit!;
+    expect(control.value).toBe('2026-07-20T19:30');
+    expect(build({ start_at: control.value, title: 'Changed title' }, held)).toEqual({
+      ok: true, edits: { title: 'Changed title' },
+    });
+    expect(held.args.start_at).toBe(exact);
+  });
+
+  it('preserves either stored instant when the repeated-hour datetime control is unchanged', () => {
+    for (const original of [Date.UTC(2026, 9, 25, 0, 30), Date.UTC(2026, 9, 25, 1, 30)]) {
+      const held = item({ arg_schema: { fields: [field({ key: 'start_at', type: 'datetime', required: true })] },
+        args: { start_at: original },
+      });
+      const control = buildAskLandingDetails(held, { timeZone: PARIS, editable: true }).details[0]!.edit!;
+      expect(control.value).toBe('2026-10-25T02:30');
+      expect(build({ start_at: control.value }, held)).toEqual({ ok: true, edits: {} });
+    }
   });
 
   it('treats an absent checkbox as false — and as a CHANGE when it was true', () => {
@@ -298,9 +354,18 @@ describe('D-210 A.8 3d-2c — createAskLandingEditApproval', () => {
         expect(h.approve).toHaveBeenCalledWith({
           hold_id: 'cp-1',
           ask_id: 'ask-1',
+          via: 'email',
           edits: { start_at: Date.UTC(2026, 6, 20, 18, 0) },
         });
       });
+  });
+
+  it('carries the delivery channel through an untouched editable approval', async () => {
+    const h = harness();
+    await h.run({ ask: ask(), option: 'approve', rawEdits: { title: 'Table for four' }, via: 'slack' });
+    expect(h.approve).toHaveBeenCalledExactlyOnceWith({
+      hold_id: 'cp-1', ask_id: 'ask-1', edits: {}, via: 'slack',
+    });
   });
 
   it('refuses edits on any option but approve, and says why for allow_session', () => {

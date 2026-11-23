@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { connect, type Socket } from 'node:net';
 import Database from 'better-sqlite3';
@@ -225,14 +225,14 @@ describe('WebSocket server', () => {
   });
 
   it('tracks client count', async () => {
-    await wait(100); // let previous test's connections close
-    expect(server.wsServer.clientCount()).toBe(0);
+    // Each step waits for the server to see it, not a fixed time: under a full
+    // suite's load the server still counted a socket 50 ms after it closed
+    // (the sweep at 420a63508).
+    await vi.waitFor(() => expect(server.wsServer.clientCount()).toBe(0));
     const ws = await connectWs(server.port, 'test-realm');
-    await wait(50);
-    expect(server.wsServer.clientCount()).toBe(1);
-    ws.close();
-    await wait(50);
-    expect(server.wsServer.clientCount()).toBe(0);
+    await vi.waitFor(() => expect(server.wsServer.clientCount()).toBe(1));
+    await new Promise<void>((resolve) => { ws.once('close', () => resolve()); ws.close(); });
+    await vi.waitFor(() => expect(server.wsServer.clientCount()).toBe(0));
   });
 
   it('peerCacheGet ignores non-bridge clients — instant null, no cache_get_request frame', async () => {

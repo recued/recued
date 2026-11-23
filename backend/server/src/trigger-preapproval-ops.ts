@@ -172,6 +172,24 @@ const opLabel = (op: string, said: unknown): string => {
   return (kernel !== undefined ? grantSwitchText(kernel)?.title : undefined) ?? firstSentence(said) ?? op;
 };
 
+/** D-177 N.15 (§N.15.6 ruling 3) — what a gate's held call does, in the owner's words (`opLabel`),
+ *  read off the manifest of the ingredient it dispatched: a catalog op's own description (the gate
+ *  records it by its key or its declared id), else the single-op ingredient's. Undefined when only
+ *  the op's id would name it, so "Allow in this chat" is offered only in words the owner reads. */
+export const heldCallOpLabel = (
+  call: { readonly slug: string; readonly operation_id?: string },
+  manifestOf: (slug: string) => IngredientManifest | null | undefined,
+): string | undefined => {
+  const op = triggerPreapprovalCallOp(call);
+  const manifest = manifestOf(call.slug) ?? null;
+  const said = !isCatalogForm(manifest) ? manifest?.description
+    : call.operation_id === undefined ? undefined
+    : Object.entries(manifest!.operations as Record<string, { operation_id?: unknown; description?: unknown } | undefined>)
+      .find(([key, spec]) => key === call.operation_id || spec?.operation_id === call.operation_id)?.[1]?.description;
+  const label = opLabel(op, said);
+  return label === op ? undefined : label;
+};
+
 /** The owner's words for each op a recipe's steps call (`opLabel`). */
 export const recipeStepOpLabels = (recipe: RecipeDefinition, deps: TriggerPreapprovalOpDeps): Map<string, string> => {
   const labels = new Map<string, string>();

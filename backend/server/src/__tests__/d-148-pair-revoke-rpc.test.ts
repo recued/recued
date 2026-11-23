@@ -734,3 +734,37 @@ describe('pair.list last_seen_at and pair.rename', () => {
     expect(events).toEqual([]);
   });
 });
+
+describe('D-402 slice H2b — pair.browsers, the owner\'s paired browsers for a browser setting', () => {
+  it('the server\'s own roster by lasting id, name and connection; nothing for a caller it cannot name as its owner', async () => {
+    const db = new Database(':memory:');
+    const paired = createPairedInstancesStore(db);
+    const listBrowsers = () => [{ bridge_id: 'tok-work', browser_id: 'inst-work', name: 'Work', online: true }];
+    const handle = { bridgeDispatcher: { listBrowsers } } as unknown as WsServerHandle;
+    const slice = makePairHandlers(paired, () => handle)!;
+    expect(slice.methods).toContain('pair.browsers');
+    expect(await slice.handlers['pair.browsers']!(undefined as never, stubCtx('inst-owner'))).toEqual({
+      browsers: [{ browser_id: 'inst-work', name: 'Work', online: true }] });
+    expect(await slice.handlers['pair.browsers']!(undefined as never, stubCtx(null, ''))).toEqual({ browsers: [] });
+    db.close();
+  });
+});
+
+describe('D-402 slice H5 — a revoked browser\'s remembered logins are forgotten with it', () => {
+  it('pair.revoke, wired as the server wires it, forgets the revoked instance\'s logins and no other\'s', async () => {
+    const { createBrowserLoginStore } = await import('../storage/browser-login-store.js');
+    const { forgetLoginsOnRevoke } = await import('../pair-handler.js');
+    const db = new Database(':memory:');
+    const paired = createPairedInstancesStore(db);
+    paired.addOrRefresh({ instance_id: 'inst-work', user_id: 'mary', display_name: 'Work' });
+    const logins = createBrowserLoginStore(db, { key: () => new Uint8Array(32).fill(9) });
+    const save = (browser: string) => logins.save({ browser, origin: 'https://login.live.com', field: 'name:passwd',
+      label: 'Password', kind: 'password', value: `secret-${browser}`, now: 1 });
+    await save('inst-work'); await save('inst-home');
+    const slice = makePairHandlers(paired, () => stubWsServer(), undefined, undefined, undefined, forgetLoginsOnRevoke(logins))!;
+    expect(await slice.handlers['pair.revoke']({ instance_id: 'inst-work' }, stubCtx('caller-id-1', 'mary'))).toEqual({ ok: true });
+    expect(logins.list().map((login) => login.browser)).toEqual(['inst-home']);
+    expect(forgetLoginsOnRevoke(undefined)).toBeUndefined();
+    db.close();
+  });
+});

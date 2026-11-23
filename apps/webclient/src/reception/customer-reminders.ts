@@ -1,3 +1,4 @@
+import { trackCustomerWorkspaceFocus } from './customer-workspace-focus.js';
 import { composeDialog,type QuoteSignoffReminder,type QuoteSignoffReminderSetInput,type QuoteSignoffReminderDraftResult,type CustomerAccountContactDefaultsRecord } from '@recued/contracts';
 import { FORM_RENDERER_STYLES,MAIL_COMPOSE_STYLES } from '@recued/ui-shared';
 import { mountMailCompose,type MailComposeDeps } from '../mail/mail-compose-host.js';
@@ -17,6 +18,7 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
   contactDefaults?: (request_id: string) => Promise<CustomerAccountContactDefaultsRecord>;
 }) => {
   const { document: doc,api: conn } = opts; const now = opts.now ?? Date.now;
+  const focusOwner = trackCustomerWorkspaceFocus(doc);
   const accountKind = opts.kind === 'account_payment';
   const paymentKind = opts.kind === 'payment' || accountKind;
   const label = (text: string) => accountKind ? text.replace('payment','account payment').replace('Payment','Account payment') : text;
@@ -56,16 +58,18 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
   };
   const when = field('reminder_due_at', 'Follow-up time (your device timezone)', 'datetime-local'); when.required = true;
   const email = field('reminder_recipient', 'Customer email (optional)', 'email'); email.maxLength = 254;
-  const accountLabel = add('label', 'Mail account (optional)', form);
-  const account = doc.createElement('select'); account.setAttribute('name', 'reminder_account'); account.setAttribute('id',`recued-${opts.kind}-reminder-account`);accountLabel.setAttribute('for',`recued-${opts.kind}-reminder-account`);form.appendChild(account);
+  const accountField = add('div', '', form);accountField.className = 'reminder-account-field';
+  const accountLabel = add('label', 'Mail account (optional)', accountField);
+  const account = doc.createElement('select'); account.setAttribute('name', 'reminder_account'); account.setAttribute('id',`recued-${opts.kind}-reminder-account`);accountLabel.setAttribute('for',`recued-${opts.kind}-reminder-account`);accountField.appendChild(account);
   const link = paymentKind ? null : field('reminder_link', opts.kind === 'offer' ? 'Offer link (paste it here for an older request)' : 'Completion link (paste it here for an older request)', 'url');
   const contactStatus = add('p','',form);contactStatus.hidden = !opts.contactDefaults;contactStatus.setAttribute('data-account-contact-default-status','');
   if (link) link.maxLength = 2048;
   const save = doc.createElement('button'); save.type = 'submit'; save.textContent = paymentKind ? label('Save payment follow-up') : 'Save follow-up'; form.appendChild(save);
-  const close = button(paymentKind ? label('Close payment follow-up') : 'Close follow-up', editor, () => {
+  const editorActions = add('div','',form);editorActions.className = 'request-actions';editorActions.appendChild(save);
+  const close = button(paymentKind ? label('Close payment follow-up') : 'Close follow-up', editorActions, () => {
     if (!busy) { editor.hidden = true; selected = null; dirty = false; editorGeneration++; controls();returnFocus?.(); }
   });
-  const pauseEditor = accountKind ? button('Pause account payment follow-up',editor,() => {
+  const pauseEditor = accountKind ? button('Pause account payment follow-up',editorActions,() => {
     if (!selected || busy || selected.reminder.due_at === null) return;const target = selected;
     void mutate(async () => {
       await conn.set({ request_id: target.request.request_id,expected_revision: target.reminder.revision,due_at: null });
@@ -77,7 +81,7 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
   if (pauseEditor) editorControls.push(pauseEditor);
   if (link) editorControls.push(link);
   const composeHost = add('div', '');
-  const style = doc.createElement('style'); style.textContent = `${FORM_RENDERER_STYLES}\n${MAIL_COMPOSE_STYLES}`; composeHost.appendChild(style);
+  const style = doc.createElement('style'); style.textContent = `${FORM_RENDERER_STYLES}\n${MAIL_COMPOSE_STYLES}\n[data-${namespace}-reminders] .reminder-account-field{display:grid;gap:6px;min-width:0}`; composeHost.appendChild(style);
   const compose = mountMailCompose(composeHost,{ ...opts.mail,onStateChanged: () => { opts.mail.onStateChanged?.();queueMicrotask(() => { if (!disposed) controls(); }); } });
   let disposed = false; let generation = 0; let editorGeneration = 0;
   let loading = false; let busy = false; let dirty = false;
@@ -131,6 +135,7 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
     }
     const action = focusedAction();
     returnFocus = onClosed ?? (() => { if (action) focusAction(action); else refresh.focus(); });
+    const ownsFocus = focusOwner.capture();
     const current = ++editorGeneration;
     editor.hidden = false; editorStatus.textContent = 'Loading follow-up…';
     heading.textContent = `Follow up — ${request.customer} — ${paymentKind ? request.quote_reference ?? request.quote_label : request.quote_label}`;
@@ -181,9 +186,10 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
         });
       }
     } catch (error) { if (!disposed && current === editorGeneration) { selected = null; editorStatus.textContent = message(error); } }
-    finally { if (!disposed && current === editorGeneration) { busy = false; controls(); if (selected) when.focus(); } }
+    finally { if (!disposed && current === editorGeneration) { busy = false; controls(); if (selected && ownsFocus()) when.focus(); } }
   };
   const draft = async (request: CustomerReminderRequest, reminder: CustomerReminderState, sourceAction: string) => {
+    const ownsFocus = focusOwner.capture();let notice = '';
     await mutate(async () => {
       if (dirty) throw new Error('Save or close this follow-up before reviewing its email.');
       if (!opts.mail.drafts) throw new Error('Saved email drafts are unavailable. Open Mail to configure them.');
@@ -194,9 +200,12 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
       if (disposed) return;
       await compose.refresh();
       if (disposed) return;
+      if (!ownsFocus()) { notice = 'Reminder draft saved in Mail. Open it there when you are ready to review and send.';return; }
       if (!await compose.openSaved(saved.draft_id)) throw new Error('The draft is saved in Mail. Close your current email before opening it.');
-      status.textContent = 'Reminder draft saved. Review it and choose Send; Recued uses your normal mail approval controls.';
+      notice = 'Reminder draft saved. Review it and choose Send; Recued uses your normal mail approval controls.';
     }, sourceAction);
+    if (!disposed && notice) status.textContent = status.textContent?.startsWith('Could not load follow-ups.')
+      ? `${status.textContent} ${notice}` : notice;
   };
   const load = async (page: { cursor?: string; previous: Array<string | undefined> } = pending ?? { cursor, previous: [...previous] }) => {
     const requestedCursor = page.cursor; const requestedPrevious = page.previous;
@@ -268,6 +277,6 @@ export const mountCustomerReminders = (opts: CustomerReminderOptions & {
     hasOpenEmail: () => Boolean(composeDialog(compose.state())),
     hasUnsavedChanges: () => dirty || compose.hasUnsavedChanges(),
     hasInFlightWork: () => busy || compose.hasInFlightWork(),
-    dispose: () => { disposed = true; generation++; editorGeneration++; compose.destroy(); root.remove(); },
+    dispose: () => { focusOwner.dispose(); disposed = true; generation++; editorGeneration++; compose.destroy(); root.remove(); },
   };
 };

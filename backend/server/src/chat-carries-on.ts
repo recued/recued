@@ -63,16 +63,37 @@ export const HELD_CARRIES_ON_MESSAGE =
   + 'result, even one that would wait for approval too: it could then run first, or run although '
   + 'this one was declined. Do not ask the user to tell you when it is done.';
 
-/** The turn's calls that wait for the owner's answer, by tool name, in `turn_state` (one turn's
- *  process-local scratch: never stored, never sent). */
+/** The turn's calls that wait for the owner's answer, in `turn_state` (one turn's process-local
+ *  scratch: never stored, never sent): the tool, and the held run when there is one. */
 const WAITING_IN_TURN = 'd337.waiting_in_turn';
 
+/** D-177 §N.15.9 — a round's kept holds, in `turn_state` (`chat-gather.ts`, which reads and writes
+ *  it): named here so the rule below reads them without the two modules importing each other. */
+export const ROUND_GATHER_STATE = 'd177.round_gather';
+
+interface WaitingCall {
+  readonly tool: string;
+  readonly run?: string;
+}
+
+const waitingIn = (turn_state: Map<string, unknown> | undefined): readonly WaitingCall[] => {
+  const waiting = turn_state?.get(WAITING_IN_TURN);
+  return Array.isArray(waiting) ? waiting as WaitingCall[] : [];
+};
+
 /** A call of this turn now waits for the owner's answer: a held run or pack action, or a write
- *  put to them. */
-export const noteWaitingInTurn = (turn_state: Map<string, unknown> | undefined, tool_name: string): void => {
+ *  put to them. Once per held run: a recipe's hold is seen by its handler and by the turn, and was
+ *  noted twice, so an answer given in its round left one note and kept holding back later calls
+ *  with nothing to bring them back (found 2026-11-10). */
+export const noteWaitingInTurn = (
+  turn_state: Map<string, unknown> | undefined,
+  tool_name: string,
+  run_id?: string,
+): void => {
   if (turn_state === undefined) return;
-  const waiting = turn_state.get(WAITING_IN_TURN);
-  turn_state.set(WAITING_IN_TURN, [...(Array.isArray(waiting) ? waiting as string[] : []), tool_name]);
+  const waiting = waitingIn(turn_state);
+  if (run_id !== undefined && waiting.some((call) => call.run === run_id)) return;
+  turn_state.set(WAITING_IN_TURN, [...waiting, { tool: tool_name, ...(run_id !== undefined ? { run: run_id } : {}) }]);
 };
 
 /** The owner's 3a (2026-11-07) — how long a turn of the owner's own app chat waits, in all, for
@@ -83,12 +104,17 @@ export const noteWaitingInTurn = (turn_state: Map<string, unknown> | undefined, 
 export const OWNER_CHAT_HELD_WAIT_MS = 60_000;
 
 /** The owner's 3a (2026-11-07) — a call this turn waited on was answered while its round waited:
- *  the turn waits on it no more, so a further call that would ask is asked. */
-export const noteAnsweredInTurn = (turn_state: Map<string, unknown> | undefined, tool_name: string): void => {
+ *  the turn waits on it no more, so a further call that would ask is asked. By its run when it has
+ *  one, else the first of that tool. */
+export const noteAnsweredInTurn = (
+  turn_state: Map<string, unknown> | undefined,
+  tool_name: string,
+  run_id?: string,
+): void => {
   if (turn_state === undefined) return;
-  const waiting = turn_state.get(WAITING_IN_TURN);
-  if (!Array.isArray(waiting)) return;
-  const at = waiting.indexOf(tool_name);
+  const waiting = waitingIn(turn_state);
+  const byRun = run_id !== undefined ? waiting.findIndex((call) => call.run === run_id) : -1;
+  const at = byRun !== -1 ? byRun : waiting.findIndex((call) => call.tool === tool_name);
   if (at === -1) return;
   turn_state.set(WAITING_IN_TURN, [...waiting.slice(0, at), ...waiting.slice(at + 1)]);
 };
@@ -106,9 +132,18 @@ export const askAfterWaiting = (
   turn_state: Map<string, unknown> | undefined,
 ): string | undefined => {
   if (!conversationCarriesOn(source)) return undefined;
-  const waiting = turn_state?.get(WAITING_IN_TURN);
-  return Array.isArray(waiting) && typeof waiting[0] === 'string' ? waiting[0] : undefined;
+  const [first] = waitingIn(turn_state);
+  if (first !== undefined) return first.tool;
+  // D-177 §N.15.9 — a call this round keeps for its gathered approval waits as a held one does.
+  const round = turn_state?.get(ROUND_GATHER_STATE) as { members?: ReadonlyArray<{ tool_name?: unknown }> } | undefined;
+  const kept = round?.members?.[0]?.tool_name;
+  return typeof kept === 'string' ? kept : undefined;
 };
+
+/** D-177 §N.15.9 — does a call of an EARLIER round still wait (a round's own kept holds aside)? A
+ *  call its round repeats may join that round's gathered approval only when none does. */
+export const earlierCallWaits = (turn_state: Map<string, unknown> | undefined): boolean =>
+  waitingIn(turn_state).length > 0;
 
 /** What the model reads for a call not asked (`not_asked_yet`), naming the call it waits on.
  *  Nothing was proposed, held or run, and nothing is waiting for the owner on its account.

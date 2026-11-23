@@ -37,8 +37,8 @@
 
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
 import type { ArgEditField, InboxItem } from '@recued/contracts';
-import type { PendingAsk } from '@recued/notification';
-import { zonedWallClockToEpochMs } from './ports/reception/processors/intake-destination-mapping.js';
+import { resolveAskLandingVia, type ChannelName, type PendingAsk } from '@recued/notification';
+import { epochMsToZonedWallClock, zonedWallClockToEpochMs } from './ports/reception/processors/intake-destination-mapping.js';
 
 /** The approve option id on a `gateway.preflight` ask. Edits only mean
  *  anything alongside it — see `submitEditedApproval`. */
@@ -59,10 +59,10 @@ export interface AskLandingEditApprovalResult {
  *  ⚠ THE ZONE IS THE WHOLE GAME for `datetime`. An
  *  `<input type="datetime-local">` submits a ZONE-LESS wall clock, and
  *  `Date.parse` would read it in the SERVER's zone. `zonedWallClockToEpochMs`
- *  resolves it in the SAME zone `epochMsToZonedWallClock` rendered the
- *  control's value in — the two are inverses living in one module precisely
- *  so this round trip cannot drift. Get it wrong and the approval moves a
- *  real appointment by the offset, at `success: true`. */
+ *  resolves deliberate changes in the SAME zone `epochMsToZonedWallClock`
+ *  used to render the control. `buildEditsFromSubmission` preserves the
+ *  original instant when that minute-level control is unchanged: its text
+ *  cannot retain seconds or distinguish a repeated local hour. */
 export const coerceSubmittedEdit = (
   field: ArgEditField,
   raw: string | undefined,
@@ -116,6 +116,8 @@ export const coerceSubmittedEdit = (
       }
   }
 };
+
+const normalizeLineEndings = (text: string): string => text.replace(/\r\n?/g, '\n');
 
 const sameValue = (a: unknown, b: unknown): boolean => {
   if (Object.is(a, b)) return true;
@@ -179,15 +181,31 @@ export const buildEditsFromSubmission = (
     // A non-boolean field absent from the body was not rendered — leave it
     // alone. (A boolean absent from the body IS the false answer.)
     if (raw === undefined && field.type !== 'boolean') continue;
+    const prefill = readArgPath(item.args, field.key);
+    // The datetime control carries only local minutes. Parsing an unchanged
+    // value would lose seconds/milliseconds or choose a different occurrence
+    // of a repeated hour. Compare with the same server-side renderer first;
+    // only a deliberate change needs a newly parsed instant.
+    if (field.type === 'datetime' && typeof prefill === 'number' && raw !== undefined
+      && raw.trim() === epochMsToZonedWallClock(prefill, timeZone)) {
+      continue;
+    }
     const coerced = coerceSubmittedEdit(field, raw, timeZone);
     if (!coerced.ok) return { ok: false, message: coerced.message };
+    // Native textareas display LF and submit CRLF. That encoding change
+    // alone is not an edit: keep the held bytes, including optional blank
+    // text. Check required validation above and compare without trimming,
+    // so content/whitespace changes still reach the approval validator.
+    if (field.type === 'string' && typeof prefill === 'string' && raw !== undefined
+      && normalizeLineEndings(raw) === normalizeLineEndings(prefill)) {
+      continue;
+    }
     // ⚠ Compare against the prefill AS THE FIELD'S TYPE READS IT. For a
     // boolean, an ABSENT arg and `false` are the same fact — the projection
     // reads `=== true` and the page renders an unchecked box for both. A raw
     // `undefined` vs `false` comparison would record an override, an
     // `edited_keys` entry, and an audit diff line every time an owner
     // approved an untouched form. Same equivalence the read half states.
-    const prefill = readArgPath(item.args, field.key);
     const normalized = field.type === 'boolean' ? prefill === true : prefill;
     if (sameValue(coerced.value, normalized)) continue;
     edits[field.key] = coerced.value;
@@ -202,13 +220,14 @@ export interface AskLandingEditApprovalDeps {
   readonly findHoldItem: (hold_id: string) => Promise<InboxItem | null>;
   /** The approve funnel — `handleReceptionInboxApprove` pre-bound to the
    *  composed inbox deps. It re-derives the hold server-side, scan-gates,
-   *  validates against the allowlist, writes through the NARROW
-   *  `setArgOverrides`, audits old→new, and releases. This module supplies
+   *  validates and captures edits with the winning answer, then projects
+   *  its audit. The gateway applies that durable snapshot before resume. This module supplies
    *  authority + coercion and nothing else. */
   readonly approve: (input: {
     hold_id: string;
     edits: Record<string, unknown>;
     ask_id: string;
+    via: ChannelName;
   }) => Promise<{ released: boolean; reason?: string }>;
   readonly timeZone?: string;
 }
@@ -231,10 +250,11 @@ export const createAskLandingEditApproval = (
   ask: PendingAsk;
   option: string;
   rawEdits: Record<string, string>;
+  via?: ChannelName;
 }) => Promise<AskLandingEditApprovalResult>) => {
   const timeZone = deps.timeZone ?? resolveDefaultTimeZone();
 
-  return async ({ ask, option, rawEdits }): Promise<AskLandingEditApprovalResult> => {
+  return async ({ ask, option, rawEdits, via }): Promise<AskLandingEditApprovalResult> => {
     // Edits ride ONLY an approve. `deny` with edits is incoherent (there is
     // nothing to commit), and `allow_session` with edits is refused by the
     // funnel itself (D-177 N.14 — an edited approval is proof the pipe's
@@ -275,7 +295,8 @@ export const createAskLandingEditApproval = (
     const built = buildEditsFromSubmission(item, rawEdits, timeZone);
     if (!built.ok) return { ok: false, message: built.message };
 
-    const result = await deps.approve({ hold_id, edits: built.edits, ask_id: ask.ask_id });
+    const result = await deps.approve({ hold_id, edits: built.edits, ask_id: ask.ask_id,
+      via: resolveAskLandingVia(via) });
     if (!result.released) {
       return {
         ok: false,

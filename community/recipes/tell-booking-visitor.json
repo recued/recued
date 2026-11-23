@@ -1,0 +1,68 @@
+{
+  "recipe_id": "tell-booking-visitor",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 0,
+  "requires": [],
+  "metadata": {
+    "name": "Tell a booking's visitor about a change",
+    "description": "Use “Tell a booking's visitor about a change” in Recued. Emails the visitor who booked through your reception page about a change to their booking, such as a new time or a cancellation. Their address stays sealed in Recued, and it asks you before it sends.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["booking", "reception", "notify", "visitor"],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "booking_id": { "label": "Booking", "type": "string" },
+    "message": { "label": "What to tell the visitor", "type": "string" },
+    "subject": { "label": "Subject", "type": "string", "default": "About your booking" },
+    "sender_mail_instance": { "label": "Send from (mail account slug)", "type": "string", "default": "" }
+  },
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "ready",
+      "transform": "all",
+      "conditions": ["{{config.booking_id}} is_not_empty", "{{config.message}} is_not_empty"],
+      "fail_on": "{{step.ready}} equal false",
+      "fail_reason": "Name the booking and what to tell its visitor."
+    },
+    {
+      "id": "subject",
+      "transform": "default",
+      "value": "{{config.subject}}",
+      "fallback": "About your booking"
+    },
+    {
+      "id": "notify",
+      "op": "core.mail.notify-booking-visitor",
+      "args": {
+        "booking_id": "{{config.booking_id}}",
+        "sender_mail_instance": "{{config.sender_mail_instance}}",
+        "subject": "{{step.subject}}",
+        "body": "{{config.message}}"
+      }
+    },
+    {
+      "id": "told",
+      "transform": "default",
+      "value": "{{step.notify.notified}}",
+      "fallback": false
+    },
+    {
+      "id": "why_not",
+      "transform": "default",
+      "value": "{{step.notify.reason}}",
+      "fallback": ""
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Visitor told", "value": "{{step.told}}" },
+        { "label": "Not sent because", "value": "{{step.why_not}}" }
+      ]
+    }
+  ],
+  "output": { "render": [{ "type": "summary", "source": "step.card" }] }
+}

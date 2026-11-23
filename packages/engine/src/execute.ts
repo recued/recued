@@ -340,8 +340,10 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
     setNamespaceValue(ctx.stores.meta as Record<string, unknown>, 'recipe_id', recipe.recipe_id);
   }
 
-  // Populate config from recipe variables (defaults)
-  for (const [key, val] of Object.entries(recipe.variables)) {
+  // Populate config from recipe variables (defaults). D-201 Slice 10AW (10AS
+  // finding 30) — a recipe may leave them out, as the validator allows: every
+  // run of one threw "Cannot convert undefined or null to object" here.
+  for (const [key, val] of Object.entries(recipe.variables ?? {})) {
     if (!hasOwnSafe(ctx.stores.config as Record<string, unknown>, key)) {
       setNamespaceValue(ctx.stores.config as Record<string, unknown>, key, extractDefault(val));
     }
@@ -985,7 +987,7 @@ const resolveOutputRender = (
       ? resolveFilterDescriptor(
           section,
           sectionIndex,
-          requireRecipe(ctx).variables,
+          requireRecipe(ctx).variables ?? {},
           ctx.stores.config as Record<string, unknown>,
           restored,
           outputRecipeHash,
@@ -1055,7 +1057,7 @@ const resolveOutputRender = (
           ...resolveTableEditColumns(section.edit, record_columns),
           hidden: resolveTableEditHidden(
             section.edit,
-            requireRecipe(ctx).variables,
+            requireRecipe(ctx).variables ?? {},
             ctx.stores.config as Record<string, unknown>,
           ),
         }
@@ -1092,7 +1094,7 @@ const resolveOutputRender = (
             id_field: declared ?? '',
             hidden: resolveTableEditHidden(
               section.select,
-              requireRecipe(ctx).variables,
+              requireRecipe(ctx).variables ?? {},
               ctx.stores.config as Record<string, unknown>,
             ),
             ...(declared === null ? { unresolved: 'no_identity' as const } : {}),

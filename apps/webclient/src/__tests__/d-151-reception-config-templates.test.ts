@@ -365,7 +365,7 @@ describe('D-151 — mountTemplatesBrowser config templates', () => {
     expect(out).not.toContain('Scheduling links');
     expect(out).not.toContain('Contact pages');
     // A fully-empty gallery still shows the not-installed empty state.
-    expect(out).toContain('Foundation pack may not be installed');
+    expect(out).toContain('No Reception templates are available');
     mount.dispose();
   });
 

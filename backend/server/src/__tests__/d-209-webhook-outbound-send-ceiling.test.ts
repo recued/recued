@@ -171,19 +171,20 @@ describe('the outbound-send lift is user_self-scoped — what holds the other ac
     expect(OUTBOUND_SEND_INGREDIENT_SLUGS.has(SEND_SLUG)).toBe(true);
   });
 
-  it('CONTROL — the attended owner is asked (the lift fires)', async () => {
+  it('CONTROL — the owner in their chat is asked (the chat\'s ceiling holds a write, D-177 §N.15.6)', async () => {
     const recipe = buildRecipe('send-owner', SEND_SLUG);
+    const ownerChat = { channel: 'chat', actor: 'user_self', chat_session_id: 'chat-1', user_id: 'owner' } as ExecutionSource;
     const result = await handleExecute(
       makeExecuteDeps(recipe, [buildManifest(SEND_SLUG)]),
-      { recipe_id: recipe.recipe_id, config: {}, execution_source: ownerSource } as never,
+      { recipe_id: recipe.recipe_id, config: {}, execution_source: ownerChat } as never,
     );
     expect(result.success).toBe(false);
     expect(preflightFired(result.errors ?? [])).toBe(true);
   });
 
   it('⛔ THE DEFECT, AT THE POLICY LAYER — a snapshot carrying `admin` does NOT hold a send', async () => {
-    // THE FINDING. `admin` ceiling relaxes the `write`; the lift is
-    // `user_self`-only so nothing re-raises it. The door grants the tool, so
+    // THE FINDING. `admin` ceiling relaxes the `write`, and nothing re-raises it (the by-name
+    // send lift, `user_self`-only, is gone since D-177 §N.15.6). The door grants the tool, so
     // Layer-1 ACCESS admits too — which is what separates this from the
     // `tool_not_in_contract` fence asserted below.
     const recipe = buildRecipe('send-webhook', SEND_SLUG);

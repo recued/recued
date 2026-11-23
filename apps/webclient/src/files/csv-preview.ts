@@ -1,4 +1,6 @@
 import { csv_parse } from '@recued/transforms/object';
+import { mountSpreadsheetFinder, spreadsheetAddress } from './spreadsheet-finder.js';
+import { xlsxColumnName } from './xlsx-workbook.js';
 
 /** A table is built only from a complete parse within these browser budgets.
  * The original bytes and the separately bounded raw preview remain available. */
@@ -113,7 +115,9 @@ export const mountCsvPreview = (options: CsvPreviewOptions): void => {
     const row = doc.createElement('tr');
     const number = doc.createElement('th'); number.scope = 'col'; number.textContent = '#'; number.setAttribute('aria-label', 'Row number'); row.append(number);
     data.columns.forEach((name, index) => {
-      const cell = doc.createElement('th'); cell.scope = 'col'; cell.textContent = name.trim() ? name : `Column ${index + 1}`; row.append(cell);
+      const cell = doc.createElement('th'); cell.scope = 'col'; cell.textContent = name.trim() ? name : `Column ${index + 1}`;
+      const letter = doc.createElement('small'); letter.textContent = xlsxColumnName(index + 1);
+      letter.setAttribute('aria-hidden', 'true'); letter.className = 'csv-preview-column-letter'; cell.prepend(letter); row.append(cell);
     });
     head.append(row);
   }
@@ -125,7 +129,9 @@ export const mountCsvPreview = (options: CsvPreviewOptions): void => {
     data.rows.slice(start, end).forEach((values, index) => {
       const row = doc.createElement('tr');
       const number = doc.createElement('th'); number.scope = 'row'; number.textContent = String(start + index + 1); row.append(number);
-      for (const value of values) { const cell = doc.createElement('td'); cell.textContent = value; row.append(cell); }
+      for (const [column, value] of values.entries()) {
+        const cell = doc.createElement('td'); cell.textContent = value; cell.setAttribute('data-spreadsheet-cell', spreadsheetAddress(start + index + 1, column + 1)); row.append(cell);
+      }
       body.append(row);
     });
     range.textContent = !data.columns.length ? 'This CSV file is empty.'
@@ -135,25 +141,39 @@ export const mountCsvPreview = (options: CsvPreviewOptions): void => {
     previous.setAttribute('aria-disabled', String(page === 0));
     next.setAttribute('aria-disabled', String(end >= data.rows.length));
     grid.scrollTop = 0; grid.scrollLeft = left;
+    finder?.paint();
   };
   const showMode = (selected: 'table' | 'raw'): void => {
     if (!current() || selected === 'table' && data.kind !== 'table') return;
+    if (selected !== mode) finder?.manualNavigation();
     const returningToTable = mode === 'raw' && selected === 'table';
     if (mode === 'table' && selected === 'raw') tableScroll = { top: grid.scrollTop, left: grid.scrollLeft };
     mode = selected;
     tableButton.setAttribute('aria-pressed', String(mode === 'table'));
     rawButton.setAttribute('aria-pressed', String(mode === 'raw'));
     tablePanel.hidden = mode !== 'table'; pre.hidden = mode !== 'raw';
+    if (finder) finder.element.hidden = mode !== 'table';
     if (returningToTable) { grid.scrollTop = tableScroll.top; grid.scrollLeft = tableScroll.left; }
     options.status(mode === 'table' ? '' : [data.kind === 'raw' ? data.reason : '', raw.truncated
       ? 'Showing the first 100,000 characters. Download the file to read the rest.' : ''].filter(Boolean).join(' '));
   };
   tableButton.addEventListener('click', () => showMode('table'), { signal: options.signal });
   rawButton.addEventListener('click', () => showMode('raw'), { signal: options.signal });
-  previous.addEventListener('click', () => { if (current() && mode === 'table' && page > 0) { page--; drawPage(); } }, { signal: options.signal });
+  previous.addEventListener('click', () => { if (current() && mode === 'table' && page > 0) { finder?.manualNavigation(); page--; drawPage(); } }, { signal: options.signal });
   next.addEventListener('click', () => {
-    if (current() && mode === 'table' && data.kind === 'table' && (page + 1) * PAGE_ROWS < data.rows.length) { page++; drawPage(); }
+    if (current() && mode === 'table' && data.kind === 'table' && (page + 1) * PAGE_ROWS < data.rows.length) { finder?.manualNavigation(); page++; drawPage(); }
   }, { signal: options.signal });
+  const finder = data.kind === 'table' ? mountSpreadsheetFinder({ doc, root, table, grid, signal: options.signal, csv: true,
+    sheets: ['CSV data'], currentSheet: () => 0,
+    read: () => ({ rowCount: data.rows.length, columnCount: data.columns.length, cells: (function* () {
+      for (const [row, values] of data.rows.entries()) for (const [column, text] of values.entries()) yield { row: row + 1, column: column + 1, text };
+    })() }),
+    open: cell => { page = Math.floor((cell.row - 1) / PAGE_ROWS); drawPage(); },
+  }) : undefined;
+  if (finder) tablePanel.prepend(finder.element);
+  else {
+    const note = doc.createElement('p'); note.textContent = 'Find and Go to cell require a complete table preview.'; formats.after(note);
+  }
   drawPage(); showMode(mode);
 };
 
@@ -173,7 +193,9 @@ const CSV_PREVIEW_STYLES = `
 .csv-preview th, .csv-preview td { box-sizing:border-box; min-width:100px; max-width:320px; padding:9px 12px;
   border-bottom:1px solid var(--border,#d9dee5); vertical-align:top; white-space:pre-wrap; overflow-wrap:anywhere; }
 .csv-preview thead th { position:sticky; top:0; z-index:1; background:var(--surface-sunk,#f0f3f6); font-weight:600; }
-.csv-preview th:first-child { min-width:42px; width:42px; color:var(--fg-muted,#596170); font-variant-numeric:tabular-nums; }
+.csv-preview-column-letter { display:block; font-weight:400; color:var(--fg-muted,#596170); }
+.csv-preview th:first-child { position:sticky; left:0; min-width:42px; width:42px; background:var(--surface-sunk,#f0f3f6); color:var(--fg-muted,#596170); font-variant-numeric:tabular-nums; }
+.csv-preview thead th:first-child { z-index:2; }
 .csv-preview tbody th { font-weight:400; }
 .csv-preview tbody tr:last-child :is(th,td) { border-bottom:0; }
 .csv-preview > pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.5 ui-monospace,monospace; }

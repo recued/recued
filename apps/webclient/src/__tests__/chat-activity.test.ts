@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
+  TIER1_TOOL_NAMES,
   type ChatMessage,
   type ChatToolCall,
   type ChatToolCallRecord,
@@ -9,6 +10,9 @@ import {
 } from '@recued/contracts';
 
 import {
+  callLabel,
+  callName,
+  callWords,
   projectInFlightActivity,
   projectMessageActivity,
   projectSettledCallNotices,
@@ -56,9 +60,9 @@ describe('chat activity projections', () => {
       tool_name: 'mail.search', state: 'running', started_at: 1, updated_at: 2,
       progress: { kind: 'provider', current: 3, total: 10 } };
     const rows = projectInFlightActivity(turn, undefined, { 'call:call-b': record });
-    expect(rows.map(row => row.text)).toEqual(['running mail.search...', 'running mail.search... · Tool progress: 3 of 10']);
+    expect(rows.map(row => row.text)).toEqual(['searching your mail...', 'searching your mail... · Tool progress: 3 of 10']);
     const settled = projectInFlightActivity(turn, undefined, { 'call:call-b': { ...record, state: 'succeeded' } });
-    expect(settled.map(row => row.text)).toEqual(['running mail.search...', 'running mail.search...']);
+    expect(settled.map(row => row.text)).toEqual(['searching your mail...', 'searching your mail...']);
   });
   it('projects tool rows for started, ok, and error statuses', () => {
     // Case 1.
@@ -77,20 +81,20 @@ describe('chat activity projections', () => {
     );
 
     expect(rows).toEqual([
-      { kind: 'tool', text: 'running mail.search...', status: 'started' },
+      { kind: 'tool', text: 'searching your mail...', status: 'started' },
       {
         kind: 'tool',
-        text: 'used mail.search ' + checkMark,
+        text: 'searched your mail ' + checkMark,
         status: 'ok',
       },
       {
         kind: 'tool',
-        text: 'couldn\'t run mail.search: its connection is not available',
+        text: 'couldn\'t search your mail: its connection is not available',
         status: 'error',
       },
       {
         kind: 'tool',
-        text: 'couldn\'t run mail.search: it failed',
+        text: 'couldn\'t search your mail: it failed',
         status: 'error',
       },
     ]);
@@ -217,10 +221,10 @@ describe('chat activity projections', () => {
 
     expect(projectInFlightActivity(turn)).toEqual([
       { kind: 'note', text: 'checking recent memory' },
-      { kind: 'tool', text: 'running mail.search...', status: 'started' },
+      { kind: 'tool', text: 'searching your mail...', status: 'started' },
       {
         kind: 'tool',
-        text: 'couldn\'t run calendar.create: it failed',
+        text: 'couldn\'t add a calendar event: it failed',
         status: 'error',
       },
     ]);
@@ -237,7 +241,7 @@ describe('chat activity projections', () => {
     ).toEqual([
       {
         kind: 'tool',
-        text: 'used mail.search ' + checkMark,
+        text: 'searched your mail ' + checkMark,
         status: 'ok',
       },
     ]);
@@ -269,13 +273,13 @@ describe('chat activity projections', () => {
     ).toEqual([
       {
         kind: 'tool',
-        text: 'used mail.search ' + checkMark,
+        text: 'searched your mail ' + checkMark,
         status: 'ok',
         run_id: 'run_259',
       },
       {
         kind: 'tool',
-        text: 'used mail.search ' + checkMark,
+        text: 'searched your mail ' + checkMark,
         status: 'ok',
         run_id: 'run_260',
         dish_id: 'dsh_standing',
@@ -403,7 +407,7 @@ describe('chat activity transparency settings', () => {
     };
 
     expect(projectInFlightActivity(turn, disabled)).toEqual([
-      { kind: 'tool', text: 'running mail.search...', status: 'started' },
+      { kind: 'tool', text: 'searching your mail...', status: 'started' },
     ]);
   });
 });
@@ -448,5 +452,216 @@ describe('a call that stopped to wait reads as what it is now', () => {
     expect(projectSettledCallNotices(message, { 'run-1': neverWaited })).toEqual([]);
     expect(projectSettledCallNotices(message, undefined)).toEqual([]);
     expect(projectSettledCallNotices(chatMessage({ role: 'user' }), { 'run-1': record({ state: 'succeeded' }) })).toEqual([]);
+  });
+});
+
+describe('D-348 §7.8 — a change a standing permission let a chat write make, undone from its line', () => {
+  const receipt = { receipt_id: 'lmr_1', kind: 'local_calendar' as const, committed_at: 3 };
+  // A chat's own write has no run: its line finds its record by the call's own row.
+  const record = (overrides: Partial<ChatToolCallRecord> = {}): ChatToolCallRecord => ({
+    message_id: 'tool:rename', session_id: 'sess_1', turn_id: 't', tool_name: 'calendar.update',
+    state: 'succeeded', started_at: 1, updated_at: 3, local_receipt: receipt, ...overrides,
+  });
+  const message = chatMessage({ tool_calls: [toolCall({ tool_name: 'calendar.update', status: 'ok', call_id: 'tool:rename' })] });
+
+  it('the line carries the change\'s receipt, found by the call\'s own row', () => {
+    expect(projectMessageActivity(message, { 'call:tool:rename': record() })[0])
+      .toMatchObject({ text: `changed a calendar event ${checkMark}`, status: 'ok', local_receipt_id: 'lmr_1' });
+    // Kept under another key, it is still found by its row.
+    expect(projectMessageActivity(message, { other: record() })[0]).toMatchObject({ local_receipt_id: 'lmr_1' });
+  });
+
+  it('none until the change succeeded, none without a receipt, and none for another call', () => {
+    const cases: Array<Record<string, ChatToolCallRecord> | undefined> = [
+      { 'call:tool:rename': record({ state: 'running' }) },
+      { 'call:tool:rename': record({ local_receipt: undefined }) },
+      { 'call:tool:other': record({ message_id: 'tool:other' }) },
+      undefined,
+    ];
+    for (const records of cases) {
+      expect(projectMessageActivity(message, records)[0]).not.toHaveProperty('local_receipt_id');
+    }
+  });
+
+  it('the live row too, by its call', () => {
+    const turn = { turn_id: 't', transparency: [], tool_calls: [{ ...toolCall({ tool_name: 'calendar.update', status: 'ok' }), call_id: 'tool:rename' }] };
+    expect(projectInFlightActivity(turn as unknown as InFlightTurn, DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
+      { 'call:tool:rename': record() })[0]).toMatchObject({ local_receipt_id: 'lmr_1' });
+  });
+});
+
+describe('a call reads as what it did, in the words its card uses', () => {
+  const line = (call: Partial<ChatToolCall>) => projectMessageActivity(chatMessage({ tool_calls: [toolCall(call)] }))[0]!.text;
+
+  it('every chat tool has words for it: its title, in each tense a line needs', () => {
+    const missing = TIER1_TOOL_NAMES.filter((tool) => callWords({ tool_name: tool, args: {} }) === undefined);
+    expect(missing).toEqual([]);
+    expect(callWords({ tool_name: 'calendar.update', args: {} }))
+      .toEqual({ title: 'Change a calendar event', base: 'change a calendar event',
+        doing: 'changing a calendar event', done: 'changed a calendar event' });
+  });
+
+  it('done, under way, and refused, each in its own words', () => {
+    expect(line({ tool_name: 'mail.search', status: 'ok' })).toBe('searched your mail ' + checkMark);
+    expect(line({ tool_name: 'mail.read', status: 'started' })).toBe('reading an email...');
+    expect(line({ tool_name: 'calendar.create', status: 'error', reason: 'connection_unavailable' }))
+      .toBe("couldn't add a calendar event: its connection is not available");
+    expect(line({ tool_name: 'tools.search', status: 'ok' })).toBe('looked for the right tool ' + checkMark);
+  });
+
+  it('a work call says what it adds or changes, by its arguments', () => {
+    expect(line({ tool_name: 'work.create', args: { kind: 'task', title: 'Pay rent' }, status: 'ok' })).toBe('added a task ' + checkMark);
+    expect(line({ tool_name: 'work.update', args: { kind: 'task', done: true }, status: 'ok' })).toBe('ticked a task off ' + checkMark);
+    expect(line({ tool_name: 'contact.write', args: { target_id: 'contact_1' }, status: 'ok' })).toBe('changed a contact ' + checkMark);
+  });
+
+  it('an app\'s tool, or a recipe\'s an older server named no recipe for, keeps its name', () => {
+    expect(line({ tool_name: 'recued-core/control-device', tier: 2, status: 'ok' })).toBe('used recued-core/control-device ' + checkMark);
+    expect(line({ tool_name: 'notion__search', tier: 3, status: 'started' })).toBe('running notion__search...');
+    expect(callName({ tool_name: 'recued-core/control-device' })).toBe('recued-core/control-device');
+    expect(callName({ tool_name: 'work.create', args: { kind: 'note' } })).toBe('“Add a note”');
+  });
+
+  it('a waited call and its later news name it by its title too', () => {
+    const record: ChatToolCallRecord = { message_id: 'tool:1', session_id: 'sess_1', turn_id: 't', tool_name: 'calendar.update',
+      run_id: 'run-1', state: 'held', started_at: 1, updated_at: 2, held_at: 2 };
+    const message = chatMessage({ tool_calls: [toolCall({ tool_name: 'calendar.update', status: 'ok', run_id: 'run-1' })] });
+    expect(projectMessageActivity(message, { 'run-1': record })[0]!.text).toBe('waiting to hear back: change a calendar event');
+    expect(projectMessageActivity(message, { 'run-1': { ...record, state: 'failed', denied: true } })[0]!.text)
+      .toBe("didn't change a calendar event: you said no");
+    expect(projectSettledCallNotices(message, { 'run-1': { ...record, state: 'succeeded' } }))
+      .toEqual([{ run_id: 'run-1', text: 'Update: “Change a calendar event” has now finished.' }]);
+  });
+});
+
+describe('a call that ran an installed recipe reads by the recipe\'s name', () => {
+  // The owner, 2026-11-13: a recipe's line read its tool's name ("used recued-core/control-device ✓").
+  const recipe = (call: Partial<ChatToolCall> = {}): ChatToolCall =>
+    toolCall({ tool_name: 'recued-core/weekly-digest', tier: 2, args: {}, recipe_name: 'Weekly digest', ...call });
+  const line = (call: Partial<ChatToolCall>) => projectMessageActivity(chatMessage({ tool_calls: [recipe(call)] }))[0]!.text;
+
+  it('done, under way and refused, by its name', () => {
+    expect(line({ status: 'ok' })).toBe('ran “Weekly digest” ' + checkMark);
+    expect(line({ status: 'started' })).toBe('running “Weekly digest”...');
+    expect(line({ status: 'error', reason: 'execution_error' })).toBe("couldn't run “Weekly digest”: it failed");
+    expect(line({ status: 'error', reason: 'not_asked_yet' }))
+      .toBe('left until you answer the approval before it: run “Weekly digest”');
+    expect(callWords(recipe())).toEqual({ title: 'Weekly digest', base: 'run “Weekly digest”',
+      doing: 'running “Weekly digest”', done: 'ran “Weekly digest”' });
+  });
+
+  it('a recipe run by `recipe.run` too, where it read "ran a recipe"; an inline one keeps that', () => {
+    expect(line({ tool_name: 'recipe.run', tier: 1, args: { recipe_id: 'recued-core/weekly-digest' }, status: 'ok' }))
+      .toBe('ran “Weekly digest” ' + checkMark);
+    const { recipe_name: _none, ...inline } = recipe({ tool_name: 'recipe.run', tier: 1, args: { recipe: {} }, status: 'ok' });
+    expect(projectMessageActivity(chatMessage({ tool_calls: [inline] }))[0]!.text).toBe('ran a recipe ' + checkMark);
+  });
+
+  it('a name that is only spaces names nothing: the tool\'s name stays', () => {
+    expect(line({ recipe_name: '   ', status: 'ok' })).toBe('used recued-core/weekly-digest ' + checkMark);
+  });
+
+  it('a call that waited, and its later news, by its name', () => {
+    const record: ChatToolCallRecord = { message_id: 'tool:1', session_id: 'sess_1', turn_id: 't',
+      tool_name: 'recued-core/weekly-digest', run_id: 'run-1', state: 'held', started_at: 1, updated_at: 2, held_at: 2 };
+    const message = chatMessage({ tool_calls: [recipe({ status: 'ok', run_id: 'run-1' })] });
+    expect(projectMessageActivity(message, { 'run-1': record })[0]!.text).toBe('waiting to hear back: run “Weekly digest”');
+    expect(projectMessageActivity(message, { 'run-1': { ...record, state: 'failed', denied: true } })[0]!.text)
+      .toBe("didn't run “Weekly digest”: you said no");
+    expect(projectSettledCallNotices(message, { 'run-1': { ...record, state: 'succeeded' } }))
+      .toEqual([{ run_id: 'run-1', text: 'Update: “Weekly digest” has now finished.' }]);
+    expect(callName(recipe())).toBe('“Weekly digest”');
+  });
+
+  it('the live row, from the call\'s start', () => {
+    const turn: InFlightTurn = { turn_id: 't', assistant_content: '', transparency: [], tool_calls: [{
+      tool_name: 'recued-core/weekly-digest', tier: 2, args: {}, status: 'started', recipe_name: 'Weekly digest' }] };
+    expect(projectInFlightActivity(turn)[0]).toMatchObject({ kind: 'tool', text: 'running “Weekly digest”...' });
+  });
+
+  it('a schedule or a stop by what it does to the recipe, where it read "scheduled a recipe"', () => {
+    const scheduled = { tool_name: 'recipe.schedule', tier: 1 as const, args: { recipe_id: 'recued-core/weekly-digest' } };
+    const stopped = { tool_name: 'recipe.stop', tier: 1 as const, args: { recipe_id: 'recued-core/weekly-digest' } };
+    expect(line({ ...scheduled, status: 'ok' })).toBe('scheduled “Weekly digest” ' + checkMark);
+    expect(line({ ...scheduled, status: 'started' })).toBe('scheduling “Weekly digest”...');
+    expect(line({ ...scheduled, status: 'error', reason: 'execution_error' })).toBe("couldn't schedule “Weekly digest”: it failed");
+    expect(line({ ...stopped, status: 'ok' })).toBe('stopped “Weekly digest” ' + checkMark);
+    expect(line({ ...stopped, status: 'started' })).toBe('stopping “Weekly digest”...');
+    // In a sentence of its own it is the call that is named, not the recipe: the recipe did not finish.
+    expect(callName(recipe(scheduled))).toBe('“Schedule ‘Weekly digest’”');
+    expect(callName(recipe(stopped))).toBe('“Stop ‘Weekly digest’”');
+    const record: ChatToolCallRecord = { message_id: 'tool:1', session_id: 'sess_1', turn_id: 't',
+      tool_name: 'recipe.schedule', run_id: 'run-1', state: 'held', started_at: 1, updated_at: 2, held_at: 2 };
+    const message = chatMessage({ tool_calls: [recipe({ ...scheduled, status: 'ok', run_id: 'run-1' })] });
+    expect(projectMessageActivity(message, { 'run-1': record })[0]!.text).toBe('waiting to hear back: schedule “Weekly digest”');
+    expect(projectMessageActivity(message, { 'run-1': { ...record, state: 'failed', denied: true } })[0]!.text)
+      .toBe("didn't schedule “Weekly digest”: you said no");
+    expect(projectSettledCallNotices(message, { 'run-1': { ...record, state: 'succeeded' } }))
+      .toEqual([{ run_id: 'run-1', text: 'Update: “Schedule ‘Weekly digest’” has now finished.' }]);
+    // With no name (a stop by run, an older server) each keeps its title.
+    const { recipe_name: _none, ...unnamed } = recipe({ ...stopped, args: { run_id: 'run_1' }, status: 'ok' });
+    expect(projectMessageActivity(chatMessage({ tool_calls: [unnamed] }))[0]!.text).toBe('stopped a recipe ' + checkMark);
+  });
+});
+
+describe('a call that stopped for the owner\'s yes reads as its card does', () => {
+  // Live, 2026-11-13: it read "couldn't change a calendar event: it is waiting for your yes", and
+  // still did under its card once the card said the change was done.
+  const held = (call: Partial<ChatToolCall> = {}): ChatToolCall => toolCall({ tool_name: 'calendar.update', tier: 1,
+    args: { source_id: 'e1', summary: 'Team meeting' }, status: 'error', reason: 'awaiting_approval',
+    detail: 'plan_id=plan_1. Sent to the owner to approve.', awaiting_plan_id: 'plan_1', ...call });
+  type Card = NonNullable<Parameters<typeof projectMessageActivity>[2]>[number];
+  const line = (card?: Partial<Card>, call: ChatToolCall = held()) => projectMessageActivity(chatMessage({ tool_calls: [call] }),
+    undefined, card === undefined ? [] : [{ plan_id: 'plan_1', status: 'proposed', ...card }])[0]!;
+
+  it('waits while its card does, as no failure', () => {
+    expect(line()).toMatchObject({ text: 'waiting for your yes: change a calendar event', status: 'started' });
+    expect(line({})).toMatchObject({ text: 'waiting for your yes: change a calendar event', status: 'started' });
+  });
+
+  it('follows the card once it is answered', () => {
+    expect(line({ status: 'approved' }).text).toBe('changing a calendar event...');
+    expect(line({ status: 'approved', execution: { status: 'running', turn_id: 't' } }).text).toBe('changing a calendar event...');
+    expect(line({ status: 'approved', execution: { status: 'completed', turn_id: 't', result_ref: 'r' } }))
+      .toMatchObject({ text: 'changed a calendar event ' + checkMark, status: 'ok' });
+    expect(line({ status: 'approved', execution: { status: 'held', turn_id: 't', result_ref: 'r', hold_kind: 'approval' } }))
+      .toMatchObject({ text: 'waiting to hear back: change a calendar event', status: 'started' });
+    expect(line({ status: 'approved', execution: { status: 'failed', turn_id: 't', reason: 'execution_error' } }))
+      .toMatchObject({ text: "couldn't change a calendar event: it failed", status: 'error' });
+    expect(line({ status: 'approved', execution: { status: 'failed', turn_id: 't', reason: 'run_cancelled' } }).text)
+      .toBe("didn't change a calendar event: it was stopped");
+    expect(line({ status: 'approved', execution: { status: 'unknown', turn_id: 't' } }).text)
+      .toBe('stopped part-way: change a calendar event. Recued does not know what happened');
+    expect(line({ status: 'cancelled' })).toMatchObject({ text: "didn't change a calendar event: you cancelled it", status: 'error' });
+    expect(line({ status: 'cancelled', lapsed: true }).text).toBe("didn't change a calendar event: no one answered in time");
+  });
+
+  it('a call an older server kept finds its card by the plan its detail names', () => {
+    const { awaiting_plan_id: _none, ...older } = held();
+    expect(line({ status: 'approved', execution: { status: 'completed', turn_id: 't', result_ref: 'r' } }, older).text)
+      .toBe('changed a calendar event ' + checkMark);
+  });
+
+  it('follows no other card, and no call that did not wait', () => {
+    expect(projectMessageActivity(chatMessage({ tool_calls: [held()] }), undefined,
+      [{ plan_id: 'plan_2', status: 'cancelled' }])[0]!.text).toBe('waiting for your yes: change a calendar event');
+    const { awaiting_plan_id: _none, ...failed } = held({ reason: 'execution_error' });
+    expect(line({ status: 'approved', execution: { status: 'completed', turn_id: 't', result_ref: 'r' } }, failed))
+      .toMatchObject({ status: 'error' });
+  });
+});
+
+describe('a call as a list names it, on a line of its own', () => {
+  it('by what it does, in the chat\'s own words; a recipe by its name; else its tool\'s name', () => {
+    expect(callLabel({ tool_name: 'calendar.update' })).toBe('Change a calendar event');
+    expect(callLabel({ tool_name: 'work.update' })).toBe('Change a task, note or more');
+    expect(callLabel({ tool_name: 'work.create', args: { kind: 'task' } })).toBe('Add a task');
+    expect(callLabel({ tool_name: 'recipe.run' })).toBe('Run a recipe');
+    expect(callLabel({ tool_name: 'recued-core/weekly-digest', recipe_name: 'Weekly digest' })).toBe('Run “Weekly digest”');
+    expect(callLabel({ tool_name: 'recipe.run', recipe_name: 'Weekly digest' })).toBe('Run “Weekly digest”');
+    expect(callLabel({ tool_name: 'recipe.schedule', recipe_name: 'Weekly digest' })).toBe('Schedule “Weekly digest”');
+    expect(callLabel({ tool_name: 'recipe.stop', recipe_name: 'Weekly digest' })).toBe('Stop “Weekly digest”');
+    expect(callLabel({ tool_name: 'recued-core/weekly-digest' })).toBe('recued-core/weekly-digest');
+    expect(callLabel({ tool_name: 'recued_op_hubspot_deal_search' })).toBe('recued_op_hubspot_deal_search');
   });
 });

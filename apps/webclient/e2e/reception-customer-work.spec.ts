@@ -168,3 +168,36 @@ test('reveals follow-up load failures instead of hiding them in a collapsed grou
 test('reveals sign-off requests after a handoff from a scrolled workspace',async({page})=>{
  await page.setViewportSize({width:390,height:844});await go(page,'#reception/jobs/job-1/activity');await page.locator('[data-job-timeline]:visible h3').waitFor();await pane(page).evaluate(n=>{n.scrollTop+=2000;});await page.evaluate(()=>{location.hash='#reception/signoffs';});await expect(page.locator('[data-recued-quote-signoffs]>h2')).toBeFocused();const first=page.locator('[data-signoff-history] article').first();expect((await first.boundingBox())!.y).toBeGreaterThanOrEqual(0);expect((await first.boundingBox())!.y).toBeLessThan(700);
 });
+
+for (const action of ['archive', 'restore'] as const) {
+    test(`keeps a pending job ${action} owned by its server after leaving Customer work`, async ({ page }) => {
+        const method = `reception.jobs.${action}`;
+        await page.goto(`${BASE}?jobs=6&server_profiles=multiple&closeout=${action === 'archive' ? 'ready' : 'archived'}#reception/jobs/job-1/closeout`);
+        const closeout = page.locator('[data-job-closeout]:visible');
+        const submit = closeout.getByRole('button', { name: action === 'archive' ? 'Archive job' : 'Restore job', exact: true });
+        if (action === 'archive') await closeout.getByRole('checkbox').check();
+        await expect(submit).toBeEnabled();
+        await page.evaluate(method => { (window as any).__customerUxHold = method; }, method);
+        await submit.click();
+        await expect.poll(async () => (await calls(page)).filter(c => c.method === method).length).toBe(1);
+        const request = (await calls(page)).find(c => c.method === method)!;
+        expect(request.args).toEqual({ job_id: 'job-1', expected_revision: 0, ...(action === 'archive' ? { expected_snapshot_hash: 'a'.repeat(64), confirmed: true } : {}) });
+        page.once('dialog', dialog => dialog.accept());
+        await page.getByRole('link', { name: 'Records', exact: true }).click();
+        await expect(page.locator('[data-customer-work]')).toHaveCount(0);
+        await page.locator('[data-recued-account-menu-trigger]').click();
+        const account = page.locator('[data-recued-account-menu-popover]');
+        const office = account.locator('[data-recued-server-switcher-item]').filter({ hasText: 'Office server' });
+        await office.click();
+        const review = account.locator('[data-recued-server-switcher-switch-confirm]');
+        await expect(review).toContainText('Work is still finishing on');
+        await expect(review.locator('[data-recued-server-switcher-switch-commit]')).toHaveText('Switch, and check later');
+        await page.evaluate(() => (window as any).__customerUxRelease?.());
+        await review.locator('[data-recued-server-switcher-switch-cancel]').click();
+        await office.click();
+        await expect(review.locator('[data-recued-server-switcher-switch-commit]')).toHaveText('Switch server');
+        expect((await calls(page)).filter(c => c.method === method)).toHaveLength(1);
+        await review.locator('[data-recued-server-switcher-switch-cancel]').click();
+        await expect(office).toBeFocused();
+    });
+}

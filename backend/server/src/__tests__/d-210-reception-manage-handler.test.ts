@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SchedulingLinkConfig } from '@recued/contracts';
+import type { AvailabilityRawCalendarEvent, SchedulingLinkConfig } from '@recued/contracts';
 
 import { createReceptionManageCredentialStore } from '../storage/reception-manage-credential-store.js';
 // D-210 A.8 slice 4b-ii — the reservation is a `reception_form_submission` row
@@ -174,7 +174,13 @@ const buildEnv = (opts: {
   const formNonce = createInMemorySchedulingFormNonceStore();
   const runCalls: RunInput[] = [];
   const accessLogs: Array<Record<string, unknown>> = [];
-  const now = opts.now ?? NOW;
+  let now = opts.now ?? NOW;
+  let events: ReadonlyArray<AvailabilityRawCalendarEvent> = [];
+  const calendarReader = { list: () => events };
+  const runReschedule = vi.fn(async (input: RunInput) => {
+    runCalls.push(input);
+    return opts.runOutcome ?? { kind: 'held' as const };
+  });
   const consumePreVerify = vi.fn(() =>
     opts.rateLimited
       ? { ok: false as const, bucket_kind: 'per_ip_global' as const, retry_after_at: opts.rateLimited.retry_after_at }
@@ -187,23 +193,35 @@ const buildEnv = (opts: {
     getPepper: () => deriveReceptionPepper(Buffer.alloc(32, 5)),
     ...(opts.ipBlocked ? { getIpBlockStore: () => ({ isBlocked: () => true } as never) } : {}),
     getIntakeFormSubmissionStore: () => ({ findById: () => booking() } as never),
-    getSchedulingCalendarReader: () => ({ list: () => [] }),
+    getSchedulingCalendarReader: () => calendarReader,
     getSchedulingFormNonceStore: () => formNonce,
     getReceptionManageCredentialStore: () => credStore,
     getReceptionManageRescheduleRunner: () => ({
-      run: async (input: RunInput) => {
-        runCalls.push(input);
-        return opts.runOutcome ?? { kind: 'held' as const };
-      },
+      run: runReschedule,
     }),
     receptionManageCalendarSlug: 'local',
     now: () => now,
   });
-  return { db, credStore, formNonce, runCalls, accessLogs, consumePreVerify, handler, now };
+  return { db, credStore, formNonce, runCalls, runReschedule, calendarReader, accessLogs, consumePreVerify, handler,
+    get now() { return now; }, setNow: (value: number) => { now = value; },
+    setEvents: (value: ReadonlyArray<AvailabilityRawCalendarEvent>) => { events = value; } };
 };
 
 const NONCE_RE = /name="form_nonce" value="([^"]+)"/;
 const SLOT_RE = /<option value="([^"]+)">/;
+
+const getManageForm = async (env: ReturnType<typeof buildEnv>, secret: string) => {
+  const response = fakeResponse();
+  await env.handler(fakeRequest({ method: 'GET', url: `${RECEPTION_MANAGE_PATH}/${secret}` }), response.response);
+  return response;
+};
+const postManageForm = async (env: ReturnType<typeof buildEnv>, secret: string, nonce: string, slot: string) => {
+  const response = fakeResponse();
+  await env.handler(fakeRequest({ method: 'POST', url: `${RECEPTION_MANAGE_PATH}/${secret}`,
+    body: new URLSearchParams({ form_nonce: nonce, slot }).toString(), origin: ORIGIN,
+    contentType: 'application/x-www-form-urlencoded' }), response.response);
+  return response;
+};
 
 describe('D-210 Appendix B — /reception/manage dispatch', () => {
   let env: ReturnType<typeof buildEnv>;
@@ -279,6 +297,126 @@ describe('D-210 Appendix B — /reception/manage dispatch', () => {
       new_end_at: end,
     });
     expect(env.accessLogs.at(-1)).toMatchObject({ action_taken: 'submit', outcome: 'ok' });
+  });
+
+  it('refreshes a stale choice without spending the link, then admits the replacement once with a credential-bound nonce', async () => {
+    env = buildEnv();
+    env.setEvents([booking().slot!]);
+    const secret = issue(), otherSecret = issue();
+    const initial = await getManageForm(env, secret);
+    const nonce = initial.body.match(NONCE_RE)![1]!, slot = initial.body.match(SLOT_RE)![1]!;
+    const [start_at, end_at] = slot.split('|').map(Number);
+    env.setEvents([booking().slot!, { start_at: start_at!, end_at: end_at! }]);
+
+    const stale = await postManageForm(env, secret, nonce, slot);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body).toContain('Availability has been refreshed');
+    expect(stale.body).not.toContain(`<option value="${slot}">`);
+    expect(stale.body).toContain(`action="${RECEPTION_MANAGE_PATH}/${secret}"`);
+    expect(env.credStore.peek(secret, NOW, 'manage').status).toBe('ok');
+    expect(env.runCalls).toHaveLength(0);
+    expect(env.accessLogs.at(-1)).toMatchObject({ action_taken: 'submit', outcome: 'rejected' });
+    const freshNonce = stale.body.match(NONCE_RE)![1]!, freshSlot = stale.body.match(SLOT_RE)![1]!;
+    expect(freshNonce).not.toBe(nonce);
+    expect(freshSlot).not.toBe(slot);
+
+    // The rejected request's nonce stays spent; the replacement is scoped to
+    // this exact link and is not consumed by an attempt against another link.
+    expect((await postManageForm(env, secret, nonce, freshSlot)).statusCode).toBe(403);
+    expect((await postManageForm(env, otherSecret, freshNonce, freshSlot)).statusCode).toBe(403);
+    expect(env.credStore.peek(otherSecret, NOW, 'manage').status).toBe('ok');
+    const accepted = await postManageForm(env, secret, freshNonce, freshSlot);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.body).toContain('sent for approval');
+    expect(env.runCalls).toHaveLength(1);
+    const [freshStart, freshEnd] = freshSlot.split('|').map(Number);
+    expect(env.runCalls[0]).toMatchObject({ booking_id: MINTED_BOOKING_ID, new_start_at: freshStart, new_end_at: freshEnd });
+    expect((await getManageForm(env, secret)).statusCode).toBe(404);
+    expect(JSON.stringify(env.accessLogs)).not.toContain(secret);
+  });
+
+  it('keeps the link usable when no replacement slots remain and offers a non-consuming availability refresh', async () => {
+    env = buildEnv();
+    const secret = issue(), initial = await getManageForm(env, secret);
+    const nonce = initial.body.match(NONCE_RE)![1]!, slot = initial.body.match(SLOT_RE)![1]!;
+    env.setEvents([{ start_at: NOW, end_at: NOW + 32 * 24 * HOUR }]);
+    const stale = await postManageForm(env, secret, nonce, slot);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.body).toContain('No available slots');
+    expect(stale.body).toContain('Check availability again');
+    expect(stale.body).toContain(`href="${RECEPTION_MANAGE_PATH}/${secret}"`);
+    expect(stale.body).not.toContain('type="submit"');
+    expect(stale.body).not.toMatch(SLOT_RE);
+    expect(stale.body.match(NONCE_RE)![1]).not.toBe(nonce);
+    expect(env.credStore.peek(secret, NOW, 'manage').status).toBe('ok');
+    env.setEvents([]);
+    const refreshed = await getManageForm(env, secret);
+    expect(refreshed.statusCode).toBe(200);
+    expect(refreshed.body).toMatch(SLOT_RE);
+    expect(env.runCalls).toHaveLength(0);
+    expect(env.credStore.peek(secret, NOW, 'manage').status).toBe('ok');
+  });
+
+  it('checks expiry again when admitting a valid slot after reading availability', async () => {
+    env = buildEnv();
+    const secret = issue(), initial = await getManageForm(env, secret);
+    vi.spyOn(env.calendarReader, 'list').mockImplementationOnce(() => {
+      env.setNow(NOW + 2 * 24 * HOUR);
+      return [];
+    });
+    const post = await postManageForm(env, secret, initial.body.match(NONCE_RE)![1]!, initial.body.match(SLOT_RE)![1]!);
+    expect(post.statusCode).toBe(410);
+    expect(env.runCalls).toHaveLength(0);
+    expect(env.accessLogs.at(-1)).toMatchObject({ action_taken: 'expired', outcome: 'expired' });
+  });
+
+  it('does not offer a recovery form if another request consumes the link during availability lookup', async () => {
+    env = buildEnv();
+    const secret = issue(), initial = await getManageForm(env, secret);
+    vi.spyOn(env.calendarReader, 'list').mockImplementationOnce(() => {
+      env.credStore.consume(secret, NOW, 'manage');
+      return [];
+    });
+    const post = await postManageForm(env, secret, initial.body.match(NONCE_RE)![1]!, 'not-a-slot');
+    expect(post.statusCode).toBe(410);
+    expect(post.body).not.toMatch(NONCE_RE);
+    expect(env.runCalls).toHaveLength(0);
+  });
+
+  it('admits only one replacement request while its approval runner is still in flight', async () => {
+    env = buildEnv();
+    const secret = issue(), initial = await getManageForm(env, secret);
+    const stale = await postManageForm(env, secret, initial.body.match(NONCE_RE)![1]!, 'not-a-slot');
+    const nonceA = stale.body.match(NONCE_RE)![1]!, slot = stale.body.match(SLOT_RE)![1]!;
+    const anotherForm = await getManageForm(env, secret), nonceB = anotherForm.body.match(NONCE_RE)![1]!;
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    env.runReschedule.mockImplementationOnce(async input => {
+      env.runCalls.push(input);
+      await held;
+      return { kind: 'held' as const };
+    });
+    const first = postManageForm(env, secret, nonceA, slot);
+    try {
+      await vi.waitFor(() => expect(env.runReschedule).toHaveBeenCalledTimes(1));
+      const second = await postManageForm(env, secret, nonceB, slot);
+      expect(second.statusCode).toBe(410);
+      expect(env.runCalls).toHaveLength(1);
+    } finally { release(); await first; }
+    expect((await first).statusCode).toBe(200);
+  });
+
+  it.each(['failed', 'no_door'] as const)('keeps an admitted link spent after the runner returns %s', async kind => {
+    env = buildEnv({ runOutcome: { kind } });
+    const secret = issue(), initial = await getManageForm(env, secret);
+    const stale = await postManageForm(env, secret, initial.body.match(NONCE_RE)![1]!, 'not-a-slot');
+    const nonce = stale.body.match(NONCE_RE)![1]!, slot = stale.body.match(SLOT_RE)![1]!;
+    const failed = await postManageForm(env, secret, nonce, slot);
+    expect(failed.statusCode).toBe(500);
+    expect(failed.body).toContain('request a new one');
+    expect(env.credStore.peek(secret, NOW, 'manage').status).toBe('already_consumed');
+    expect((await postManageForm(env, secret, nonce, slot)).statusCode).toBe(410);
+    expect(env.runCalls).toHaveLength(1);
   });
 
   it('binds each form nonce to the credential that rendered it', async () => {

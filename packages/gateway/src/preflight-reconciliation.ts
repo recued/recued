@@ -67,6 +67,13 @@ import {
   readTriggerPreapprovalOffer,
   TRIGGER_PREAPPROVAL_OPTION_ID,
   triggerPreapprovalOfferOption,
+  describeKindGrantOffer,
+  describeKindGrantOfferPlainly,
+  KIND_GRANT_OPTION_ID,
+  kindGrantOption,
+  readKindGrantOffer,
+  mergeValueLabels,
+  reviewedEachTime,
   isOperationSpecHash,
   kernelWriteStaysInRecued,
   browserActNamesTabs,
@@ -75,12 +82,17 @@ import {
   renderBatchItemsBlock,
   tier1CallDetails,
   tier1CallTitle,
+  grantSwitchText,
+  tier1CallsTitle,
+  tier1KindsPhrase,
+  isTier1RecordLabel,
   tier1WriteStaysInRecued,
   getMessengerVendorDeclaration,
   MAIL_CHAT_DOOR_VENDOR,
   WRITE_STAYS_IN_RECUED_CLAUSE,
 } from '@recued/contracts';
 import type {
+  ApprovalValueLabels,
   BatchedApprovalItem,
   Checkpoint,
   OriginUnit,
@@ -90,6 +102,7 @@ import type {
   BrowserPassOffer,
   OperationApproval,
   PreflightForeachCover,
+  PreflightApprovedTarget,
   PreflightOverrideOffer,
   RiskTier,
 } from '@recued/contracts';
@@ -113,6 +126,11 @@ import type { CheckpointStore } from '@recued/storage';
  *  function registered under it, so the handler survives the restart
  *  between an outstanding ask and its answer (I-5; D-158 N.3). */
 export const PREFLIGHT_HANDLER_KIND: AskHandlerKind = 'gateway.preflight';
+
+/** D-177 §N.15.9 — the `AskHandlerKind` of a round's gathered approval: one ask for the held calls
+ *  of one op an owner's chat round made. Its payload lists each member's own `gateway.preflight`
+ *  payload; its answer is given to each in turn (`createGatheredPreflightAnswerHandler`). */
+export const PREFLIGHT_GATHERED_HANDLER_KIND: AskHandlerKind = 'gateway.preflight.gathered';
 
 /** The two answers a preflight ask always offers (A.2):
  *   - `approve` — admit the gated call; the run re-instantiates from
@@ -175,6 +193,9 @@ export const PREFLIGHT_ASK_OPTIONS_WITH_SESSION: readonly AskOption[] = [
  *  alongside the `(kind, ask_id)` so a boot-time re-dispatch carries it
  *  back to the handler verbatim. */
 export interface PreflightAskContext {
+  /** D-402 slice F3 — the owner's answer to the question before a run (`Checkpoint.run_question`):
+   *  the resumer starts that run afresh with it, never as a resume of its first step. */
+  run_question_answer?: import('@recued/contracts').RunQuestionAnswer;
   /** The recipe whose run paused. OPTIONAL since D-182 §8 — a recipe-LESS
    *  raw-op door hold (`raw_op` set) has no recipe; the resumer reads the
    *  held op identity off `Checkpoint.raw_op`, never off this context. */
@@ -297,6 +318,14 @@ export interface PreflightAskContext {
     items: ReadonlyArray<BatchedApprovalItem>;
     unit: OriginUnit;
   };
+  /** D-177 §N.15.9 — a round's gathered holds of one op, asked once (Q7): every held call the
+   *  approval covers, listed as a batch's are, and each one's own answer payload, which the
+   *  answer is given to in turn. Raise-time only, as `batch` is; ignored beside it. The ask keeps
+   *  "Allow in this chat" (the members share the op) and drops the answers of one call. */
+  gathered?: {
+    items: ReadonlyArray<Pick<BatchedApprovalItem, 'summary' | 'args_preview'>>;
+    members: ReadonlyArray<Record<string, unknown>>;
+  };
   /** A held `foreach` step: every call this ONE approval covers. The engine
    *  approves the step's remaining same-target items together, so an ask that
    *  showed only the item it paused on under-stated what "Approve" does —
@@ -319,12 +348,28 @@ export interface PreflightAskContext {
    *  answer. ⚠ Not `browser_pass`: a re-raise spreads the checkpoint's context, offer and
    *  all, into this one. */
   browser_pass_kind?: BrowserPassAnswerKind;
+  /** Saved asks supporting durable browser-pass decisions. Legacy choices still
+   * approve their action without creating a pass. */
+  browser_pass_decision_version?: 1;
   /** D-341 slice B2 — answer-time resume context ONLY: the owner chose "Always allow for this
    *  webhook / schedule / trigger". The resumer grants the offer the checkpoint carries
    *  (`preflight_context.trigger_preapproval`), never one read again, then resumes. Absent on
    *  every other answer. ⚠ Not `trigger_preapproval`: a re-raise spreads the checkpoint's
    *  context, offer and all, into this one. */
   trigger_preapproval_answer?: true;
+  /** Present only for a saved ask supporting durable trigger-grant identity.
+   * Legacy answers still approve their action without minting standing trust. */
+  trigger_preapproval_decision_version?: 1;
+  /** D-177 N.15 — answer-time resume context ONLY: the owner chose "Allow in this
+   *  chat". The resumer grants the offer the checkpoint carries (`preflight_context.kind_grant`),
+   *  then resumes. Absent on every other answer. */
+  kind_grant_answer?: true;
+  /** Present only for saved asks whose kind-grant decisions bind an exact
+   * checkpoint. Legacy answers retain their one-time action approval. */
+  kind_grant_decision_version?: 1;
+  /** Saved recipe session-grant choices supporting exact checkpoint identity.
+   * Legacy recipe choices retain their one-time action approval. */
+  session_grant_decision_version?: 1;
 }
 
 /** The narrow notification-block seam this leaf calls — the subset of
@@ -452,7 +497,7 @@ const isArgsRecord = (v: unknown): v is Record<string, unknown> =>
  *  records on the checkpoint when it holds a step. */
 const coveredCallArgs = (
   checkpoint: Checkpoint,
-  batch: PreflightAskContext['batch'],
+  batch: { readonly items: ReadonlyArray<Pick<BatchedApprovalItem, 'args_preview'>> } | undefined,
   cover: PreflightForeachCover | undefined,
 ): ReadonlyArray<Record<string, unknown>> => {
   const listed = batch?.items ?? cover?.items;
@@ -612,9 +657,24 @@ const heldBrowserSteps = (target: unknown, args: Record<string, unknown> | undef
       continue;
     }
     // Slice X — the steps on the page as a whole.
+    if (step.do === 'data') {
+      lines.push(`${n} Processes retained browser data on the server, without changing the page.`);
+      continue;
+    }
+    if (step.do === 'table') {
+      lines.push(`${n} Reads the table ${quoted(step.ref ?? step.selector ?? '')}.`);
+      continue;
+    }
     if (step.do === 'read') {
       lines.push(`${n} Reads the page${step.find !== undefined ? `, the part about ${quoted(step.find)}`
         : step.form === 'text' ? ' as text' : ''}.`);
+      continue;
+    }
+    if (step.do === 'collect') {
+      acts ||= step.max_pages > 1;
+      lines.push(`${n} Collects ${Object.keys(step.fields).map(quoted).join(', ')} from up to ${step.max_pages} pages and `
+        + `${step.max_items} items, for at most ${step.max_seconds} seconds. `
+        + (step.next === undefined ? 'Reads this page only.' : `Follows same-site links matching ${quoted('text' in step.next ? step.next.text : step.next.selector)}.`));
       continue;
     }
     // Slice AD — a question about the page, which a separate AI answers from its text.
@@ -715,11 +775,12 @@ const tier1Proposer = (source: unknown): string => {
   const s = source as { channel?: unknown; actor?: unknown; vendor?: unknown; prompt_schedule?: unknown } | null | undefined;
   if (s?.channel === 'schedule' && s.actor === 'system' && s.prompt_schedule !== undefined) return 'Your scheduled prompt';
   if (s?.actor !== 'user_self') return 'An AI agent';
-  if (s.channel === 'chat') return 'Your chat';
+  // D-343 (the owner's day audit, 2026-11-15) — the AI in the chat proposes it, not the chat.
+  if (s.channel === 'chat') return 'The AI in your chat';
   if (s.channel !== 'messenger' || typeof s.vendor !== 'string') return 'An AI agent';
-  if (s.vendor === MAIL_CHAT_DOOR_VENDOR) return 'Your email chat';
+  if (s.vendor === MAIL_CHAT_DOOR_VENDOR) return 'The AI in your email chat';
   const name = getMessengerVendorDeclaration(s.vendor)?.display_name;
-  return name !== undefined ? `Your ${oneLine(name)} chat` : 'Your chat';
+  return name !== undefined ? `The AI in your ${oneLine(name)} chat` : 'The AI in your chat';
 };
 
 /** D-329 — a held Tier-1 tool call (`Checkpoint.raw_op.tier1_tool`): its tool, its switch
@@ -741,6 +802,34 @@ const tier1HoldOf = (checkpoint: Checkpoint, riskTier: string | undefined) => {
   };
 };
 const lowerFirst = (text: string): string => text.charAt(0).toLowerCase() + text.slice(1);
+
+/** D-343 (the owner, 2026-11-14: "the approval message can be more human friendly") — why a held AI
+ *  tool call waits, in a message's plain words. The card's own line stays the tier's clause. */
+const PLAIN_CLAUSES = new Map<string, readonly [string, string]>([
+  [LOCAL_WRITE_CLAUSE, ['This changes your data in Recued', 'These change your data in Recued']],
+  [TIER_CLAUSE.write, ['This changes data outside Recued', 'These change data outside Recued']],
+  [TIER_CLAUSE.admin, ['This changes account settings or access', 'These change account settings or access']],
+  [TIER_CLAUSE.destructive, ['This permanently removes data and cannot be undone', 'These permanently remove data and cannot be undone']],
+  [TIER_CLAUSE.read, ['Your policy asks before this read', 'Your policy asks before these reads']],
+]);
+const plainHeldLine = (clause: string | undefined, many: boolean): string => {
+  const words = clause !== undefined ? PLAIN_CLAUSES.get(clause) : undefined;
+  return `${words !== undefined ? words[many ? 1 : 0] : 'Recued asks you first'}, so ${many ? 'they wait' : 'it waits'} for your yes.`;
+};
+/** One held call's details as a message lists them: the record by its name alone ("Call the
+ *  plumber", not "Task: Call the plumber"), then any other detail as the card shows it. A tick-off's
+ *  `done: true` is its title's to say. */
+const plainItemParts = (args: Readonly<Record<string, unknown>>, labels: ApprovalValueLabels | undefined): string[] => {
+  const { done, ...rest } = args;
+  const shown = done === true ? rest : args;
+  if (Object.keys(shown).length === 0) return [];
+  return renderBatchItemsBlock([{ summary: '', args_preview: shown }], labels).split('\n')
+    .map((line) => line.trim()).filter((line) => line.length > 0)
+    .map((line) => {
+      const at = line.indexOf(': ');
+      return at > 0 && isTier1RecordLabel(line.slice(0, at)) ? line.slice(at + 2) : line;
+    });
+};
 
 /** The origin unit, in words. `turn` / `burst` / `fire` / `run` are the
  *  aggregation-key vocabulary (`deriveOriginUnit`) — precise internally,
@@ -954,6 +1043,9 @@ const renderBrowserPassBlock = (offer: BrowserPassOffer): string => {
   return oneLine(`“Allow on ${offer.host} for this session” stops asking about ${acts} in this `
     + `conversation, for up to ${renderTtl(BROWSER_PASS_SESSION_TTL_MS)}. “Always allow on ${offer.host}” stops `
     + `asking about them ${everywhere}, until you end it under Contracts.`
+    // D-402 slice H4d — a pass for a recipe that names its browsers is the browser's it was granted in.
+    + (offer.key.browser !== undefined ? ` Both are for ${offer.browser_name !== undefined ? `“${offer.browser_name}”`
+      : 'the browser it runs in'} alone: in another browser, each still asks.` : '')
     // D-341 slice A — and, from the owner's own chat, the switch below its input.
     + (browserPassOffersRequest(offer) ? ' “Don’t ask about browser actions in this chat” stops asking about any of '
       + `them, on any site, in this conversation, until you turn it off below the chat's input, for up to `
@@ -982,7 +1074,9 @@ const connectionPhrase = (
   connection: string | undefined,
   named: string | undefined,
 ): string =>
-  connection === undefined
+  // An empty name is no connection: a local program's step (a `cli` op)
+  // arrives with `''`, and the ask read "…is waiting for your approval on ."
+  connection === undefined || connection === ''
     || (named ?? '').split(/[/.]/).includes(connection)
     ? ''
     : ` on ${connection}`;
@@ -1124,8 +1218,12 @@ export const buildPreflightAsk = (args: {
   // payload). A single-member batch is the degenerate case — same shape,
   // one item.
   const batch = context.batch;
-  const cover = batch === undefined ? readForeachCover(context.foreach_cover) : undefined;
-  const count = batch?.items.length ?? cover?.total ?? 1;
+  // D-177 §N.15.9 — a round's gathered holds of one op (Q7), listed as a batch's members are.
+  const gathered = batch === undefined && context.gathered !== undefined && context.gathered.items.length > 0
+    ? context.gathered : undefined;
+  const cover = batch === undefined && gathered === undefined ? readForeachCover(context.foreach_cover) : undefined;
+  const listed = batch ?? gathered;
+  const count = listed?.items.length ?? cover?.total ?? 1;
   // Without the listed items the total is an upper bound (an item aimed at a
   // different account is asked about on its own), so it is worded as one.
   const upTo = cover !== undefined && cover.items === undefined ? 'up to ' : '';
@@ -1143,17 +1241,31 @@ export const buildPreflightAsk = (args: {
   // D-335 slice F — a held browser write offers a pass on its site in place of D-177's
   // "Allow this session", whose exact grant matched the page handle and the ref and so never
   // covered a second write. One call only: a batch or a foreach cover is many.
-  const browserPass = freshReview || batch !== undefined || cover !== undefined
+  const browserPass = freshReview || listed !== undefined || cover !== undefined
     ? undefined
     : readBrowserPassOffer(checkpoint.preflight_context?.browser_pass);
   // D-341 slice B2 — a held write a trigger's run made offers its pre-approval on that trigger,
   // in place of "Allow this session" too: an exact grant matches the same values only, and the
-  // next post, morning or event brings new ones. One call only, as a site pass.
+  // next post, morning or event brings new ones. One call only, as a site pass; or a round's
+  // gathered calls of one op (D-177 §N.15.9), whose trigger and op are every member's: a
+  // scheduled prompt's gathered writes keep the one answer that stops it asking next time.
   const triggerOffer = freshReview || batch !== undefined || cover !== undefined || browserPass !== undefined
     ? undefined
     : readTriggerPreapprovalOffer(checkpoint.preflight_context?.trigger_preapproval);
-  const sessionGrant = freshReview || browserPass !== undefined || triggerOffer !== undefined ? undefined : context.session_grant;
-  const overrideOffer = freshReview ? undefined : context.owner_override_offer;
+  // D-177 N.15 — a held write the owner's own conversation made offers "Allow in this chat" in
+  // place of "Allow this session", whose exact grant matches the very same call only. One call
+  // only, and never on a review the owner gives each time. A send is no exception (§N.15.6: Q7's
+  // "never an hour of sending" went with the by-name send lift; every op follows its setting).
+  const kindOffer = freshReview || batch !== undefined || cover !== undefined || browserPass !== undefined
+    || triggerOffer !== undefined || reviewedEachTime(context.authorization_provenance?.lift_reason)
+    ? undefined
+    : readKindGrantOffer(checkpoint.preflight_context?.kind_grant);
+  // A gathered approval is many calls: an exact grant from one of them would match that one only.
+  const sessionGrant = freshReview || gathered !== undefined || browserPass !== undefined || triggerOffer !== undefined
+    || kindOffer !== undefined
+    ? undefined : context.session_grant;
+  // A gathered approval keeps its three answers; an op's own setting is changed on one call's ask.
+  const overrideOffer = freshReview || gathered !== undefined ? undefined : context.owner_override_offer;
   // WHICH account this lands in — unless the op id already said so.
   const onConnection = connectionPhrase(context.connection_name, named);
 
@@ -1172,21 +1284,25 @@ export const buildPreflightAsk = (args: {
   const tier1 = tier1HoldOf(checkpoint, context.risk_tier);
   const opening =
     tier1 !== undefined
-      ? `${tier1.proposer} wants to ${lowerFirst(tier1.title)}.`
+      ? count > 1 && gathered !== undefined
+        ? `${tier1.proposer} wants to ${lowerFirst(tier1.title)} ${count} times, all from ${UNIT_PHRASE.turn}.`
+        : `${tier1.proposer} wants to ${lowerFirst(tier1.title)}.`
       : context.raw_op !== undefined
-      ? `An AI agent wants to run ${action}${onConnection}.`
+      ? count > 1 && gathered !== undefined
+        ? `An AI agent wants to run ${action}${onConnection} ${count} times, all from ${UNIT_PHRASE.turn}.`
+        : `An AI agent wants to run ${action}${onConnection}.`
       : recipeTitle !== undefined
-        ? count > 1 && batch !== undefined
+        ? count > 1 && listed !== undefined
           ? `"${recipeTitle}" is waiting for your approval to run ${count} actions${onConnection}, `
-            + `all from ${UNIT_PHRASE[batch.unit.kind]}.`
+            + `all from ${UNIT_PHRASE[batch?.unit.kind ?? 'turn']}.`
           : cover !== undefined
             ? `"${recipeTitle}" is waiting for your approval for ${upTo}${count} items${onConnection}. `
               + 'One approval covers them all.'
             : `"${recipeTitle}" is waiting for your approval${onConnection}.`
-      : count > 1 && batch !== undefined
+      : count > 1 && listed !== undefined
         ? `Recipe ${clipRecipeId(context.recipe_id)} wants to run ${count} `
           + `${action} actions${onConnection}, all from `
-          + `${UNIT_PHRASE[batch.unit.kind]}.`
+          + `${UNIT_PHRASE[batch?.unit.kind ?? 'turn']}.`
         : cover !== undefined
           ? `Recipe ${clipRecipeId(context.recipe_id)} wants to run `
             + `${action}${onConnection} for ${upTo}${count} items (step `
@@ -1200,7 +1316,7 @@ export const buildPreflightAsk = (args: {
   const clause = tier1 !== undefined ? tier1.clause : heldConsequence(
     context.risk_tier,
     named,
-    coveredCallArgs(checkpoint, batch, cover),
+    coveredCallArgs(checkpoint, listed, cover),
   );
   // ⛔ THE SECOND LINE OF THE BODY, AND THE CARD READS IT THERE. The approval
   // card (`projectGeneratedApprovalAsk`) shows this clause as its consequence
@@ -1273,7 +1389,8 @@ export const buildPreflightAsk = (args: {
   // chat's card. Named, never linked (the owner: "Name the chat, no link"), so no id leaves
   // Recued and it reads the same whichever web app the owner uses.
   const chatTitle = checkpoint.preflight_context?.change_in_chat;
-  const changeBlock = tier1 !== undefined && typeof chatTitle === 'string' && chatTitle.trim() !== ''
+  // An approval of several (D-177 §N.15.9) takes no change to one of them.
+  const changeBlock = tier1 !== undefined && gathered === undefined && typeof chatTitle === 'string' && chatTitle.trim() !== ''
     ? `\n\nTo change it first, open the chat “${chatTitle.trim()}” in Recued.` : '';
   const clampWarning = context.approval_clamped_from !== undefined
     ? `\n\nWarning: stored approval '${context.approval_clamped_from}' is below `
@@ -1291,10 +1408,10 @@ export const buildPreflightAsk = (args: {
     // D-336 slice G — and a held save's notes in memory it meets ("Contradicts").
     : { title: tier1.title, ...tier1CallDetails(tier1.tool, tier1.args, valueLabels, checkpoint.preflight_context?.memory_conflicts) };
   const itemsBlock =
-    tier1Shown !== undefined
+    tier1Shown !== undefined && gathered === undefined
       ? `\n\n${renderBatchItemsBlock([{ summary: tier1Shown.title, args_preview: tier1Shown.args }], tier1Shown.labels)}`
-      : batch !== undefined
-      ? `\n\n${renderBatchItemsBlock(batch.items, valueLabels)}`
+      : listed !== undefined
+      ? `\n\n${renderBatchItemsBlock(listed.items, valueLabels)}`
       : cover?.items !== undefined
         ? `\n\n${renderBatchItemsBlock(cover.items, valueLabels)}`
         // D-336 (spec §52) — a single held call lists what it changes, as its card shows it,
@@ -1310,7 +1427,7 @@ export const buildPreflightAsk = (args: {
   // populated pinned lines → the projection's pinned roots, the varies lines
   // → its clean roots). Null/blank pinned values remain enforced by the
   // projection and hash; only their redundant human-preview lines are omitted.
-  const [heldArgs, ...moreArgs] = coveredCallArgs(checkpoint, batch, cover);
+  const [heldArgs, ...moreArgs] = coveredCallArgs(checkpoint, listed, cover);
   // Who "Allow this session" lets go ahead. A session grant is bound to the
   // recipe and its step, so a hold that recorded the recipe's title names it;
   // an older hold, or an agent's raw op, names the action as before.
@@ -1336,6 +1453,7 @@ export const buildPreflightAsk = (args: {
     : `\n\n${describeTriggerPreapprovalOffer(triggerOffer,
       triggerOffer.trigger.kind === 'prompt_schedule' && triggerOffer.prompt_sha256 === undefined ? 'it'
         : recipeTitle !== undefined ? `"${recipeTitle}"` : 'the recipe')}`;
+  const kindBlock = kindOffer === undefined ? '' : `\n\n${describeKindGrantOffer(kindOffer)}`;
 
   // The question goes LAST, always — it is what the buttons answer, and a
   // reader who has to scroll back up past the evidence to find what they
@@ -1364,7 +1482,7 @@ export const buildPreflightAsk = (args: {
   // changes the decision. The approval card reads it from the body's second
   // line, which states it in full (`askConsequence`, `@recued/ui-shared`).
   const subject = tier1?.title ?? recipeTitleOf(checkpoint) ?? (named !== undefined ? titleOperation(named) : undefined);
-  const scope = count > 1 ? `, ${upTo}${count} ${batch !== undefined ? 'actions' : 'items'}` : '';
+  const scope = count > 1 ? `, ${upTo}${count} ${listed !== undefined ? 'actions' : 'items'}` : '';
   const title =
     subject !== undefined
       ? `Approve: ${subject}${scope}${tierTitleWords(context.risk_tier)}`
@@ -1377,13 +1495,71 @@ export const buildPreflightAsk = (args: {
     : undefined;
   const browserBlock = browserLine !== undefined ? `\n\n${browserLine}` : '';
 
+  // D-343 (the owner, 2026-11-14) — a held AI tool call in a message's plain words, for the channels
+  // that show text (Telegram, Slack, email): what it does and to which records, why it waits, and
+  // what "Allow in this chat" lets happen. No tool name and no raw arguments. The app's card reads
+  // `text`, line by line, and keeps its own layout and its Technical details.
+  const kindWords = kindOffer === undefined ? ''
+    : `\n\n${describeKindGrantOfferPlainly(kindOffer, tier1KindsPhrase(kindOffer.name))}`;
+  const plainRest = `${startedByLine}${browserBlock}${egressBoundLine}${reasonLine}${resourceBlock}${clampWarning}`;
+  const plainAnswers = `${changeBlock}${grantBlock}${passBlock}${triggerBlock}${kindWords}\n\n${question}`;
+  const plain: { title: string; text: string } = tier1 !== undefined && tier1Shown !== undefined ? (() => {
+    const many = count > 1 && gathered !== undefined;
+    const titled = many ? tier1CallsTitle(tier1.title, count) : tier1.title;
+    const items = (gathered !== undefined ? gathered.items.map((item) => item.args_preview) : [tier1Shown.args])
+      .map((itemArgs) => plainItemParts(itemArgs as Record<string, unknown>, gathered !== undefined ? valueLabels : tier1Shown.labels));
+    const list = many
+      ? items.map((parts, i) => `\n  ${String(i + 1)}. ${parts.join(' · ') || '(no details)'}`).join('')
+      : (items[0] ?? []).map((part) => `\n  ${part}`).join('');
+    // D-343 (the owner's day audit, 2026-11-15) — the title asks ("Approve: Change a task") and the
+    // buttons answer, so a single call's message ends without asking a third time.
+    const answers = count > 1 ? plainAnswers : `${changeBlock}${grantBlock}${passBlock}${triggerBlock}${kindWords}`;
+    return {
+      title: `Approve: ${titled}${tierTitleWords(context.risk_tier)}`,
+      text: `${tier1.proposer} wants to ${lowerFirst(titled)}${list === '' ? '.' : `:${list}`}`
+        + `\n\n${plainHeldLine(clause, count > 1)}${plainRest}${answers}`,
+    };
+  })() : (() => {
+    // A recipe's hold, or an outside agent's call: the recipe by its title, a built-in operation by
+    // its name on the Grant switches page ("Send an email"), any other by its own short name. The
+    // listed items as the card lists them, with "For all 3:" for what they share.
+    const opName = named !== undefined ? grantSwitchText(named)?.title : undefined;
+    const rawName = opName ?? checkpoint.raw_op?.operation ?? (named !== undefined ? titleOperation(named) : undefined);
+    const who = recipeTitle !== undefined ? `"${recipeTitle}" wants to go ahead`
+      : context.raw_op !== undefined && rawName !== undefined
+        ? `An AI agent wants to ${opName !== undefined ? lowerFirst(opName) : `use “${rawName}”`}` : undefined;
+    const times = cover !== undefined ? ` for ${upTo}${String(count)} items` : count > 1 ? ` ${String(count)} times` : '';
+    const items = itemsBlock.replace(/^ {2}All (\d+) share: /mu, '  For all $1: ').replace(/^ {2}All (\d+) are the same call:/mu, '  All $1 are the same:');
+    const plainTitle = recipeTitle === undefined && context.raw_op !== undefined && rawName !== undefined
+      ? `Approve: ${opName ?? rawName}${scope}${tierTitleWords(context.risk_tier)}` : title;
+    return {
+      title: plainTitle,
+      text: who === undefined
+        // No name to say it by: the sentence it has, without its technical line.
+        ? `${opening}\n${plainHeldLine(clause, count > 1)}${plainRest}${items}${plainAnswers}`
+        : `${who}${times}${onConnection}`
+          + (cover !== undefined ? `. One yes covers them all.${items.replace(/^\n\n/u, '\n')}`
+            : items === '' ? '.' : `:${items.replace(/^\n\n/u, '\n')}`)
+          + `\n\n${plainHeldLine(clause, count > 1)}${plainRest}${plainAnswers}`,
+    };
+  })();
   const message: NotificationMessage = {
     title,
     text:
       `${opening}\n${held}${technicalLine}${startedByLine}${browserBlock}${egressBoundLine}${reasonLine}`
-      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}${passBlock}${triggerBlock}\n\n${question}`,
+      + `${resourceBlock}${clampWarning}${itemsBlock}${changeBlock}${grantBlock}${passBlock}${triggerBlock}${kindBlock}\n\n${question}`,
+    plain,
   };
-  const handler: AskHandlerRef = {
+  // D-177 §N.15.9 — a gathered approval's answer goes to each member's own handler, in turn; the
+  // checkpoints are listed beside them so a boot finds the ask any member is held by.
+  const handler: AskHandlerRef = gathered !== undefined ? {
+    kind: PREFLIGHT_GATHERED_HANDLER_KIND,
+    payload: {
+      members: gathered.members.map((member) => ({ ...member })),
+      checkpoint_ids: gathered.members.flatMap((member) =>
+        typeof member.checkpoint_id === 'string' ? [member.checkpoint_id] : []),
+    },
+  } : {
     kind: PREFLIGHT_HANDLER_KIND,
     payload: {
       checkpoint_id: checkpoint.checkpoint_id,
@@ -1402,12 +1578,17 @@ export const buildPreflightAsk = (args: {
       ...(overrideOffer !== undefined
         ? { owner_override_offer: overrideOffer }
         : {}),
+      ...(triggerOffer !== undefined ? { trigger_preapproval_decision_version: 1 } : {}),
+      ...(browserPass !== undefined ? { browser_pass_decision_version: 1 } : {}),
+      ...(kindOffer !== undefined ? { kind_grant_decision_version: 1 } : {}),
       ...(context.authorization_provenance !== undefined
         ? { authorization_provenance: context.authorization_provenance }
         : {}),
       ...(sessionGrant !== undefined
         ? { session_grant: sessionGrant }
         : {}),
+      ...(sessionGrant !== undefined && checkpoint.raw_op === undefined
+        ? { session_grant_decision_version: 1 } : {}),
       // D-177 P5a — the batch identity + the version pin (the stale-approve
       // guard): the answer flow transitions the row `open → closing`
       // guarded by exactly this version; a superseded ask's answer fails
@@ -1418,7 +1599,7 @@ export const buildPreflightAsk = (args: {
     },
   };
   const options: readonly AskOption[] =
-    overrideOffer === undefined && browserPass === undefined && triggerOffer === undefined
+    overrideOffer === undefined && browserPass === undefined && triggerOffer === undefined && kindOffer === undefined
       ? sessionGrant !== undefined
         ? PREFLIGHT_ASK_OPTIONS_WITH_SESSION
         : PREFLIGHT_ASK_OPTIONS
@@ -1428,6 +1609,7 @@ export const buildPreflightAsk = (args: {
           ...(browserPass !== undefined
             ? browserPassOptions(browserPass.host, { request: browserPassOffersRequest(browserPass) }) : []),
           ...(triggerOffer !== undefined ? [triggerPreapprovalOfferOption(triggerOffer)] : []),
+          ...(kindOffer !== undefined ? [kindGrantOption()] : []),
           ...(overrideOffer !== undefined ? [overrideAskOption(overrideOffer)] : []),
           PREFLIGHT_ASK_OPTIONS[1],
         ];
@@ -1559,9 +1741,64 @@ export const readPreflightOverrideOffer = (
  *  the run was reaped by a staleness guard, or a manual delete) is
  *  treated as a silent skip — there is nothing to resume or deny, the
  *  paused run no longer exists in the system. */
+export const PREPARED_PREFLIGHT_EDITS_KIND = 'preflight_checkpoint_edits';
+export const PREPARED_PREFLIGHT_DENIAL_KIND = 'preflight_denial';
+
+/** Host history is part of handling a prepared denial. A failed projection
+ *  leaves the durable answer available for recovery before its hold is consumed. */
+export const applyPreparedPreflightDenial = async (
+  answer: Answer,
+  checkpointId: string,
+  record: ((answer: Answer) => Promise<void>) | undefined,
+): Promise<void> => {
+  if (answer.option !== 'deny' || answer.prepared?.kind !== PREPARED_PREFLIGHT_DENIAL_KIND
+    || answer.prepared.checkpoint_id !== checkpointId || record === undefined) {
+    throw new Error('gateway.preflight on_answer: invalid or unwired prepared denial');
+  }
+  await record(answer);
+};
+
+/** Host-validated checkpoint patch captured with the winning answer. Kept
+ *  generic at the notification boundary; only this consumer interprets it. */
+export interface PreparedPreflightEdits extends Record<string, unknown> {
+  kind: typeof PREPARED_PREFLIGHT_EDITS_KIND;
+  checkpoint_id: string;
+  arg_overrides: Record<string, unknown>;
+  approved_target?: PreflightApprovedTarget;
+}
+
+/** Host-authored identity of the durable answer applying a standing ruling.
+ * The optional revision is an opaque host snapshot carried by the saved ask. */
+export interface PreflightOverrideDecision {
+  decision_id: string;
+  answered_at: number;
+  holds: ReadonlyArray<{ run_id: string; checkpoint_id: string; raw_op?: true }>;
+  policy_revision?: string;
+}
+
+export type PreflightOverrideWriter = (
+  offer: PreflightOverrideOffer,
+  decision: PreflightOverrideDecision,
+) => Promise<void>;
+
+export const readPreparedPreflightEdits = (data: Record<string, unknown>, checkpointId: string): PreparedPreflightEdits => {
+  const edits = data.arg_overrides;
+  const target = data.approved_target;
+  if (data.kind !== PREPARED_PREFLIGHT_EDITS_KIND || data.checkpoint_id !== checkpointId
+    || edits === null || typeof edits !== 'object' || Array.isArray(edits)
+    || Object.keys(edits).some(key => ['__proto__', 'constructor', 'prototype'].includes(key))
+    || (target !== undefined && (target === null || typeof target !== 'object' || Array.isArray(target)
+      || ['ingredient_slug', 'operation_id', 'connection_name'].some(key =>
+        (target as Record<string, unknown>)[key] !== undefined && typeof (target as Record<string, unknown>)[key] !== 'string')))) {
+    throw new Error('gateway.preflight on_answer: invalid prepared checkpoint edits');
+  }
+  return data as PreparedPreflightEdits;
+};
+
 export const createPreflightAnswerHandler = (deps: {
   checkpointStore: CheckpointStore;
   resumer: PreflightResumer;
+  recordPreparedDenial?: (answer: Answer) => Promise<void>;
   /** D-177 P5a (N.10) — the batch answer flow (host-implemented; the leaf
    *  cannot reach the batch-ask store). When the payload carries a
    *  `batch_id`, the handler delegates FIRST: `'handled'` means the batch
@@ -1574,7 +1811,7 @@ export const createPreflightAnswerHandler = (deps: {
    *  single-member v1 ask correctly and throws-to-retry on a
    *  multi-member payload — fail closed, never a partial resume). */
   batchApprovals?: PreflightBatchAnswerHooks;
-  upsertOverride?: (offer: PreflightOverrideOffer) => Promise<void>;
+  upsertOverride?: PreflightOverrideWriter;
 }): AskHandlerFn => {
   return async (payload: Record<string, unknown>, answer: Answer) => {
     // D-177 P5a — batch-registered asks route through the batch flow.
@@ -1669,18 +1906,42 @@ export const createPreflightAnswerHandler = (deps: {
         ? { authorization_provenance: authorizationProvenance }
         : {}),
     };
-    const checkpoint = await deps.checkpointStore.get(checkpointId);
+    const preparedDenial = answer.prepared?.kind === PREPARED_PREFLIGHT_DENIAL_KIND;
+    if (preparedDenial) await applyPreparedPreflightDenial(answer, checkpointId, deps.recordPreparedDenial);
+    let checkpoint = await deps.checkpointStore.get(checkpointId);
     if (checkpoint === null) {
       // The paused run no longer exists in the system — a staleness
       // guard or a manual delete consumed the checkpoint before the
       // answer arrived. Silent skip: nothing to resume or deny.
       return;
     }
+    if (answer.prepared !== undefined && !preparedDenial) {
+      const prepared = readPreparedPreflightEdits(answer.prepared, checkpointId);
+      if (!['approve', 'allow_session', TRIGGER_PREAPPROVAL_OPTION_ID, KIND_GRANT_OPTION_ID].includes(effectiveAnswer.option)
+        && !isBrowserPassOptionId(effectiveAnswer.option)) {
+        throw new Error('gateway.preflight on_answer: prepared edits require an approval');
+      }
+      // The decision is already durable. Retry applies this same winning
+      // patch before resuming, including after a failed write or restart.
+      checkpoint = await deps.checkpointStore.setArgOverrides(checkpointId, {
+        arg_overrides: prepared.arg_overrides,
+        ...(prepared.approved_target !== undefined ? { approved_target: prepared.approved_target } : {}),
+      });
+    }
     // Checkpoint existence is the single-ask stale guard: a consumed/deleted
     // hold cannot mutate standing policy. Persist before resume so the resumed
     // dispatch observes the ruling selected alongside its approval.
     if (overrideOffer !== undefined) {
-      await deps.upsertOverride!(overrideOffer);
+      const revision = payload.owner_override_policy_revision;
+      if (revision !== undefined && (typeof revision !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(revision))) {
+        throw new Error('gateway.preflight on_answer: malformed standing-policy revision');
+      }
+      await deps.upsertOverride!(overrideOffer, {
+        decision_id: JSON.stringify(['preflight', runId, checkpointId]),
+        answered_at: answer.answered_at,
+        holds: [{ run_id: runId as string, checkpoint_id: checkpointId, ...(isRawOp ? { raw_op: true as const } : {}) }],
+        ...(revision !== undefined ? { policy_revision: revision } : {}),
+      });
       effectiveAnswer = { ...answer, option: 'approve' };
     }
     if (
@@ -1688,6 +1949,7 @@ export const createPreflightAnswerHandler = (deps: {
       || effectiveAnswer.option === 'allow_session'
       || isBrowserPassOptionId(effectiveAnswer.option)
       || effectiveAnswer.option === TRIGGER_PREAPPROVAL_OPTION_ID
+      || effectiveAnswer.option === KIND_GRANT_OPTION_ID
     ) {
       // D-177 P3 — `allow_session` is approve PLUS a mint instruction: the
       // resume context carries the bounds the ask offered (read back off the
@@ -1701,7 +1963,7 @@ export const createPreflightAnswerHandler = (deps: {
       // plain approve — the human's "go ahead" is honored; the convenience
       // grant is dropped.
       const grant =
-        effectiveAnswer.option === 'allow_session'
+        effectiveAnswer.option === 'allow_session' && (isRawOp || payload.session_grant_decision_version === 1)
           ? readSessionGrantPayload(payload.session_grant)
           : undefined;
       // D-335 slice F — a site answer is approve PLUS the pass the hold offered, which the
@@ -1717,12 +1979,26 @@ export const createPreflightAnswerHandler = (deps: {
       // degrades to a plain approve, as a site answer's does.
       const triggerGrant = effectiveAnswer.option === TRIGGER_PREAPPROVAL_OPTION_ID
         && readTriggerPreapprovalOffer(checkpoint.preflight_context?.trigger_preapproval) !== undefined;
+      // D-177 N.15 — "Allow in this chat" is approve PLUS the grant the hold offered,
+      // which the resumer reads off the checkpoint. An offer that no longer reads degrades to a plain
+      // approve, as a trigger's does.
+      const kindGrant = effectiveAnswer.option === KIND_GRANT_OPTION_ID
+        && readKindGrantOffer(checkpoint.preflight_context?.kind_grant) !== undefined;
       await deps.resumer.resumeRun(checkpoint, {
         ...context,
         approved_at: effectiveAnswer.answered_at,
         ...(grant !== undefined ? { session_grant: grant } : {}),
+        ...(grant !== undefined && !isRawOp && payload.session_grant_decision_version === 1
+          ? { session_grant_decision_version: 1 as const } : {}),
         ...(pass !== undefined ? { browser_pass_kind: pass } : {}),
+        ...(pass !== undefined && payload.browser_pass_decision_version === 1
+          ? { browser_pass_decision_version: 1 as const } : {}),
         ...(triggerGrant ? { trigger_preapproval_answer: true as const } : {}),
+        ...(triggerGrant && payload.trigger_preapproval_decision_version === 1
+          ? { trigger_preapproval_decision_version: 1 as const } : {}),
+        ...(kindGrant ? { kind_grant_answer: true as const } : {}),
+        ...(kindGrant && payload.kind_grant_decision_version === 1
+          ? { kind_grant_decision_version: 1 as const } : {}),
       });
     } else {
       // Any other answer is treated as deny. The closed option lists
@@ -1747,14 +2023,134 @@ export const registerPreflightHandler = (
   deps: {
     checkpointStore: CheckpointStore;
     resumer: PreflightResumer;
+    recordPreparedDenial?: (answer: Answer) => Promise<void>;
     batchApprovals?: PreflightBatchAnswerHooks;
-    upsertOverride?: (offer: PreflightOverrideOffer) => Promise<void>;
+    upsertOverride?: PreflightOverrideWriter;
   },
 ): void => {
   notifier.registerAskHandler(
     PREFLIGHT_HANDLER_KIND,
     createPreflightAnswerHandler(deps),
   );
+  notifier.registerAskHandler(
+    PREFLIGHT_GATHERED_HANDLER_KIND,
+    createGatheredPreflightAnswerHandler(deps),
+  );
+};
+
+/** D-177 §N.15.9 — the answer to a round's gathered approval, given to each member's own
+ *  `gateway.preflight` handler in the listed order: approve resumes each as approved, deny
+ *  declines each, and a standing answer ("Allow in this chat", or a scheduled prompt's "Always
+ *  allow for this scheduled prompt") is given with the first member's answer and the rest are
+ *  approved (each member's own answer would grant once per run). Every member is answered even
+ *  when one throws; the first error is rethrown after, so the block retries and the members
+ *  already answered, their checkpoints consumed, are skipped then. */
+export const createGatheredPreflightAnswerHandler = (
+  deps: Parameters<typeof createPreflightAnswerHandler>[0],
+): AskHandlerFn => {
+  const answerOne = createPreflightAnswerHandler(deps);
+  return async (payload: Record<string, unknown>, answer: Answer) => {
+    const members = Array.isArray(payload.members)
+      ? payload.members.filter((member): member is Record<string, unknown> =>
+        member !== null && typeof member === 'object' && !Array.isArray(member))
+      : [];
+    let failed: unknown;
+    for (const [index, member] of members.entries()) {
+      const standing = answer.option === KIND_GRANT_OPTION_ID || answer.option === TRIGGER_PREAPPROVAL_OPTION_ID;
+      const option = standing && index > 0 ? PREFLIGHT_ASK_OPTIONS[0].id : answer.option;
+      try {
+        await answerOne(member, { ...answer, option });
+      } catch (error) {
+        failed ??= error;
+      }
+    }
+    if (failed !== undefined) throw failed;
+  };
+};
+
+/** D-177 §N.15.9 — is this ask an approval of held calls: a call's own (`gateway.preflight`, one
+ *  hold or a batch) or a round's gathered one? What holds back an approval (the owner's pause) holds
+ *  back both. */
+export const isPreflightApprovalKind = (kind: string): boolean =>
+  kind === PREFLIGHT_HANDLER_KIND || kind === PREFLIGHT_GATHERED_HANDLER_KIND;
+
+/** D-177 §N.15.9 — the holds an approval answers, as its payload names them (its checkpoint, its
+ *  run, either or both): a call's own ask its one, a gathered approval each member's. Empty for any
+ *  other ask. A reader matches the field it holds, so a hold named by its run alone is still found by
+ *  its run, as a call's own ask always was. */
+export const preflightAskHolds = (
+  ask: { readonly handler_kind: string; readonly handler_payload: Record<string, unknown> },
+): ReadonlyArray<{ readonly checkpoint_id?: string; readonly run_id?: string }> => {
+  const holdOf = (payload: unknown): ReadonlyArray<{ readonly checkpoint_id?: string; readonly run_id?: string }> => {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return [];
+    const { checkpoint_id, run_id } = payload as { checkpoint_id?: unknown; run_id?: unknown };
+    const checkpoint = typeof checkpoint_id === 'string' && checkpoint_id.length > 0 ? checkpoint_id : undefined;
+    const run = typeof run_id === 'string' && run_id.length > 0 ? run_id : undefined;
+    return checkpoint === undefined && run === undefined ? [] : [{
+      ...(checkpoint !== undefined ? { checkpoint_id: checkpoint } : {}),
+      ...(run !== undefined ? { run_id: run } : {}),
+    }];
+  };
+  if (ask.handler_kind === PREFLIGHT_HANDLER_KIND) return holdOf(ask.handler_payload);
+  if (ask.handler_kind !== PREFLIGHT_GATHERED_HANDLER_KIND || !Array.isArray(ask.handler_payload.members)) return [];
+  return ask.handler_payload.members.flatMap(holdOf);
+};
+
+/** D-177 §N.15.9 — does this ask hold that checkpoint? A call's own ask names it; a gathered
+ *  approval lists every member's. The boot sweep pairs a hold with its ask by this, so a gathered
+ *  ask is never raised again for one of its members. */
+export const preflightAskHoldsCheckpoint = (
+  ask: { readonly handler_kind: string; readonly handler_payload: Record<string, unknown> },
+  checkpoint_id: string,
+): boolean => preflightAskHolds(ask).some((hold) => hold.checkpoint_id === checkpoint_id);
+
+/** D-177 §N.15.9 — one held call of a round's gathered approval: its checkpoint and the ask its
+ *  hold would have raised, and what it does, for the approval's list (its arguments as resolved,
+ *  and a line to fall back on). */
+export interface GatheredHoldAsk {
+  readonly checkpoint: Checkpoint;
+  readonly context: PreflightAskContext;
+  readonly item: Pick<BatchedApprovalItem, 'summary' | 'args_preview'>;
+}
+
+/** D-177 §N.15.9 — a round's gathered approval: one member asks as its hold would have; two or
+ *  more ask once, in the first one's words (its recipe, its op, its connection, which they share),
+ *  every member listed, with each one's own answer payload for the answer to go to. The names the
+ *  members carry are all kept (a mailbox's address, a contact's name). */
+export const buildGatheredPreflightAsk = (members: ReadonlyArray<GatheredHoldAsk>): PreflightAsk => {
+  const [lead] = members;
+  if (lead === undefined) throw new Error('a gathered approval needs at least one held call');
+  if (members.length === 1) return buildPreflightAsk({ checkpoint: lead.checkpoint, context: lead.context });
+  const answers = members.map((member) =>
+    buildPreflightAsk({ checkpoint: member.checkpoint, context: member.context }).handler.payload);
+  // D-177 §N.15.9 (1c-b) — a chat's own write is listed as its own approval lists it: its kind's
+  // title, and its arguments as the owner reads them, the records by their names.
+  const listed = members.map((member) => {
+    const tier1 = tier1HoldOf(member.checkpoint, member.context.risk_tier);
+    if (tier1 === undefined) return { item: member.item, labels: member.checkpoint.preflight_context?.value_labels };
+    const shown = tier1CallDetails(tier1.tool, tier1.args, member.checkpoint.preflight_context?.value_labels,
+      member.checkpoint.preflight_context?.memory_conflicts);
+    return { item: { summary: tier1.title, args_preview: shown.args }, labels: shown.labels };
+  });
+  let labels: ReturnType<typeof mergeValueLabels>;
+  for (const entry of listed) labels = mergeValueLabels(labels, entry.labels);
+  const checkpoint: Checkpoint = labels === undefined ? lead.checkpoint
+    : { ...lead.checkpoint, preflight_context: { ...lead.checkpoint.preflight_context, value_labels: labels } };
+  return buildPreflightAsk({
+    checkpoint,
+    context: { ...lead.context, gathered: { items: listed.map((entry) => entry.item), members: answers } },
+  });
+};
+
+/** D-177 §N.15.9 — raise a round's gathered approval (`buildGatheredPreflightAsk`). Returns the
+ *  ask's id, for each member's hold to record. */
+export const raiseGatheredPreflightAsk = async (
+  notifier: PreflightNotifier,
+  members: ReadonlyArray<GatheredHoldAsk>,
+): Promise<{ ask_id: string }> => {
+  const { message, options, handler, extras } = buildGatheredPreflightAsk(members);
+  return extras ? notifier.ask(message, options, handler, undefined, extras)
+    : notifier.ask(message, options, handler);
 };
 
 /** Raise the preflight `notification.ask` for a freshly-persisted

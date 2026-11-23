@@ -195,7 +195,7 @@ describe('D-149 follow-on — renderLaunchWizard: header + stepper', () => {
 describe('D-149 follow-on — renderLaunchWizard: current step frame', () => {
   it('renders the current step title, summary, and a host-filled content slot', () => {
     const html = renderLaunchWizard(stepperView('reception_page'));
-    expect(html).toContain('Set up your Reception page');
+    expect(html).toContain('Your page');
     expect(html).toContain('reception-wizard-step-slot');
     expect(html).toContain('data-wizard-step="reception_page"');
   });

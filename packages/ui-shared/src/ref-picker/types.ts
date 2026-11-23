@@ -55,6 +55,8 @@ export interface RefPickerSelection {
  *  that admits it, because the missing record looks like a missing FACT. */
 export interface RefPickerSearchPage {
   readonly options: readonly RefPickerOption[];
+  /** Context-specific empty state, such as an empty recent-choice list. */
+  readonly emptyText?: string;
   /** The underlying read hit its page cap, so matches may be missing. */
   readonly truncated?: boolean;
   /** A failed additional read left these options usable. The owner can retry
@@ -84,6 +86,7 @@ export interface RefPickerState {
   activeIndex: number;
   /** The suggestions currently shown (already filtered/ranked). */
   options: readonly RefPickerOption[];
+  emptyText?: string;
   /** A search is in flight (async inventories). */
   loading: boolean;
   /** Last search error, surfaced inline in the dropdown. */
@@ -121,6 +124,9 @@ export interface RefPickerRenderConfig {
    *  form-renderer's `readFormValues` reads it back unchanged. Omitted
    *  for route filters that read the value via `getValue()`/`onChange`. */
   formFieldName?: string;
+  /** Inventory carried by the hidden form mirror so a host can attach the
+   * matching lookup when a form contains several reference kinds. */
+  formRefTarget?: string;
   /** Array-item variant of the mirror: emits a hidden `<input
    *  data-form-array-item=… data-form-array-index=… data-form-type="ref">`
    *  instead of the `data-form-field` form, so the form-renderer's ARRAY
@@ -163,9 +169,16 @@ export interface RefPickerHandle {
    *  Keeps the committed selection, reruns search, and does NOT fire
    *  `onChange`. */
   setQuery(query: string): void;
+  /** Rerun the last search without changing query, selection, focus or whether
+   * the list is open. Retires any older pending result. */
+  refresh(): void;
   /** Programmatically set (or clear, with null) the selection. Repaints
    *  the picker's subtree; does NOT fire `onChange`. */
   setValue(selection: RefPickerSelection | null): void;
+  /** Detach old DOM listeners immediately before a host replaces its form.
+   * A removal-induced blur must not discard the query or focus state that
+   * `rewire` will restore. This does not change the committed selection. */
+  beforeRender(): void;
   /** Re-attach to a freshly-painted host. Call after the host overwrote
    *  the container's innerHTML — the previous subtree + its listeners are
    *  gone, but the JS state survives, so this repaints from state and

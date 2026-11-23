@@ -1,6 +1,7 @@
 import type { SituationAgendaStatus, SituationCloseDaySettings, SituationCloseDayStatus } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
+import { serializeChatSessionAddress } from '../shell/route.js';
 import { deliveryCardStyles, nextDigestText } from './situation-delivery-panel.js';
 
 export const CLOSE_DAY_PANEL_ATTR = 'data-situation-close-day';
@@ -14,6 +15,8 @@ export interface CloseDayPanelOptions {
   read: () => Promise<SituationAgendaStatus>;
   save: (settings: SituationCloseDaySettings) => Promise<unknown>;
   sendNow: () => Promise<unknown>;
+  retryReply?: (id: string) => Promise<unknown>;
+  reviewReply?: (id: string) => Promise<unknown>;
   /** D-340 slice 2 — on Today, under the streams' tabs. In Settings (the default) the card leaves on a
    *  server whose streams took over, since Today holds it then. */
   onToday?: boolean;
@@ -29,6 +32,12 @@ const RUN_STATE: Readonly<Record<string, string>> = {
   sent: 'Sent', pending: 'Waiting to retry', sending: 'Sending', uncertain: 'Delivery not confirmed',
   superseded: 'Not sent: a newer one replaced it',
 };
+const REPLY_REASON = {
+  waiting: 'Saved and waiting to open in Chat. Recued will try again.',
+  retry: 'Could not open in Chat yet. Your reply is saved; Recued will try again.',
+  source_unavailable: 'The saved email could not be read. Check its mailbox, then try again.',
+  unknown: 'An earlier reply could not be confirmed. Check its conversation before sending a new reply.',
+} as const;
 
 export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
   const doc = opts.document ?? document;
@@ -83,6 +92,9 @@ export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
   retry.hidden = true;
   const results = node('div');
   results.setAttribute('data-close-day-results', '');
+  const emailReplies = node('div');
+  emailReplies.setAttribute('data-close-day-email-replies', '');
+  let replyButtons: HTMLButtonElement[] = [];
   const controls = [enabled, time, saveButton, sendButton];
   let disposed = false;
   let busy = false;
@@ -94,7 +106,7 @@ export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
     notice.textContent = text;
     notice.setAttribute('role', error ? 'alert' : 'status');
   };
-  const lock = (value: boolean) => { busy = value; for (const control of controls) control.disabled = value; };
+  const lock = (value: boolean) => { busy = value; for (const control of [...controls, ...replyButtons]) control.disabled = value; };
   const settings = (): SituationCloseDaySettings => ({ enabled: enabled.checked, time: time.value });
   const same = (a: SituationCloseDaySettings, b: SituationCloseDaySettings) => a.enabled === b.enabled && a.time === b.time;
   const updateDirty = () => {
@@ -116,6 +128,30 @@ export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
     results.innerHTML = `${status.next_at !== undefined ? `<p data-close-day-next>Next: ${e(nextDigestText(status.next_at, status.time_zone))}</p>` : ''}
       ${status.uncertain ? `<p>${status.uncertain === 1 ? 'A delivery' : `${status.uncertain} deliveries`} could not be confirmed, even after one repeat.</p>` : ''}
       ${run ? `<p>Last sent ${e(new Date(run.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))} · ${e(RUN_MODE[run.mode] ?? run.mode)} · ${e(RUN_STATE[run.state] ?? run.state)}</p>${sent?.text ? `<details><summary>What it sent</summary><p class="sd-sent">${e(sent.text)}</p></details>` : ''}` : '<p>Nothing has been sent yet.</p>'}`;
+    emailReplies.textContent = '';
+    replyButtons = [];
+    if (status.email_replies?.length) {
+      node('h4', 'Email replies', emailReplies);
+      for (const reply of status.email_replies) {
+        const item = node('div', undefined, emailReplies);
+        node('p', `Reply received ${new Date(reply.received_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}. ${REPLY_REASON[reply.reason]}`, item);
+        if (reply.session_id) node('a', 'Open conversation', item).href = serializeChatSessionAddress({ sessionId: reply.session_id });
+        if (reply.retry_available && opts.retryReply) {
+          const button = node('button', 'Try opening in Chat', item, 'rx-btn rx-btn-secondary rx-btn-sm');
+          button.type = 'button'; button.disabled = busy;
+          button.setAttribute('data-close-day-email-retry', reply.id);
+          button.addEventListener('click', () => { void write('reply', reply.id); });
+          replyButtons.push(button);
+        }
+        if (reply.reason === 'unknown' && opts.reviewReply) {
+          const button = node('button', 'Mark reviewed', item, 'rx-btn rx-btn-secondary rx-btn-sm');
+          button.type = 'button'; button.disabled = busy;
+          button.setAttribute('data-close-day-email-review', reply.id);
+          button.addEventListener('click', () => { void write('review', reply.id); });
+          replyButtons.push(button);
+        }
+      }
+    }
   };
   const adopt = (next: SituationAgendaStatus): boolean => {
     if (!next.close_day || (next.streams && !opts.onToday)) return false;
@@ -124,19 +160,21 @@ export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
     return true;
   };
 
-  const write = async (kind: 'save' | 'send') => {
+  const write = async (kind: 'save' | 'send' | 'reply' | 'review', replyId?: string) => {
     if (busy || disposed || !status) return;
     const wanted = kind === 'save' ? settings() : undefined;
     if (wanted) dirty = true;
     generation += 1;
-    const owner = controls.find(control => control === doc.activeElement);
+    const owner = [...controls, ...replyButtons].find(control => control === doc.activeElement);
     lock(true);
     retry.hidden = true;
-    message(kind === 'save' ? 'Saving…' : 'Sending…');
+    message(kind === 'save' ? 'Saving…' : kind === 'reply' ? 'Opening your email reply in Chat…' : kind === 'review' ? 'Marking reviewed…' : 'Sending…');
     if (owner) notice.focus({ preventScroll: true });
     let reading = false;
     try {
       if (wanted) await opts.save(wanted);
+      else if (kind === 'reply') await opts.retryReply!(replyId!);
+      else if (kind === 'review') await opts.reviewReply!(replyId!);
       else await opts.sendNow();
       if (disposed) return;
       reading = true;
@@ -149,7 +187,8 @@ export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
       }
       if (wanted) dirty = false;
       paint();
-      message(kind === 'save' ? 'Close the day saved.' : 'Sent. Reply to it with what you did.');
+      message(kind === 'review' ? 'Earlier email reply marked reviewed.' : kind === 'save' ? 'Close the day saved.' : kind === 'reply'
+        ? 'Email reply checked. Any reply still waiting is listed below.' : 'Sent. Reply to it with what you did.');
     } catch (error) {
       if (!disposed) {
         message(error instanceof Error ? error.message : String(error), true);
@@ -160,7 +199,7 @@ export const mountCloseDayPanel = (opts: CloseDayPanelOptions) => {
       busy = false;
       if (!disposed) {
         lock(false);
-        if (doc.activeElement === notice) owner?.focus({ preventScroll: true });
+        if (doc.activeElement === notice && kind !== 'reply' && kind !== 'review') owner?.focus({ preventScroll: true });
       }
     }
   };

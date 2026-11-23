@@ -69,11 +69,25 @@ describe('Anthropic adapter', () => {
     expect(body.messages[0].role).toBe('user');
   });
 
-  it('enables thinking when options.thinking=true', async () => {
-    fetchMock.mockImplementationOnce(mockFetch({ content: [{ type: 'text', text: 'ok' }] }));
+  it('enables thinking as adaptive, and as a budget of half max_tokens the second way', async () => {
+    fetchMock.mockImplementation(mockFetch({ content: [{ type: 'text', text: 'ok' }] }));
     await createAnthropicAdapter().complete(slot, messages, { ...options, thinking: true });
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
-    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 50 });
+    await createAnthropicAdapter().complete(slot, messages, { ...options, thinking: true, thinking_step: 1 });
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(bodies.map((body) => body.thinking)).toEqual([{ type: 'adaptive' }, { type: 'enabled', budget_tokens: 50 }]);
+  });
+
+  it('turns thinking off as disabled, between_tools, then the lowest effort with no thinking field', async () => {
+    fetchMock.mockImplementation(mockFetch({ content: [{ type: 'text', text: 'ok' }] }));
+    for (const thinking_step of [0, 1, 2]) {
+      await createAnthropicAdapter().complete(slot, messages, { ...options, thinking: false, thinking_step });
+    }
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    expect(bodies.map((body) => [body.thinking, body.output_config])).toEqual([
+      [{ type: 'disabled' }, undefined],
+      [{ type: 'between_tools' }, undefined],
+      [undefined, { effort: 'low' }],
+    ]);
   });
 
   it('concatenates multi-block text responses', async () => {
@@ -95,6 +109,17 @@ describe('Anthropic adapter', () => {
     }));
     const result = await createAnthropicAdapter().complete(slot, messages, options);
     expect(result.finish_reason).toBe('length');
+  });
+
+  it('marks a reply that stopped at max_tokens while thinking, before any text', async () => {
+    fetchMock.mockImplementationOnce(mockFetch({
+      content: [{ type: 'thinking', thinking: '' }],
+      stop_reason: 'max_tokens',
+      usage: { input_tokens: 12, output_tokens: 1 },
+    }));
+    const error = await createAnthropicAdapter().complete(slot, messages, options).catch((e: unknown) => e);
+    expect((error as LLMError).message).toBe('Anthropic response had no text blocks');
+    expect((error as LLMError).details).toMatchObject({ finish_reason: 'length', usage: { input_tokens: 12 } });
   });
 
   it('preserves a textless provider refusal as content_filter', async () => {
@@ -186,6 +211,47 @@ describe('OpenAI adapter', () => {
     const compat: LLMSlot = { ...slot, base_url: 'https://api.groq.com/openai', provider: 'openai-compatible' };
     await createOpenAIAdapter('openai-compatible').complete(compat, messages, options);
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.groq.com/openai/v1/chat/completions');
+  });
+
+  /** OpenAI's reasoning models refuse `max_tokens`; a server that ignored `max_completion_tokens`
+   *  would run with no cap, so only OpenAI's own API gets the new name. */
+  it('names the cap max_completion_tokens on OpenAI\'s own API and max_tokens on every other server', async () => {
+    const capOf = async (provider: 'openai' | 'openai-compatible', base_url?: string) => {
+      fetchMock.mockImplementationOnce(mockFetch({ choices: [{ message: { content: 'x' } }] }));
+      await createOpenAIAdapter(provider).complete(
+        { ...slot, provider, ...(base_url !== undefined ? { base_url } : {}) }, messages, options);
+      const body = JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string);
+      return { max_tokens: body.max_tokens, max_completion_tokens: body.max_completion_tokens };
+    };
+    const openAI = { max_tokens: undefined, max_completion_tokens: 100 };
+    const other = { max_tokens: 100, max_completion_tokens: undefined };
+    expect(await capOf('openai')).toEqual(openAI);
+    expect(await capOf('openai', 'https://api.openai.com/v1')).toEqual(openAI);
+    // No address: the adapter calls api.openai.com whatever the protocol says.
+    expect(await capOf('openai-compatible')).toEqual(openAI);
+    expect(await capOf('openai-compatible', 'https://api.groq.com/openai/v1')).toEqual(other);
+    expect(await capOf('openai-compatible', 'http://localhost:11434/v1')).toEqual(other);
+    expect(await capOf('openai', 'https://openrouter.ai/api/v1')).toEqual(other);
+  });
+
+  it('says when a reasoning model spent its whole limit thinking, and marks the stop', async () => {
+    fetchMock.mockImplementationOnce(mockFetch({
+      choices: [{ message: { content: '' }, finish_reason: 'length' }],
+      usage: { prompt_tokens: 20, completion_tokens: 100, total_tokens: 120,
+        completion_tokens_details: { reasoning_tokens: 100 } },
+    }));
+    const error = await createOpenAIAdapter().complete(slot, messages, options).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(LLMError);
+    expect((error as LLMError).code).toBe('AI_RESPONSE_PARSE_FAILED');
+    expect((error as LLMError).message).toContain('spent its whole output limit reasoning');
+    expect((error as LLMError).details).toMatchObject({ finish_reason: 'length', usage: { total_tokens: 120 } });
+  });
+
+  it('leaves a missing answer that did not stop at the limit unmarked', async () => {
+    fetchMock.mockImplementationOnce(mockFetch({ choices: [{ message: { content: '' }, finish_reason: 'stop' }] }));
+    const error = await createOpenAIAdapter().complete(slot, messages, options).catch((e: unknown) => e);
+    expect((error as LLMError).message).toBe('OpenAI response missing choices[0].message.content');
+    expect((error as LLMError).details?.finish_reason).toBeUndefined();
   });
 
   it('throws when choices array is empty', async () => {
@@ -315,6 +381,17 @@ describe('Google adapter', () => {
     }));
     await expect(createGoogleAdapter().complete(slot, messages, options))
       .rejects.toThrow(/only thinking parts/);
+  });
+
+  it('marks a reply that stopped at its limit before any answer', async () => {
+    // The shape a thinking model returns when the limit runs out while it thinks.
+    fetchMock.mockImplementationOnce(mockFetch({
+      candidates: [{ content: { role: 'model' }, finishReason: 'MAX_TOKENS' }],
+      usageMetadata: { promptTokenCount: 10, totalTokenCount: 11, thoughtsTokenCount: 1 },
+    }));
+    const error = await createGoogleAdapter().complete(slot, messages, options).catch((e: unknown) => e);
+    expect((error as LLMError).code).toBe('AI_RESPONSE_PARSE_FAILED');
+    expect((error as LLMError).details).toMatchObject({ finish_reason: 'length', usage: { total_tokens: 11 } });
   });
 
   it('sets generationConfig.responseMimeType json when options.json is set', async () => {

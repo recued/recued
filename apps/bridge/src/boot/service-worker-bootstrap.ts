@@ -107,7 +107,6 @@ import {
 } from '../transport/ws-client.js';
 import {
   installKeepaliveAlarm,
-  removeKeepaliveAlarm,
   runKeepaliveTick,
   type ChromeAlarmsApi,
   type ChromeRuntimeInfoApi,
@@ -165,6 +164,7 @@ import {
 import { isPickerResultMessage } from '../picker/picker-protocol.js';
 import { deriveWatchUrlPattern } from '../picker/url-pattern.js';
 import type { BridgePickerInjector } from '../picker/picker-injector.js';
+import { createPickerSessions } from '../picker/picker-sessions.js';
 
 /** chrome.runtime.onMessage's listener signature. The handler returns
  *  `true` when it intends to call `sendResponse` asynchronously
@@ -315,6 +315,8 @@ export interface BridgeServiceWorkerHandle {
    *  Tests `pushNow()` to drive the rpc on demand; the monitor's own
    *  chrome.permissions listeners fire it on every grant change. */
   readonly capabilityMonitor: BridgeCapabilityProfileMonitor | null;
+  /** Navigation, same-URL reload, tab closure or replacement retires a picker. */
+  retirePickerForTab(tab_id: number): void;
   /** Stop the SW pipeline. Idempotent — safe to call from a chrome
    *  unload listener or a test teardown. */
   stop(): Promise<void>;
@@ -352,6 +354,12 @@ const sendBridgeResult = (ws: WsClient, result: BridgeResult): void => {
   }
 };
 
+interface BridgeEnvelopeRouter {
+  dispatch(envelope: BridgeWireEnvelope): void;
+  resumeCommands(): void;
+  stop(): void;
+}
+
 /** Wire the inbound `BridgeWireEnvelope` router. Pure factory — the
  *  router function is invoked by the SW's inbound dispatcher
  *  (`buildInboundDispatcher`, below) after a parse-once step has
@@ -367,27 +375,29 @@ const buildEnvelopeRouter = (args: {
   grants: BridgeGrantStore;
   getIdempotencyCache(): IdempotencyCache;
   queue: BridgeFifoQueue;
+  onQueueReleased(): void;
   notificationDispatch: (
     notification: ServerToBridgeNotification,
   ) => Promise<void> | void;
   notificationPermission(): Promise<'granted' | 'denied'>;
   notificationClear(id: string): Promise<void>;
   inflight: Map<string, { signalled: boolean }>;
-}): ((envelope: BridgeWireEnvelope) => void) => {
+}): BridgeEnvelopeRouter => {
   let draining = false;
+  let stopped = false;
   // Reconnecting with another token must not redirect a queued or running
   // command's receipt to that token's namespace.
   const receiptCaches = new WeakMap<BridgeCommand, IdempotencyCache>();
 
-  /** Exactly one drain loop owns `queue.dequeue()` at a time. Calling
-   *  this after every accepted enqueue is safe: a running loop makes
-   *  later calls no-ops, then observes the newly queued command on its
-   *  next iteration. */
+  /** One drain per runtime. The shared FIFO's running slot serializes
+   *  dispatches across runtimes, including one stopped while awaiting
+   *  its executor. Enqueues during this drain are picked up on its next
+   *  iteration. */
   const drainQueue = async (): Promise<void> => {
-    if (draining) return;
+    if (stopped || draining) return;
     draining = true;
     try {
-      while (true) {
+      while (!stopped) {
         const command = args.queue.dequeue();
         if (!command) return;
 
@@ -405,7 +415,7 @@ const buildEnvelopeRouter = (args: {
             },
             cancel,
           );
-          sendBridgeResult(args.ws, outcome.result);
+          if (!stopped) sendBridgeResult(args.ws, outcome.result);
         } catch {
           // A receipt read/write failure must not acknowledge completion.
           // The action may already have run if its receipt could not commit;
@@ -419,10 +429,15 @@ const buildEnvelopeRouter = (args: {
       }
     } finally {
       draining = false;
+      // The shared queue keeps its running slot until this dispatch settles.
+      // A new runtime may already have queued work and found that slot busy.
+      // Wake its drain, rather than consuming its work through this old owner.
+      if (stopped) args.onQueueReleased();
     }
   };
 
-  return (envelope: BridgeWireEnvelope): void => {
+  const dispatch = (envelope: BridgeWireEnvelope): void => {
+    if (stopped) return;
     if (envelope.kind === 'command') {
       const command = envelope.command;
       const enqueued = args.queue.enqueue(command);
@@ -491,6 +506,11 @@ const buildEnvelopeRouter = (args: {
 
     // Unknown kind — drop. The TypeScript discriminated union assertion
     // catches new variants at compile time; runtime here just defends.
+  };
+  return {
+    dispatch,
+    resumeCommands: () => { void drainQueue(); },
+    stop: () => { stopped = true; },
   };
 };
 
@@ -592,6 +612,26 @@ export const bootBridgeServiceWorker = async (
   deps: BridgeServiceWorkerDeps,
 ): Promise<BridgeServiceWorkerHandle> => {
   const now = deps.now ?? ((): number => Date.now());
+  // Chrome storage has no compare-and-delete transaction. Pair finalization,
+  // runtime starts and teardown persistence share this queue, so checking an
+  // identity and clearing it cannot interleave with a supported new pairing.
+  let pairWork: Promise<void> = Promise.resolve();
+  const runPairWork = <T,>(work: () => Promise<T>): Promise<T> => {
+    const result = pairWork.then(work);
+    pairWork = result.then(() => undefined, () => undefined);
+    return result;
+  };
+  type TeardownResult = { told_server: boolean };
+  type PairOwner = {
+    serverUrl: string;
+    serverKey: string;
+    tokenId: string;
+    instanceId: string | null;
+    conn: BridgeRpcConn | null;
+    confirmedRevocation: boolean;
+    teardown: Promise<TeardownResult> | null;
+  };
+  let currentPairOwner: PairOwner | null = null;
 
   // 1. SW lifecycle handlers — skipWaiting + claim so the new SW
   // becomes the active version immediately.
@@ -605,6 +645,7 @@ export const bootBridgeServiceWorker = async (
   // 2. Build the local-store + queue/grants/idempotency collaborators.
   const localStore: BridgeLocalStore = createChromeBridgeLocalStore(deps.chromeStorage);
   const queue = deps.queue ?? createFifoQueue();
+  let activeEnvelopeRouter: BridgeEnvelopeRouter | null = null;
   // Invalidation contains no command data. A closed or slow panel cannot
   // delay committed admission/results or accumulate broadcast promises.
   const diagnosticChanges = createCoalescedTask(() => deps.chromeRuntimeSendMessage?.({
@@ -684,7 +725,7 @@ export const bootBridgeServiceWorker = async (
   const pairing = createBridgeWorkerPairing({
     submit: (options) =>
       submitBridgePairCodeInput({ ...options, ...(deps.fetch ? { fetch: deps.fetch } : {}) }),
-    finalize: (accepted) =>
+    finalize: (accepted) => runPairWork(() =>
       finalizeBridgePair({
         serverUrl: accepted.serverUrl,
         bearer: accepted.token,
@@ -698,14 +739,14 @@ export const bootBridgeServiceWorker = async (
         ...(deps.pairCompletionMintTokenId
           ? { mintTokenId: deps.pairCompletionMintTokenId }
           : {}),
-      }),
+      })),
     readPaired: readStoredPair,
     ...(deps.chromeStorageSession
       ? { pendingStore: createSessionPendingPairStore(deps.chromeStorageSession) }
       : {}),
     // Paired: connect from this worker, now. Declared below; only ever
     // called after the boot has returned.
-    onPaired: () => startPairedInPlace(),
+    onPaired: () => runPairWork(() => startPairedInPlace()),
     ...(deps.pairMintInstanceId ? { mintInstanceId: deps.pairMintInstanceId } : {}),
     refusals,
   });
@@ -724,9 +765,11 @@ export const bootBridgeServiceWorker = async (
   /** Set while the owner disconnects this bridge from its side panel (`disconnect`, below): the
    *  server closing the socket with 4003, for the revoke this bridge asked for itself, is its
    *  answer, not a refusal to note. */
-  let disconnecting: (() => void) | null = null;
+  let disconnecting: { owner: PairOwner; closed(code: number): void } | null = null;
   /** The side panel's Disconnect. Assigned with the paired runtime's state, below. */
   let disconnect: (() => Promise<{ told_server: boolean }>) | null = null;
+  const pickerSessions = createPickerSessions<BridgeRpcConn>(now);
+  let pickerLaunchPending = false;
 
   // D-169 P2 Slice 1 — the live broadcast-bus buffer. Created
   // unconditionally (pure in-memory; the unpaired path just never feeds
@@ -805,7 +848,9 @@ export const bootBridgeServiceWorker = async (
    *  means no confirmation line; the user launched from the panel, so it's
    *  normally still open). */
   const pushPickerResult = (payload: {
+    launch_id: string;
     ok: boolean;
+    cancelled?: boolean;
     created?: boolean;
     recipe_id?: string;
     url?: string;
@@ -831,7 +876,7 @@ export const bootBridgeServiceWorker = async (
   //    via the WS rpc; when unpaired, returns a typed error. The pairing
   //    session's messages are routed here too, which is why this runs
   //    before the pair state is read.
-  deps.chromeRuntimeOnMessage.addListener((message, _sender, sendResponse) => {
+  deps.chromeRuntimeOnMessage.addListener((message, sender, sendResponse) => {
     const typed = message as { type?: unknown } | null | undefined;
     if (typed && typed.type === 'recued.bridge.inspect') {
       void inspectState().catch(() => null).then((snapshot) => {
@@ -1120,15 +1165,35 @@ export const bootBridgeServiceWorker = async (
     // picker content script into the active tab (the sanctioned write
     // gesture). The picked element returns later as a separate `picker.result`
     // message (below). Replies the inject outcome so the panel shows
-    // "pick an element…" or a failure reason. No pair check here — the inject
-    // is independent of the WS; the watch-create step (below) is pair-gated.
+    // "pick an element…" or a failure reason. The launch belongs to this
+    // paired connection before any asynchronous injection work begins.
     if (typed && typed.type === 'recued.bridge.side-panel.launch-picker') {
       void (async () => {
         if (!deps.pickerInjector) {
           sendResponse({ ok: false, reason: 'picker_unavailable' });
           return;
         }
-        sendResponse(await deps.pickerInjector.injectIntoActiveTab());
+        const owner = rpcConnForSidePanel;
+        if (owner === null) { sendResponse({ ok: false, reason: 'bridge_not_paired' }); return; }
+        if (pickerLaunchPending) { sendResponse({ ok: false, reason: 'picker_busy' }); return; }
+        pickerLaunchPending = true;
+        const launch = pickerSessions.begin(owner);
+        try {
+          const outcome = await deps.pickerInjector.injectIntoActiveTab({
+            launch_id: launch.launch_id,
+            expires_at: launch.expires_at,
+            bind: document => pickerSessions.bind(launch, rpcConnForSidePanel, document),
+          });
+          if (!pickerSessions.current(launch, rpcConnForSidePanel)) {
+            sendResponse({ ok: false, reason: 'picker_session_invalid' });
+          } else if (!outcome.ok || launch.document === null) {
+            pickerSessions.retire(launch);
+            sendResponse(outcome.ok ? { ok: false, reason: 'inject_failed' } : outcome);
+          } else sendResponse({ ok: true, launch_id: launch.launch_id });
+        } catch {
+          pickerSessions.retire(launch);
+          sendResponse({ ok: false, reason: 'inject_failed' });
+        } finally { pickerLaunchPending = false; }
       })();
       return true;
     }
@@ -1137,43 +1202,39 @@ export const bootBridgeServiceWorker = async (
     // derive the Chrome match pattern from the page url (fork 4) + create the
     // DISARMED watch via `triggers.createElementWatch`, then push the result
     // to the side panel for the confirmation + #automation enable hint.
-    // 'cancelled' is a no-op.
+    // Cancellation consumes the launch without creating a watch.
     //
-    // SECURITY — DOCUMENT-AND-DEFER (D-169 bridge security hunt, F3). The
-    // picker outcome is NOT bound to the launch request: this handler trusts
-    // `result.selector` / `result.page_url` from the injected content script
-    // without a launch nonce or a `sender.tab` id/url match. A granted page
-    // with its OWN XSS could mutate the picker's textarea value before the user
-    // clicks confirm, so a different selector is saved. LATENT + user-mediated:
-    // the page cannot call chrome.runtime.sendMessage itself (only the isolated-
-    // world content script can), and the resulting watch is DISARMED (no
-    // actuation) — it only matters on an already-XSS'd granted domain. Close-out
-    // = mint a launch nonce in the SW (with tab id + url), thread it into the
-    // injected picker, and require sender.tab.id/url to match here.
+    // The launch credential is single-use and bound to Chrome's sender
+    // document, URL, top frame and this paired RPC connection. Validate and
+    // consume before the first await, including cancellation and RPC failure.
     if (isPickerResultMessage(message)) {
+      const accepted = pickerSessions.consume(message, sender, rpcConnForSidePanel);
+      if (!accepted.ok) {
+        if (accepted.expired) pushPickerResult({ launch_id: accepted.expired.launch_id, ok: false, error: accepted.error });
+        sendResponse({ ok: false, error: accepted.error });
+        return false;
+      }
+      const { launch } = accepted;
       const result = message.result;
       if (result.status !== 'picked') {
+        pushPickerResult({ launch_id: launch.launch_id, ok: true, cancelled: true });
         sendResponse({ ok: true, cancelled: true });
         return false;
       }
       void (async () => {
-        if (rpcConnForSidePanel === null) {
-          pushPickerResult({ ok: false, error: 'bridge_not_paired' });
-          sendResponse({ ok: false, error: 'bridge_not_paired' });
-          return;
-        }
         const url = deriveWatchUrlPattern(result.page_url);
         if (url === null) {
-          pushPickerResult({ ok: false, error: 'unsupported_page' });
+          pushPickerResult({ launch_id: launch.launch_id, ok: false, error: 'unsupported_page' });
           sendResponse({ ok: false, error: 'unsupported_page' });
           return;
         }
         try {
-          const reply = await rpcConnForSidePanel.call(
+          const reply = await launch.owner.call(
             'triggers.createElementWatch',
             { url, selector: result.selector },
           );
-          pushPickerResult({
+          if (pickerSessions.current(launch, rpcConnForSidePanel)) pushPickerResult({
+            launch_id: launch.launch_id,
             ok: true,
             created: reply.created,
             recipe_id: reply.recipe_id,
@@ -1186,7 +1247,7 @@ export const bootBridgeServiceWorker = async (
           });
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
-          pushPickerResult({ ok: false, error });
+          if (pickerSessions.current(launch, rpcConnForSidePanel)) pushPickerResult({ launch_id: launch.launch_id, ok: false, error });
           sendResponse({ ok: false, error });
         }
       })();
@@ -1264,60 +1325,79 @@ export const bootBridgeServiceWorker = async (
    *  side panel, watching the stored pair, then mounts the pair form, which reads the note and
    *  says why. Before, nothing handled the refusal: the bridge reconnected every ~40 ms, forever,
    *  and behind a proxy that kept every other client of the server out (measured 2026-11-03). */
-  const forgetRefusedPairing = async (
-    serverUrl: string,
-    info: { code: number; reason: string },
-  ): Promise<void> => {
+  const revokeOwnedPair = async (owner: PairOwner): Promise<void> => {
+    const conn = owner.conn;
+    if (owner.confirmedRevocation || conn === null || conn !== rpcConnForSidePanel
+      || !owner.instanceId || isServerConnected?.() !== true) return;
+    let closeCode: number | null = null;
+    let closed!: (confirmed: boolean) => void;
+    const close = new Promise<boolean>(resolve => { closed = resolve; });
+    const signal = { owner, closed(code: number) { closeCode = code; closed(code === 4003); } };
+    disconnecting = signal;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answered = conn.call('pair.revoke', { instance_id: owner.instanceId }).then(() => true, () => false);
+      const waited = new Promise<boolean>(resolve => { deadline = setTimeout(() => resolve(false), DISCONNECT_WAIT_MS); });
+      const ok = await Promise.race([answered, close, waited]);
+      // RPC rejection can precede the fatal-close callback. Only 4003 on
+      // this runtime confirms revocation; a 4401 proves no such outcome.
+      if (!ok && closeCode === null) {
+        await Promise.race([close, new Promise<void>(resolve => { grace = setTimeout(resolve, 1_000); })]);
+      }
+      owner.confirmedRevocation = ok || closeCode === 4003;
+    } finally {
+      if (deadline !== undefined) clearTimeout(deadline);
+      if (grace !== undefined) clearTimeout(grace);
+      if (disconnecting === signal) disconnecting = null;
+    }
+  };
+
+  const teardownPair = (owner: PairOwner, cause: 'disconnect' | 'refused'): Promise<TeardownResult> => {
+    // Claim synchronously, before any await. Keep a successful receipt for
+    // this lifetime; a storage failure permits retry without losing proof
+    // that the server already confirmed revocation.
+    if (owner.teardown !== null) return owner.teardown;
+    const task = runPairWork(async (): Promise<TeardownResult> => {
+      if (currentPairOwner !== owner) return { told_server: owner.confirmedRevocation };
+      pickerSessions.retire();
+      if (cause === 'disconnect') await revokeOwnedPair(owner);
+      const running = runtime;
+      runtime = null;
+      await running?.stop().catch(() => undefined);
+      const stored = await localStore.inspect();
+      const ownsStorage = currentPairOwner === owner && stored.server_url === owner.serverUrl
+        && stored.server_public_key === owner.serverKey && stored.webclient_token?.token_id === owner.tokenId
+        && (stored.pair_metadata?.instance_id ?? null) === owner.instanceId;
+      if (ownsStorage) {
+        if (cause === 'refused' || !owner.confirmedRevocation) {
+          await refusals.save({ serverUrl: pairFormServerUrl(owner.serverUrl), at: now(),
+            ...(cause === 'disconnect' ? { kind: 'disconnected' as const } : {}) }).catch(() => undefined);
+        }
+        await localStore.clear();
+      }
+      return { told_server: owner.confirmedRevocation };
+    }).catch((error: unknown) => {
+      if (owner.teardown === task) owner.teardown = null;
+      throw error;
+    });
+    owner.teardown = task;
+    return task;
+  };
+
+  const forgetRefusedPairing = async (owner: PairOwner, info: { code: number; reason: string }): Promise<void> => {
+    if (currentPairOwner !== owner) return;
     console.warn(`bridge.service-worker-bootstrap: the server refused this bridge's sign-in (close ${String(info.code)}); unpairing it so it can be paired again`);
-    await refusals.save({ serverUrl: pairFormServerUrl(serverUrl), at: now() }).catch(() => undefined);
-    // A refusal can come while the runtime is still being started.
-    await runtimeStarting?.catch(() => undefined);
-    const running = runtime;
-    runtime = null;
-    await running?.stop().catch(() => undefined);
-    await localStore.clear().catch((err: unknown) => {
-      console.warn('bridge.service-worker-bootstrap: clearing the refused pairing failed', err);
+    await teardownPair(owner, 'refused').catch((error: unknown) => {
+      console.warn('bridge.service-worker-bootstrap: clearing the refused pairing failed', error);
     });
   };
 
-  /** The owner disconnects this bridge from its side panel. First the server is asked to remove
-   *  it (`pair.revoke` for its own instance), so its Devices list drops it and its sign-in stops
-   *  working there; the server answers by closing this socket with 4003 (`ws-server.ts`), before
-   *  the call's own answer can arrive, which `disconnecting` takes as the answer. Then the bridge
-   *  forgets the pairing as a refusal does, keeping the owner's blocked sites. Nothing is noted
-   *  unless the server could not be told, when the pair form says it still lists this bridge. */
-  disconnect = async () => {
-    const pair = currentSnapshot.local;
-    const serverUrl = typeof pair.server_url === 'string' ? pair.server_url : '';
-    const instanceId = pair.pair_metadata?.instance_id;
-    const conn = rpcConnForSidePanel;
-    let told = false;
-    if (conn !== null && typeof instanceId === 'string' && instanceId !== '' && isServerConnected?.() === true) {
-      let closedByServer = false;
-      const closed = new Promise<void>((resolve) => {
-        disconnecting = () => { closedByServer = true; resolve(); };
-      });
-      const answered = conn.call('pair.revoke', { instance_id: instanceId }).then(() => true, () => false);
-      const waited = new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), DISCONNECT_WAIT_MS); });
-      const ok = await Promise.race([answered, closed.then(() => true), waited]);
-      // A call the close cut off can fail just before the close itself is reported.
-      if (!ok && !closedByServer) {
-        await Promise.race([closed, new Promise<void>((resolve) => { setTimeout(resolve, 1_000); })]);
-      }
-      told = ok || closedByServer;
-    }
-    await runtimeStarting?.catch(() => undefined);
-    const running = runtime;
-    runtime = null;
-    await running?.stop().catch(() => undefined);
-    disconnecting = null;
-    if (!told && serverUrl !== '') {
-      await refusals.save({ serverUrl: pairFormServerUrl(serverUrl), at: now(), kind: 'disconnected' })
-        .catch(() => undefined);
-    }
-    await localStore.clear();
-    return { told_server: told };
-  };
+  /** The owning runtime supplies both the revoke target and the local
+   * clearing identity. Concurrent panels join its operation and receipt. */
+  disconnect = () => currentPairOwner === null
+    ? Promise.resolve({ told_server: false })
+    : teardownPair(currentPairOwner, 'disconnect');
 
   /** 6–7. Build the WS pipeline from a stored pair and start connecting.
    *  Runs at boot for a paired bridge, and in place right after a pair. */
@@ -1346,11 +1426,17 @@ export const bootBridgeServiceWorker = async (
     const serverUrl = pair.server_url;
     const serverPublicKey = pair.server_public_key;
     const initialTokenId = pair.webclient_token.token_id;
+    const owner: PairOwner = { serverUrl, serverKey: serverPublicKey, tokenId: initialTokenId,
+      instanceId: pair.pair_metadata?.instance_id ?? null, conn: null,
+      confirmedRevocation: false, teardown: null };
+    currentPairOwner = owner;
     const notificationDispatcher = deps.chromeNotifications
       ? createNotificationDispatcher(deps.chromeNotifications, { default_icon_url: deps.defaultNotificationIconUrl },
         route => { if (route.url) { try { void Promise.resolve(deps.openNotificationUrl?.(route.url)).catch(() => {}); } catch { /* Chrome may refuse a tab after shutdown. */ } } }, { server_url: serverUrl }) : null;
 
     let inboundDispatcher: ((payload: string) => void) | null = null;
+    // The conn is built after the WS; wire its loss handler before ws.start().
+    let onRpcDisconnected: (() => void) | null = null;
     // Forward-declared so the WsClient's `onConnected` handler can fire
     // the initial capability-profile push. The monitor is constructed
     // after rpcConn (which it pushes through) so the reference is null
@@ -1392,7 +1478,7 @@ export const bootBridgeServiceWorker = async (
       //
       // The structured `${token_id}.${plaintext}` wire shape unlocks the
       // server's rpc-layer gate (matches webclient bootstrap line 689).
-      resolveBearer: async () => {
+      resolveBearer: async (attempt) => {
         const current = await localStore.get('webclient_token');
         if (current === null) {
           // Console.warn provides diagnostic visibility ahead of the
@@ -1412,7 +1498,13 @@ export const bootBridgeServiceWorker = async (
             token_id: current.token_id,
             server_public_key: serverPublicKey,
           });
-          selectIdempotencyForPair({ server_public_key: serverPublicKey, token_id: current.token_id });
+          // A successful unwrap can reload a rotated credential for this
+          // runtime. Keep its clearing identity current without adopting a
+          // different server or instance, which remain pinned in owner.
+          if (attempt.isCurrent() && currentPairOwner === owner) {
+            owner.tokenId = current.token_id;
+            selectIdempotencyForPair({ server_public_key: serverPublicKey, token_id: current.token_id });
+          }
           return `${current.token_id}.${plaintext}`;
         } catch (err) {
           // Surface AEAD-verify failures via console.warn for the same
@@ -1426,15 +1518,18 @@ export const bootBridgeServiceWorker = async (
         onMessage(payload) {
           inboundDispatcher?.(payload);
         },
+        onDisconnected() {
+          onRpcDisconnected?.();
+        },
         // The server refused this sign-in for good (4003: removed from its devices; 4401: the
         // bearer was rejected). The client has stopped; unpair, so the panel asks to pair again.
         onSignInRefused(info) {
           // The owner's own Disconnect: the server's answer to it, not a refusal.
-          if (disconnecting !== null) {
-            disconnecting();
+          if (disconnecting?.owner === owner) {
+            disconnecting.closed(info.code);
             return;
           }
-          void forgetRefusedPairing(serverUrl, info);
+          void forgetRefusedPairing(owner, info);
         },
         onConnected() {
           // D-169 P0 — re-push capability profile on every successful
@@ -1484,6 +1579,7 @@ export const bootBridgeServiceWorker = async (
       grants,
       getIdempotencyCache: () => idempotency,
       queue,
+      onQueueReleased: () => activeEnvelopeRouter?.resumeCommands(),
       notificationDispatch: notificationDispatcher
         ? (n) => notificationDispatcher.dispatch(n)
         : () => { throw new Error('OS notifications are unavailable'); },
@@ -1491,6 +1587,7 @@ export const bootBridgeServiceWorker = async (
       notificationClear: async id => { if (!deps.chromeNotifications) throw new Error('OS notifications are unavailable'); await deps.chromeNotifications.clear(id); },
       inflight,
     });
+    activeEnvelopeRouter = envelopeRouter;
 
     // D-169 P0 Slice 3 — typed rpc conn over the WS. The conn's `send`
     // callback writes the serialised envelope through `ws.send`; the
@@ -1508,11 +1605,13 @@ export const bootBridgeServiceWorker = async (
         ws.send(JSON.stringify(envelope));
       },
     });
+    onRpcDisconnected = () => rpcConn.transportDisconnected();
     // D-169 P1 — expose the conn to the side-panel `fetch-status`
     // responder built at step 4. Assigned post-construction so the
     // responder remains a no-op (returns `bridge_not_paired`) until the
     // WS pipeline actually boots.
     rpcConnForSidePanel = rpcConn;
+    owner.conn = rpcConn;
     isServerConnected = () => ws.isConnected();
     if (deps.chromeNotifications) {
       approvalNotices = createApprovalNotices({
@@ -1548,7 +1647,7 @@ export const bootBridgeServiceWorker = async (
 
     inboundDispatcher = buildInboundDispatcher({
       rpcConn,
-      envelopeRouter,
+      envelopeRouter: envelopeRouter.dispatch,
       dispatchServerEvent: (event) => broadcastSubscriber.dispatch(event),
     });
 
@@ -1683,13 +1782,13 @@ export const bootBridgeServiceWorker = async (
     }
 
     // 6. Keepalive alarm + start.
-    if (deps.chromeAlarms && deps.chromeRuntimeInfo) {
-      installKeepaliveAlarm(
+    const stopKeepalive = deps.chromeAlarms && deps.chromeRuntimeInfo
+      ? installKeepaliveAlarm(
         deps.chromeAlarms,
         deps.chromeRuntimeInfo,
         async () => runKeepaliveTick({ ws, idempotency, now }),
-      );
-    }
+      )
+      : undefined;
 
     // 7. Start the connect loop. The WsClient returns as soon as the
     // loop is scheduled; the actual TCP/TLS handshake races in the
@@ -1703,6 +1802,11 @@ export const bootBridgeServiceWorker = async (
       rpcConn,
       capabilityMonitor,
       async stop() {
+        envelopeRouter.stop();
+        if (activeEnvelopeRouter === envelopeRouter) activeEnvelopeRouter = null;
+        pickerSessions.retire();
+        // Retire queued alarm callbacks before they can restart this socket.
+        stopKeepalive?.();
         // Stop the capability monitor BEFORE the rpc conn so a
         // chrome.permissions event firing concurrently with teardown
         // doesn't kick off a `pushNow` that races the dispose path.
@@ -1715,13 +1819,12 @@ export const bootBridgeServiceWorker = async (
         for (const cancel of inflight.values()) cancel.signalled = true;
         queue.clear();
         await ws.stop();
-        if (deps.chromeAlarms) {
-          removeKeepaliveAlarm(deps.chromeAlarms);
-        }
         // The responders fall back to their unpaired answers.
-        rpcConnForSidePanel = null;
-        isServerConnected = null;
-        fetchAndSeedHistory = null;
+        if (rpcConnForSidePanel === rpcConn) {
+          rpcConnForSidePanel = null;
+          isServerConnected = null;
+          fetchAndSeedHistory = null;
+        }
       },
     };
   };
@@ -1759,7 +1862,7 @@ export const bootBridgeServiceWorker = async (
   };
 
   if (isStoredPaired(bootSnapshot.local)) {
-    await startPairedOnce(bootSnapshot);
+    await runPairWork(() => startPairedOnce(bootSnapshot));
   }
 
   return {
@@ -1778,7 +1881,9 @@ export const bootBridgeServiceWorker = async (
     get capabilityMonitor() {
       return runtime?.capabilityMonitor ?? null;
     },
+    retirePickerForTab: tab_id => pickerSessions.retireTab(tab_id),
     async stop() {
+      pickerSessions.retire();
       diagnosticChanges.stop();
       const running = runtime;
       runtime = null;

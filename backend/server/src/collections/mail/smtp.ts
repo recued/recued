@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { IngredientError } from '@recued/ingredients';
 import { MAIL_RECONCILIATION_ID_HEADER } from '@recued/contracts';
-import { MAIL_AUTOMATIC_REPLY_HEADERS, mailHeaderText, mimeFilenameParameter, type MailDispatchBoundary, type OutgoingMessage, type SentMessageMeta } from './provider.js';
+import { MAIL_AUTOMATIC_REPLY_HEADERS, mailHeaderEncoded, mailHeaderText, mimeFilenameParameter, type MailDispatchBoundary, type OutgoingMessage, type SentMessageMeta } from './provider.js';
 
 /** Narrow SMTP transport surface that matches what nodemailer's
  *  `Transporter` exposes for our send path. `raw` carries the
@@ -154,6 +154,15 @@ export const submitSmtp = async (opts: {
         envelope: { from: opts.config.from, to: [...msg.to, ...(msg.cc ?? []), ...(msg.bcc ?? [])] } });
     } catch (error) {
       const err = error as { code?: string; responseCode?: number } | null;
+      // Too large for the server: the message, not a recipient. Sent again, it
+      // is refused again (2026-11-17: files up to 25 MB go, and many servers
+      // take less).
+      if (smtpRefusedForSize(error)) {
+        throw new IngredientError('MAIL_SEND_MESSAGE_REFUSED',
+          'The mail server refused the message as too large, so it was not sent. Send fewer or smaller files.', {
+            kind: opts.kind, slug: opts.slug, smtp_code: err?.code, smtp_response_code: err?.responseCode, not_sent: true,
+          });
+      }
       const code = err?.code === 'EAUTH' ? 'MAIL_SEND_AUTH_FAILED'
         : err?.code === 'EENVELOPE' || (typeof err?.responseCode === 'number' && err.responseCode >= 500
           && err.responseCode < 600 && err.responseCode !== 530 && err.responseCode !== 535)
@@ -165,6 +174,23 @@ export const submitSmtp = async (opts: {
     }
     return { meta, raw };
   } finally { try { transport.close(); } catch { /* submission outcome is authoritative */ } }
+};
+
+/** Did the server refuse the message for its SIZE? RFC 3463's 5.3.4 ("message
+ *  too big for system") or 5.2.3 ("message length exceeds administrative
+ *  limit"), or RFC 1870's 552 with words of size. A 552 is also a recipient's
+ *  full mailbox (5.2.2), which is not the message's fault, so that stays a
+ *  recipient's refusal. Also nodemailer's own refusal, before it sends anything,
+ *  of a message larger than the server's advertised SIZE ("Message size larger
+ *  than allowed", `EMESSAGE`). Every one is a refusal: nothing was sent. */
+export const smtpRefusedForSize = (err: unknown): boolean => {
+  if (err === null || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; message?: unknown; responseCode?: unknown; response?: unknown };
+  if (e.code === 'EMESSAGE' && typeof e.message === 'string' && /size larger than allowed/i.test(e.message)) return true;
+  const response = typeof e.response === 'string' ? e.response : '';
+  if (/\b5\.3\.4\b|\b5\.2\.3\b/.test(response)) return true;
+  return e.responseCode === 552 && !/\b5\.2\.2\b/.test(response)
+    && /\bsize\b|too (big|large)|exceed/i.test(response);
 };
 
 /** Does this SMTP failure PROVE the server never accepted the message?
@@ -292,7 +318,7 @@ export const buildSmtpRfc5322 = (
   if (msg.to.length > 0) headers.push(`To: ${mailHeaderText(msg.to.join(', '))}`);
   if (msg.cc && msg.cc.length > 0) headers.push(`Cc: ${mailHeaderText(msg.cc.join(', '))}`);
   if (msg.bcc && msg.bcc.length > 0) headers.push(`Bcc: ${mailHeaderText(msg.bcc.join(', '))}`);
-  headers.push(`Subject: ${mailHeaderText(msg.subject)}`);
+  headers.push(`Subject: ${mailHeaderEncoded(msg.subject)}`);
   if (msg.reply_to) headers.push(`Reply-To: ${mailHeaderText(msg.reply_to)}`);
   if (msg.in_reply_to) headers.push(`In-Reply-To: ${mailHeaderText(msg.in_reply_to)}`);
   if (msg.references && msg.references.length > 0) {

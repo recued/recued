@@ -68,7 +68,28 @@ export type RunSwitchNeed = {
   label?: string;
 };
 
-export type RunNeed = RunConnectionNeed | RunProgramNeed | RunSwitchNeed;
+/** D-402 slice H3c (ruling 14) — a browser a recipe's setting names that is no longer paired, or not
+ *  connected, so the run was refused before step 1 (the server's `browser-step-check.ts`). The run dialog
+ *  offers to move the dish's settings that hold it to another browser: "Use this browser instead"
+ *  (`dishes.use_browser`). A fresh pairing is a new browser, so pairing again does not bring it back. */
+export type RunBrowserNeed = {
+  kind: 'browser';
+  step_id: string;
+  /** `not_paired`: its pairing is gone (revoked, or replaced by a fresh one). `offline`: paired, and not
+   *  connected now. */
+  problem: 'not_paired' | 'offline';
+  /** The setting that names it. */
+  setting: string;
+  /** The browser the setting holds: its lasting id. */
+  browser_id: string;
+  /** Its owner's name for it, when known. */
+  name?: string;
+  /** The dish whose settings the run used: the one it ran as, else the recipe's main dish. */
+  dish_id?: string;
+  /** The one other browser connected now, when there is exactly one: the browser to offer instead. */
+  instead?: { browser_id: string; name: string };
+};
+export type RunNeed = RunConnectionNeed | RunProgramNeed | RunSwitchNeed | RunBrowserNeed;
 
 /** What the catalog gateway attaches to a cli operation it refused because it is switched
  *  off for the owner (`cli_reachability_disabled`), and the engine keeps in the step error's

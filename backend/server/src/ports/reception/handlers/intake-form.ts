@@ -41,6 +41,7 @@
  *  Spec: D-149 § A.5.3 + § Must Hold I-12 + I-12b + § N.6. */
 
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readLiveReceptionEndpoint } from '../endpoint-authority.js';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
@@ -669,6 +670,9 @@ export const createIntakeFormPacketHandler = (
 
 export interface IntakeFormSubmitHandlerDeps {
   readonly getStore: () => PublicEndpointRegistryStore;
+  readonly getPepper: () => Buffer;
+  /** Trust the forwarded public scheme only behind the configured proxy. */
+  readonly trustForwardedProto?: boolean;
   readonly getSubmissionStore: () => FormSubmissionStore;
   readonly getFormNonceStore: () => IntakeFormNonceStore;
   readonly getFormSubmissionPiiKey: () => Uint8Array;
@@ -729,14 +733,16 @@ export const createIntakeFormSubmitHandler = (
       return;
     }
 
-    if (!verifyOrigin(req)) {
+    if (!verifyOrigin(req, deps.trustForwardedProto === true)) {
       writeErrorPage(res, 'this form', 'Submission blocked by origin policy.', 403);
       return;
     }
 
-    const row = deps.getStore().findById(endpoint_id);
+    // Dispatch preceded the body wait. Reauthorize before consuming its nonce.
+    const liveEndpoint = () => readLiveReceptionEndpoint(req, endpoint_id, 'intake_form', deps);
+    const row = liveEndpoint();
     if (!row) {
-      writeErrorPage(res, 'this form', 'Submission unavailable.', 503);
+      writeErrorPage(res, 'this form', 'This form is no longer available. Ask for a new link.', 410);
       return;
     }
     const config = parseIntakeFormConfig(row.metadata);
@@ -965,16 +971,19 @@ export const createIntakeFormSubmitHandler = (
       pair_binding: nonceStamp.pair_binding,
       metadata: metadataPayload,
     } as const;
-    // Encryption yielded above, so the cheap read cannot authorize this write.
-    // Re-check and insert synchronously to prevent two concurrent submissions
-    // from consuming the same final per-source slot.
+    // Encryption yielded above. Check both live endpoint authority and the
+    // source cap under the insertion's write lock.
     const inserted = submissionStore.insertIfSourceAvailable({
       ...submissionInput,
       max_submissions_per_window: config.anti_spam.rate_limit_per_ip,
       window_start_at: windowStartAt,
       now,
-    });
+    }, () => liveEndpoint() !== null);
     if ('conflict' in inserted) {
+      if (inserted.conflict === 'not_authorized') {
+        writeErrorPage(res, display_name, 'This form is no longer available. Ask for a new link.', 410);
+        return;
+      }
       writeSourceRateLimitPage(res, display_name, now, inserted.retry_after_at);
       return;
     }

@@ -9,7 +9,9 @@
  *
  *  A batch held and approved carries `preflight_admitted` and opens what its ask listed. One the
  *  gateway admitted with no ask to stand in for (the owner's own policy, or an exact session
- *  grant) has no admission here and opens as before: the owner chose that.
+ *  grant) has no admission here and opens as before: the owner chose that. So does one a
+ *  pre-approval let through (D-402 ruling 18): an "Always" covers opening a page at an address the
+ *  run finds as it goes, within its recipe's sites.
  *
  *  In memory, for a few minutes: the run reads it as it starts, right after the gateway admitted
  *  it. Keyed by the run and the call's page and steps, so another call of the same run never reads
@@ -31,7 +33,7 @@ export const BROWSER_BATCH_ADMISSION_TTL_MS = 10 * 60_000;
 
 const keyOf = (run_id: string, input: unknown): string => {
   const call = input !== null && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
-  return `${run_id}|${canonicalJSONStringify({ page: call.page ?? null, steps: call.steps ?? null })}`;
+  return `${run_id}|${canonicalJSONStringify({ page: call.page ?? null, steps: call.steps ?? null, bridge_id: call.bridge_id ?? null })}`;
 };
 
 export const createBrowserBatchAdmissions = (now: () => number = Date.now): BrowserBatchAdmissions => {

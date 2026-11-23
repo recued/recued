@@ -5,7 +5,7 @@ export type {
   LLMCompletionOptions, LLMSlot, LLMConfig,
   LlmGatewayDefaultRoute,
   LLMAdapter, LLMCompletionResult, LLMFinishReason, AdapterRegistry, ModelHint, TokenUsage,
-  TokenUsageAttribution, WebChatTab,
+  TokenUsageAttribution, UnavailableModel, OpenAIOffEffort, WebChatTab,
   FreePoolApiEntry, FreePoolEntry, CoordinationStrategy,
   AvailabilityReason, AvailabilityStatus, AvailabilitySnapshot,
   Match, MatchSource,
@@ -52,6 +52,8 @@ export type {
 
 // Router
 export { resolveSlot, computeMaxTokens, shouldEnableThinking, resolveThinking, thinkingSettingOf } from './router.js';
+export { inspectLLMOutput } from './output-diagnostics.js';
+export type { LLMOutputDiagnostics } from './output-diagnostics.js';
 // D-344 — a model's thinking switch, by provider and host.
 export { openAiThinkingSwitch } from './thinking-switch.js';
 export type { ResolvedSlot } from './router.js';
@@ -100,6 +102,7 @@ export {
   demoteSystemMessages,
   endpointFingerprint,
   isJsonModeRejection,
+  isModelMissingRejection,
   isSystemRoleRejection,
   isThinkingSwitchRejection,
   jsonModeUnsupported,
@@ -119,6 +122,13 @@ export {
   learnedContextWindow,
   provenAcceptedInput,
   minLearnedContextWindow,
+  knownContextWindow,
+  minKnownContextWindow,
+  noteTokenRatio,
+  estimateTokenRatio,
+  minEstimateTokenRatio,
+  TOKEN_RATIO_MIN_SAMPLES,
+  TOKEN_RATIO_RANGE,
   maxProvenAcceptedInput,
 } from './endpoint-capabilities.js';
 export type { EndpointCapabilityNote } from './endpoint-capabilities.js';
@@ -146,6 +156,10 @@ export {
 // Quota tracking (per-entry daily + RPM for the free pool)
 export { createQuotaTracker } from './quota.js';
 export type { QuotaTracker, QuotaSnapshot } from './quota.js';
+// How a call to a provider ended, kept per source and shown beside it in Settings.
+export { answeredByAnotherModel, diagnoseProviderFailure, failedCallResult } from './call-outcome.js';
+export type { ProviderFailureDiagnosis, SourceCallOutcome, SourceCallResult } from './call-outcome.js';
+export { stoppedAtOutputLimit } from './types.js';
 
 // Config validation (trust boundaries — server.setLLMConfig, CLI import, etc.)
 export { parseLLMConfig, LLMConfigValidationError } from './validate-config.js';

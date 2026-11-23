@@ -123,7 +123,7 @@ import {
   type ConnectionsSuggestSetupCaller,
   type CredentialRotationServerUpdateTarget,
 } from '../settings/connections-enroll-panel.js';
-import { serializeShellRoute } from '../shell/route.js';
+import { serializeChatAnswerAddress, serializeShellRoute } from '../shell/route.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 import { serializeChatConnectedSource } from '../chat/connected-source-handoff.js';
 import {
@@ -137,11 +137,17 @@ import {
   type WebhooksDeliveryListCaller,
   type WebhooksDisableCaller,
   type WebhooksEnableCaller,
+  type WebhooksDoorSetCaller,
+  type WebhooksStraysDismissCaller,
   type WebhooksListCaller,
   type WebhooksManualConfirmCaller,
   type WebhooksRegistrationReconcileCaller,
   type WebhooksPanelMount,
   type WebhooksRejectedDeliveryListCaller,
+  type WebhooksUpdateCaller,
+  type WebhooksDeadLetterListCaller,
+  type WebhooksDeadLetterRequeueCaller,
+  type WebhooksDeadLetterResolveCaller,
   type WebhooksRetireCaller,
   type WebhooksTestDeliveryCaller,
   type WebhooksRetentionPruneCaller,
@@ -178,6 +184,9 @@ export const CONNECTIONS_ROUTE_HEADING_ATTR =
   'data-recued-connections-route-heading';
 export const CONNECTIONS_ROUTE_DESCRIPTION_ATTR =
   'data-recued-connections-route-description';
+/** D-405 slice 7 — the way back to the chat answer whose "Connect your mail" opened the page. */
+export const CONNECTIONS_ROUTE_BACK_TO_CHAT_ATTR =
+  'data-recued-connections-route-back-to-chat';
 export const CONNECTIONS_ROUTE_TABS_ATTR =
   'data-recued-connections-route-tabs';
 export const CONNECTIONS_ROUTE_CONTENT_ATTR =
@@ -334,28 +343,42 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 [${CONNECTIONS_ROUTE_HOST_ATTR}] {
   max-width: var(--wc-content-max, 1080px);
   margin: 0 auto;
-  padding: 22px 16px 36px;
+  padding: var(--wc-page-pad, 24px) var(--wc-page-pad, 24px) 32px;
   color: var(--fg);
 }
 [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-header {
   display: grid;
-  gap: 7px;
-  max-width: 720px;
-  margin-bottom: 20px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: var(--wc-space-md, 16px);
 }
 [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-title {
   margin: 0;
   color: var(--fg-strong, var(--fg));
-  font-size: 28px;
+  font-size: var(--wc-font-title, 28px);
   line-height: 1.15;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: -0.025em;
 }
 [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-description {
+  grid-column: 1 / -1;
   margin: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--wc-font-body, 14px);
   line-height: 1.55;
+}
+[${CONNECTIONS_ROUTE_BACK_TO_CHAT_ATTR}] {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+[${CONNECTIONS_ROUTE_BACK_TO_CHAT_ATTR}]:hover,
+[${CONNECTIONS_ROUTE_BACK_TO_CHAT_ATTR}]:focus-visible {
+  text-decoration: underline;
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] {
   display: flex;
@@ -369,7 +392,7 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
   /* Keep the separator inside the rail; overlapping its border with a
      negative tab margin creates one pixel of vertical scroll overflow. */
   box-shadow: inset 0 -1px 0 var(--border);
-  margin-bottom: 20px;
+  margin-bottom: var(--wc-space-md, 16px);
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab {
   flex: 0 0 auto;
@@ -417,7 +440,7 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 .connections-setup-return a:hover{text-decoration:underline}
 [${CONNECTIONS_ROUTE_UNAVAILABLE_ATTR}] {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--wc-radius, 9px);
   padding: 10px 12px;
   background: var(--surface-subtle);
   color: var(--muted);
@@ -428,11 +451,11 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 [${CONNECTIONS_ROUTE_HOST_ATTR}] .rx-empty-hint {
   display: block;
   margin: 0;
-  padding: 18px;
-  border: 1px dashed var(--border-strong);
-  border-radius: 8px;
+  padding: var(--wc-space-lg, 24px);
+  border: 0;
+  border-radius: var(--wc-radius, 9px);
   background: var(--surface-sunk);
-  text-align: center;
+  text-align: left;
   color: var(--fg-muted);
   font-size: 13px;
   line-height: 1.5;
@@ -440,17 +463,17 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 }
 @media (max-width: 720px) {
   [${CONNECTIONS_ROUTE_HOST_ATTR}] {
-    padding: 18px 14px 28px;
+    padding: var(--wc-page-pad, 16px) var(--wc-page-pad, 16px) 28px;
   }
   [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-header {
     margin-bottom: 16px;
   }
   [${CONNECTIONS_ROUTE_HOST_ATTR}] .connections-route-title {
-    font-size: 25px;
+    font-size: var(--wc-font-title, 24px);
   }
   [${CONNECTIONS_ROUTE_TABS_ATTR}] {
-    margin-right: -14px;
-    padding-right: 14px;
+    margin-right: calc(-1 * var(--wc-page-pad, 16px));
+    padding-right: var(--wc-page-pad, 16px);
     margin-bottom: 18px;
   }
 }
@@ -638,12 +661,22 @@ export interface BootstrapConnectionsRouteOptions {
   webhooksManualConfirmCaller?: WebhooksManualConfirmCaller;
   webhooksRegistrationReconcileCaller?: WebhooksRegistrationReconcileCaller;
   webhooksEnableCaller?: WebhooksEnableCaller;
+  /** D-201 Slice 10AF — each recipe's own door switch on a webhook's card. */
+  webhooksDoorSetCaller?: WebhooksDoorSetCaller;
+  /** D-201 Slice 10AL — the owner removed the endpoints Recued gave up on. */
+  webhooksStraysDismissCaller?: WebhooksStraysDismissCaller;
   webhooksDisableCaller?: WebhooksDisableCaller;
   webhooksTestDeliveryCaller?: WebhooksTestDeliveryCaller;
   webhooksDeliveryListCaller?: WebhooksDeliveryListCaller;
   webhooksDeliveryGetCaller?: WebhooksDeliveryGetCaller;
   webhooksDeliveryEventGetCaller?: WebhooksDeliveryEventGetCaller;
   webhooksRejectedDeliveryListCaller?: WebhooksRejectedDeliveryListCaller;
+  /** D-201 Slice 10C — change which events an existing webhook takes. */
+  webhooksUpdateCaller?: WebhooksUpdateCaller;
+  /** D-201 Slice 10B — the messages that did not reach their recipes. */
+  webhooksDeadLetterListCaller?: WebhooksDeadLetterListCaller;
+  webhooksDeadLetterRequeueCaller?: WebhooksDeadLetterRequeueCaller;
+  webhooksDeadLetterResolveCaller?: WebhooksDeadLetterResolveCaller;
   /** D-341 slice B2b — "What it may do without asking" on each webhook's card. */
   webhooksTriggerPreapprovals?: TriggerPreapprovalPanelCallers;
   webhooksRetireCaller?: WebhooksRetireCaller;
@@ -775,6 +808,17 @@ export const bootstrapConnectionsRoute = (
   description.textContent =
     'Bring your mail, calendars, files, and everyday services into Recued.';
   header.appendChild(description);
+  // D-405 slice 7 — opened from a chat answer's "Connect your mail": the way back to that answer, where
+  // the row then says one is connected and offers Ask again (as Yours' form and the Packs page do).
+  const returnToChat = opts.initialAddress?.kind === 'lane' ? opts.initialAddress.returnToChat : undefined;
+  if (returnToChat !== undefined) {
+    const back = doc.createElement('a');
+    back.className = 'connections-route-back-to-chat';
+    back.setAttribute(CONNECTIONS_ROUTE_BACK_TO_CHAT_ATTR, '');
+    back.href = serializeChatAnswerAddress(returnToChat);
+    back.textContent = 'Back to chat';
+    header.appendChild(back);
+  }
   routeRoot.appendChild(header);
 
   // ── Tab bar (anchors → hash → shell remount) ──
@@ -952,8 +996,14 @@ export const bootstrapConnectionsRoute = (
             : connectionsAccountAddress(lane, detailSlug),
         );
       },
-      onGoToChat: (source) => navigate(serializeChatConnectedSource(source)),
-      onFirstMailboxConnected: () => navigate('#yours/proposals'),
+      // D-405 slice 7 — opened from a chat answer, its chat is that answer, and the first mailbox's
+      // Proposals (D-325's first session) carry it on, so they offer the way back too.
+      onGoToChat: (source) => navigate(returnToChat !== undefined
+        ? serializeChatAnswerAddress(returnToChat)
+        : serializeChatConnectedSource(source)),
+      onFirstMailboxConnected: () => navigate(returnToChat !== undefined
+        ? serializeShellRoute('yours', 'proposals', 'return', 'chat', returnToChat.sessionId, returnToChat.messageId)
+        : '#yours/proposals'),
       onOpenLane: (lane) => navigate(connectionsLaneAddress(lane).hash),
       ...(initialDetailSlug !== undefined
         ? { initialDetailSlug }
@@ -1018,6 +1068,12 @@ export const bootstrapConnectionsRoute = (
           : {}),
         runEnable: opts.webhooksEnableCaller!,
         runDisable: opts.webhooksDisableCaller!,
+        ...(opts.webhooksStraysDismissCaller !== undefined
+          ? { runStraysDismiss: opts.webhooksStraysDismissCaller }
+          : {}),
+        ...(opts.webhooksDoorSetCaller !== undefined
+          ? { runDoorSet: opts.webhooksDoorSetCaller }
+          : {}),
         ...(opts.webhooksTestDeliveryCaller !== undefined
           ? { runTestDelivery: opts.webhooksTestDeliveryCaller }
           : {}),
@@ -1033,6 +1089,18 @@ export const bootstrapConnectionsRoute = (
         ...(opts.webhooksRejectedDeliveryListCaller !== undefined
           ? { runRejectedDeliveryList: opts.webhooksRejectedDeliveryListCaller }
           : {}),
+        ...(opts.webhooksUpdateCaller !== undefined
+          ? { runUpdate: opts.webhooksUpdateCaller }
+          : {}),
+        ...(opts.webhooksDeadLetterListCaller !== undefined
+          ? { runDeadLetterList: opts.webhooksDeadLetterListCaller }
+          : {}),
+        ...(opts.webhooksDeadLetterRequeueCaller !== undefined
+          ? { runDeadLetterRequeue: opts.webhooksDeadLetterRequeueCaller }
+          : {}),
+        ...(opts.webhooksDeadLetterResolveCaller !== undefined
+          ? { runDeadLetterResolve: opts.webhooksDeadLetterResolveCaller }
+          : {}),
         ...(opts.webhooksRetireCaller !== undefined
           ? { runRetire: opts.webhooksRetireCaller }
           : {}),
@@ -1042,6 +1110,7 @@ export const bootstrapConnectionsRoute = (
         ...(opts.webhooksTriggerPreapprovals !== undefined
           ? { triggerPreapprovals: opts.webhooksTriggerPreapprovals }
           : {}),
+        ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       });
     } else {
       appendUnavailable(

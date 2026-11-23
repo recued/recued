@@ -1,3 +1,5 @@
+import { nativeBrowserPageKey, nativeBrowserPageContext, nativeBrowserPageSchemas, resolveNativeBrowserPages } from './browser-native-pages.js';
+import {withoutUnsuccessfulAttemptEchoes} from './chat-request-evidence.js';
 import { outputFilesFromResults, outputFileSelectionValid, OUTPUT_FILE_GUIDANCE } from './chat-output-files.js';
 import { visibleSourceFacts, renderSourceFacts, sourceFactOutputSchema, SOURCE_FACT_GUIDANCE, SOURCE_FACT_REPAIR, SOURCE_FACT_FAILURE } from './chat-source-facts.js';
 /** D-160 spec-O-5 — the chat turn MECHANICS.
@@ -58,10 +60,12 @@ import { mailWorkChatOutputSchema, renderMailWorkChatPlan, type MailWorkRendered
 import { mailWorkEditTarget, readMailWorkEditTarget, withMailWorkEditTarget, mailWorkEditPrompt,
   mailWorkEditSchema, renderMailWorkEdits } from './mail-work-plan-edit.js';
 import { createMailWorkEvidence, parseMailWorkEvidence } from './mail-work-evidence.js';
+import { boundRequestEvidence, readerRequestRecords, REQUEST_EVIDENCE_LIMITS, withoutBrowserPages, withoutCurrentReadResults, type ReaderRequestRecords, type RequestExecutionEvidence } from './chat-request-evidence.js';
 
 import { resolveContextSlice, type ContextSliceRequest } from './chat-context-slice.js';
 import { utcOffsetLabel } from './chat-clock.js';
 import { chatToolCallFailureResult, isNonTerminalToolResult, markChatToolCallSaved, savedChatToolCallId } from './chat-tool-call-context.js';
+import { calledRecipeActsInBrowser, calledRecipeTitle } from './recipe-tool-name.js';
 import {
   CONTEXT_OMISSION_NOTICE,
   buildEvictionBriefing,
@@ -82,6 +86,7 @@ import {
   shouldFailOnCaptureFailure,
   BRIEF_CALL_TIMEOUT_MS,
   withCompletedActions,
+  completedActionRecords,
   foldableToolResults,
   buildBriefPrompt,
   appendUnfoldedUserMessage,
@@ -99,11 +104,14 @@ import {
 } from './chat-rolling-brief.js';
 import {
   groundingCorpusFromPacket,
+  identifierArgumentValues,
   ungroundedArgumentsInCall,
   ungroundedArgumentsDetail,
 } from './tool-argument-grounding.js';
+import { canonicalJSONStringifyStrict } from '@recued/crypto';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
-import { BOUNDED_RUN_LAST_ROUND } from './chat-turn-budget.js';
+import { BOUNDED_RUN_LAST_ROUND, CHAT_TURN_EARNED_ROUND_CEILING, CHAT_TURN_EARNED_ROUND_TOKEN_CEILING, chatToolRoundBudget,
+  freshTokens, reachedSomethingNew, toolBudgetStopAnswer } from './chat-turn-budget.js';
 import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
@@ -145,12 +153,18 @@ import {
   isTier1ToolName,
   isLlmRetryTime,
   formatLlmRetryTime,
+  tier1CallTitle,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
+import { conversationCarriesOn } from './chat-carries-on.js';
 import { keptTabPdfs, withTabPdfReadNote } from './chat-tab-pdf-read.js';
 import { carriedResults, carryRefusal, closingFoldLimit, estimatedTokens, nextPacketTokens } from './chat-turn-carry.js';
-import { estimateConservativeMessagesTokens, isContextOverflowRejection, LLMError } from '@recued/llm';
-import type { LLMMessageRole } from '@recued/llm';
+import { failedRunEffectsKnown } from './chat-failed-run-outcome.js';
+import { estimateConservativeMessagesTokens, isContextOverflowRejection, LLMError, stoppedAtOutputLimit } from '@recued/llm';
+import type { LLMMessageRole, UnavailableModel } from '@recued/llm';
+import { CHAT_OUTPUT_SHAPE, browserActionContext } from './chat-output-policy.js';
+import { BROWSER_COMPLETION_GUIDANCE, BROWSER_COMPLETION_INCOMPLETE, BROWSER_COMPLETION_REPAIR,
+  createBrowserTaskCompletion, type BrowserTaskContext } from './browser-task-completion.js';
 import type {
   BroadcastChatEvent,
   ChatCatalogDeliveryMode,
@@ -170,6 +184,9 @@ import type {
 } from './execution-case-critic.js';
 import { noteBrowserImagesForChat } from './mcp-browser-images.js';
 import { approvalChannelWords, withoutRenderAlias } from './run-result-agent-projection.js';
+import { projectBrowserReadContext, projectBrowserObservationOrder, type BrowserReadContextStats } from './browser-read-context.js';
+import { browserCurrentContext, compactBrowserPassiveViews, compactBrowserReadFields } from './browser-current-context.js';
+import { browserActArgumentError, browserActBindingRefusal, browserActPreflightGuidance, browserInspectArgumentError, browserInspectArgumentGuidance } from './browser-tool-arguments.js';
 
 /** D-164 P6.3 — per-channel default tier baseline for the chat surface.
  *  The chat channel pins `'fast'` directly; SI / session preference /
@@ -231,6 +248,8 @@ const toolCallIdentity = (tool: string, args: unknown): string => {
  *  guard must never turn a model that is genuinely correcting itself into one
  *  that is blocked. */
 const REPEAT_REFUSAL_LIMIT = 1;
+const REPEATED_BROWSER_ARGUMENT_MESSAGE = 'I stopped because the browser kept receiving the same invalid arguments. Those refused calls did not run; that browser step remains incomplete.';
+const REPEATED_BROWSER_ARGUMENT_FEEDBACK = 'The last two tool batches only repeated browser arguments already refused before dispatch. No new work ran. Finish from verified evidence and state what remains incomplete, or provide a genuinely corrected plan. Another batch of unchanged refused arguments will end this loop. A malformed reference is not evidence that its stored file is missing.';
 
 export const CHAT_RECORD_PROVENANCE_LIMIT = 8;
 
@@ -352,20 +371,32 @@ const REPEATED_EMPTY_AI_OUTPUT_MESSAGE =
   'The AI model returned another empty reply after this turn\'s recovery attempt. Please try again — or switch models in Settings → AI / Models if this keeps happening.';
 const EMPTY_CORRECTION_MESSAGE =
   'The AI model returned an empty reply while correcting its answer. Please try again or narrow the request.';
+/** Model-facing: why an identical write was not proposed while an earlier attempt of it is unconfirmed. */
+export const UNCONFIRMED_ATTEMPT_DETAIL = (tool: string): string =>
+  `Not proposed: an earlier attempt of this exact \`${tool}\` was approved and has no confirmed result, so it may`
+  + ' already have taken effect. Read the record\'s current state first, in a round of its own; propose it again'
+  + ' only if that read shows the change is still missing.';
+const canonicalArgs = (args: unknown): string | undefined => {
+  try { return canonicalJSONStringifyStrict(args); } catch { return undefined; }
+};
 const UNVERIFIED_CORRECTION_MESSAGE =
   'I could not verify the model\'s reply for this turn. Please try again or narrow the request.';
+/** The host's line before an absence the model said again after being asked to look (2026-11-19, the owner's "do
+ *  the still open items"). It replaced the whole answer with UNVERIFIED_CORRECTION_MESSAGE, and that was mostly the
+ *  case where no tool could have looked: at "NOTES GO" the retry said "There are no pending note exports" again in
+ *  6 of 10 resends, while a question a tool could answer (the meeting notes) was looked up in 20 of 20. So the owner
+ *  now gets the answer, saying plainly that it was not checked. An invented value still gets the message above. */
+export const UNCHECKED_ABSENCE_NOTE = 'This answer was not checked with a tool.';
 /** Persist readable context when guided repair cannot fix a malformed reply.
  *  Raw model output and validation details stay out of saved Chat messages. */
 const INVALID_AI_OUTPUT_MESSAGE =
   'The AI model returned a reply that could not be read. Please try again.';
 const INVALID_AI_OUTPUT_MID_TURN_MESSAGE =
   'The AI model returned a reply that could not be read after some tools had already run. Check those results before trying again.';
-/** Saved explanation for `max_rounds_exhausted`: the final permitted model
- *  call still requested tools. Keep any useful partial answer and append this
- *  reason so reopened history and the next turn's chat_tail show that work
- *  remains. No extra synthesis call is allowed past the cap. */
-const TOOL_BUDGET_EXHAUSTED_MESSAGE =
-  'The AI used all of this turn\'s tool budget before finishing an answer. Ask it to continue — or narrow the request if this keeps happening.';
+// Saved explanation for `max_rounds_exhausted`: the final permitted model call still requested tools. Save the stop
+// reason without unfinished model prose; actual tool results remain recorded. No extra synthesis call is allowed past
+// the cap. 2026-11-21 — the text is `TOOL_BUDGET_EXHAUSTED_MESSAGE` (contracts), after the pages the turn reached
+// (`toolBudgetStopAnswer`, `chat-turn-budget.ts`).
 /** Saved explanation for `waiting_for_approval` (D-337): a call of the turn
  *  waits for the owner's approval and the model, told once that a further call
  *  that would ask them is not asked until they answer, made another. The turn
@@ -374,6 +405,15 @@ const TOOL_BUDGET_EXHAUSTED_MESSAGE =
  *  — see `chat-prompt-optimization-log.md`. */
 const WAITING_FOR_APPROVAL_MESSAGE =
   'The rest of this request waits for your answer to the approval. Once you answer it, this conversation carries on by itself.';
+/** D-343 (the owner, 2026-11-14) — the answer to a round whose every call waits for the owner's
+ *  approval: what waits, in their words, and no further model call. That call only wrote that the
+ *  calls wait, for ~30–45 s, and the round's own reply was written before they were held (it said
+ *  "I've recorded your day" of a record waiting for a yes). A held call is only ever made in a
+ *  conversation that carries on once it is answered (the owner's chat, messenger or scheduled
+ *  prompt), where the model then says how it went.
+ *  ⚠ Owner- and model-facing — see `chat-prompt-optimization-log.md`. */
+export const heldRoundReply = (titles: readonly string[]): string =>
+  `Waiting for your approval: ${[...new Set(titles)].join('; ')}. Once you answer it, this conversation carries on by itself.`;
 /** Fail-loud message for the trim-livelock exit.
  *
  *  ⛔⛔ WHY THE TURN ENDS HERE RATHER THAN CARRYING ON. Measured 2026-09-05
@@ -487,12 +527,25 @@ export class ChatTurnUnansweredError extends Error {
     this.name = 'ChatTurnUnansweredError';
   }
 }
+/** The model a failed call's provider said it does not have, as the executor names it
+ *  (`UnavailableModel` in `@recued/llm`), or undefined for any other failure. */
+const unavailableModelOf = (error: unknown): UnavailableModel | undefined => {
+  if (!(error instanceof LLMError)) return undefined;
+  const found = error.details?.model_unavailable as Partial<UnavailableModel> | undefined;
+  return found !== undefined && typeof found.model === 'string' && typeof found.provider === 'string'
+    && found.source !== undefined ? found as UnavailableModel : undefined;
+};
+
 /** A failed provider cascade appends a matcher no-match to the real error.
  *  Classify while its code and provenance are still available; that appended
  *  diagnostic must not turn a timeout or HTTP failure into model-setup advice.
  *  Prefix matching also supports older untyped no-config errors without
  *  treating a quoted no-match inside a provider message as configuration. */
 const llmFailureReason = (error: unknown): TransparencyDecoderUnavailableReason => {
+  // First: a provider that says it does not have the owner's model is not "the provider failed".
+  if (unavailableModelOf(error) !== undefined) return 'model_unavailable';
+  // Nor is a model that answered, but spent its whole output allowance before writing anything.
+  if (stoppedAtOutputLimit(error)) return 'output_limit';
   if (error instanceof LLMError && (error.code !== 'AI_LLM_UNAVAILABLE'
     || error.details?.status !== undefined || error.details?.fallback_unavailable !== undefined)) return 'provider_failure';
   if (error instanceof LLMError && Array.isArray(error.details?.cooldown_sources) && error.details.cooldown_sources.length > 0) return 'cooldown';
@@ -520,6 +573,8 @@ export const isFastNetworkFailure = (error: unknown, elapsedMs: number): boolean
 interface ReplyFailure {
   readonly detail: string;
   readonly decoder_reason?: TransparencyDecoderUnavailableReason;
+  /** With `model_unavailable`: the model and where the owner set it, for the reply to name. */
+  readonly model_unavailable?: UnavailableModel;
   readonly retry_at?: number;
   readonly validation_issues?: ReadonlyArray<AIOutputValidationIssue>;
   readonly context_overflow?: true;
@@ -590,9 +645,9 @@ export const retainForReinvoke = (
   return [...older.slice(Math.max(0, older.length - keep)), ...current];
 };
 
-/** Saved explanation when a tool-loop reinvoke fails. Keep useful partial
- *  text and append the failure context so reopened history and the next
- *  turn's chat_tail do not present an unfinished answer as successful.
+/** Saved explanation when a required tool-loop reinvoke fails. Save the
+ *  failure context without unfinished model prose so reopened history and
+ *  the next turn's chat_tail do not present unverified claims as an answer.
  *  A critique reinvoke can fail before dispatch; only claim tools ran when
  *  the executor has actual tool results. Raw diagnostics stay internal. */
 const PROVIDER_FAILED_MID_TURN_MESSAGE =
@@ -608,21 +663,48 @@ const providerFailureMessage = (failure: Parameters<typeof decoderUnavailableRea
   const message = site === 'tool_loop' ? PROVIDER_FAILED_MID_TURN_MESSAGE : 'The AI provider failed before answering.';
   return retryAt ? `${message} Try again after ${retryAt}.` : message;
 };
+/** The service a protocol calls when its source has no address of its own: an OpenAI-compatible
+ *  source with none calls api.openai.com, as the OpenAI adapter does. */
+const PROTOCOL_DEFAULT_SERVICE: Readonly<Record<string, string>> = {
+  openai: 'OpenAI', 'openai-compatible': 'OpenAI', anthropic: 'Anthropic', google: 'Google',
+};
+/** The provider as the owner knows it: the name they gave it; else the host of its address, since an
+ *  `openai` source can point at another server; else the service its protocol calls. */
+const providerLabel = (model: UnavailableModel): string =>
+  model.provider_name ?? model.host ?? PROTOCOL_DEFAULT_SERVICE[model.provider] ?? 'The provider';
+const sourceLabel = (model: UnavailableModel): string =>
+  model.source.kind === 'slot'
+    ? `slot ${model.source.slot_key === 'slot_1' ? '1' : '2'}`
+    : `the free pool's "${model.source.entry_id}"`;
+/** Said when the provider does not have the owner's model: which model, from where, and where to
+ *  choose another. Recued keeps no list of models, so this is how a retired one comes to light
+ *  (`gemini-2.5-flash`: "no longer available to new users", 2026-11-16). Before, it read "The AI
+ *  provider failed before answering.", the same as an outage, with nowhere to go. */
+export const modelUnavailableMessage = (model: UnavailableModel | undefined): string =>
+  model === undefined
+    ? 'The AI provider does not have the model chosen for this chat. Choose another model in Settings → AI / Models.'
+    : `${providerLabel(model)} does not have the model "${model.model}" (${sourceLabel(model)}). `
+      + 'It may have been retired or renamed, or the name may be mistyped. Choose another model in Settings → AI / Models.';
+/** Said when the model spent its whole output allowance before it wrote an answer. A model that
+ *  thinks can do that on thinking alone, and only turning its thinking off, or down, stops it: the
+ *  allowance is Recued's. Before (2026-11-16) it read "The AI provider failed before answering.". */
+export const OUTPUT_LIMIT_NO_ANSWER_MESSAGE =
+  'The AI model used its whole output allowance before it wrote an answer, most likely on thinking. '
+  + 'If this keeps happening, turn its thinking off in Settings → AI / Models.';
 const failedReplyMessage = (failure: ReplyFailure, toolsRan = false): string => {
   if (failure.context_trim_livelock) return CONTEXT_TRIM_LIVELOCK_MESSAGE;
   const reason = decoderUnavailableReason(failure);
   if (reason === 'no_source') return NO_LLM_SOURCE_MESSAGE;
+  if (reason === 'model_unavailable') return modelUnavailableMessage(failure.model_unavailable)
+    + (toolsRan ? ' Some tools had already run; check their results before trying again.' : '');
+  if (reason === 'output_limit') return OUTPUT_LIMIT_NO_ANSWER_MESSAGE
+    + (toolsRan ? ' Some tools had already run; check their results before trying again.' : '');
   if (reason === 'cooldown') return sourceCooldownMessage(failure)
     + (toolsRan ? ' Some tools had already run; check their results before trying again.' : '');
   if (failure.context_overflow) return CONTEXT_TOO_LARGE_MESSAGE
     + (toolsRan ? ' Some tools had already run; check their results before trying again.' : '');
   if (reason === 'invalid_output') return toolsRan ? INVALID_AI_OUTPUT_MID_TURN_MESSAGE : INVALID_AI_OUTPUT_MESSAGE;
   return providerFailureMessage(failure, toolsRan ? 'tool_loop' : 'initial');
-};
-const withStopMessage = (response: string, message: string): string =>
-  response.trim().length > 0 ? `${response}\n\n${message}` : message;
-const failedToolLoopContent = (response: string, failure: Parameters<typeof decoderUnavailableReason>[0], toolsRan = true): string => {
-  return withStopMessage(response, failedReplyMessage(failure, toolsRan));
 };
 
 /** The three documented AIOutput envelope keys — anything else on a decoded
@@ -635,6 +717,7 @@ const AI_OUTPUT_ENVELOPE_KEYS: ReadonlySet<string> = new Set([
   'tool_calls',
   'mail_work_recap',
   'mail_work_plan',
+  'browser_task_progress',
 ]);
 
 /** A decoded-yet-EMPTY main-turn output: nothing to render (no response
@@ -902,52 +985,26 @@ export const DEFAULT_CHAT_ROLE_INSTRUCTIONS =
  *  ⚠ The echo is doubly harmful
  *  because the coercer's aliases nearly match it — see `looksLikeToolResultEcho`
  *  in `ai-output.ts`, which is the parser half of this same defect. */
-/** ⛔⛔ `reasoning` COMES FIRST, AND THE ORDER IS THE WHOLE POINT — a field
- *  appended after `response` buys nothing, because the answer is already
- *  written by then.
- *
- *  🔑 WHY IT IS HERE AT ALL: this door calls with `output_format: 'json'`, which
- *  the OpenAI adapter turns into `response_format: {type:'json_object'}` —
- *  CONSTRAINED DECODING, not a prompt instruction. Under that constraint the
- *  model answers straight into the first key it is given, and with `response`
- *  first that key IS the final answer, so a derivation has nowhere to happen.
- *  Measured on the bench-276 packet, one captured turn replayed with only the
- *  SHAPE varying: 11/16 correct with `response` first, 16/16 with `reasoning`
- *  first (Fisher two-tailed p = 0.043). The same packet sent WITHOUT json mode
- *  is 31/31 — so the constraint was costing ~26 points and this recovers them.
- *
- *  ⛔ NOT THE SAME AS A PROMPT INSTRUCTION TO EMIT JSON, and that distinction is
- *  why this was missed for so long. Shipping this very text as a system message
- *  WITHOUT `response_format` measured 11/11 — the envelope reads as innocent
- *  every way except the one the door actually uses.
- *
- *  🔑 THE SYMPTOM, IN HINDSIGHT: answers that STATED a figure and then computed a
- *  different one. Two baseline runs headlined $12,337.50 and $12,600, worked
- *  through the arithmetic inside the reply, and landed on $11,397.50 — the model
- *  was reasoning in the `response` string after committing to a number.
- *
- *  ⚠ THE "never shown to the user" CLAUSE IS A PROMISE THE SUBSTRATE KEEPS, not
- *  a hope. The user-visible reply is `currentAiOutput.response` (this file) and
- *  the streamed `final_text` is that same text (`middleware/pipeline.ts`); no
- *  surface renders the envelope. Break that and this line becomes a lie told to
- *  the model about its own privacy.
- *
- *  ⚠ COSTS OUTPUT TOKENS ON EVERY TURN, including the trivial ones that need no
- *  derivation. That is the open trade — see the optimization log entry. */
-const CHAT_OUTPUT_SHAPE = `AIOutput shape:
-{
-  "reasoning": "<work the answer out here FIRST, in full, before writing \"response\". Show any arithmetic step by step. This field is internal and is never shown to the user.>",
-  "response": "<short, calm reply>",
-  "events": [ {"kind": "extraction.<class>", "payload": {...}}, ... ],
-  "tool_calls": [{ "tool": "<recipe_slug>", "args": {...} }],
-  "nothing_outstanding": <true only when you plan no further action — the ask is answered, or you have concluded it cannot be answered. Omit it otherwise.>
-}`;
+
+const STANDARD_ACTION_GUIDANCE = "\"events\" RECORDS something worth remembering. It never performs an action — only a \"tool_calls\" entry does anything at all. Never tell the user you have done something unless a tool call in this turn did it.";
+
+/** The main turn's guidance while the running note is on (2026-11-19). The owner: "switch back to old but look
+ *  for improvements to absorb from new, maybe a few extra guards are still useful & harmless in the instructions".
+ *  The retired Consolidated style's held-write study traced its wins to the records each turn gets of pending,
+ *  approved, cancelled and completed actions, and to its guards on claims and unknown outcomes; Standard had
+ *  re-proposed done and cancelled work and claimed an unconfirmed rename. These are those guards, in Consolidated's
+ *  words where it had them. */
+export const STANDARD_BRIEF_ACTION_GUIDANCE = `"events" records information; only "tool_calls" requests an action. Claim an action succeeded only when matching successful tool evidence supports it. Distinguish an action performed this turn from an earlier recorded success and from a current state observed by a read. An approval proposal is not an executed action, and approval is not proof of execution. Composing a draft does not send or save it; for requested message content, preserve quoted text exactly. When the owner asks whether you may act, answer about permission: tool availability does not answer it, and the question does not itself ask you to act.
+
+When request_execution_context is present, its records are the host's own, read afresh: pending_approvals await the owner's answer, approved_actions were approved and not yet dispatched, cancelled_approvals did not run, completed_held_actions ran, and unconfirmed_held_actions ran with no confirmed result; a record that is absent holds nothing. They supersede an older claim in the running note about the same plan. Do not propose an action again while a record shows it awaiting approval, approved, cancelled or completed; only a new owner request for it is new work. host_resume actions belong to the host continuation, not a duplicate tool call; an approved action with execution_on_continuation=later_dispatch may be dispatched through its normal tool path when the current owner request asks for it.
+
+Continuing an answered status or read request stays status or read work: report the observed result or ask what the owner wants next. A cancelled action does not reopen through a continuation. An unknown or failed attempt does not establish that the desired state is absent: before retrying a state change with an unknown outcome, use a relevant successful read to establish the current state. Nor does a read that shows the desired state establish that the attempt did it: never say an unconfirmed action succeeded or is done; say what the read shows and that the attempt's own result is unconfirmed. A new request to check an external record's current state needs a relevant read in that owner turn.`;
 
 export const RECUED_CORE_TEXT = `Emit AIOutput JSON only — never wrap in markdown, never add commentary outside JSON.
 
 ${CHAT_OUTPUT_SHAPE}
 
-"events" RECORDS something worth remembering. It never performs an action — only a "tool_calls" entry does anything at all. Never tell the user you have done something unless a tool call in this turn did it.
+${STANDARD_ACTION_GUIDANCE}
 
 For a requested downloadable file, use available tools to create the stored file and attach it to the answer. Inline text alone leaves that request unfinished. If no tool can create it, say the file has not been delivered.
 
@@ -1130,7 +1187,7 @@ export const CHAT_MAIN_TURN_SYSTEM_PROMPT = composeSystemPromptBlocks({
  *  backtick collisions). Phrased to avoid the D-177 negative granting-vocabulary
  *  pin (`/you (can|may) (grant|approve|allow)/i`). */
 export const CHAT_INDEX_MODE_CATALOG_GUIDANCE =
-  'Tool catalog (index mode): the installed recipe tools in "available_tools" are listed by "recipe_slug" and a one-line summary, without their argument schema. To use one that is listed, call it by its "recipe_slug". If you need its exact arguments, or no listed tool fits the request, call "tools.search" with a short capability query (for example "draft a follow-up email" or "summarize a PDF") to look one up — it returns matching recipes with their "args_schema". The always-listed core tools already carry their arguments (contact, mail, calendar, memory, enrichment, deal, account, and work search, plus "recipe.run") — call those directly and never search for them. Always emit the tool call you decide on — do not just describe what you would do. If a "tools.search" you actually ran comes back with no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed, naming any it lists as "installable" that fits (the owner installs it; you cannot). Never say a recipe is not installed, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. That rule is about \"tools.search\" ONLY, because the recipe catalog is written in English. The user\'s OWN records — mail, calendar, memory, contacts, deals — are written in whatever language the user writes in, so search THOSE in the language of the request and of the records: an English query against a Chinese or Japanese mailbox matches nothing at all.';
+  'Tool catalog (index mode): "available_tools" lists installed recipes by "recipe_slug" and summary. Entries with "args_schema" already define their arguments; call those directly. To use a listed tool, call it by its "recipe_slug". For a listed entry without its schema, if you need exact arguments, or if no listed tool fits, call "tools.search" with a short capability query (for example "draft a follow-up email" or "summarize a PDF") to look one up — it returns matching recipes with their "args_schema". The always-listed core tools already carry their arguments (contact, mail, calendar, memory, enrichment, deal, account, and work search, plus "recipe.run") — call those directly and never search for them. Always emit the tool call you decide on — do not just describe what you would do. If a "tools.search" you actually ran comes back with no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed, naming any it lists as "installable" that fits (the owner installs it; you cannot). Never say a recipe is not installed, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. That rule is about \"tools.search\" ONLY, because the recipe catalog is written in English. The user\'s OWN records — mail, calendar, memory, contacts, deals — are written in whatever language the user writes in, so search THOSE in the language of the request and of the records: an English query against a Chinese or Japanese mailbox matches nothing at all.';
 
 /** Lever-2 v2 (2026-07-03) — the LEAN-CORE catalog guidance, a SEPARATE
  *  variant from the index copy. Emitted under the same `tools.search`-injecting
@@ -1189,7 +1246,7 @@ export const CHAT_INDEX_MODE_CATALOG_GUIDANCE =
  *  named `recipe_slug`. It now says the slug goes in "tool", and that it is the
  *  field's VALUE. No example slug: a quoted one is a name to guess. */
 export const CHAT_LEAN_CORE_MODE_CATALOG_GUIDANCE =
-  'Tool catalog (lean-core mode): "available_tools" lists only the always-available core tools — contact, mail, calendar, memory, enrichment, deal, and account search, work search and read, plus "recipe.run" and "tools.search". Those are fully defined; call them directly and never search for them. Beyond the core tools, the user has installed MANY recipe tools that are NOT listed here — these produce prepared, curated, or actioned results that the core searches (which only return raw records) do not. Their absence from "available_tools" is a deliberate space saving, NOT evidence that they are missing: if the user names a routine, or asks for something a recipe would do, assume it IS installed and search for it. So: for a plain record lookup (for example "find Pat\'s email" or "what meetings are today") call the core search tool directly. The core tools cover only their own subjects — contacts, mail, calendar, memory, enrichment, deals, accounts, work items. A request about anything else — a building, a unit, an invoice, a queue, a job, a booking, a web page or the tabs open in the user\'s browser — has NO core tool at all, so "tools.search" is the only way to reach one; search rather than reporting that nothing is available. But if the request asks for a prepared view, digest, briefing, triage, or a specific named routine over the user\'s data — even one a core search could partly answer — call "tools.search" FIRST with a short capability query to find the recipe built for it, then invoke it with the slug the search returned as the "tool" in "tool_calls" — the value of its "recipe_slug", not the field name. Do not wrap a recipe in "recipe.run", because two different recipes sent through "recipe.run" record as the same tool called twice, which reads as a retry rather than a procedure; fall back to a core search tool only if no recipe matches. If a core search comes back EMPTY for something that belongs to a routine — a customer, a tenant, a unit, an invoice, a job — that is not proof the record does not exist; the core tools only see their own subjects, and the record may live in a recipe\'s own store. Search for the recipe that lists it before telling the user it is missing. In particular, a request to review or act on the user\'s own items that need attention or follow-up — not just look one up — usually has a purpose-built recipe: search for it before settling for a raw core-search list. Always emit the tool call you decide on — do not just describe what you would do. Never invoke a "recipe_slug" you have not seen in a "tools.search" result — a guessed recipe name will fail. If "tools.search" finds no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed, naming any it lists as "installable" that fits (the owner installs it; you cannot). Never tell the user a capability is missing, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. That rule is about \"tools.search\" ONLY, because the recipe catalog is written in English. The user\'s OWN records — mail, calendar, memory, contacts, deals — are written in whatever language the user writes in, so search THOSE in the language of the request and of the records: an English query against a Chinese or Japanese mailbox matches nothing at all. Whatever you decide, your reply is ALWAYS the AIOutput shape ({"response", "events", "tool_calls"}) and never any other envelope — not a chat message, not an error object, not a copy of "available_tools" or of a tool result.';
+  'Tool catalog (lean-core mode): "available_tools" lists the always-available core tools — contact, mail, calendar, memory, enrichment, deal, and account search, work search and read, plus "recipe.run" and "tools.search". Those are fully defined; call them directly and never search for them. Any recipe also listed with "args_schema" is fully defined too: call it directly. Beyond these listed tools, the user has installed MANY recipe tools that are NOT listed here — these produce prepared, curated, or actioned results that the core searches (which only return raw records) do not. Their absence from "available_tools" is a deliberate space saving, NOT evidence that they are missing: if the user names a routine, or asks for something a recipe would do, assume it IS installed and search for it. So: for a plain record lookup (for example "find Pat\'s email" or "what meetings are today") call the core search tool directly. The core tools cover only their own subjects — contacts, mail, calendar, memory, enrichment, deals, accounts, work items. For a subject beyond those core searches, including a web page or browser tabs, use an appropriate recipe already listed with its arguments, or call "tools.search" to find one. Core searches do not cover those subjects.  But if the request asks for a prepared view, digest, briefing, triage, or a specific named routine over the user\'s data — even one a core search could partly answer — call "tools.search" FIRST with a short capability query to find the recipe built for it, then invoke it with the slug the search returned as the "tool" in "tool_calls" — the value of its "recipe_slug", not the field name. Do not wrap a recipe in "recipe.run", because two different recipes sent through "recipe.run" record as the same tool called twice, which reads as a retry rather than a procedure; fall back to a core search tool only if no recipe matches. If a core search comes back EMPTY for something that belongs to a routine — a customer, a tenant, a unit, an invoice, a job — that is not proof the record does not exist; the core tools only see their own subjects, and the record may live in a recipe\'s own store. Search for the recipe that lists it before telling the user it is missing. In particular, a request to review or act on the user\'s own items that need attention or follow-up — not just look one up — usually has a purpose-built recipe: search for it before settling for a raw core-search list. Always emit the tool call you decide on — do not just describe what you would do. Never guess a "recipe_slug": use an entry actually listed in "available_tools" or returned by "tools.search". If "tools.search" finds no match, do not reword the query and search again: satisfy the request with the core tools, answer from your own knowledge, or tell the user that no matching recipe is installed, naming any it lists as "installable" that fits (the owner installs it; you cannot). Never tell the user a capability is missing, and never offer to search instead of searching, unless you have already called "tools.search" for it in this turn and it returned nothing. Write every "tools.search" query in English, whatever language you are speaking with the user — the recipe names and summaries it searches are written in English, and a query in another script matches nothing at all. Translate the capability, search in English, then answer in the user\'s language. That rule is about \"tools.search\" ONLY, because the recipe catalog is written in English. The user\'s OWN records — mail, calendar, memory, contacts, deals — are written in whatever language the user writes in, so search THOSE in the language of the request and of the records: an English query against a Chinese or Japanese mailbox matches nothing at all. Whatever you decide, your reply is ALWAYS the AIOutput shape ({"response", "events", "tool_calls"}) and never any other envelope — not a chat message, not an error object, not a copy of "available_tools" or of a tool result.';
 
 /** Compose the chat main-turn system prompt for the turn's catalog delivery
  *  mode. `'index'` appends {@link CHAT_INDEX_MODE_CATALOG_GUIDANCE};
@@ -1270,7 +1327,7 @@ const withMailWorkOutputShape = (prompt: string): string => {
  *  honored without rebinding the manifest. Pure (no capture); each
  *  call produces a fresh object so callers can freely mutate without
  *  affecting other turns. */
-const buildChatMainTurnManifest = (): IngredientManifest => ({
+export const buildChatMainTurnManifest = (): IngredientManifest => ({
   slug: CHAT_MAIN_TURN_INGREDIENT_SLUG,
   name: 'Chat main-turn decoder',
   description:
@@ -1343,10 +1400,15 @@ export interface ChatPriorToolPointers {
 /** D-164 prompt-cache restructure — the chat main-turn prompt packet
  *  `composeChatMainTurnPromptParts` consumes. */
 interface ChatMainTurnPromptPacket {
+  readonly native_browser_page_key?: string;
+  readonly attachment_refs?: readonly { file_ref: string; filename: string }[];
+  readonly browser_task_context?: BrowserTaskContext;
+  readonly deduplicate_browser_reads?: boolean;
   readonly available_tools: ReadonlyArray<ChatMainTurnTool>;
   readonly content: RunChatTurnPromptContent;
   readonly source_citations?: readonly ChatSourceCitation[];
   readonly prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>;
+  readonly request_execution_context?: ReaderRequestRecords;
   /** D-160 O-5 (light slice) — the `correction-learning` middleware's
    *  `before-turn` prompt contributions (flat "recent corrections — …"
    *  summary). Computed once per turn and threaded into every round's
@@ -1394,6 +1456,15 @@ interface ChatMainTurnPromptPacket {
    *  byte-stable across days. Optional so packet composers without a
    *  clock (dbless harnesses) stay valid. */
   readonly current_date?: string;
+  /** D-378 — host-owned remaining dispatch budget, in the dynamic tail only.
+   *  Output repairs do not replenish it; these are tool batches, not model calls. */
+  readonly tool_round_budget?: {
+    readonly discovery_only_rounds_remaining: number;
+    readonly rules: string;
+    /** 2026-11-21 — `CHAT_TURN_AFTER_ROUND_LIMIT`, in a turn after one that stopped at its round limit, until its
+     *  first work round. */
+    readonly previous_turn?: string;
+  };
   /** In-turn parse feedback for the ONE empty-output retry
    *  (`buildEmptyAiOutputFeedback`): tells the model its previous output
    *  decoded to an empty AIOutput (e.g. an args-only object with no tool
@@ -1403,7 +1474,8 @@ interface ChatMainTurnPromptPacket {
    *  static instruction text only — the model's output keys are
    *  alias-space because everything it reads passed the PII egress), so
    *  the egress's data-field scan list does not include it. Omitted from
-   *  the wire shape when absent (every non-retry call). */
+   *  the wire shape when absent. Also carries the final-call instruction when
+   *  no tool rounds remain, including during an existing output repair. */
   readonly output_feedback?: string;
   /** EXPERIMENT, MEASURED AND NEGATIVE (env-gated, `RECUED_CARRY_REASONING=1`,
    *  OFF BY DEFAULT) — the PREVIOUS turn's own `reasoning` text, carried into
@@ -1717,6 +1789,7 @@ const scatterAdvisory = (sig: ScatterSignals): string | undefined => {
 export interface ChatMainTurnPromptParts {
   readonly cacheable_prefix: string;
   readonly body: string;
+  readonly browser_read_context?: BrowserReadContextStats;
 }
 
 /** Current-instant date+time stamp for the main-turn packet — e.g.
@@ -1836,10 +1909,28 @@ export const composeChatMainTurnPromptParts = (
   const prior = sourceReadSequence && sourceReads?.sources.some(source => source.kind === 'asset')
     && sourceReads.sources.some(source => source.kind === 'file')
     ? withSourceReadBriefGuidance(calls) : calls;
+  const once = prior.map(call => call.result === undefined ? call : { ...call, result: withoutRenderAlias(call.result) });
+  const browserReads = packet.deduplicate_browser_reads ? projectBrowserReadContext(once) : undefined;
+  const orderedBrowserObservations = projectBrowserObservationOrder(browserReads?.calls ?? once);
+  const capturedBrowserContext = browserCurrentContext(orderedBrowserObservations,
+    packet.available_tools.find(tool => /^(recued-core|kitchen)\/act-on-web-page$/.test(tool.recipe_slug))?.recipe_slug, packet.attachment_refs);
+  const browserContext = packet.native_browser_page_key ? nativeBrowserPageContext(capturedBrowserContext, packet.native_browser_page_key) : capturedBrowserContext;
+  const nativeTools = packet.native_browser_page_key ? nativeBrowserPageSchemas(packet.available_tools) : packet.available_tools;
+  const compactedViews = packet.deduplicate_browser_reads ? compactBrowserPassiveViews(orderedBrowserObservations) : undefined;
+  const compactedFields = compactedViews ? compactBrowserReadFields(compactedViews.calls) : undefined;
+  const browserObservations = compactedFields?.calls ?? compactedViews?.calls ?? orderedBrowserObservations;
+  if (browserReads && compactedViews) {
+    browserReads.stats.snapshot_copies_elided += compactedViews.copies;
+    browserReads.stats.chars_saved += compactedViews.chars;
+    if (compactedFields?.copies) {
+      browserReads.stats.field_copies_elided = compactedFields.copies;
+      browserReads.stats.chars_saved += compactedFields.chars;
+    }
+  }
   // The stable head, serialized ONCE. Dropping its closing brace yields — by
   // JSON's insertion-order guarantee — a byte-exact prefix of `body`.
   const headJson = JSON.stringify({
-    available_tools: packet.available_tools,
+    available_tools: nativeTools,
     commitment_context: [] as const,
   });
   const cacheable_prefix = headJson.slice(0, -1);
@@ -1875,20 +1966,27 @@ export const composeChatMainTurnPromptParts = (
       ? { prior_working_unverified: packet.prior_working_unverified }
       : {}),
     ...(packet.mail_work_edit_target ? { mail_work_edit_target: packet.mail_work_edit_target } : {}),
+    ...(packet.browser_task_context ? { browser_task_context: packet.browser_task_context } : {}),
     ...(packet.prior_tool_pointers
       ? { prior_tool_pointers: packet.prior_tool_pointers }
       : {}),
     // D-335 slice Q — each result's output once: the engine's `sidebar` copy of `render` doubled
     // every recipe result the model read (`withoutRenderAlias`). The calls themselves keep it.
-    ...(prior.length > 0 ? { prior_tool_calls: prior.map((call) => call.result === undefined ? call
-      : { ...call, result: withoutRenderAlias(call.result) }) } : {}),
+    ...(prior.length > 0 ? { prior_tool_calls: browserObservations } : {}),
+    // Re-read every round, each record stamped with its read (`observed_at`): kept after the retained history
+    // so it does not invalidate the provider's otherwise reusable prefix, as browser_context below.
+    ...(packet.request_execution_context ? { request_execution_context: packet.request_execution_context } : {}),
+    // This summary changes each round. Keep it after retained history so it
+    // does not invalidate the provider's otherwise reusable history prefix.
+    ...(browserContext ? { browser_context: browserContext } : {}),
+    ...(packet.tool_round_budget ? { tool_round_budget: packet.tool_round_budget } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
     ...(packet.draft_for_review ? { draft_for_review: packet.draft_for_review } : {}),
   });
   // Byte-identical to the legacy merged `JSON.stringify`: head sans `}`, a
   // joining comma, then tail sans `{`.
   const body = `${cacheable_prefix},${tailJson.slice(1)}`;
-  return { cacheable_prefix, body };
+  return { cacheable_prefix, body, ...(browserReads ? { browser_read_context: browserReads.stats } : {}) };
 };
 
 /** D-137 P1.4 — Build a `ChatToolCall` provenance entry from the
@@ -1913,9 +2011,15 @@ export const toolCallProvenanceEntry = (
   const tier: ToolTier = tier_override
     ?? registry.getByName(tc.tool)?.tier
     ?? (isTier1ToolName(tc.tool as Tier1ToolName) ? 1 : 2);
+  // D-348 §7.8 — and the call's own row in the owner's chat, by which its line finds the record of
+  // a call with no run (a chat's own write's receipt, for Undo).
+  const call_id = savedChatToolCallId(result);
   const runAddress = {
     ...(result.run_id !== undefined ? { run_id: result.run_id } : {}),
     ...(result.dish_id !== undefined ? { dish_id: result.dish_id } : {}),
+    ...(call_id !== undefined ? { call_id } : {}),
+    // D-402 slice F5 — its line offers "Stop allowing" for the recipe a standing permission ran.
+    ...(result.stop_allowing_recipe_id !== undefined ? { stop_allowing_recipe_id: result.stop_allowing_recipe_id } : {}),
   };
   if (result.ok) {
     // D-182 — a FAILED run (run_failed set) PERSISTS as an error row, mirroring the
@@ -1952,6 +2056,7 @@ export const toolCallProvenanceEntry = (
     status: 'error',
     reason: result.reason,
     ...(result.detail !== undefined ? { detail: result.detail } : {}),
+    ...(result.awaiting_plan_id !== undefined ? { awaiting_plan_id: result.awaiting_plan_id } : {}),
     ...runAddress,
     started_at,
     completed_at,
@@ -1987,10 +2092,14 @@ const priorToolCallEntry = (
    *  call was Tier 2 (recipe), making the model reason about a
    *  cooperative-recipe step that never existed. */
   tier_override?: ToolTier,
+  preflight?: true,
+  attachmentRefs: readonly { file_ref: string; filename: string }[] = [],
 ): ChatPriorToolCall => {
   const tier: ToolTier = tier_override
     ?? registry.getByName(tc.tool)?.tier
     ?? (isTier1ToolName(tc.tool as Tier1ToolName) ? 1 : 2);
+  const guidance = !result.ok && preflight ? browserActPreflightGuidance(registry.getByName(tc.tool), tc.args, attachmentRefs)
+    ?? browserInspectArgumentGuidance(registry.getByName(tc.tool), tc.args) : undefined;
   if (result.ok) {
     return {
       tool_name: tc.tool,
@@ -2011,6 +2120,7 @@ const priorToolCallEntry = (
     status: 'error',
     reason: result.reason,
     ...(result.detail !== undefined ? { detail: result.detail } : {}),
+    ...(guidance ? { result: { browser_guidance: guidance } } : {}),
     started_at,
     completed_at,
   };
@@ -2020,6 +2130,8 @@ const priorToolCallEntry = (
  *  to `runChatTurn`. Chat-SHAPED (Stage 1b) — Stage 2 adapts this onto
  *  the framework `TurnContext`. */
 export interface RunChatTurnInputs {
+  /** Host-only ordinary owner Chat policy; gateway and peer turns omit it. */
+  readonly browser_task_completion?: true;
   /** Wired only for ordinary direct-owner Chat. References are not grants. */
   readonly prefetch_selected_asset?: true;
   readonly source_citations?: readonly ChatSourceCitation[];
@@ -2029,6 +2141,10 @@ export interface RunChatTurnInputs {
   /** D-340 slice 4 — host-only: a managed run's own tool rounds, below the chat's cap (the Agenda's and
    *  the streams' AI suggestions, ruling 9). Its last round is told to answer with what it has. */
   readonly tool_round_cap?: number;
+  /** 2026-11-21 (the owner: "finish the followups") — host-only: the answer before this turn's message is marked
+   *  `ChatMessage.reached_round_limit`. Until its first work round, the turn is told it has rounds of its own
+   *  (`CHAT_TURN_AFTER_ROUND_LIMIT`). */
+  readonly previous_turn_reached_round_limit?: true;
   /** D-337 — host-only: the calls this conversation was waiting on, now answered, each with its
    *  outcome. The turn opens holding them, as if they had returned in the turn that made them. */
   readonly held_results?: ReadonlyArray<ChatPriorToolCall>;
@@ -2038,6 +2154,12 @@ export interface RunChatTurnInputs {
   /** D-335 slice AK — host-only: the pages the request names, each read with this recipe tool before
    *  the first round, as calls of the turn's own. The orchestrator chose them: none asks the owner. */
   readonly named_pages?: ReadonlyArray<{ readonly tool_name: string; readonly page: string }>;
+  /** D-406 — host-only: the emails the owner picked for the request, each read with `mail.read` by its id
+   *  before the first round, as calls of the turn's own (beside the named pages, first). */
+  readonly picked_mail?: ReadonlyArray<{ readonly slug: string; readonly record_id: string }>;
+  /** D-406 (Q4) — host-only: the calendar events the owner picked, each read with `calendar.search` by its
+   *  record id before the first round, after the emails. */
+  readonly picked_events?: ReadonlyArray<{ readonly slug: string; readonly record_id: string }>;
   /** Correlation-only origin for an owner-sent verify-before-retry turn. */
   readonly retry_of_plan_id?: string;
   readonly picker_target: ChatPickerTarget;
@@ -2084,6 +2206,11 @@ export interface RunChatTurnInputs {
    *  from `input_token_budget` being set; it is stated now because that
    *  inference stopped being true. */
   readonly propagate_typed_errors?: boolean;
+  /** D-343 (the owner, 2026-11-14) — the turn's closing brief runs after its reply goes out: the
+   *  result carries it as `after_reply`, which the caller runs once the reply is saved and sent
+   *  (and before the conversation's next turn). Never with `propagate_typed_errors`, whose caller
+   *  must hear of a closing fold that failed before the turn reports success. */
+  readonly defer_closing_fold?: boolean;
   /** The turn's I-7 hop token (`ChannelInbound.dispatch_depth`) — rides
    *  beside the source onto every dispatch (D-160 P3) so the Gateway's
    *  loop ceiling sees re-entrant messenger fires truthfully. Optional
@@ -2114,6 +2241,8 @@ export interface RunChatTurnInputs {
    *  the legacy JSON field names, but their source is the prompt content
    *  arm rather than raw shell params. */
   readonly content: RunChatTurnPromptContent;
+  /** Canonical, resolved attachments issued by this owner turn, never parsed from user prose. References are not grants. */
+  readonly attachment_refs?: readonly { file_ref: string; filename: string }[];
   /** The `correction-learning` middleware's before-turn contribution
    *  (flat "recent corrections — …" summary; `[]` when none). */
   readonly correction_context: readonly string[];
@@ -2177,6 +2306,12 @@ export interface RunChatTurnDeps {
    *  case stays a quiet substrate signal). */
   readonly executeAiCall?: ExecuteChatAiCall;
   readonly registry: InternalToolRegistry;
+  /** An installed recipe's name (`ChatOrchestratorDeps.recipeTitle`): a call that ran one keeps it
+   *  in its provenance (`ChatToolCall.recipe_name`), which its line shows. */
+  readonly recipeTitle?: (recipe_ref: string) => string | undefined;
+  /** D-402 slice A4 — whether an installed recipe acts in a web page: a call that ran one is
+   *  marked (`ChatToolCall.browser`), so its answer offers "Make a recipe". */
+  readonly recipeActsInBrowser?: (recipe_ref: string) => boolean;
   /** D-167 — is THIS TURN recall-bearing? Bound by the orchestrator to
    *  `hasRegisteredRecallResult` over the turn's own scratch state.
    *
@@ -2235,6 +2370,12 @@ export interface RunChatTurnDeps {
    *  before. */
   readonly serverTimeZone?: () => string | undefined;
   readonly rollingBriefEnabled?: () => boolean;
+  readonly readRequestEvidence?: (sessionId: string, turnId: string,
+    earlierUserMessages: readonly string[]) => Promise<RequestExecutionEvidence | undefined>;
+  /** The session's approved held writes whose outcome is not known: an unknown receipt, or an execution error
+   *  (2026-11-19). An identical write is not proposed again until an earlier round of the turn has read the record:
+   *  {@link UNCONFIRMED_ATTEMPT_DETAIL}. Absent: no such check. */
+  readonly readUncertainHeldWrites?: (sessionId: string) => Promise<ReadonlyArray<{ readonly tool: string; readonly args: unknown }>>;
   /** DURABLE home for the carried brief. Bound by the composition root to the
    *  chat store's encrypted `chat_briefs` rows.
    *
@@ -2282,6 +2423,19 @@ export interface RunChatTurnDeps {
   readonly revalidateProjectionRead?: (source: Extract<ChatSourceCitation, { kind: 'asset_projection' }>, time_zone: string) => Promise<boolean>;
   readonly revalidateAssetRead?: (id: string, version: string, time_zone: string) => Promise<boolean>;
   readonly dispatchTool: OrchestratorDispatch['dispatchTool'];
+  /** D-177 §N.15.9 — told a round's calls before any runs, so the calls the round repeats can be
+   *  gathered (Q7, "After each round"). */
+  readonly beforeRound?: (round: {
+    readonly round_index: number;
+    readonly calls: ReadonlyArray<{ readonly tool: string; readonly args: unknown }>;
+  }) => Promise<void>;
+  /** D-177 §N.15.9 — given a round's results once all its calls have run (`undefined` for a call
+   *  that threw), in emit order: asks the round's gathered approval, waits for it where the owner
+   *  waits, and returns the results to read on with, in the same order. */
+  readonly afterRound?: (round: {
+    readonly round_index: number;
+    readonly results: ReadonlyArray<ChatDispatchResult | undefined>;
+  }) => Promise<ReadonlyArray<ChatDispatchResult | undefined>>;
   /** Optional owner-Chat preview of the settled answer, before the closing
    * brief. Already restored by the AI boundary; never a planning response.
    * This does not complete the turn or bypass durable finalization. */
@@ -2345,6 +2499,12 @@ export interface RunChatTurnResult {
   readonly assistant_content: string;
   /** Filled by the owner driver from native sources in successful protected main packets. */
   readonly prefetch_source_citations?: readonly ChatSourceCitation[];
+  /** D-405 slice 1 — filled by the owner driver: the setup step the owner's message named, joined to
+   *  the answer's row (`next-steps/prompt-steps.ts`). */
+  readonly setup_hint?: {
+    readonly fixes: readonly import('@recued/contracts').ChatFix[];
+    readonly offers: readonly import('@recued/contracts').InstallOffer[];
+  };
   readonly tool_calls?: ChatToolCall[];
   /** Dispatch bodies for turn-end recall finalization or the legacy writer.
    *  message_id identifies a call already saved before dispatch. */
@@ -2364,6 +2524,10 @@ export interface RunChatTurnResult {
    * searches during this turn. */
   readonly provenance?: ChatProvenanceRef[];
   readonly usage?: TokenUsageReport;
+  /** 2026-11-21 (the owner: "recued sees the limit, stop the model, show a continue") — the turn ended at its round
+   *  limit: its last call had no round left and it answered there, or still asked for tools. The owner driver keeps it
+   *  on the answer's row (`ChatMessage.reached_round_limit`), and Chat offers Continue under it. */
+  readonly reached_round_limit?: true;
   /** Present when a provider/decoder failure ended a cooperative tool loop
    * after dispatch. Gateway callers use this signal to return a non-retryable
    * post-effect outcome instead of misrepresenting the turn as successful. */
@@ -2388,6 +2552,14 @@ export interface RunChatTurnResult {
    *  gathers (personal-recipes over `events`, the SI Checkpoint 2 final
    *  guard) iff present. */
   readonly final_ai_output?: AIOutput;
+  /** The turn's closing brief, left to run after its reply (`defer_closing_fold`). It never
+   *  rejects: a fold that fails keeps the carry with its gap declared, as it would inline. */
+  readonly after_reply?: () => Promise<void>;
+  /** D-343 (the owner, 2026-11-14: "stop the quick follow-ups from waiting") — the conversation's
+   *  next turn takes over that brief while it is still being written: this turn's results ride to
+   *  it raw (the D-347 carry) and the brief, when it comes, is dropped unsaved, so the next turn
+   *  folds them with its own. Once the brief is saving, it waits for that instead. */
+  readonly supersede_after_reply?: () => Promise<void>;
 }
 
 /** Run one chat turn: the per-round AI call + the cooperative tool loop
@@ -2401,6 +2573,22 @@ export const runChatTurn = async (
   const { session_id, turn_id, picker_target } = inputs;
   const dispatchPeerName = inputs.dispatch_peer_name;
   const now = deps.now;
+  // A call that ran an installed recipe keeps the recipe's name with it, for its line.
+  // 2026-11-20 — the failed runs of this turn whose actions are all accounted for: nothing ran, or every attempted
+  //   action was acknowledged (`chat-failed-run-outcome.ts`). Their answer needs no "did not confirm completion"
+  //   notice; a row not marked here keeps it.
+  const knownOutcomeCalls = new WeakSet<ChatToolCall>();
+  const provenanceEntry = (...entry: Parameters<typeof toolCallProvenanceEntry>): ChatToolCall => {
+    const call = toolCallProvenanceEntry(...entry);
+    const recipe_name = calledRecipeTitle(deps.recipeTitle, call);
+    // D-402 slice A4 — and whether the recipe acts in a web page, for "Make a recipe".
+    const browser = calledRecipeActsInBrowser(deps.recipeActsInBrowser, call);
+    const row = recipe_name === undefined && !browser ? call
+      : { ...call, ...(recipe_name !== undefined ? { recipe_name } : {}), ...(browser ? { browser: true as const } : {}) };
+    const dispatched = entry[1];
+    if (dispatched.ok && dispatched.run_failed !== undefined && failedRunEffectsKnown(dispatched.result)) knownOutcomeCalls.add(row);
+    return row;
+  };
   const briefEnabled = deps.rollingBriefEnabled?.() ?? false;
   // A peer or gateway must not inherit local work evidence merely by reusing
   // a session id. Only the owner-Chat composition wires this store.
@@ -2419,8 +2607,13 @@ export const runChatTurn = async (
   // Invalidate the previous source snapshot even if this reread is denied or
   // cancelled. An old body is not a successful refresh.
   if (inputs.mail_work !== undefined) evidenceStore?.clear(session_id);
+  const configuredSystemPrompt = inputs.system_prompt ?? CHAT_MAIN_TURN_SYSTEM_PROMPT;
+  // With the running note on, the turn reconciles against the request records (below) by this guidance.
+  const briefSystemPrompt = briefEnabled && inputs.mail_work === undefined && mailEvidence === null
+    ? configuredSystemPrompt.replace(STANDARD_ACTION_GUIDANCE, () => STANDARD_BRIEF_ACTION_GUIDANCE)
+    : configuredSystemPrompt;
   const baseSystemPrompt = composeChatMainTurnSystemPrompt(inputs.catalog_mode,
-    withApprovalsHere(inputs.system_prompt ?? CHAT_MAIN_TURN_SYSTEM_PROMPT, inputs.approvals_here))
+    withApprovalsHere(briefSystemPrompt, inputs.approvals_here))
     + (inputs.notices_here === true ? `\n\n${FEATURE_TEXT_NOTICES}` : '');
   const mainSystemPrompt = (mailEvidence ? withMailWorkOutputShape(baseSystemPrompt) : baseSystemPrompt)
     + (inputs.mail_work !== undefined ? `\n\n${MAIL_WORK_INVESTIGATION_GUIDANCE}`
@@ -2529,6 +2722,9 @@ export const runChatTurn = async (
   let lastPacketBody = '';
   // The fitted packet before privacy aliasing, for exact retained-result checks.
   let lastSourcePacket = '';
+  const browserCompletion = createBrowserTaskCompletion(inputs.content.user_message,
+    inputs.content.chat_tail.filter(message => message.role === 'user').map(message => message.content));
+  let browserCompletionActive = false;
   // EXPERIMENT — the previous turn's own working, when the flag is on. Set after
   // every successful main turn; read by the tool-loop continuation below.
   let carriedWorking: string | undefined;
@@ -2539,6 +2735,16 @@ export const runChatTurn = async (
   // one event that can create or shrink one mid-turn, because the refusal IS
   // how the endpoint's window gets learned.
   let activeInputTokenBudget = inputs.input_token_budget;
+  // 2026-11-20 (the owner: "go ahead", the estimate) — read again before each prompt is composed and each fold is
+  //   weighed, because it becomes better known while the turn runs: the provider counts each call it answers, and after
+  //   three the budget is in its units (`minEstimateTokenRatio`); an input the endpoint accepted is a floor
+  //   (`maxProvenAcceptedInput`). Read only at the turn's start, a server's first turn kept the uncounted estimate,
+  //   about twice the provider's count on browser task P, for every fold it weighed. Only chat passes a reader; the
+  //   gateway's budget is its caller's declared window and stays as given.
+  const refreshInputTokenBudget = (): void => {
+    const current = deps.resolveInputTokenBudget?.();
+    if (current !== undefined) activeInputTokenBudget = current;
+  };
 
   // What the trim ladder dropped, for the length of THIS turn only. The value
   // is the executor's own pre-egress copy, so a slice of it re-enters the
@@ -2604,8 +2810,9 @@ export const runChatTurn = async (
     started_at: number,
     completed_at: number,
     tier_override?: ToolTier,
+    preflight?: true,
   ): ChatPriorToolCall => {
-    const observed = priorToolCallEntry(tc, result, deps.registry, started_at, completed_at, tier_override);
+    const observed = priorToolCallEntry(tc, result, deps.registry, started_at, completed_at, tier_override, preflight, inputs.attachment_refs);
     if (result.ok && result.run_failed === undefined && !isNonTerminalToolResult(result)
       && result.result !== undefined) successfulAnswerCalls.add(observed);
     return observed;
@@ -2624,6 +2831,9 @@ export const runChatTurn = async (
    *  Shipping it on by default would repeat the eviction-briefing mistake — a
    *  mechanism built on an inferred failure and never exercised. */
   let briefCallIndex = 0;
+  /** The reader's request records (Consolidated), estimated as the last reader packet carried them: they ride in
+   *  every reader packet, so the mid-turn and closing folds count them with the system prompt. */
+  let requestEvidenceTokens = 0;
   const runRollingBrief = async (
     unbriefed: ReadonlyArray<ChatPriorToolCall>,
     previous: RollingBrief | null,
@@ -2635,8 +2845,11 @@ export const runChatTurn = async (
      *  boundary — not about fitting a budget, and the size test would skip
      *  exactly the small turns whose results would then vanish. The brief-call
      *  CAPACITY guard still applies; it is the one that must never be waived. */
-    opts?: { readonly force?: boolean },
+    opts?: { readonly force?: boolean; readonly replyCompleted?: boolean; readonly preparedReply?: string; readonly signal?: AbortSignal;
+      /** What earlier folds left in the packet (`shouldBrief`'s `heldTokens`). */
+      readonly heldTokens?: number },
   ): Promise<RollingBrief | null> => {
+    refreshInputTokenBudget();
     const executeAiCall = deps.executeAiCall;
     if (!executeAiCall) return null;
     const systemPrompt = mainSystemPrompt;
@@ -2671,10 +2884,20 @@ export const runChatTurn = async (
       priorToolCalls: unbriefed,
       // What would actually reach `tool_results_since`. Empty ⇒ no fold.
       newResultCount: nonRecall.length,
+      // ⛔ No limit known, no fold inside the turn (the owner, 2026-11-20: "on the slot that knows the limit (from the
+      //   api or hit the limit before) we use that, from unknown yet, we let it bloat"). A window is known once an
+      //   endpoint refused a request for size, and a refusal on the turn's first call is retried under it.
+      //   `e46d206c9` gave this fold the carry's 128,000 stand-in, and browser task P went from 4/4 with no fold inside
+      //   the turn to 3/17 with two or three: the brief kept what was pending but not the current page, its
+      //   references or which steps were done, so runs repeated work and ran out of rounds
+      //   (recued-bridge-vs-browser-use/results/analysis/2026-11-20-JSON-output-investigation-2159cc311-bifrl40j).
+      //   Within a turn the provider's cache holds the growing packet, so growing is cheap there, and a fold misses
+      //   the cache on the next call.
       budgetTokens: activeInputTokenBudget ?? Number.POSITIVE_INFINITY,
       catalogTokens: Math.floor(JSON.stringify(inputs.available_tools).length / 2),
-      overheadTokens: Math.floor(systemPrompt.length / 2),
+      overheadTokens: Math.floor(systemPrompt.length / 2) + requestEvidenceTokens,
       tailTokens: Math.floor(JSON.stringify(inputs.content.chat_tail).length / 2),
+      ...(opts?.heldTokens !== undefined ? { heldTokens: opts.heldTokens } : {}),
       previous,
     });
     // ⛔ `force` WAIVES ONLY WHAT THE WHITELIST NAMES. It closes a turn's carry;
@@ -2723,15 +2946,19 @@ export const runChatTurn = async (
        *
        *  ⚠ AND THE COST OF RETRYING IS ONE CALL ON A FOLD THAT ALREADY FAILED —
        *  ~6% of folds at the observed rate, under 1% of a turn's calls. */
-      const attemptFold = async (): Promise<RollingBrief | null> => {
-        const prompt = buildBriefPrompt({
+      const foldInstruction = BRIEF_INSTRUCTION;
+      const prompt = buildBriefPrompt({
           userMessage: inputs.content.user_message,
           previous,
           // ⚠ NON-RECALL results only in `tool_results_since`; the recall half
           //   rides in `recall_context` where the egress knows how to alias it.
           // ⛔ And never a HELD call's result: it is a status the fold would write
           //   into `findings`, which never forget it (see `foldableToolResults`).
-          since: foldableToolResults(nonRecall),
+          // 2026-11-21 (the owner: "test all three for answers") — each result's output once, as the main packet
+          //   reads it (`withoutRenderAlias`, D-335 slice Q): the engine's `sidebar` is an exact copy of `render`,
+          //   and was 41% of the fold's input on browser task P. The calls themselves keep both.
+          since: foldableToolResults(nonRecall).map((call) => call.result === undefined ? call
+            : { ...call, result: withoutRenderAlias(call.result) }),
           ...(recallContext.length > 0 ? { recallContext } : {}),
           // ⛔ The backlog from turns that never got a fold — see
           //   `appendUnfoldedUserMessage`. PEEKED, not taken: a fold that fails
@@ -2740,6 +2967,7 @@ export const runChatTurn = async (
             ? { earlierUserMessages: earlierUserStatements() }
             : {}),
         });
+      const attemptFold = async (): Promise<RollingBrief | null> => {
         const call_index = ++briefCallIndex;
         const started_at = now();
         const metrics = { call_index, closing: opts?.force === true, input_chars: prompt.length,
@@ -2751,18 +2979,19 @@ export const runChatTurn = async (
         emitCall({ phase: 'started' });
         try {
           const result = await executeAiCall(buildChatMainTurnManifest(), {
-            'llm.system_prompt': BRIEF_INSTRUCTION
+            'llm.system_prompt': foldInstruction
               + (inputs.mail_work === undefined && mailEvidence === null ? '' : `\n\n${MAIL_WORK_BRIEF_GUIDANCE}`),
             'llm.system_role': inputs.system_role ?? 'system',
             'llm.prompt': prompt,
             'llm.output_format': 'json',
-          }, { timeout_ms: BRIEF_CALL_TIMEOUT_MS });
-          emitCall({ phase: 'finished', outcome: 'returned', elapsed_ms: Math.max(0, now() - started_at),
-            usage: result?.usage ?? null });
+          }, { timeout_ms: BRIEF_CALL_TIMEOUT_MS, ...(opts?.signal !== undefined ? { signal: opts.signal } : {}) });
           // JSON mode returns the object as body; response is a compatibility fallback.
           const body = result?.body;
-          return parseBrief(body)
-            ?? parseBrief((body as { response?: unknown } | undefined)?.response);
+          const decode = (value: unknown): RollingBrief | null => parseBrief(value);
+          const parsed = decode(body) ?? decode((body as { response?: unknown } | undefined)?.response);
+          emitCall({ phase: 'finished', outcome: 'returned', parsed: parsed !== null,
+            elapsed_ms: Math.max(0, now() - started_at), usage: result?.usage ?? null });
+          return parsed;
         } catch (error) {
           emitCall({ phase: 'finished', outcome: 'failed', elapsed_ms: Math.max(0, now() - started_at) });
           throw error;
@@ -2906,6 +3135,31 @@ export const runChatTurn = async (
   let outputFileGuidanceActive = false;
   let mainCallCount = 0;
   let sourceFactRepairUsed = false;
+  // D-378 — one accounting state for enforcement and every native packet,
+  // including the opening call and output-repair calls. Count dispatched batches,
+  // not provider calls. A search-only batch has its own bounded allowance.
+  let chargedRounds = 0;
+  let discoveryRounds = 0;
+  let repeatedBrowserRefusalRounds = 0;
+  let refusalLoopStopped = false;
+  const roundCap = inputs.tool_round_cap !== undefined && Number.isSafeInteger(inputs.tool_round_cap) && inputs.tool_round_cap >= 1
+    ? Math.min(inputs.tool_round_cap, CHAT_MAIN_TURN_TOOL_LOOP_CAP) : CHAT_MAIN_TURN_TOOL_LOOP_CAP;
+  // 2026-11-21 (the owner: "a,b,c yes", b: earned rounds) — past the cap, a work round is earned by the round before it
+  //   reaching a page or making a call the turn had not (`reachedSomethingNew`), up to `CHAT_TURN_EARNED_ROUND_CEILING`
+  //   rounds and while the turn has had the provider newly process fewer than `CHAT_TURN_EARNED_ROUND_TOKEN_CEILING`
+  //   tokens (`freshTokens`: its cached input is not counted). Only the owner's
+  //   ordinary turn earns: a managed run keeps the cap it was given.
+  const earns = inputs.tool_round_cap === undefined;
+  let earnedRounds = 0;
+  const roundCapNow = (): number => roundCap + earnedRounds;
+  /** 2026-11-21 (the owner: "recued sees the limit, stop the model, show a continue") — whether the loop's last model
+   *  call had no round left (it was told so, `BOUNDED_RUN_LAST_ROUND`), and then whether the turn ended there: it
+   *  answered, or still asked for tools (`max_rounds_exhausted`). Chat offers Continue under such an answer
+   *  (`RunChatTurnResult.reached_round_limit`), whatever the model wrote. */
+  let lastCallAtRoundLimit = false;
+  let reachedRoundLimit = false;
+  /** What the turn has reached, for `reachedSomethingNew`. */
+  const reached = new Set<string>();
   const callMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
     output_feedback?: string,
@@ -2916,6 +3170,7 @@ export const runChatTurn = async (
         kind: 'failed';
         detail: string;
         decoder_reason?: TransparencyDecoderUnavailableReason;
+        model_unavailable?: UnavailableModel;
         retry_at?: number;
         context_trim_livelock?: true;
         usage?: TokenUsageReport;
@@ -2923,6 +3178,7 @@ export const runChatTurn = async (
         context_overflow?: true;
       }
   > => {
+    refreshInputTokenBudget();
     const executeAiCall = deps.executeAiCall;
     if (!executeAiCall) {
       // Substrate-reachable path. No executor wired → no provider
@@ -2931,13 +3187,31 @@ export const runChatTurn = async (
       // reachable.
       return { kind: 'failed', detail: 'no_executor' };
     }
+    // Either style (2026-11-19): the records of pending, approved, cancelled and completed actions are what kept
+    // Consolidated from proposing done and cancelled work again; Standard's note keeps none of them.
+    const readEvidence = briefEnabled && inputs.mail_work === undefined && mailEvidence === null
+      ? await deps.readRequestEvidence?.(session_id, turn_id, earlierUserStatements()) : undefined;
+    // The turn's reads are in its prior_tool_calls already; their receipts here keep the call alone. A browser call's
+    // keeps what ran and how it ended, not the pages it read (`withoutBrowserPages`).
+    const unboundedRequestEvidence = readEvidence ? withoutBrowserPages(withoutCurrentReadResults(readEvidence, deps.registry)) : undefined;
+    const boundedRequestEvidence = unboundedRequestEvidence ? boundRequestEvidence(unboundedRequestEvidence,
+      unboundedRequestEvidence.coverage?.incomplete ?? false,
+      Math.min(REQUEST_EVIDENCE_LIMITS.packetBytes, activeInputTokenBudget === undefined ? Infinity : Math.max(1024, activeInputTokenBudget / 2))) : undefined;
+    // What the model reads of them: the empty and the repeated left out (`readerRequestRecords`).
+    const requestEvidence = boundedRequestEvidence ? readerRequestRecords(boundedRequestEvidence) : undefined;
+    requestEvidenceTokens = requestEvidence ? estimatedTokens(JSON.stringify(requestEvidence).length) : 0;
     const manifest = buildChatMainTurnManifest();
     // A new read can invalidate old bindings. In that case use the ordinary
     // full-plan contract rather than silently retaining or rebinding stale work.
     const activeEditTarget = mailEvidence && editTarget ? mailWorkEditTarget(editTarget.plan, mailEvidence.planSnapshot()) : null;
     const sourceFactDemand = sourceFactReadOnly && visibleSourceFacts(prior_tool_calls ?? [], prior_tool_calls ?? []).active;
+    if (sourceFactDemand) browserCompletionActive = false;
+    browserCompletionActive ||= picker_target === 'self' && inputs.browser_task_completion === true
+      && inputs.mail_work === undefined && mailEvidence === null && !sourceFactDemand
+      && browserActionContext(inputs.named_pages, prior_tool_calls);
     const systemPrompt = mainSystemPrompt + (activeEditTarget ? `\n\n${MAIL_WORK_EDIT_SHAPE}` : '')
       + (sourceFactDemand ? `\n\n${SOURCE_FACT_GUIDANCE}` : '')
+      + (browserCompletionActive ? `\n\n${BROWSER_COMPLETION_GUIDANCE}` : '')
       + (outputFileGuidanceActive ? `\n\n${OUTPUT_FILE_GUIDANCE}` : '');
     const systemRole: LLMMessageRole = inputs.system_role ?? 'system';
     let fittedChatTail = inputs.content.chat_tail.map(message => mailEvidence && message.role === 'assistant'
@@ -2955,6 +3229,9 @@ export const runChatTurn = async (
      *  original would attribute one call's elision to another's identity. */
     let settledSourceToolCalls: ReadonlyArray<ChatPriorToolCall> = fittedPriorToolCalls;
     let omittedContext = false;
+    // No work round is left for this call to spend: it is told so (`BOUNDED_RUN_LAST_ROUND`). Past the cap it is the
+    // cap the turn has EARNED (`roundCapNow`), so a call in an earned round is not told it is the last.
+    const lastRound = chargedRounds >= roundCapNow();
     const contentForPrompt = (): RunChatTurnPromptContent => ({
       chat_tail: omittedContext
         ? [
@@ -2971,10 +3248,15 @@ export const runChatTurn = async (
         : fittedChatTail,
       user_message: inputs.content.user_message,
     });
-    const composePrompt = (): ChatMainTurnPromptParts =>
-      composeChatMainTurnPromptParts({
+    const browserPageKey = dispatchPeerName === null ? nativeBrowserPageKey(inputs.available_tools) : undefined;
+    const composePrompt = (): ChatMainTurnPromptParts => composeChatMainTurnPromptParts({
+        ...(browserPageKey ? { native_browser_page_key: browserPageKey } : {}),
+        ...(inputs.attachment_refs ? { attachment_refs: inputs.attachment_refs } : {}),
+        deduplicate_browser_reads: process.env.RECUED_BROWSER_READ_DEDUP !== '0',
         available_tools: inputs.available_tools,
         content: contentForPrompt(),
+        ...(browserCompletionActive ? { browser_task_context: browserCompletion.context() } : {}),
+        ...(requestEvidence ? { request_execution_context: requestEvidence } : {}),
         ...(inputs.source_citations ? { source_citations: inputs.source_citations } : {}),
         current_date: currentDate,
         ...(inputs.index_context ? { index_context: inputs.index_context } : {}),
@@ -3008,8 +3290,12 @@ export const runChatTurn = async (
           : {}),
         ...(carriedWorking ? { prior_working_unverified: carriedWorking } : {}),
         ...(activeEditTarget ? { mail_work_edit_target: mailWorkEditPrompt(activeEditTarget) } : {}),
-        ...((projectionRefreshFeedback || output_feedback)
-          ? { output_feedback: [projectionRefreshFeedback, output_feedback].filter(Boolean).join('\n\n') } : {}),
+        tool_round_budget: chatToolRoundBudget(roundCapNow(), chargedRounds, discoveryRounds,
+          inputs.previous_turn_reached_round_limit === true && chargedRounds === 0),
+        ...((projectionRefreshFeedback || output_feedback || lastRound || refusalLoopStopped)
+          ? { output_feedback: [projectionRefreshFeedback, output_feedback,
+            refusalLoopStopped ? REPEATED_BROWSER_ARGUMENT_FEEDBACK : undefined,
+            lastRound ? BOUNDED_RUN_LAST_ROUND : undefined].filter(Boolean).join('\n\n') } : {}),
         ...(draft_for_review ? { draft_for_review } : {}),
       });
     // Estimate against the role we will ACTUALLY send under — an owner who
@@ -3398,8 +3684,9 @@ export const runChatTurn = async (
     // put the refused value into the next packet, and an unchanged retry
     // grounded on it (measured on bench 98's captures: refused on packet 5,
     // admitted on packet 6, nothing changed but the echo).
-    lastPacketBody = `${systemPrompt}\n${groundingCorpusFromPacket(promptParts.body)}`;
-    lastSourcePacket = promptParts.body;
+    const groundingBody = withoutUnsuccessfulAttemptEchoes(promptParts.body);
+    lastPacketBody = `${systemPrompt}\n${groundingCorpusFromPacket(groundingBody)}`;
+    lastSourcePacket = groundingBody;
     const sourceFacts = sourceFactDemand ? visibleSourceFacts(prior_tool_calls ?? [], fittedPriorToolCalls) : undefined;
     const aiInput: Record<string, unknown> = {
       // Lever-2 slice 3 — index mode appends the `tools.search` two-stage
@@ -3435,17 +3722,21 @@ export const runChatTurn = async (
     // aliases every outbound packet — aliasing is the sole PII protection.
     try {
       mainCallCount += 1;
+      if (promptParts.browser_read_context) console.info(`[chat] browser read context ${JSON.stringify({
+        turn_id, main_call: mainCallCount, ...promptParts.browser_read_context,
+      })}`);
       const started = Date.now();
       // D-347 follow-up (2026-11-08) — a call that failed fast before any answer is tried once more
       // ({@link isFastNetworkFailure}); the line says so, so a record shows it even when the retry answers.
-      const result = await executeAiCall(manifest, aiInput).catch(async (error: unknown) => {
+      const callOptions = browserActionContext(inputs.named_pages, prior_tool_calls) ? { browser_action_mode: true } : undefined;
+      const result = await executeAiCall(manifest, aiInput, callOptions).catch(async (error: unknown) => {
         if (!isFastNetworkFailure(error, Date.now() - started)) throw error;
         console.warn(`[chat] model call failed before any answer, trying once more — turn ${turn_id}: `
           + failureDetailForRecord((error as Error).message));
         await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS));
         deps.assertActive?.();
         mainCallCount += 1;
-        return executeAiCall(manifest, aiInput);
+        return executeAiCall(manifest, aiInput, callOptions);
       });
       // Executor return is wire-level untrusted. Coerce a real model's
       // envelope deviations (dropped empty `events`/`tool_calls`, omitted
@@ -3538,10 +3829,12 @@ export const runChatTurn = async (
       const decoderReason = llmFailureReason(e);
       const retryAt = (decoderReason === 'cooldown' || decoderReason === 'provider_failure')
         && e instanceof LLMError && isLlmRetryTime(e.details?.retry_at) ? e.details.retry_at : undefined;
+      const unavailable = unavailableModelOf(e);
       return {
         kind: 'failed',
         detail: (e as Error)?.message ?? 'main-turn executor failure',
         decoder_reason: decoderReason,
+        ...(unavailable !== undefined ? { model_unavailable: unavailable } : {}),
         ...(contextOverflow ? { context_overflow: true as const } : {}),
         ...(retryAt !== undefined ? { retry_at: retryAt } : {}),
       };
@@ -3593,6 +3886,10 @@ export const runChatTurn = async (
   // the FINAL `currentAiOutput` (the last successful synthesis, or the
   // last good round on a mid-loop abort).
   let finalAiOutput: AIOutput | undefined;
+  /** D-343 — the closing brief, when it runs after the reply (`defer_closing_fold`), and how a
+   *  newer turn takes it over. */
+  let afterReply: (() => Promise<void>) | undefined;
+  let supersedeAfterReply: (() => Promise<void>) | undefined;
 
   /** The carry-forward this turn opens with, if any.
    *
@@ -3670,6 +3967,8 @@ export const runChatTurn = async (
   // Run the fixed read sequence through dispatch before the first AI call;
   // results are ordinary prior_tool_calls, aliased at the existing wire seam.
   const freshCalls: ChatPriorToolCall[] = [];
+  /** Read once, when the turn first calls a write (`readUncertainHeldWrites`). */
+  let uncertainWrites: ReadonlyArray<{ readonly tool: string; readonly args: unknown }> | undefined;
   const readDiscoveredMail = inputs.mail_work === undefined ? undefined : createMailWorkDiscoveryReader();
   let readingNotice = '';
   const nativeRead = (name: string): boolean => {
@@ -3697,7 +3996,7 @@ export const runChatTurn = async (
     const observed = observeToolCall(tc, result, started_at, completed_at);
     freshCalls.push(observed);
     mailEvidence?.record(observed);
-    const provenance = toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id);
+    const provenance = provenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id);
     (assistantToolCalls ??= []).push(provenance);
     const held = isNonTerminalToolResult(result);
     const heldRunId = held ? runIdOf(result) : undefined;
@@ -3768,6 +4067,20 @@ export const runChatTurn = async (
     for (let revision = 0; ; revision++) {
       const result = await callMainTurn(calls, repairFeedback, sourceFactRepairUsed ? undefined : draft);
       usage = aggregateTokenUsageReports(usage, result.usage);
+      if (result.kind === 'ok' && browserCompletionActive && !outputLengthStops.has(result.output)) {
+        const completion = browserCompletion.check(result.output, lastSourcePacket);
+        if (process.env.RECUED_CHAT_OUTPUT_DIAGNOSTICS === '1') console.info(`[chat] browser completion ${JSON.stringify({
+          main_call: mainCallCount, decision: completion, ...browserCompletion.counts(),
+        })}`);
+        if (completion === 'repair') {
+          deps.assertActive?.();
+          repairFeedback = [feedback, BROWSER_COMPLETION_REPAIR].filter(Boolean).join('\n\n');
+          continue;
+        }
+        if (completion === 'unverified') return { kind: 'ok', output: {
+          response: BROWSER_COMPLETION_INCOMPLETE, events: [], tool_calls: [], nothing_outstanding: true,
+        }, ...(usage ? { usage } : {}) };
+      }
       if (result.kind === 'ok' && invalidSourceAnswers.has(result.output)) {
         deps.assertActive?.();
         if (sourceFactRepairUsed) return { kind: 'ok', output: { response: SOURCE_FACT_FAILURE, events: [], tool_calls: [] }, ...(usage ? { usage } : {}) };
@@ -3808,12 +4121,36 @@ export const runChatTurn = async (
       await readDiscoveredMail!(freshCalls, [found], async args => { await read('mail.read', args); });
     }
   }
-  const presentAnswer = (text: string): string => readingNotice && text.trim() ? `${readingNotice}\n\n${text}` : text;
+  let answerCalls: readonly ChatToolCall[] = [];
+  const presentAnswer = (text: string): string => {
+    if (!text.trim()) return text;
+    // An execution error is a native receipt, not a claim the model can omit
+    // after a successful read. Keep the attempt separate from observed state,
+    // including when the answer is shown before its closing fold finishes.
+    // ⛔ Not for a failed run whose actions are all accounted for (2026-11-20): nothing ran, or every attempted action
+    //   was acknowledged and a check failed. On browser task P, all four runs that failed on this notice alone carried
+    //   a correct answer behind it (`chat-failed-run-outcome.ts`).
+    const unconfirmedAction = briefEnabled
+      && [...answerCalls, ...(assistantToolCalls ?? []), ...(inputs.held_results ?? [])].some(call =>
+        call.status === 'error' && call.reason === 'execution_error'
+        && deps.registry.getByName(call.tool_name)?.classification !== 'read'
+        && !knownOutcomeCalls.has(call));
+    return [readingNotice, unconfirmedAction
+      ? 'An action attempt returned an error and did not confirm completion. A separate check of the current state does not confirm what happened to that attempt.'
+      : undefined, text].filter(part => part?.trim()).join('\n\n');
+  };
   // D-335 slice AK — the pages the request names, read side by side before the first round and
   // recorded as `read` records a prepared read: the first round sees them as calls already made.
-  if (inputs.named_pages !== undefined && inputs.named_pages.length > 0) {
-    const pages = await Promise.all(inputs.named_pages.map(async ({ tool_name, page }) => {
-      const tc: ToolCall = { tool: tool_name, args: { page } };
+  // D-406 — and, first, the emails the owner picked, each read with `mail.read` by its id; then (Q4) the calendar
+  // events, each with `calendar.search` by its record id.
+  const openingReads: ToolCall[] = [
+    ...(inputs.picked_mail ?? []).map(({ slug, record_id }): ToolCall => ({ tool: 'mail.read', args: { slug, record_id } })),
+    ...(inputs.picked_events ?? []).map(({ slug, record_id }): ToolCall => ({ tool: 'calendar.search', args: { slug, record_id } })),
+    ...(inputs.named_pages ?? []).map(({ tool_name, page }): ToolCall => ({ tool: tool_name, args: { page } })),
+  ];
+  if (openingReads.length > 0) {
+    const pages = await Promise.all(openingReads.map(async (tc) => {
+      const tool_name = tc.tool;
       const started_at = now();
       const result = await dispatchTool({
         session_id, turn_id, tool_name, arg_values: tc.args as Record<string, unknown>, picker_target,
@@ -3827,7 +4164,7 @@ export const runChatTurn = async (
       collectProvenance(tc.tool, result);
       const observed = observeToolCall(tc, result, started_at, completed_at);
       freshCalls.push(observed);
-      const provenance = toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id);
+      const provenance = provenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id);
       (assistantToolCalls ??= []).push(provenance);
       const held = isNonTerminalToolResult(result);
       const heldRunId = held ? runIdOf(result) : undefined;
@@ -4075,7 +4412,17 @@ export const runChatTurn = async (
         buildUnverifiedAbsenceFeedback(),
       );
       totalUsage = aggregateTokenUsageReports(totalUsage, absenceRetry.usage);
-      adoptInitialCorrection(absenceRetry);
+      // Asked to look, it said the absence again without looking: shown, with the host's line before it, and
+      // without its events. Anything else (a look, an invented value, an empty or cut-off reply) goes as before.
+      if (absenceRetry.kind === 'ok' && !isEmptyChatAiOutput(absenceRetry.output)
+        && !outputLengthStops.has(absenceRetry.output)
+        && !inventedValueInReply(absenceRetry.output, lastPacketBody)
+        && assertedAbsenceWithoutLooking(absenceRetry.output)) {
+        currentAiOutput = { ...absenceRetry.output, events: [],
+          response: `${UNCHECKED_ABSENCE_NOTE}\n\n${absenceRetry.output.response}` };
+      } else {
+        adoptInitialCorrection(absenceRetry);
+      }
     }
 
     assistantContent = initialReplyStopped
@@ -4098,6 +4445,7 @@ export const runChatTurn = async (
       // the chat broadcast bus so the renderer can paint per-round
       // progress. Capped by `CHAT_MAIN_TURN_TOOL_LOOP_CAP` (contract).
       const toolCallsAccum: ChatToolCall[] = [...(assistantToolCalls ?? [])];
+      answerCalls = toolCallsAccum;
       // Beside `toolCallsAccum` (provenance, persisted) and `priorToolCalls`
       // (the model-facing accumulator, discarded at the turn boundary). This is
       // the third view: the durable body.
@@ -4158,26 +4506,17 @@ export const runChatTurn = async (
       };
       let nextToolCalls: ReadonlyArray<ToolCall> = currentAiOutput.tool_calls;
       let roundIndex = 0;
-      // `(tool, args)` → how many times this EXACT call has been refused in this
-      // turn. Turn-scoped on purpose: a later turn may legitimately retry the
-      // same call once the conversation has supplied what the gate wanted.
+      // Dispatcher invalid_args remains closed for this turn. A local grounding
+      // rejection is temporary: a later lookup in THIS turn may supply exactly
+      // the missing identifier, so it must be checked against each new input.
       const refusedCallCounts = new Map<string, number>();
+      const groundingRefusalCounts = new Map<string, number>();
       // D-337 — rounds of this turn in which a call was not asked because one
       // before it waits for the owner's approval (`not_asked_yet`). The second
       // such round ends the turn: see `WAITING_FOR_APPROVAL_MESSAGE`.
       let notAskedRounds = 0;
-      // The cap counts WORK, not rounds. A round that dispatched nothing but
-      // `tools.search` is the lean-core catalog's own tax — it converts an
-      // omitted recipe entry into a callable name and does nothing the owner
-      // asked for — so it is charged against the bounded discovery budget
-      // instead. `roundIndex` stays the true round ordinal: D-219's flow
-      // compiler keys `round_index` off it, and a gap there would misalign
-      // `nonCoreRoundDepth`.
-      let chargedRounds = 0;
-      let discoveryRounds = 0;
-      // D-340 slice 4 — a managed run's own budget, never above the chat's.
-      const roundCap = inputs.tool_round_cap !== undefined && Number.isSafeInteger(inputs.tool_round_cap) && inputs.tool_round_cap >= 1
-        ? Math.min(inputs.tool_round_cap, CHAT_MAIN_TURN_TOOL_LOOP_CAP) : CHAT_MAIN_TURN_TOOL_LOOP_CAP;
+      // `roundIndex` remains the true ordinal, including discovery-only rounds:
+      // D-219's flow compiler keys `round_index` and `nonCoreRoundDepth` off it.
       // Loop-final empty recovery state — the deferred second site of the
       // args-only recovery. Own per-turn budget, separate from the initial
       // site's (distinct failure points; worst case 2 recovery calls per
@@ -4203,7 +4542,7 @@ export const runChatTurn = async (
         });
       };
 
-      const stopForContextTrim = (result: Awaited<ReturnType<typeof tryMainTurn>>, partialResponse = currentAiOutput.response): boolean => {
+      const stopForContextTrim = (result: Awaited<ReturnType<typeof tryMainTurn>>): boolean => {
         if (result.kind !== 'failed' || result.context_trim_livelock !== true) return false;
         // End only after the whole batch is recorded and its next prompt is
         // fitted. Two confirmed reread losses justify stopping; one can recover.
@@ -4216,13 +4555,15 @@ export const runChatTurn = async (
           + `produced, so further rounds cannot make progress.`,
         );
         terminationReason = 'context_trim_livelock';
-        assistantContent = withStopMessage(partialResponse, CONTEXT_TRIM_LIVELOCK_MESSAGE);
+        assistantContent = CONTEXT_TRIM_LIVELOCK_MESSAGE;
         // Critique runs before a round starts; review can run after it closes.
         // Only an open dispatch round needs a terminal event here.
         completeRound('aborted');
         return true;
       };
 
+      // What the turn opened with (carried results, the pages the request names) is reached already.
+      if (earns) reachedSomethingNew(priorToolCalls, reached);
       toolLoop: while (nextToolCalls.length > 0) {
         // D-214 §10.2 — treatment-only advisory reinvocation before a
         // consequential candidate dispatches. The critic itself records both
@@ -4256,7 +4597,6 @@ export const runChatTurn = async (
             started_at: critiqueAt,
             completed_at: now(),
           });
-          const responseBeforeCritique = currentAiOutput.response;
           let critiqueReinvoke =
             await tryMainTurn(priorToolCalls.slice());
           totalUsage = aggregateTokenUsageReports(
@@ -4284,14 +4624,14 @@ export const runChatTurn = async (
           if (critiqueReinvoke.kind !== 'ok') {
             toolLoopFailure = { detail: critiqueReinvoke.detail };
             terminationReason = 'aborted';
-            assistantContent = failedToolLoopContent(currentAiOutput.response, critiqueReinvoke, toolResultsAccum.length > 0);
+            assistantContent = failedReplyMessage(critiqueReinvoke, toolResultsAccum.length > 0);
             emitDecoderFailure(critiqueReinvoke, 'tool_loop');
             break toolLoop;
           }
           currentAiOutput = critiqueReinvoke.output;
           if (isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput)) {
-            assistantContent = withStopMessage(responseBeforeCritique,
-              outputLengthStops.has(currentAiOutput) ? OUTPUT_LENGTH_EXHAUSTED_MESSAGE : EMPTY_AI_OUTPUT_MESSAGE);
+            assistantContent = outputLengthStops.has(currentAiOutput)
+              ? OUTPUT_LENGTH_EXHAUSTED_MESSAGE : EMPTY_AI_OUTPUT_MESSAGE;
             loopReplyStopped = true;
             break toolLoop;
           }
@@ -4331,6 +4671,8 @@ export const runChatTurn = async (
           readonly started_at: number;
           readonly completed_at: number;
           readonly reused?: true;
+          readonly preflight?: true;
+          readonly repeated_browser_argument_refusal?: true;
           /** D-335 slice AT — the PDFs this call's answer kept from a tab, read in its round. */
           readonly pdf_reads?: ReadonlyArray<{
             readonly tc: ToolCall; readonly result: ChatDispatchResult; readonly started_at: number; readonly completed_at: number;
@@ -4347,11 +4689,26 @@ export const runChatTurn = async (
           // `dispatchPeerName` is always null now.
           return deps.registry.getByName(toolName)?.concurrency_safe ?? false;
         };
+        const browserPageResolutions = new Map<ToolCall, ReturnType<typeof resolveNativeBrowserPages>>();
+        nextToolCalls = nextToolCalls.map(tc => {
+          const resolution = resolveNativeBrowserPages(deps.registry.getByName(tc.tool), tc.args, lastSourcePacket);
+          const call = resolution.resolved ? { ...tc, args: resolution.args as ToolCall['args'] } : tc;
+          browserPageResolutions.set(call, resolution);
+          return call;
+        });
         const sourceReadBatch = nextToolCalls.every(tc => nativeRead(tc.tool)
           && ['work.read', 'document.read', 'situation.query'].includes(tc.tool));
         if (!nextToolCalls.every(tc => nativeRead(tc.tool))) sourceFactReadOnly = false;
         // A mixed batch may contain a write before or after a concurrent read.
         if (!sourceReadBatch) { assetReadReuse?.clear(); projectionDemand?.invalidate(); allowPrefetchProof = false; }
+        await deps.beforeRound?.({
+          round_index: roundIndex,
+          calls: nextToolCalls.map((tc) => ({ tool: tc.tool, args: tc.args })),
+        });
+        // The reads this turn finished before this round, which the model has seen: a read in the same batch as
+        // a write was not in front of it when it chose that write.
+        const readsSeen = [...freshCalls, ...toolCallsAccum].filter((call) => call.status === 'ok'
+          && deps.registry.getByName(call.tool_name)?.classification === 'read');
         const dispatchOutput = await dispatchToolCalls<ToolCall, ToolCallExecution>({
           calls: nextToolCalls.map((tc) => ({
             concurrency_safe: resolveConcurrencySafe(tc.tool),
@@ -4405,12 +4762,12 @@ export const runChatTurn = async (
             // path makes it retry PROPERLY — fetch, wait, then use the real
             // value. That is also how a genuinely sequenced chain gets
             // produced, which nothing else in the loop currently requires.
-            // ⛔ ALREADY REFUSED, BYTE FOR BYTE — do not spend a round re-deciding
-            // it. The detail deliberately does NOT repeat the original advice: the
-            // model already had that and acted on it by sending the same thing
-            // again, so restating it invites a third identical call. Say that this
-            // call is closed and name the two ways forward.
+            // A dispatcher-invalid call remains closed. Missing identifier
+            // evidence is handled separately below and may recover after lookup.
             const identity = toolCallIdentity(tc.tool, tc.args);
+            const browserArgumentError = browserPageResolutions.get(tc)?.error
+              ?? browserActArgumentError(deps.registry.getByName(tc.tool), tc.args)
+              ?? browserInspectArgumentError(deps.registry.getByName(tc.tool), tc.args);
             if ((refusedCallCounts.get(identity) ?? 0) > REPEAT_REFUSAL_LIMIT - 1) {
               const completed_at = now();
               return {
@@ -4421,15 +4778,31 @@ export const runChatTurn = async (
                     `This exact call to \`${tc.tool}\` was already refused in this turn `
                     + 'and was not sent again. Repeating it unchanged cannot succeed. '
                     + 'Either call it with different arguments, or answer using what you '
-                    + 'already have and say which part you could not complete.',
+                    + 'already have and say which part you could not complete.'
+                    + (browserArgumentError ? ` Correct the browser arguments: ${browserArgumentError}` : ''),
                 },
                 started_at,
                 completed_at,
+                preflight: true,
+                ...(browserArgumentError ? { repeated_browser_argument_refusal: true as const } : {}),
               };
             }
 
+            // Host-validated browser structure precedes string heuristics, so
+            // a malformed data plan receives its actual actionable error.
+            if (browserArgumentError) {
+              refusedCallCounts.set(identity, 1);
+              return { result: { ok: false as const, reason: 'invalid_args' as const,
+                detail: `Not dispatched: no batch steps ran. Correct the browser arguments: ${browserArgumentError}` },
+                started_at, completed_at: now(), preflight: true };
+            }
+
             const issued = deps.wasValueIssuedToModel;
-            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody, { tool: tc.tool, packet: lastSourcePacket })
+            const groundingTool = deps.registry.getByName(tc.tool);
+            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody, { tool: tc.tool, packet: lastSourcePacket,
+              // Tier-2 schemas are host-projected from actual recipe op bindings.
+              // A remote MCP tool (Tier 3) cannot grant itself a DSL exemption.
+              argument_schema: groundingTool?.tier === 2 ? groundingTool.arg_schema : undefined })
               // ⛔ A VALUE THE SUBSTRATE ISSUED IS NOT AN INVENTION. See
               //   `wasValueIssuedToModel` — the prefetch block is injected after
               //   the corpus is captured, so its identifiers can never appear in
@@ -4438,20 +4811,53 @@ export const runChatTurn = async (
               .filter((u) => !(issued?.(String(u.value)) ?? false));
             if (ungrounded.length > 0) {
               const completed_at = now();
-              refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
+              const repeated = (groundingRefusalCounts.get(identity) ?? 0) >= REPEAT_REFUSAL_LIMIT;
+              groundingRefusalCounts.set(identity, (groundingRefusalCounts.get(identity) ?? 0) + 1);
               return {
                 result: {
                   ok: false as const,
-                  reason: 'invalid_args' as const,
-                  detail: ungroundedArgumentsDetail(ungrounded),
+                  reason: ungrounded.every(u => u.why === 'ungrounded')
+                    ? 'identifier_evidence_missing' as const
+                    : 'invalid_args' as const,
+                  detail: repeated
+                    ? ungrounded.every(u => u.why === 'ungrounded')
+                      ? `This exact call to \`${tc.tool}\` was already refused in this turn `
+                      + 'and still lacks eligible source evidence. Repeating it unchanged cannot succeed '
+                      + 'until an original user request or a lookup/recall result supplies the missing evidence. '
+                      + 'This does not mean the identifier is invalid. After retrieving that evidence, retry the call.'
+                      : `This exact call to \`${tc.tool}\` was already refused in this turn `
+                        + 'and still contains a placeholder. Repeating it unchanged cannot succeed. '
+                        + 'Correct the reported argument, choose a checked read-only recovery when offered, '
+                        + 'or answer using the facts already returned and state what remains incomplete.'
+                    : ungroundedArgumentsDetail(ungrounded),
                 },
                 started_at,
                 completed_at,
+                preflight: true,
               };
             }
             if (sourceReadBatch && tc.tool === 'work.read') {
               const reused = await assetReadReuse?.reuse(tc.args, lastSourcePacket);
               if (reused) return { result: reused, started_at, completed_at: now(), reused: true as const };
+            }
+            // 2026-11-19 (the owner: "do check against re-proposing an unconfirmed rename") — an earlier attempt of
+            // this exact write was approved and has no confirmed result, so it may already have taken effect. It is
+            // not proposed again until an earlier round of this turn read the record: a read sharing one of its
+            // identifiers, or any read when it carries none. After that read it goes as usual, since the owner may
+            // want it again. Before this: "The current title of calendar event EVENT-7 is Review. The earlier rename
+            // attempt failed, so I will retry it now." (2 of 10 resends of one request).
+            if (deps.readUncertainHeldWrites && deps.registry.getByName(tc.tool)?.classification === 'write') {
+              uncertainWrites ??= await deps.readUncertainHeldWrites(session_id).catch(() => []);
+              const key = canonicalArgs(tc.args);
+              if (key !== undefined && uncertainWrites.some((w) => w.tool === tc.tool && canonicalArgs(w.args) === key)) {
+                const ids = identifierArgumentValues(tc.args);
+                const looked = readsSeen.some((read) => ids.length === 0
+                  || identifierArgumentValues(read.args).some((value) => ids.includes(value)));
+                if (!looked) {
+                  return { result: { ok: false as const, reason: 'unconfirmed_attempt' as const,
+                    detail: UNCONFIRMED_ATTEMPT_DETAIL(tc.tool) }, started_at, completed_at: now(), preflight: true };
+                }
+              }
             }
             const result = await dispatchTool({
               session_id,
@@ -4491,7 +4897,9 @@ export const runChatTurn = async (
             // again, so it feeds the same ledger. Other failures — a timeout, an
             // upstream outage — are NOT counted: those can genuinely succeed on a
             // retry, and blocking them would turn a transient fault into a refusal.
-            if (result.ok === false && result.reason === 'invalid_args') {
+            if ((result.ok === false && result.reason === 'invalid_args')
+              || (result.ok === true && result.run_failed !== undefined && browserArgumentError !== undefined)
+              || browserActBindingRefusal(deps.registry.getByName(tc.tool), tc.args, result) !== undefined) {
               refusedCallCounts.set(identity, (refusedCallCounts.get(identity) ?? 0) + 1);
             }
             if (sourceReadBatch && tc.tool === 'work.read') assetReadReuse?.remember(tc.args, result);
@@ -4501,6 +4909,12 @@ export const runChatTurn = async (
               : { result: pdfRead.answer, started_at, completed_at, pdf_reads: pdfRead.reads };
           },
         });
+        // D-177 §N.15.9 — the round's held calls kept for one gathered approval are asked now; where
+        // the owner waits, the round waits for it, and reads on with what they settled to.
+        const settledRound = deps.afterRound === undefined ? undefined : await deps.afterRound({
+          round_index: roundIndex,
+          results: dispatchOutput.results.map((outcome) => (outcome.ok ? outcome.value.result : undefined)),
+        });
         // ⚗ Where THIS round's results begin. Retention below must never cut
         //   below it — see `retainForReinvoke`.
         // Batch dispatch converts thrown errors to tool outcomes, including a
@@ -4509,7 +4923,10 @@ export const runChatTurn = async (
         const roundStart = priorToolCalls.length;
         let toolCallsExecuted = 0;
         let notAskedThisRound = false;
+        // D-343 — the round's calls that wait for the owner's approval, by title, and its others.
+        const heldThisRound: string[] = []; let otherThisRound = 0;
         let reusedAssetRead = false;
+        let repeatedBrowserArgumentsOnly = nextToolCalls.length > 0;
         const mailSearchResults: ChatDispatchResult[] = [];
         for (let i = 0; i < nextToolCalls.length; i += 1) {
           const tc = nextToolCalls[i]!;
@@ -4523,20 +4940,34 @@ export const runChatTurn = async (
           // shape `dispatchTool` would have produced for an
           // `execution_error` so the provenance accumulator stays
           // uniform.
-          const execution: ToolCallExecution = outcome.ok
+          const dispatched: ToolCallExecution = outcome.ok
             ? outcome.value
             : {
                 result: chatToolCallFailureResult(outcome.error) ?? { ok: false, reason: 'execution_error' },
                 started_at: now(),
                 completed_at: now(),
               };
+          // D-177 §N.15.9 — a call its round's gathered approval settled reads as it settled.
+          const settled = settledRound?.[i];
+          const execution: ToolCallExecution = settled !== undefined && settled !== dispatched.result
+            ? { ...dispatched, result: settled, completed_at: now() }
+            : dispatched;
+          repeatedBrowserArgumentsOnly &&= execution.repeated_browser_argument_refusal === true;
           // A validation probe is not another executed Chat tool. Keep the
           // original durable result, provenance and read time.
           if (execution.reused) { reusedAssetRead = true; continue; }
           if (!execution.result.ok && execution.result.reason === 'not_asked_yet') notAskedThisRound = true;
+          // A write held for the owner's yes. ⚠ Not a held RUN (`run_held`): the email door, the held-run
+          // watch and a round's gathered ask read the model's answer after it (11 tests red with it).
+          if (!execution.result.ok && execution.result.reason === 'awaiting_approval') {
+            // A built-in tool by its title, a recipe by its own ("Send the weekly digest").
+            heldThisRound.push(tier1CallTitle(tc.tool, tc.args) ?? deps.recipeTitle?.(tc.tool) ?? 'an action');
+          // The model's note of how it read the request is no step of its own: a round of it and a
+          // held write still waits for the owner alone (the owner's day, 2026-11-14: 33 s more).
+          } else if (tc.tool !== 'request.dissection') otherThisRound += 1;
           if (tc.tool === 'mail.search') mailSearchResults.push(execution.result);
           collectProvenance(tc.tool, execution.result);
-          toolCallsAccum.push(toolCallProvenanceEntry(
+          toolCallsAccum.push(provenanceEntry(
             tc,
             execution.result,
             deps.registry,
@@ -4607,7 +5038,7 @@ export const runChatTurn = async (
             ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}),
             ts: execution.completed_at ?? execution.started_at,
           });
-          const observed = observeToolCall(
+          const observedBase = observeToolCall(
             tc,
             execution.result,
             execution.started_at,
@@ -4616,7 +5047,13 @@ export const runChatTurn = async (
             // above; reinvoke `prior_tool_calls` must carry tier 3
             // for peer-routed rounds.
             dispatchPeerName !== null ? 3 : undefined,
+            execution.preflight,
           );
+          const resolvedPages = browserPageResolutions.get(tc)?.resolved ?? 0;
+          const observed = resolvedPages ? { ...observedBase, result: {
+            ...(observedBase.result && typeof observedBase.result === 'object' && !Array.isArray(observedBase.result) ? observedBase.result : {}),
+            browser_document_resolution: { resolved: resolvedPages, preflight: execution.preflight === true },
+          } } : observedBase;
           // A successful reread is only a candidate until a settled prompt
           // loses its answer. Failures and holds have not recovered an answer.
           if (
@@ -4631,7 +5068,7 @@ export const runChatTurn = async (
           // D-335 slice AT — the PDF that answer kept, read in its round: a call of its own, recorded as one.
           for (const pdfRead of execution.pdf_reads ?? []) {
             collectProvenance(pdfRead.tc.tool, pdfRead.result);
-            toolCallsAccum.push(toolCallProvenanceEntry(pdfRead.tc, pdfRead.result, deps.registry,
+            toolCallsAccum.push(provenanceEntry(pdfRead.tc, pdfRead.result, deps.registry,
               pdfRead.started_at, pdfRead.completed_at, session_id, turn_id));
             const readHeld = isNonTerminalToolResult(pdfRead.result);
             const readRunId = readHeld ? runIdOf(pdfRead.result) : undefined;
@@ -4660,7 +5097,7 @@ export const runChatTurn = async (
           });
           const completed_at = now();
           collectProvenance(tc.tool, result);
-          toolCallsAccum.push(toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
+          toolCallsAccum.push(provenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
           toolResultsAccum.push({ tool_name: tc.tool, args, result, ts: completed_at, message_id: savedChatToolCallId(result) });
           const observed = observeToolCall(tc, result, started_at, completed_at);
           priorToolCalls.push(observed);
@@ -4668,6 +5105,10 @@ export const runChatTurn = async (
           toolCallsExecuted += 1;
         });
         openRound.tool_calls_executed = toolCallsExecuted;
+        // Read before a fold rebuilds the calls: this round's own results.
+        const roundReachedNew = earns && reachedSomethingNew(priorToolCalls.slice(roundStart), reached);
+        repeatedBrowserRefusalRounds = repeatedBrowserArgumentsOnly ? repeatedBrowserRefusalRounds + 1 : 0;
+        refusalLoopStopped = repeatedBrowserRefusalRounds >= 2;
         // ⛔ D-337 — TOLD ONCE THAT A CALL WAITS FOR THE OWNER, THE MODEL ASKED
         //   AGAIN: end the turn rather than spend its rounds on calls that
         //   cannot be asked until they answer. Measured: in a browser search the
@@ -4681,8 +5122,17 @@ export const runChatTurn = async (
         //   model is called again, which would cost a round for the same call.
         if (notAskedThisRound && ++notAskedRounds > 1) {
           terminationReason = 'waiting_for_approval';
-          assistantContent = withStopMessage(currentAiOutput.response, WAITING_FOR_APPROVAL_MESSAGE);
+          assistantContent = WAITING_FOR_APPROVAL_MESSAGE;
           // As at the round cap: the round ran, and the model wanted more.
+          completeRound('continue');
+          break toolLoop;
+        }
+        // D-343 (the owner, 2026-11-14) — every call of the round waits for the owner: say so and
+        // end the turn, rather than call the model again only to write that. The conversation
+        // carries on by itself once they answer.
+        if (heldThisRound.length > 0 && otherThisRound === 0 && conversationCarriesOn(inputs.execution_source)) {
+          terminationReason = 'waiting_for_approval';
+          assistantContent = heldRoundReply(heldThisRound);
           completeRound('continue');
           break toolLoop;
         }
@@ -4696,6 +5146,7 @@ export const runChatTurn = async (
             priorToolCalls.slice(briefedCallCount),
             rollingBrief,
             briefTrail,
+            { heldTokens: Math.floor(JSON.stringify(priorToolCalls.slice(0, briefedCallCount)).length / 2) },
           );
           if (folded !== null) {
             rollingBrief = folded;
@@ -4741,8 +5192,16 @@ export const runChatTurn = async (
             const survivingRecall = withRecallReceipts(
               partitionPriorToolCalls(priorToolCalls).recall,
             );
+            // 2026-11-20 (the owner: "go ahead", the brief's handoff) — THE ROUND THAT JUST LANDED STAYS AS IT CAME.
+            //   The brief kept the task, its values and what was left (14 of 14 briefs delivered to failed P runs), but
+            //   not the page now: its refs, an open dialog, the values just read back. Folded, the next call went back
+            //   to an earlier page's ref in 8 of 10 frozen replays and chose a fitting next step in 0 of 6; with the
+            //   newest raw result beside the same brief, 0 of 10 and 6 of 6
+            //   (recued-bridge-vs-browser-use/results/analysis/2026-11-20-P-four-way-handoff-386igzlf). The brief
+            //   has summarised that round too, so it counts as briefed: the next fold replaces it.
+            const keptRound = partitionPriorToolCalls(priorToolCalls.slice(roundStart)).prior;
             priorToolCalls.length = 0;
-            priorToolCalls.push(briefAsPriorToolCall(folded), ...survivingRecall);
+            priorToolCalls.push(briefAsPriorToolCall(folded), ...survivingRecall, ...keptRound);
             briefedCallCount = priorToolCalls.length;
           }
         }
@@ -4756,16 +5215,24 @@ export const runChatTurn = async (
         // into the earlier round's wire input.
         if (!sourceReadBatch) projectionReadBarrier = toolResultsAccum.length;
         outputFileGuidanceActive ||= outputFilesFromResults(toolResultsAccum).length > 0;
-        // D-340 slice 4 — a bounded run's last charged round: its results come with the word to answer
-        // now. Classified as the cap check below classifies the round.
-        const lastBoundedRound = roundCap < CHAT_MAIN_TURN_TOOL_LOOP_CAP && chargedRounds + 1 >= roundCap
-          && !(nextToolCalls.length > 0 && nextToolCalls.every((call) => call.tool === TOOLS_SEARCH_TOOL_NAME)
-            && discoveryRounds < CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP);
-        const reinvokeFeedback = [reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,
-          lastBoundedRound ? BOUNDED_RUN_LAST_ROUND : undefined].filter(Boolean).join('\n\n');
+        // Account for THIS dispatched batch before composing the next request,
+        // so normal synthesis and every output repair see the enforced budget.
+        // Search-only rounds remain free only within the discovery allowance;
+        // a mixed batch did work and is charged. Enforcement stays after synthesis.
+        const discoveryOnlyRound = nextToolCalls.length > 0
+          && nextToolCalls.every((call) => call.tool === TOOLS_SEARCH_TOOL_NAME);
+        if (discoveryOnlyRound && discoveryRounds < CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP) {
+          discoveryRounds += 1;
+        } else {
+          chargedRounds += 1;
+        }
+        if (earns && roundReachedNew && chargedRounds >= roundCapNow() && chargedRounds < CHAT_TURN_EARNED_ROUND_CEILING
+          && freshTokens(totalUsage) < CHAT_TURN_EARNED_ROUND_TOKEN_CEILING) {
+          earnedRounds += 1;
+        }
         const reinvokeResult = await tryMainTurn(
           retainForReinvoke(priorToolCalls, roundStart),
-          reinvokeFeedback || undefined,
+          reusedAssetRead ? ASSET_READ_REUSE_FEEDBACK : undefined,
         );
         totalUsage = aggregateTokenUsageReports(totalUsage, reinvokeResult.usage);
 
@@ -4811,14 +5278,13 @@ export const runChatTurn = async (
           completeRound('aborted');
           emitDecoderFailure(effectiveReinvoke, 'tool_loop', roundIndex);
           terminationReason = 'aborted';
-          // The failed reply never replaces the last valid output. Preserve
-          // its partial text and save why the turn stopped; whitespace-only
-          // planning gets only the failure message.
-          assistantContent = failedToolLoopContent(currentAiOutput.response, effectiveReinvoke);
+          // Keep the last valid output for existing after-turn processing.
+          // The visible answer explains the stop without unfinished prose;
+          // actual tool results remain recorded separately.
+          assistantContent = failedReplyMessage(effectiveReinvoke, toolResultsAccum.length > 0);
           break;
         }
 
-        const responseBeforeReinvoke = currentAiOutput.response;
         currentAiOutput = effectiveReinvoke.output;
         let loopStopMessage = EMPTY_AI_OUTPUT_MESSAGE;
         if (outputLengthStops.has(currentAiOutput)) {
@@ -4850,7 +5316,7 @@ export const runChatTurn = async (
               totalUsage,
               loopRetryResult.usage,
             );
-            if (stopForContextTrim(loopRetryResult, responseBeforeReinvoke)) break toolLoop;
+            if (stopForContextTrim(loopRetryResult)) break toolLoop;
             if (loopRetryResult.kind === 'ok') {
               currentAiOutput = loopRetryResult.output;
               loopReplyStopped = isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput);
@@ -4879,7 +5345,7 @@ export const runChatTurn = async (
             const repair = await tryMainTurn(priorToolCalls.slice(),
               `${OUTPUT_FILE_GUIDANCE} Select from these completed outputs: ${JSON.stringify(outputFiles)}. Return your final answer with output_files.`);
             totalUsage = aggregateTokenUsageReports(totalUsage, repair.usage);
-            if (stopForContextTrim(repair, responseBeforeReinvoke)) break toolLoop;
+            if (stopForContextTrim(repair)) break toolLoop;
             if (repair.kind === 'ok') {
               currentAiOutput = repair.output;
               loopReplyStopped = isEmptyChatAiOutput(currentAiOutput) || outputLengthStops.has(currentAiOutput);
@@ -4887,7 +5353,7 @@ export const runChatTurn = async (
             } else {
               toolLoopFailure = { detail: repair.detail };
               terminationReason = 'aborted';
-              loopReplyStopped = true; loopStopMessage = failedReplyMessage(repair); emitDecoderFailure(repair, 'tool_loop');
+              loopReplyStopped = true; loopStopMessage = failedReplyMessage(repair, toolResultsAccum.length > 0); emitDecoderFailure(repair, 'tool_loop');
             }
           }
           if (!loopReplyStopped && currentAiOutput.tool_calls.length === 0 && !outputFileSelectionValid(currentAiOutput, outputFiles)) {
@@ -4896,7 +5362,7 @@ export const runChatTurn = async (
         }
 
         assistantContent = loopReplyStopped
-          ? withStopMessage(responseBeforeReinvoke, loopStopMessage)
+          ? loopStopMessage
           : currentAiOutput.response;
         // The unrecovered guard is load-bearing for CONTENT only (an empty
         // output has no tool_calls by definition): it pins that the
@@ -4916,21 +5382,20 @@ export const runChatTurn = async (
         //    `max_rounds_exhausted` step. Mirrors PB5's
         //    `runMultiTurnLoop` semantics (round outcome vs loop
         //    termination reason are distinct).
-        // ⚠ Classified from THIS round's dispatched calls, which `nextToolCalls`
-        // still holds — it is reassigned to the next round's calls at the foot
-        // of the loop. `every` over a non-empty list: a mixed round did work.
-        const discoveryOnlyRound = nextToolCalls.length > 0
-          && nextToolCalls.every((call) => call.tool === TOOLS_SEARCH_TOOL_NAME);
-        if (discoveryOnlyRound && discoveryRounds < CHAT_MAIN_TURN_DISCOVERY_ROUND_CAP) {
-          discoveryRounds += 1;
-        } else {
-          // Charged when the round did real work OR when the discovery budget
-          // is spent — the second arm is what stops a model searching forever.
-          chargedRounds += 1;
+        // The dispatched batch was charged before reinvocation, not its newly
+        // proposed tools. Repair calls never buy another dispatch round.
+        const atCap = chargedRounds >= roundCapNow();
+        lastCallAtRoundLimit = atCap;
+        if (refusalLoopStopped && moreTools && !currentAiOutput.tool_calls.every(call => {
+          const tool = deps.registry.getByName(call.tool), normalized = resolveNativeBrowserPages(tool, call.args, lastSourcePacket);
+          return (refusedCallCounts.get(toolCallIdentity(call.tool, normalized.args)) ?? 0) > 0
+            && (normalized.error ?? browserActArgumentError(tool, normalized.args) ?? browserInspectArgumentError(tool, normalized.args)) !== undefined;
+        })) {
+          refusalLoopStopped = false;
+          repeatedBrowserRefusalRounds = 0;
         }
-        const atCap = chargedRounds >= roundCap;
         completeRound(
-          loopReplyStopped ? 'aborted' : moreTools ? 'continue' : 'completed',
+          loopReplyStopped || refusalLoopStopped && moreTools ? 'aborted' : moreTools ? 'continue' : 'completed',
         );
 
         if (!moreTools) {
@@ -4995,7 +5460,12 @@ export const runChatTurn = async (
               reviewInstruction,
             );
             totalUsage = aggregateTokenUsageReports(totalUsage, reviewed.usage);
-            if (stopForContextTrim(reviewed)) break toolLoop;
+            if (stopForContextTrim(reviewed)) {
+              // This optional pass reviews a settled answer with no pending
+              // tools. Keep that draft and the review stop notice together.
+              assistantContent = `${currentAiOutput.response}\n\n${CONTEXT_TRIM_LIVELOCK_MESSAGE}`;
+              break toolLoop;
+            }
             if (
               reviewed.kind === 'ok'
               && !isEmptyChatAiOutput(reviewed.output)
@@ -5012,12 +5482,19 @@ export const runChatTurn = async (
           break;
         }
 
+        if (refusalLoopStopped) {
+          terminationReason = 'aborted';
+          toolLoopFailure = { detail: REPEATED_BROWSER_ARGUMENT_MESSAGE };
+          assistantContent = REPEATED_BROWSER_ARGUMENT_MESSAGE;
+          break;
+        }
         if (atCap) {
           terminationReason = 'max_rounds_exhausted';
           // A final answer from the last allowed call exits above. Here more
-          // tools remain: retain partial text with the stop reason. Keep the
-          // validated output itself intact for the existing after-turn gathers.
-          assistantContent = withStopMessage(currentAiOutput.response, TOOL_BUDGET_EXHAUSTED_MESSAGE);
+          // tools remain: show the stop reason without unfinished prose.
+          // Keep the validated output intact for existing after-turn gathers.
+          // 2026-11-21 (the owner: "present to user on what already has") — and the pages it reached, ahead of it.
+          assistantContent = toolBudgetStopAnswer(toolResultsAccum);
           break;
         }
 
@@ -5036,6 +5513,11 @@ export const runChatTurn = async (
       if (loopReplyStopped && terminationReason === 'completed') {
         terminationReason = 'output_unreadable';
       }
+      // A turn whose last call had no round left ended at its limit when it answered there or still asked for tools.
+      // A context-trim stop, a refusal loop or an unreadable reply is not a limit, and a turn that finished before its
+      // last round is not one either.
+      reachedRoundLimit = lastCallAtRoundLimit
+        && (terminationReason === 'completed' || terminationReason === 'max_rounds_exhausted');
 
       deps.emit({
         kind: 'chat.transparency',
@@ -5109,6 +5591,21 @@ export const runChatTurn = async (
         recordStatementsFold();
         briefTrail.push('exact_mail_work_carry:source observations and owner statements saved; no closing model call');
       }
+      // D-343 (the owner, 2026-11-14) — the closing brief and its trail: inline, or after the
+      // reply goes out (`defer_closing_fold`), so the owner does not wait for a summary their
+      // answer does not need. The next turn still waits for it (the conversation's queue).
+      // D-343 — a newer turn took the brief over (`supersede_after_reply`), or it is being saved.
+      let superseded = false; let committing = false;
+      // 2026-11-19 (the owner: "both") — whether this turn closes with a fold because the next packet would pass the
+      // closing limit (`carry_due`). Then a newer turn waits for that fold rather than taking the results over raw:
+      // taken over, a conversation of quick messages never folded (276,746 characters, past the budget, and every
+      // cancelled fold paid for). Settled `false` however else the turn closes.
+      let settleSizeFold: (due: boolean) => void = () => {};
+      const sizeFold = new Promise<boolean>((resolve) => { settleSizeFold = resolve; });
+      // Cancels the brief's own model call when a newer turn takes it over, so its request (and the
+      // conversation's alias ledger, which serializes the conversation's model calls) frees at once.
+      const briefCancel = new AbortController();
+      const closeTurn = async (): Promise<void> => {
       if (briefEnabled && !exactCarryCoversTurn) {
         const unfolded = priorToolCalls.slice(briefedCallCount);
         // ⛔⛔ COUNT WHAT COULD ACTUALLY BE FOLDED, NOT WHAT WAS DISPATCHED.
@@ -5164,6 +5661,7 @@ export const runChatTurn = async (
         //   Slice C: the trail says why a turn folded instead (`carry_refused:<reason>`, `carry_due:<estimated
         //   tokens>`); a measured fold could not be told from a threshold without it.
         let carriedForward = false;
+        if (deps.carryStore === undefined || inputs.mail_work !== undefined) settleSizeFold(false);
         if (deps.carryStore !== undefined && inputs.mail_work === undefined) {
           const refused = statementsFull ? 'statements_full'
             : (deps.hasRegisteredRecall?.() ?? false) ? 'recall'
@@ -5172,7 +5670,7 @@ export const runChatTurn = async (
           const carry = carriedResults(unfolded);
           const next = nextPacketTokens({
             catalogTokens: estimatedTokens(JSON.stringify(inputs.available_tools).length),
-            overheadTokens: estimatedTokens(mainSystemPrompt.length),
+            overheadTokens: estimatedTokens(mainSystemPrompt.length) + requestEvidenceTokens,
             // The next turn's tail holds this turn's request and answer, and the statements still waiting.
             tailTokens: estimatedTokens(JSON.stringify(inputs.content.chat_tail).length
               + inputs.content.user_message.length + assistantContent.length
@@ -5180,7 +5678,10 @@ export const runChatTurn = async (
             briefTokens: rollingBrief === null ? 0 : estimatedTokens(JSON.stringify(rollingBrief).length),
             carried: carry,
           });
+          refreshInputTokenBudget();
           const limit = Math.round(closingFoldLimit(activeInputTokenBudget));
+          // Decided here, for every outcome: a newer turn waiting on it must not wait for the fold itself.
+          settleSizeFold(refused === null && next >= limit);
           if (refused !== null) {
             briefTrail.push(`carry_refused:${refused}`);
           } else if (next >= limit) {
@@ -5190,7 +5691,7 @@ export const runChatTurn = async (
               if (carry.length > 0) await deps.carryStore.write(session_id, carry);
               else deps.carryStore.clear(session_id);
               carriedForward = true;
-              briefTrail.push(`carried_raw:${String(carry.length)} result(s) ride to the next turn, under the closing threshold`);
+              briefTrail.push(`carried_raw:${String(carry.length)} result(s) ride to the next turn, under the closing threshold (${String(next)} estimated tokens next, the closing limit ${String(limit)})`);
             } catch {
               briefTrail.push('carry_failed:the closing brief folds them instead');
             }
@@ -5207,10 +5708,17 @@ export const runChatTurn = async (
           }
           // D-347 — what rode in was folded within the turn: the store holds it no longer.
           if (carriedRaw.length > 0) deps.carryStore?.clear(session_id);
+        } else if (superseded) {
+          briefTrail.push('superseded:a newer turn took these results raw, and folds them');
         } else {
           const closing = await runRollingBrief(unfolded, rollingBrief, briefTrail,
-            { force: true });
-          if (closing !== null) {
+            { force: true, preparedReply: assistantContent, replyCompleted: terminationReason === 'completed' && toolLoopFailure === undefined
+              && assistantContent.trim().length > 0, signal: briefCancel.signal });
+          // A newer turn took this brief over while it was written: nothing of it is saved.
+          if (superseded) {
+            briefTrail.push('superseded:a newer turn took these results raw, and folds them');
+          } else if (closing !== null) {
+            committing = true;
             await saveCarriedBrief(closing);
             const sweptClosing = clearIngestedUserMessages(session_id, closing);
             recordStatementsFold();
@@ -5224,6 +5732,7 @@ export const runChatTurn = async (
             }
           }
           else {
+            committing = true;
             // ⛔⛔ FAIL THE TURN — see `ChatBriefCaptureError`. The closing fold
             //   is the last chance to capture THIS turn's user statement, and
             //   `chat_tail` (3 rows, fixed) forgets it within ~2 turns. Keeping
@@ -5231,17 +5740,6 @@ export const runChatTurn = async (
             //   turn must not report success on a capture that did not happen:
             //   the loss is silent, partial, and surfaces later as a confident
             //   answer built on a subset.
-            if (shouldFailOnCaptureFailure({
-              closing,
-              isClosingFold: true,
-              propagateTypedErrors: inputs.propagate_typed_errors === true,
-            })) {
-              briefTrail.push('capture_failed:closing fold produced no brief');
-              throw new ChatBriefCaptureError(
-                briefTrail.filter((x) => x.startsWith('parse_failed')
-                  || x.startsWith('call_failed')).join('; ') || 'no brief produced',
-              );
-            }
             // ⛔⛔ KEEP THE FACTS, DECLARE THE GAP. This used to
             //   `clearSessionBrief`, reasoned as "a stale brief is worse than
             //   no brief" — which conflated STALE (claims now false) with
@@ -5253,13 +5751,32 @@ export const runChatTurn = async (
             //   current context". See `markCarryIncomplete`.
             // ⚠ The gap counts RETAINABLE results only. A recall call that was
             //   never summarisable is not a hole in the carry.
-            const kept = markCarryIncomplete(rollingBrief, retainableUnfolded);
+            // Effects belong to the host receipt, even when the writer fails. A
+            // first failed fold carries only the exact request, effects and gap.
+            const completed = completedActionRecords(unfolded);
+            const fallback = rollingBrief ?? (completed.length === 0 ? null
+              : { intent: inputs.content.user_message, constraints: [], pending: [], findings: [], completed: [] });
+            const effectCarry = fallback === null ? null : withCompletedActions(fallback, unfolded);
+            const kept = effectCarry !== null && piiEgress.hasPotentialPiiAliasLiteral(JSON.stringify(effectCarry))
+              ? markCarryIncomplete(rollingBrief, retainableUnfolded)
+              : markCarryIncomplete(effectCarry, retainableUnfolded);
             if (kept !== null) await saveCarriedBrief(kept);
             else dropCarriedBrief();
             briefTrail.push(
               `carry_incomplete:${String(retainableUnfolded)} retainable result(s) `
               + `${kept !== null ? 'kept with gap declared' : 'and no prior carry'}`,
             );
+            if (shouldFailOnCaptureFailure({
+              closing,
+              isClosingFold: true,
+              propagateTypedErrors: inputs.propagate_typed_errors === true,
+            })) {
+              briefTrail.push('capture_failed:closing fold produced no brief');
+              throw new ChatBriefCaptureError(
+                briefTrail.filter((x) => x.startsWith('parse_failed')
+                  || x.startsWith('call_failed')).join('; ') || 'no brief produced',
+              );
+            }
             console.warn(
               '[chat] rolling brief: turn ended with '
               + `${String(retainableUnfolded)} retainable result(s) and the closing `
@@ -5291,6 +5808,40 @@ export const runChatTurn = async (
           },
         } as never);
       }
+      };
+      if (inputs.defer_closing_fold === true && inputs.propagate_typed_errors !== true) {
+        let closed: Promise<void> | undefined;
+        afterReply = async () => {
+          closed = (async () => {
+            try { await closeTurn(); } catch (error) {
+              console.warn(`[chat] rolling brief after the reply failed: ${error instanceof Error ? error.message : String(error)}`);
+            } finally { settleSizeFold(false); }
+          })();
+          await closed;
+        };
+        // The next turn takes the brief over: this turn's results ride to it raw, unless the brief
+        // is already being saved (then it waits for that) or there is no carry to ride in.
+        supersedeAfterReply = async () => {
+          if (superseded) return;
+          if (committing || deps.carryStore === undefined) { await closed; return; }
+          // Past the closing limit the fold is what keeps the next packet in budget: the newer turn waits for it.
+          if (await sizeFold) { briefTrail.push('waited:the results passed the closing limit, so a newer turn waits for this fold'); await closed; return; }
+          // The brief may have begun saving while the decision was awaited: then this waits for it, as above.
+          if (superseded) return;
+          if (committing) { await closed; return; }
+          superseded = true;
+          try {
+            await deps.carryStore.write(session_id, carriedResults(priorToolCalls.slice(briefedCallCount)));
+          } catch {
+            // Without the carry the results would be lost to the next turn: let the brief finish.
+            superseded = false; await closed; return;
+          }
+          // The results ride raw now: end the brief's model call, so the next turn's waits for nothing.
+          briefCancel.abort();
+        };
+      } else {
+        await closeTurn();
+      }
       if (toolCallsAccum.length > 0) {
         assistantToolCalls = toolCallsAccum;
       }
@@ -5307,6 +5858,8 @@ export const runChatTurn = async (
 
   return {
     assistant_content: presentAnswer(assistantContent),
+    ...(afterReply !== undefined ? { after_reply: afterReply } : {}),
+    ...(supersedeAfterReply !== undefined ? { supersede_after_reply: supersedeAfterReply } : {}),
     ...(assistantToolCalls ? { tool_calls: assistantToolCalls } : {}),
     ...(assistantToolResults ? { tool_results: assistantToolResults } : {}),
     ...(assistantProvenance.length > 0
@@ -5316,5 +5869,6 @@ export const runChatTurn = async (
     ...(toolLoopFailure !== undefined ? { tool_loop_failure: toolLoopFailure } : {}),
     ...(decoderFailure !== undefined ? { decoder_failure: decoderFailure } : {}),
     ...(finalAiOutput !== undefined ? { final_ai_output: finalAiOutput } : {}),
+    ...(reachedRoundLimit ? { reached_round_limit: true as const } : {}),
   };
 };

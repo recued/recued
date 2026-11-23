@@ -11,6 +11,8 @@
  *  are present; `executeScript({files})` runs a classic script (no
  *  `web_accessible_resources`). */
 
+import type { PickerDocument } from './picker-sessions.js';
+
 /** The injectable picker bundle, relative to the extension root. */
 export const PICKER_SCRIPT_FILE = 'picker/picker.js';
 
@@ -20,12 +22,14 @@ export interface PickerInjectorActiveTab {
   url?: string;
 }
 
-/** The two chrome calls the injector makes, narrowed + injected for tests. */
+/** Native tab selection, credential preparation and document-pinned injection. */
 export interface PickerInjectorChromeApi {
   /** `chrome.tabs.query({active:true, currentWindow:true})` → first tab. */
   queryActiveTab(): Promise<PickerInjectorActiveTab | null>;
-  /** `chrome.scripting.executeScript({ target:{tabId}, files:[file] })`. */
-  injectFile(tab_id: number, file: string): Promise<void>;
+  /** Seed a credential in the isolated world and return Chrome's document ID. */
+  prepare(tab_id: number, launch: { launch_id: string; expires_at: number }): Promise<PickerDocument>;
+  /** Inject only into the document just prepared, never a replacement page. */
+  injectFile(tab_id: number, file: string, document_id: string): Promise<void>;
 }
 
 export type PickerInjectOutcome =
@@ -36,13 +40,18 @@ export type PickerInjectOutcome =
        *  `unsupported_page` — not an http/https page (chrome://, the New
        *  Tab page, the web store, a file://, …) where the picker can't run.
        *  `inject_failed` — executeScript rejected (host permission not
-       *  granted for this origin, the page blocks injection, etc.). */
-      reason: 'no_active_tab' | 'unsupported_page' | 'inject_failed';
+       *  granted for this origin, the page blocks injection, etc.).
+       *  `picker_session_invalid` — navigation, expiry or teardown retired it. */
+      reason: 'no_active_tab' | 'unsupported_page' | 'inject_failed' | 'picker_session_invalid';
       detail?: string;
     };
 
 export interface BridgePickerInjector {
-  injectIntoActiveTab(): Promise<PickerInjectOutcome>;
+  injectIntoActiveTab(launch: {
+    launch_id: string;
+    expires_at: number;
+    bind(document: PickerDocument): boolean;
+  }): Promise<PickerInjectOutcome>;
 }
 
 /** A page the picker can run on. Chrome refuses `executeScript` on
@@ -56,7 +65,7 @@ export const isInjectableUrl = (url: string | undefined | null): boolean =>
 export const createPickerInjector = (
   api: PickerInjectorChromeApi,
 ): BridgePickerInjector => ({
-  async injectIntoActiveTab() {
+  async injectIntoActiveTab(launch) {
     let tab: PickerInjectorActiveTab | null;
     try {
       tab = await api.queryActiveTab();
@@ -74,7 +83,10 @@ export const createPickerInjector = (
       return { ok: false, reason: 'unsupported_page' };
     }
     try {
-      await api.injectFile(tab.id, PICKER_SCRIPT_FILE);
+      const document = await api.prepare(tab.id, launch);
+      if (document.tab_id !== tab.id || !document.document_id || document.page_url !== tab.url
+        || !launch.bind(document)) return { ok: false, reason: 'picker_session_invalid' };
+      await api.injectFile(tab.id, PICKER_SCRIPT_FILE, document.document_id);
       return { ok: true };
     } catch (err) {
       return {

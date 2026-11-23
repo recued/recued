@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ChatDispatchContext, ChatDispatchResult, InternalToolRegistry, ToolEntry } from '@recued/contracts';
+import type { ChatDispatchContext, ChatDispatchResult, InternalToolRegistry, ResourceReview, ToolEntry } from '@recued/contracts';
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import { bindChatToolCallRun, observeResumedChatToolCall, withChatToolCallContext } from '../chat-tool-call-context.js';
 import { createChatRunSettledSink } from '../chat-run-settled-sink.js';
@@ -17,6 +17,7 @@ import {
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatToolCallStore } from '../storage/chat-tool-call-store.js';
 import { InFlightRegistry } from '../execution/in-flight-registry.js';
+import { recordLocalMutation } from '../local-mutation-context.js';
 import { LaneSemaphore } from '../execution/lane-semaphore.js';
 import { reportToolProgress } from '../execution/tool-progress.js';
 import { handleExecutionActive, handleToolCallDismiss } from '../execution-control-handler.js';
@@ -396,6 +397,38 @@ describe('restart recovery and lifecycle boundaries', () => {
     expect(calls.displayProgress('call', measurement, Date.now() + 1)).toBe(false);
   });
 
+  it('D-348 §7.8 — keeps a receipt only for a call running here whose change Recued can undo; any other runs as before', async () => {
+    const { db, store } = storage();
+    const review = (precondition: ResourceReview['resources'][number]['precondition']): ResourceReview => ({
+      schema_version: 1, operation: 'calendar-update', input_hash: 'a'.repeat(64), captured_at: 1,
+      resources: [{ kind: 'calendar', key: 'meeting', label: 'Meeting', binding: 'local', version: 'v1',
+        before: { summary: 'A' }, after: { summary: 'B' }, precondition }] });
+    const local = review({ kind: 'local_version', value: 'v1' });
+    const change = () => db.transaction(() => { recordLocalMutation(db, 'local_calendar', local); return 'changed'; })();
+    const old = createChatToolCallStore(db, store.appendMessage, 'old-process');
+    await old.start(startInput('left-by-another-process'));
+    const calls = createChatToolCallStore(db, store.appendMessage, 'this-process');
+    await calls.start(startInput('stopped'));
+    calls.interrupt('stopped');
+    await calls.start(startInput('on-another-calendar'));
+    await calls.start(startInput('running'));
+    for (const id of ['left-by-another-process', 'stopped']) {
+      expect(await calls.runLocalMutation(id, source, local, change)).toBe('changed');
+    }
+    // Reviewed against its version, never undone: it runs, as it did, with no receipt to begin.
+    expect(await calls.runLocalMutation('on-another-calendar', source, review({ kind: 'etag', value: 'e1' }),
+      () => 'changed')).toBe('changed');
+    expect(db.prepare('SELECT count(*) FROM ordinary_local_mutation_attempts').pluck().get()).toBe(0);
+    for (const id of ['left-by-another-process', 'stopped', 'on-another-calendar']) {
+      expect(calls.get(id)).not.toHaveProperty('local_receipt');
+    }
+    expect(await calls.runLocalMutation('running', source, local, change)).toBe('changed');
+    expect(calls.get('running')).toMatchObject({ state: 'running', local_receipt: { kind: 'local_calendar' } });
+    // A receipt is checked as the record is read, as every field is: a malformed one is refused.
+    expect(isChatToolCallRecord(calls.get('running'))).toBe(true);
+    expect(isChatToolCallRecord({ ...calls.get('running'), local_receipt: { receipt_id: 'lmr_x', kind: 'local_calendar', committed_at: 2 } })).toBe(false);
+  });
+
   it('cannot replace the outer run identity or keep writing through detached async context', async () => {
     const bind = vi.fn(), progress = vi.fn(() => true);
     let late: ((at: number, stalled: boolean) => boolean | undefined) | undefined;
@@ -515,6 +548,25 @@ describe('a call that had to wait, and what the next turn is told about it', () 
     // Nothing waited ⇒ no block at all, so such a turn is byte-identical to before.
     expect(renderWaitedCallsContext([])).toBeUndefined();
     expect(renderWaitedCallsContext([{ ...neverWaited, message_id: 'g', state: 'succeeded' }])).toBeUndefined();
+  });
+
+  it('keeps the recipe a call names on its record, for Live control only: the next turn is told the tool', async () => {
+    const { store } = storage();
+    await store.toolCalls!.start({ ...startInput('named'), tool_name: 'recued-core/weekly-digest', recipe_name: 'Weekly digest' });
+    store.toolCalls!.bind('named', 'run-named');
+    store.toolCalls!.hold('named');
+    await holdCall(store, 'unnamed', 'run-unnamed');
+    const listed = handleExecutionActive({ registry: new InFlightRegistry(new LaneSemaphore()), toolCalls: store.toolCalls },
+      { user_id: 'owner' } as WsClient, {}).tool_calls ?? [];
+    expect(listed.map(call => [call.message_id, call.recipe_name])).toEqual([['named', 'Weekly digest'], ['unnamed', undefined]]);
+    expect(listed[1]).not.toHaveProperty('recipe_name');
+    // Display only: the model reads the tool, as before.
+    const told = buildWaitedCallsContext(store.toolCalls, source)!;
+    expect(told).toContain('run=run-named; recipe=recued-core/weekly-digest; state=still waiting');
+    expect(told).not.toContain('Weekly digest');
+    // A name that is no string is refused, as any other field is; a record with none reads as before.
+    expect(isChatToolCallRecord(store.toolCalls!.get('named'))).toBe(true);
+    expect(isChatToolCallRecord({ ...store.toolCalls!.get('named'), recipe_name: 7 })).toBe(false);
   });
 
   it('is told only in the owner\'s own chat, and shares the field with live work', async () => {

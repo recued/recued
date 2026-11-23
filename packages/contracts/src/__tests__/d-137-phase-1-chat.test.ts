@@ -134,6 +134,8 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // Without it "do X instead" silently became "do X as well": the model
     // started the new work while the old run kept going.
     'recipe.stop',
+    // D-402 slice F4 — +1: `recipe.stop_allowing`, the owner's chat taking an "Always" back (§7.9).
+    'recipe.stop_allowing',
     // D-193 amendment (2026-10-05) — +1: `recipe.schedule`. No recipe step may
     // schedule another recipe any more; chat schedules through this, granted by
     // its contract's `core.schedule.recipe`.
@@ -229,7 +231,8 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // `contact.write` changes one contact's row, and two adds of one person would make
     // two contacts: shared identity again (D-336 slice F).
     // A day's records twice in one turn: the same records (D-343 slice 2).
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'document.search', 'memory.forget', 'contact.write',
+    // Taking an "Always" back twice in one turn ends the same rows (D-402 slice F4).
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.stop_allowing', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read', 'document.search', 'memory.forget', 'contact.write',
       'episode.record', 'schedule.run_prompt', 'schedule.update', 'schedule.pause', 'schedule.resume', 'schedule.remove']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
@@ -338,11 +341,13 @@ describe('D-137 P1 — CHAT_DISPATCH_CHANNELS closed list (§ A.1.1)', () => {
 });
 
 describe('D-137 P1 — CHAT_DISPATCH_REASONS closed list (§ A.1.1)', () => {
-  it('lists exactly thirteen reason codes (P1: 9 + P3 plan-approval: 2 + D-181 run-cancel: 1 + D-337 not asked yet: 1)', () => {
+  it('lists the closed dispatch reasons, including recoverable identifier evidence gaps', () => {
     expect(CHAT_DISPATCH_REASONS).toEqual([
       'not_implemented',
       'unknown_tool',
       'invalid_args',
+      // Recover by fetching an eligible original source or current read.
+      'identifier_evidence_missing',
       'channel_denied',
       'kind_gated',
       'classification_blocked',
@@ -357,8 +362,10 @@ describe('D-137 P1 — CHAT_DISPATCH_REASONS closed list (§ A.1.1)', () => {
       'run_cancelled',
       // D-337 slice K — not asked while a call of the same turn waits for approval.
       'not_asked_yet',
+      // 2026-11-19 — an earlier attempt of this exact write has no confirmed result; read the record first.
+      'unconfirmed_attempt',
     ]);
-    expect(CHAT_DISPATCH_REASON_SET.size).toBe(13);
+    expect(CHAT_DISPATCH_REASON_SET.size).toBe(15);
   });
 
   it('isChatDispatchReason accepts every reason + rejects unknown', () => {
@@ -448,6 +455,14 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.schedule.remove',
       'chat.schedule.run_now',
       'chat.schedule.preview',
+      'chat.schedule.skip_preview',
+      'chat.schedules.bulk.preview',
+      'chat.schedules.bulk.apply',
+      'chat.schedule.pause_preview',
+      'chat.schedule.pause_until',
+      'chat.schedule.runs.list',
+      'chat.schedule.skip_next',
+      'chat.schedule.undo_skip',
       'chat.turns.list',
       'chat.turn.withdraw',
       'chat.turn.cancel',
@@ -472,6 +487,9 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       // D-335 slice W4 — a kept browser flow's forget, and its recipe.
       'chat.execution.browser_flow.forget',
       'chat.execution.browser_flow.recipe',
+      // D-402 slice A4 — "Make a recipe" on a request in the chat.
+      'chat.execution.request_recipe',
+      'chat.execution.carry_on',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       // D-167 chat provider-threading — per-session override lifecycle +
@@ -483,6 +501,11 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.rolling_brief.set',
       'chat.install_offers.get',
       'chat.install_offers.set',
+      'chat.next_steps.state',
+      'chat.hints.list',
+      'chat.hints.not_now',
+      'chat.hints.restore',
+      'chat.setup.features',
       'chat.session.brief.get',
       'chat.session.brief.clear',
       'chat.connection_mcp.list',

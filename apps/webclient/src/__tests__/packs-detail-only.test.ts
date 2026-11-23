@@ -35,9 +35,11 @@ import {
   PACKS_ROW_INSTALL_BTN_ATTR,
   PACKS_SECTION_ATTR,
   mountPacksPanel,
+  type PacksInstallPreviewCaller,
   type PacksListCaller,
   type PacksResolveCaller,
 } from '../settings/packs-panel.js';
+import { PACKS_DIALOG_WEBHOOK_DOOR_ATTR } from '../settings/packs-install-dialog.js';
 import type { BulkPackManifest, PackListEntry } from '@recued/contracts';
 
 // ── Fake DOM ──────────────────────────────────────────────────────
@@ -196,6 +198,8 @@ interface MountArgs {
   copyPackInKitchen?: (manifest: BulkPackManifest) => Promise<void>;
   install?: ReturnType<typeof vi.fn>;
   installBySlug?: ReturnType<typeof vi.fn>;
+  /** D-201 Slice 10AJ — the install preview, for the door switches it raises. */
+  preview?: PacksInstallPreviewCaller;
   uninstall?: ReturnType<typeof vi.fn>;
   recipeList?: ReturnType<typeof vi.fn>;
   /** Wiring these is what makes the owner-operation controller `enabled`. A
@@ -238,6 +242,7 @@ const mount = (args: MountArgs) => {
     runInstall: runInstall as never,
     runInstallBySlug: runInstallBySlug as never,
     runUninstall: runUninstall as never,
+    ...(args.preview !== undefined ? { runInstallPreview: args.preview } : {}),
     ...(args.recipeList !== undefined
       ? { runRecipeList: args.recipeList as never }
       : {}),
@@ -543,6 +548,52 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
     expect(resolve).toHaveBeenCalledTimes(1); // resolved once, not again post-install
     expect(recipeList).toHaveBeenCalledTimes(2); // pre-install roster + refreshed roster
+  });
+
+  // D-201 Slice 10AJ (10AI finding 5) — the marketplace's install, by slug, is
+  // the path an owner-edited pack arrives by: it carries the switches the
+  // owner set, and none they left as shown.
+  it('D-201 Slice 10AJ — a marketplace install sends the door switches the owner set, and none they left', async () => {
+    for (const pick of [undefined, 'closed'] as const) {
+      const resolve = vi.fn<PacksResolveCaller>(async () => ({
+        manifest: manifest(),
+        manifest_review_hash: 'a'.repeat(64),
+      }));
+      const preview = vi.fn<PacksInstallPreviewCaller>(async () => ({
+        resolved: true,
+        will_enable: [],
+        hidden_count: 0,
+        missing_packs: [],
+        webhook_publisher_changes: [{
+          pack_slug: 'mkt-pack',
+          recipe_id: 'mkt-watch',
+          from_publisher: 'the-first-publisher',
+          door: 'open',
+        }],
+      }));
+      const { host, mount: m, runInstallBySlug } = mount({
+        initialSlug: 'mkt-pack',
+        roster: () => ({ packs: [], installed_versions: [] }),
+        resolve,
+        preview,
+      });
+      await m.whenLoaded();
+      await tick();
+      m.clickInstall('mkt-pack');
+      await tick();
+      if (pick !== undefined) {
+        const radio = findByAttrValue(host, PACKS_DIALOG_WEBHOOK_DOOR_ATTR, pick);
+        expect(radio, 'the switch is raised').not.toBeNull();
+        for (const fn of radio!.listeners.get('change') ?? []) fn({ target: radio });
+        await tick();
+      }
+      await m.clickConfirmInstall();
+      await tick();
+      expect(runInstallBySlug, String(pick)).toHaveBeenCalledTimes(1);
+      const args = runInstallBySlug.mock.calls[0]![0] as Record<string, unknown>;
+      if (pick === undefined) expect(args).not.toHaveProperty('webhook_door_choices');
+      else expect(args.webhook_door_choices).toEqual([{ pack_slug: 'mkt-pack', recipe_id: 'mkt-watch', door: 'closed' }]);
+    }
   });
 
   it('D-333 — offers Edit in Kitchen on an installed pack made there, and says when it cannot open', async () => {

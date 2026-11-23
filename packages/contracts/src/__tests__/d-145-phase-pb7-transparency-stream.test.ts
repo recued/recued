@@ -1083,6 +1083,8 @@ describe('D-145 PB7 — engine.decoder_unavailable failure event', () => {
       'provider_failure',
       'invalid_output',
       'cooldown',
+      'model_unavailable',
+      'output_limit',
     ]);
     expect(new Set(TRANSPARENCY_DECODER_UNAVAILABLE_REASONS).size).toBe(
       TRANSPARENCY_DECODER_UNAVAILABLE_REASONS.length,
@@ -1177,6 +1179,17 @@ describe('D-145 PB7 — engine.decoder_unavailable failure event', () => {
         site: 'initial',
       }),
     ).toBe('no AI model source available for this turn — check Settings → AI / Models');
+
+    // A model its provider does not have is not "the provider failed": only a new choice fixes it.
+    const missing = { kind: 'engine.decoder_unavailable', reason: 'model_unavailable', site: 'initial' } as const;
+    expect(validateTransparencyEvent(missing)).toEqual([]);
+    expect(renderTransparencyTemplate(missing))
+      .toBe('the provider does not have this AI model — choose another in Settings → AI / Models');
+    // Nor is a model that spent its whole output allowance before answering: its thinking is the lever.
+    const outOfRoom = { kind: 'engine.decoder_unavailable', reason: 'output_limit', site: 'initial' } as const;
+    expect(validateTransparencyEvent(outOfRoom)).toEqual([]);
+    expect(renderTransparencyTemplate(outOfRoom)).toBe('the AI model used its whole output allowance before it answered, '
+      + 'most likely on thinking — if it keeps happening, turn its thinking off in Settings → AI / Models');
 
     expect(
       renderTransparencyTemplate({

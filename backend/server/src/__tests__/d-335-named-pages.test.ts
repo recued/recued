@@ -41,6 +41,11 @@ describe('D-335 slice AK — the addresses a request names', () => {
     expect(await readableNamedPages([MAIN], { requestPassLive: () => false, listTabs: async () => undefined })).toEqual([]);
     expect(await readableNamedPages([MAIN], { requestPassLive: () => false, listTabs: async () => { throw new Error('gone'); } })).toEqual([]);
   });
+  it('leaves browser choice to the owner even when a request pass is live', async () => {
+    const listTabs = vi.fn(async () => [{ url: MAIN }]);
+    expect(await readableNamedPages([MAIN], { connectedBridges: () => 2, requestPassLive: () => true, listTabs })).toEqual([]);
+    expect(listTabs).not.toHaveBeenCalled();
+  });
 });
 
 const NOW = Date.UTC(2030, 3, 2, 10, 0, 0);
@@ -53,7 +58,8 @@ const INSPECT = entry('kitchen/inspect-web-page', 2);
 const outlineOf = (page: string) => ({ recipe_id: 'inspect-web-page', success: true,
   output: { render: [{ type: 'json', data: { page: `7:${page.length}`, url: page, title: 'A page', outline: `# A page\nThe top of ${page}` } }] } });
 
-type Packet = { prior_tool_calls?: Array<{ tool_name: string; args: unknown; status: string; result?: unknown }>; in_flight_context?: string };
+type Packet = { prior_tool_calls?: Array<{ tool_name: string; args: unknown; status: string; result?: unknown }>;
+  in_flight_context?: string; browser_task_context?: { assessment: string } };
 
 /** One turn of `message`, with the toolkit installed (`installed`) and a Bridge connected
  *  (`connected`); `readable` answers which addresses read without asking. */
@@ -69,7 +75,11 @@ const turn = async (message: string, options: { connected?: boolean; installed?:
     const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_manifest, aiInput) => {
       order.push('model');
       packets.push(JSON.parse(aiInput['llm.prompt'] as string) as Packet);
-      return { body: { response: 'The top story is there.', events: [], tool_calls: [] } satisfies AIOutput };
+      const calls = packets.at(-1)!.prior_tool_calls ?? [];
+      const browser_task_progress = calls.length ? [{ requirement: message.slice(0, 240), status: 'confirmed',
+        evidence: [{ call: 0, quote: `The top of ${(calls[0]!.args as { page: string }).page}` }] }] : undefined;
+      return { body: { response: 'The top story is there.', events: [], tool_calls: [],
+        ...(browser_task_progress ? { browser_task_progress } : {}) } satisfies AIOutput };
     });
     const all = [entry('mail.search', 1), ...(options.installed === false ? [] : [INSPECT])];
     const dispatch = vi.fn<InternalToolRegistry['dispatch']>(async (name, args) => {
@@ -103,9 +113,20 @@ describe('D-335 slice AK — a request\'s pages, read before its first round', (
       status: 'ok' })]);
     expect(JSON.stringify(packet.prior_tool_calls![0]!.result)).toContain(`The top of ${HN}`);
     expect(packet.in_flight_context).toContain(NAMED_PAGES_NOTE);
+    expect(packet.browser_task_context).toBeUndefined();
+    expect(order.filter(item => item === 'model')).toHaveLength(1);
     // The turn's own call, stored with its answer as a model's call is.
     const answer = stored.find((m) => m.role === 'assistant');
     expect(answer?.tool_calls?.map((call) => call.tool_name)).toEqual(['kitchen/inspect-web-page']);
+  });
+
+  it('only adds the experimental completion contract when the owner explicitly enables it', async () => {
+    vi.stubEnv('RECUED_BROWSER_TASK_COMPLETION', '1');
+    try {
+      const { packet, order } = await turn(`Read ${HN}`);
+      expect(packet.browser_task_context?.assessment).toBe('model_selected_source_linked');
+      expect(order.filter(item => item === 'model')).toHaveLength(1);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it('reads three pages side by side, and no fourth', async () => {

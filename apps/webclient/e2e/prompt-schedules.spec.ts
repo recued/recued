@@ -88,7 +88,7 @@ test('Chat and Automation manage the same scheduled prompt and preserve edits du
   await automation.getByLabel('Title', { exact: true }).fill('Morning mail');
   await automation.getByLabel('Request to run').fill('Summarize unread work mail.');
   await automation.getByLabel('Run', { exact: true }).selectOption('recurring');
-  await automation.getByLabel('Recurring timezone').fill('America/Los_Angeles');
+  await automation.getByLabel('Recurring timezone', { exact: true }).fill('America/Los_Angeles');
   await clickActionGlyph(page, automation.getByRole('button', { name: 'Create schedule' }));
   await expect(automation.getByRole('link', { name: 'Open conversation' })).toHaveAttribute('href', '#chat/session/scheduled-session');
   expect(schedule?.cron_expression).toBe('0 9 * * *');
@@ -292,7 +292,9 @@ test('Automation separates scheduling from outcomes and keeps older approvals li
   await expect(interruptedCard.getByText('No future runs', { exact: true })).toBeVisible();
   await expect(interruptedCard.locator('dl')).toContainText('Interrupted');
   await expect(interruptedCard).toContainText('Check what completed before running it again.');
-  expect(methods.every(method => ['recipe.list', 'dishes.list', 'schedules.list', 'chat.schedules.list'].includes(method))).toBe(true);
+  // Reads only, and once whether the server offers a schedule's own pre-approvals (D-341 b3).
+  expect(methods.filter(method => !['recipe.list', 'dishes.list', 'schedules.list', 'chat.schedules.list',
+    'collection.contract.triggerPreapprovalChoices'].includes(method))).toEqual([]);
 });
 
 test('Chat preserves drafts through outcome changes and runs the saved request without sending the composer', async ({ context, page }) => {
@@ -431,9 +433,9 @@ test('timing previews use the selected timezone and ignore an older reply withou
   await panel.getByLabel('Request to run').fill('Private request text stays out of timing previews.');
   await panel.getByLabel('Run', { exact: true }).selectOption('recurring');
   await panel.getByLabel('Time', { exact: true }).fill('01:30');
-  await panel.getByLabel('Recurring timezone').fill('America/New_York');
+  await panel.getByLabel('Recurring timezone', { exact: true }).fill('America/New_York');
   await expect.poll(() => previews.some(args => args.time_zone === 'America/New_York')).toBe(true);
-  await panel.getByLabel('Recurring timezone').fill('America/Los_Angeles');
+  await panel.getByLabel('Recurring timezone', { exact: true }).fill('America/Los_Angeles');
   const preview = panel.getByRole('region', { name: 'Schedule preview' });
   await expect(preview.getByRole('heading')).toContainText('America/Los_Angeles');
   await expect(preview.locator('time').first()).toHaveAttribute('datetime', '2026-11-01T08:30:00.000Z');
@@ -445,10 +447,10 @@ test('timing previews use the selected timezone and ignore an older reply withou
   await expect(preview.getByRole('heading')).toContainText('America/Los_Angeles');
   await expect(preview.locator('time').first()).toHaveAttribute('datetime', '2026-11-01T08:30:00.000Z');
   await expect(panel.getByLabel('Title', { exact: true })).toHaveValue('Keep my briefing draft');
-  await expect(panel.getByLabel('Recurring timezone')).toBeFocused();
+  await expect(panel.getByLabel('Recurring timezone', { exact: true })).toBeFocused();
   await expect(panel.getByLabel('Request to run')).toHaveValue('Private request text stays out of timing previews.');
   expect(previews.every(args => !('prompt' in args) && !('title' in args))).toBe(true);
-  await panel.getByLabel('Recurring timezone').fill('Bad/Zone');
+  await panel.getByLabel('Recurring timezone', { exact: true }).fill('Bad/Zone');
   await expect(preview).toContainText('Choose a valid IANA timezone.');
   await expect(preview.locator('time')).toHaveCount(0);
   expect(methods.every(method => ['recipe.list', 'dishes.list', 'schedules.list', 'chat.schedules.list', 'chat.schedule.preview'].includes(method))).toBe(true);
@@ -726,8 +728,8 @@ test('Overview includes prompt attention and failures, and Coming up sorts promp
   await page.getByRole('tab', { name: /^Coming up\s+3$/ }).click();
   const coming = page.locator('[data-recued-automation-coming-up]');
   await expect(coming.locator('li')).toHaveCount(3);
-  await expect(coming.getByRole('link')).toHaveText(['Morning briefing', 'fixture-later', 'Failed briefing']);
-  await expect(coming.getByRole('link', { name: 'Morning briefing' })).toHaveAttribute('href', '#chat/session/morning-chat');
+  await expect(coming.locator('.automation-coming-up-name')).toHaveText(['Morning briefing', 'fixture-later', 'Failed briefing']);
+  await expect(coming.getByRole('link', { name: 'Schedule details for Morning briefing', exact: true })).toHaveAttribute('href', '#automation/schedules/prompt/' + rows[0]!.schedule_id);
   await expect(coming.locator('li').first()).toContainText('Prompt');
   await expect(coming.locator('li').first()).toContainText('UTC');
   const picker = page.getByRole('combobox', { name: 'Show only one Recipe' });
@@ -764,7 +766,7 @@ test('Coming up reports pending and failed prompt reads and ignores an older lis
   await expect(page.getByRole('tab', { name: 'Coming up', exact: true })).toBeVisible();
   mode = 'ready'; await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('tab', { name: /^Coming up\s+1$/ })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Morning briefing' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Schedule details for Morning briefing', exact: true })).toBeVisible();
   mode = 'hold';
   const changed = () => page.evaluate(() => (window as unknown as { promptEvent(event: unknown): void }).promptEvent({ kind: 'chat.session_changed', session_id: 'morning-chat', field: 'queue', value: true }));
   await changed(); await expect.poll(() => !!older).toBe(true);
@@ -775,7 +777,7 @@ test('Coming up reports pending and failed prompt reads and ignores an older lis
   await older!.fulfill({ json: { result: [] } });
   await expect(page.getByRole('tab', { name: /^Coming up\s+1$/ })).toBeVisible();
   await expect(time).toHaveAttribute('datetime', new Date(rows[0].next_run_at!).toISOString());
-  await expect(page.getByRole('link', { name: 'Morning briefing' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Schedule details for Morning briefing', exact: true })).toBeVisible();
 });
 
 test('prompt drafts survive attention filters, recipe filters, tab changes and background outcome refreshes', async ({ context, page }) => {

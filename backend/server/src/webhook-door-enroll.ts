@@ -41,7 +41,12 @@
  *
  *  Spec: D-209 §1.4; D-207 §5.1b / §5.1d / §5.1g. */
 
-import type { DishWebhookDoorChange, RecipeDefinition } from '@recued/contracts';
+import {
+  contractPermitsDoorType,
+  isContractActive,
+  type DishWebhookDoorChange,
+  type RecipeDefinition,
+} from '@recued/contracts';
 
 import {
   deriveResolvedRecipeCapability,
@@ -52,9 +57,12 @@ import {
 import {
   carryOwnerRevokes,
   mintDoorContract,
+  closedByOwner,
   doorCapabilityChanged,
+  OWNER_DOOR_CLOSE_REASON,
   retireDoorContract,
   type MintDoorDeps,
+  type ServerDoorRetireReason,
 } from './mint-door-contract.js';
 import type {
   WebhookConsumerKind,
@@ -67,7 +75,7 @@ export interface WebhookDoorEnrollDeps extends MintDoorDeps {
   readonly consumerStore: Pick<
     WebhookConsumerStore,
     'stampTriggerContracts' | 'doorContractIdForRecipe'
-  >;
+  > & Partial<Pick<WebhookConsumerStore, 'newestRecipeDoor' | 'doorAnswerFor'>>;
   /** The installed dish's resolved `config_overlay` for a recipe — the SAME
    *  lookup the webhook runner feeds `handleExecute`, so the closure the door
    *  grants is derived from the config the run will actually use. */
@@ -106,6 +114,26 @@ export type WebhookDoorOutcome =
    *  revoked, still stamped, so every delivery keeps being refused. Nothing
    *  was minted. */
   | { readonly kind: 'kept_revoked'; readonly contract_id: string };
+
+/** D-201 Slice 10U (10Q finding 9) — whether the door stamped on a trigger
+ *  lets its deliveries run: `missing` with none stamped (a save or install
+ *  that has not made it, a mint refused), `closed` when it is gone, revoked
+ *  (the owner switched it off under Contracts), or not a webhook door. The
+ *  runner checks it before a run, and the owner's try again before it sends
+ *  a dead letter back. */
+export type WebhookDoorState = 'live' | 'missing' | 'closed';
+
+export const webhookDoorState = (
+  definitionStore: Pick<MintDoorDeps['definitionStore'], 'get'>,
+  contractId: string | null | undefined,
+  now: number,
+): WebhookDoorState => {
+  if (contractId === null || contractId === undefined) return 'missing';
+  const door = definitionStore.get(contractId);
+  return door !== null && isContractActive(door, now) && contractPermitsDoorType(door, 'webhook')
+    ? 'live'
+    : 'closed';
+};
 
 /** Owner-facing prose for a door refusal — the webhook sibling of the
  *  reception handler's `describeDoorRefusal`, minus the responding-door case
@@ -161,6 +189,79 @@ export const deriveWebhookDoorCapability = (
   );
 };
 
+/** D-201 Slice 10AJ (10AI findings 4 and 8) — the door a recipe has now, as a
+ *  door step that keeps the owner's decisions reads it (`keepOwnerRevoked`):
+ *  the one its rows carry under this publisher, else the newest door it had,
+ *  while that door exists (rows a fault left door-less, or a publisher
+ *  change). Kitchen's keep-on question and the webhook's card read the same:
+ *  the question read the rows only, so a save could keep a door closed, or an
+ *  operation off, that the question never showed. */
+export const currentRecipeDoorId = (
+  deps: {
+    readonly consumerStore: Pick<WebhookConsumerStore, 'doorContractIdForRecipe'>
+      & Partial<Pick<WebhookConsumerStore, 'newestRecipeDoor'>>;
+    readonly definitionStore: Pick<MintDoorDeps['definitionStore'], 'get'>;
+  },
+  consumerKind: WebhookConsumerKind,
+  consumerId: string,
+  recipeId: string,
+  publisherId: string,
+): string | null => {
+  const onRows = deps.consumerStore.doorContractIdForRecipe(consumerKind, consumerId, recipeId, publisherId);
+  if (onRows !== null) return onRows;
+  const newest = deps.consumerStore.newestRecipeDoor?.(consumerKind, consumerId, recipeId) ?? null;
+  return newest !== null && deps.definitionStore.get(newest.contract_id) !== null ? newest.contract_id : null;
+};
+
+/** D-201 Slice 10AO (10AM findings 1 and 13) — whether its owner left this
+ *  recipe's door closed, read one way by every reader: the webhook's card and
+ *  its master switch (`webhook-ingress-doors.ts`), and Kitchen's question and
+ *  status (`recipe-save-handler.ts`). The door its rows carry; with none, the
+ *  answer or switch kept for a door not made yet (`doorAnswerFor`), which the
+ *  door step makes the door in; else the door it had last. Kitchen's status
+ *  read the rows only, and said "missing" where the card said closed. */
+export const ownerLeftDoorClosed = (
+  deps: OwnerDoorClosingDeps,
+  consumerKind: WebhookConsumerKind,
+  consumerId: string,
+  recipeId: string,
+  publisherId: string,
+): boolean => ownerDoorClosing(deps, consumerKind, consumerId, recipeId, publisherId) !== null;
+
+type OwnerDoorClosingDeps = {
+  readonly consumerStore: Pick<WebhookConsumerStore, 'doorContractIdForRecipe'>
+    & Partial<Pick<WebhookConsumerStore, 'newestRecipeDoor' | 'doorAnswerFor'>>;
+  readonly definitionStore: Pick<MintDoorDeps['definitionStore'], 'get'>;
+};
+
+/** D-201 Slice 10AX (10AS finding 10) — where its owner's closing of this
+ *  recipe's door is read from, as `ownerLeftDoorClosed` reads it: a door its
+ *  owner closed (`door`), the one its rows carry or, with none, the one it had
+ *  last; or, with none on its rows, the answer or switch kept for a door not
+ *  made yet (`answer`). `null`: its owner did not close it. Only `answer` is a
+ *  closing made before the door was: the card said "closed before its door was
+ *  made" for a door its owner closed after it was made, too. */
+export type OwnerDoorClosing = 'door' | 'answer';
+
+export const ownerDoorClosing = (
+  deps: OwnerDoorClosingDeps,
+  consumerKind: WebhookConsumerKind,
+  consumerId: string,
+  recipeId: string,
+  publisherId: string,
+): OwnerDoorClosing | null => {
+  const onRows = deps.consumerStore.doorContractIdForRecipe(consumerKind, consumerId, recipeId, publisherId);
+  if (onRows === null) {
+    const answer = deps.consumerStore.doorAnswerFor?.(consumerKind, consumerId, recipeId) ?? null;
+    if (answer !== null) return answer === 'closed' ? 'answer' : null;
+  }
+  const contractId = onRows
+    ?? deps.consumerStore.newestRecipeDoor?.(consumerKind, consumerId, recipeId)?.contract_id
+    ?? null;
+  const stored = contractId === null ? null : deps.definitionStore.get(contractId);
+  return stored !== null && closedByOwner(stored) ? 'door' : null;
+};
+
 /** Distinct non-null door ids stamped on a snapshot's trigger rows —
  *  optionally narrowed to one recipe. The uninstall/removal paths retire
  *  these; the enroll path diffs against them. */
@@ -184,7 +285,7 @@ export const snapshotDoorContractIds = (
  *  declaration removal, re-save supersession). */
 export const retireWebhookDoors = (
   contractIds: readonly string[],
-  reason: string,
+  reason: ServerDoorRetireReason,
   deps: Pick<MintDoorDeps, 'definitionStore'>,
 ): void => {
   for (const contractId of contractIds) {
@@ -216,8 +317,8 @@ export const reconcileWebhookDoors = (
     }>;
     readonly mintedBy: string;
     /** Stamped as the prior doors' revocation reason (`'resaved'`,
-     *  `'pack_reinstalled'`, …). */
-    readonly retireReason: string;
+     *  `'pack_reinstalled'`, …): always the server's (D-201 Slice 10AC). */
+    readonly retireReason: ServerDoorRetireReason;
     /** ⛔ D-295 — a PACK install: a door its owner revoked stays revoked.
      *  Re-minting it (the default — a revoked prior "must never be re-used as
      *  the live door") re-opened, on every pack update, a door the owner had
@@ -226,6 +327,19 @@ export const reconcileWebhookDoors = (
      *  new door, or leaves none. A Kitchen re-save is the owner acting on that
      *  recipe, and still re-mints. */
     readonly keepOwnerRevoked?: boolean;
+    /** D-201 Slice 10X — with `keepOwnerRevoked`, the owner's switch
+     *  (Connections → Webhooks, or a Kitchen recipe's own; the owner's ruling
+     *  of 2026-11-19: the switch is the control, never a pack). A door that was
+     *  closed opens again: the revoked prior is not kept. What the owner
+     *  switched off on it under Contracts stays off, carried onto the new door
+     *  as `keepOwnerRevoked` carries it. */
+    readonly reopen?: boolean;
+    /** D-201 Slice 10AF (10AE finding 17; the owner's ruling of 2026-11-20) —
+     *  the owner's answer for a recipe whose pack update comes from another
+     *  publisher (`packs.install` `webhook_door_choices`): `open` opens its
+     *  door, `closed` closes it. Without one, its door starts from the state
+     *  the owner left it in. Read only for a recipe whose publisher changed. */
+    readonly doorChoices?: ReadonlyMap<string, 'open' | 'closed'>;
   },
   deps: WebhookDoorEnrollDeps,
 ): Map<string, WebhookDoorOutcome> => {
@@ -233,7 +347,54 @@ export const reconcileWebhookDoors = (
   const reused = new Set<string>();
 
   for (const entry of input.recipes) {
-    const priorIds = snapshotDoorContractIds(input.prior, entry);
+    let priorIds = snapshotDoorContractIds(input.prior, entry);
+    const rowsCarriedNoDoor = priorIds.length === 0;
+    // D-201 Slice 10AC (10AA finding 3) — no door on its rows: the door it had
+    // last, when an earlier version dropped its webhook or its trigger. A later
+    // version that takes the webhook again then keeps the owner's closing and
+    // switch-offs, as an update that kept the webhook does; it minted a door
+    // with every operation granted, open, the owner's closing forgotten.
+    // D-201 Slice 10AF (10AE findings 1 and 5) — the stamp keeps it, in the
+    // stamp's own transaction, so it is the newest door the recipe had.
+    // (10AE finding 17; the owner's ruling of 2026-11-20) — under whichever
+    // publisher: one that now comes from another, as an owner who edits a pack
+    // publishes it under their own name, starts from the state the owner left
+    // its door in, never a fresh open door.
+    let publisherChanged = false;
+    if (priorIds.length === 0 && input.keepOwnerRevoked === true) {
+      const newest = deps.consumerStore.newestRecipeDoor?.(
+        input.consumer_kind,
+        input.consumer_id,
+        entry.recipe_id,
+      ) ?? null;
+      if (newest !== null && deps.definitionStore.get(newest.contract_id) !== null) {
+        priorIds = [newest.contract_id];
+        publisherChanged = newest.publisher_id !== entry.publisher_id;
+      }
+    }
+    // D-201 Slice 10AJ (10AI finding 1) — with no answer passed, the one kept
+    // with the update that brought it (`ReplaceWebhookConsumerInput
+    // .door_answers`): an install whose door step did not finish, and every
+    // later step (the start's finish, a settings change, the next update),
+    // makes the door as the owner answered. It was read from this call only,
+    // so a "closed" answer was lost and the door opened. The owner's own
+    // switch (`reopen`) is a newer decision.
+    // D-201 Slice 10AO (10AM finding 1) — read for any recipe whose rows carry
+    // no door, whatever the publisher, as the card reads it: it is the state
+    // of a door no stamp has made yet (an answer, or the owner's switch on the
+    // card, `keepOwnerDoorDecision`), and any stamp of that recipe's door ends
+    // it. Read for the answer's own publisher only, a pack that went to a
+    // third publisher, or back to its first, made its door from the door
+    // before while the card showed the owner's answer.
+    const kept = rowsCarriedNoDoor && input.keepOwnerRevoked === true && input.reopen !== true
+      ? deps.consumerStore.doorAnswerFor?.(
+        input.consumer_kind,
+        input.consumer_id,
+        entry.recipe_id,
+      ) ?? undefined
+      : undefined;
+    const choice = (publisherChanged ? input.doorChoices?.get(entry.recipe_id) : undefined) ?? kept;
+    const reopen = input.reopen === true || choice === 'open';
     try {
       deps.preflightNonOwnerRecipeExposure?.(entry.recipe, 'webhook');
     } catch (error) {
@@ -258,11 +419,13 @@ export const reconcileWebhookDoors = (
       const stored = priorIds.length === 1
         ? deps.definitionStore.get(priorIds[0]!)
         : null;
+      // D-201 Slice 10AC (10AA finding 8) — kept closed only when its owner
+      // closed it: a door the server retired is made again.
       if (
         input.keepOwnerRevoked === true
+        && !reopen
         && stored !== null
-        && stored.revoked_at !== undefined
-        && stored.revoked_at !== null
+        && closedByOwner(stored)
       ) {
         const stampedRows = deps.consumerStore.stampTriggerContracts({
           consumer_kind: input.consumer_kind,
@@ -305,6 +468,9 @@ export const reconcileWebhookDoors = (
         // derived op afresh. A Kitchen re-save is the owner acting, and starts clean.
         if (input.keepOwnerRevoked === true) carryOwnerRevokes(priorIds, contractId, deps);
       }
+      // D-201 Slice 10AF — the owner answered "closed": closed before any row
+      // carries it, so no delivery runs under it.
+      if (choice === 'closed') deps.definitionStore.revoke(contractId, OWNER_DOOR_CLOSE_REASON);
 
       const stampedRows = deps.consumerStore.stampTriggerContracts({
         consumer_kind: input.consumer_kind,
@@ -325,6 +491,10 @@ export const reconcileWebhookDoors = (
       }
 
       if (unchanged) reused.add(contractId);
+      if (choice === 'closed') {
+        outcomes.set(entry.recipe_id, { kind: 'kept_revoked', contract_id: contractId });
+        continue;
+      }
       outcomes.set(entry.recipe_id, {
         kind: 'minted',
         contract_id: contractId,
@@ -345,11 +515,8 @@ export const reconcileWebhookDoors = (
   // runs LAST (mint → stamp → retire) so no window pairs a retired door with
   // unstamped rows; both halves of that window fail closed regardless.
   const priorAll = snapshotDoorContractIds(input.prior);
-  retireWebhookDoors(
-    priorAll.filter((id) => !reused.has(id)),
-    input.retireReason,
-    deps,
-  );
+  const retiring = priorAll.filter((id) => !reused.has(id));
+  retireWebhookDoors(retiring, input.retireReason, deps);
 
   return outcomes;
 };
@@ -402,7 +569,12 @@ export const followMainDishWebhookDoors = (
   },
   /** What moved the door, stamped on the one it mints and the ones it retires: a
    *  main dish's settings (D-209), or a pack's connections (D-320 phase 3). */
-  cause: { readonly mintedBy: string; readonly retireReason: string } = {
+  cause: {
+    readonly mintedBy: string;
+    readonly retireReason: ServerDoorRetireReason;
+    /** D-201 Slice 10X — the owner's switch: a closed door opens again. */
+    readonly reopen?: boolean;
+  } = {
     mintedBy: 'dish_settings',
     retireReason: 'dish_settings_changed',
   },
@@ -451,6 +623,7 @@ export const followMainDishWebhookDoors = (
           mintedBy: cause.mintedBy,
           retireReason: cause.retireReason,
           keepOwnerRevoked: true,
+          ...(cause.reopen === true ? { reopen: true } : {}),
         },
         deps,
       ).get(input.recipe_id);
@@ -536,9 +709,12 @@ export const rederiveWebhookDoorsAtBoot = (
         .flatMap((owner) => snapshotDoorContractIds(owner.snapshot))
         .some((contractId) => {
           const stored = deps.definitionStore.get(contractId);
-          return stored !== null
-            && (stored.revoked_at === undefined || stored.revoked_at === null)
-            && doorCapabilityChanged(stored, derived.capability).changed;
+          if (stored === null) return false;
+          // D-201 Slice 10AC (10AA finding 8) — a door the server retired and a
+          // start before 10AC put back on its rows, closed, as if its owner had:
+          // made again. One its owner closed stays closed.
+          if (stored.revoked_at !== undefined && stored.revoked_at !== null) return !closedByOwner(stored);
+          return doorCapabilityChanged(stored, derived.capability).changed;
         });
       if (!stale) continue;
       changes.push(...followMainDishWebhookDoors(
@@ -577,7 +753,7 @@ const hadLiveDoor = (
 
 /** A refusal the owner can fix in these settings: a step's account slot
  *  (`{{config.<name>}}`) that names no account. Anything else is the recipe's. */
-const reasonCodeOf = (refusal: RecipeCapabilityRefusal): 'no_account' | 'refused' =>
+export const reasonCodeOf = (refusal: RecipeCapabilityRefusal): 'no_account' | 'refused' =>
   refusal.reason === 'dynamic_connection' && /^\{\{\s*config\./.test(refusal.ref)
     ? 'no_account'
     : 'refused';

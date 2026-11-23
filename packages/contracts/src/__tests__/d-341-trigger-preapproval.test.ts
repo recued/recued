@@ -123,8 +123,9 @@ describe('D-341 slice B1b — an armed auto-run names its timer by its dish', ()
     expect(describeTriggerPreapproval(row({ trigger, door_contract_id: undefined }), 'Watch pipeline', ['Add a task']))
       .toBe('Watch pipeline, when it runs on its own, may do this without asking: add a task. Once a run, until you end it.');
     expect(describeTriggerPreapprovalOffer({ trigger, recipe_id: 'r', recipe_sha256: 'a'.repeat(64), op: 'a.b' }, '"Watch pipeline"'))
-      .toBe('“Always allow for this auto-run” stops asking about this write when "Watch pipeline" runs on its own, once a'
-        + ' run, until you end it on the auto-run\'s page or under Contracts. A change to the recipe asks you again.');
+      // D-402 ruling 10 — every write of the recipe's version.
+      .toBe('“Always allow for this auto-run” stops asking about what "Watch pipeline" writes when it runs on its own,'
+        + ' until you end it on the auto-run\'s page or under Contracts. Deleting, anything that needs your review and anything set to ask every time still ask. A change to the recipe asks you again.');
     expect(triggerPreapprovalCovers(row({ trigger, door_contract_id: undefined }),
       { ...call, trigger, door_contract_id: undefined })).toBe(true);
     // Another dish's timer is another trigger.
@@ -185,8 +186,8 @@ describe('D-341 slice B4 — a reception form names its endpoint and its door', 
       .toBe('Book a table, when its form runs it, may do this without asking: save a booking. Its AI decides what it'
         + ' writes. Once a run, until you end it.');
     expect(describeTriggerPreapprovalOffer({ trigger, door_contract_id: 'door-r1', recipe_id: 'r', recipe_sha256: 'a'.repeat(64),
-      op: 'a.b' }, '"Book a table"')).toBe('“Always allow for this form” stops asking about this write when its form runs'
-      + ' "Book a table", once a run, until you end it on the form\'s page or under Contracts. A change to the recipe asks'
+      op: 'a.b' }, '"Book a table"')).toBe('“Always allow for this form” stops asking about what "Book a table" writes when'
+      + ' its form runs it, until you end it on the form\'s page or under Contracts. Deleting, anything that needs your review and anything set to ask every time still ask. A change to the recipe asks'
       + ' you again.');
   });
 });
@@ -340,12 +341,12 @@ describe('D-341 slice B2 — what an ask offers to grant', () => {
 
   it('says what the answer lets happen, that it lasts until the owner ends it and where, and when its AI decides', () => {
     expect(describeTriggerPreapprovalOffer(offer as never, '"Receive Apple Health readings"')).toBe(
-      '“Always allow for this webhook” stops asking about this write when its webhook runs "Receive Apple Health'
-      + ' readings", once a run, until you end it on the webhook\'s page or under Contracts. A change to the recipe'
+      '“Always allow for this webhook” stops asking about what "Receive Apple Health readings" writes when its'
+      + ' webhook runs it, until you end it on the webhook\'s page or under Contracts. Deleting, anything that needs your review and anything set to ask every time still ask. A change to the recipe'
       + ' asks you again.');
     expect(describeTriggerPreapprovalOffer({ ...offer, trigger: { kind: 'event_trigger', trigger_id: 't' }, asks_ai: true } as never,
-      '"Sort new mail"')).toBe('“Always allow for this trigger” stops asking about this write when its trigger runs'
-      + ' "Sort new mail", once a run, until you end it on the trigger\'s page or under Contracts. Its AI decides what it'
+      '"Sort new mail"')).toBe('“Always allow for this trigger” stops asking about what "Sort new mail" writes when its'
+      + ' trigger runs it, until you end it on the trigger\'s page or under Contracts. Deleting, anything that needs your review and anything set to ask every time still ask. Its AI decides what it'
       + ' writes. A change to the recipe asks you again.');
   });
 });

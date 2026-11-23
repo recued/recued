@@ -52,6 +52,7 @@
 
 import {
   RpcError,
+  buildShareCards,
   type Conn,
   type EndpointSummary,
   type ReceptionEndpointCreateResult,
@@ -79,6 +80,7 @@ import {
   buildReceptionPageModel,
   buildReceptionRevokeDispatch,
   buildReceptionRotateDispatch,
+  isReceptionEndpointKindAvailable,
   reduceReceptionEmergencyDisabled,
   type ReceptionEndpointDetailModel,
   type ReceptionPageModel,
@@ -143,9 +145,8 @@ export interface ReceptionPageShellError {
 /** Result of `runLaunchWizard` — the § A.20.1 first-run flow's ordered
  *  substrate operations, executed. */
 export interface LaunchWizardRunResult {
-  /** Always `true` once the wizard's `reception.page.upsert` lands (the
-   *  shell throws — and the renderer surfaces `last_error` — if it does
-   *  not, so a `false` is unreachable; the field documents intent). */
+  readonly cancelled?: boolean;
+  /** True after the page write is acknowledged; false if stopped before it. */
   readonly page_upserted: boolean;
   /** One entry per `LaunchWizardDispatchPlan` draft, in planner order —
    *  the kind + the `reception.endpoint.create` result (carrying the
@@ -157,6 +158,13 @@ export interface LaunchWizardRunResult {
   }>;
 }
 
+export interface LaunchWizardRunOptions {
+  /** Stop future, unsent operations after the owner leaves the wizard. */
+  shouldContinue?: () => boolean;
+  /** Capture acknowledged results immediately, including one-shot URLs. */
+  onProgress?: (progress: LaunchWizardRunResult) => void;
+}
+
 /** The full observable state of the Reception page. Every field is a
  *  satellite projection (or `null` until first loaded) — the shell never
  *  synthesises display state, it only holds the builders' output. */
@@ -165,6 +173,9 @@ export interface ReceptionPageShellState {
   readonly page: ReceptionPageModel | null;
   /** Open per-endpoint detail view — `null` when closed. */
   readonly detail: ReceptionEndpointDetailModel | null;
+  /** The requested detail survives a failed access-log read so Refresh can
+   * retry that endpoint. Absent on older injected shell snapshots. */
+  readonly detail_endpoint_id?: string | null;
   /** § A.20.5 Abuse Inbox subview — `null` until `loadAbuseInbox()`. */
   readonly abuse_inbox: AbuseInboxSubviewModel | null;
   /** § A.20.2 View-As-Visitor panel — `null` until a preview runs. */
@@ -189,6 +200,7 @@ export interface ReceptionPageShellState {
 /** Injected dependencies. All I/O + the clock enter here so the shell
  *  itself stays pure + unit-testable. */
 export interface ReceptionPageShellDeps {
+  beginWizardWork?: () => () => void;
   /** Typed rpc dispatch over the `reception.*` method subset. */
   readonly call: ReceptionConn;
   /** Broadcast-bus subscription seam — exactly `BroadcastSubscriber['on']`.
@@ -286,8 +298,10 @@ export interface ReceptionPageShell {
    *  launch-wizard satellite's `buildLaunchWizardDispatchPlan`): the
    *  `reception.page.upsert` first, then per draft in planner order
    *  preview → `buildEndpointCreateDispatch({ ...draft, preview_hash })`
-   *  → create. Refetches the list at the end. */
-  runLaunchWizard(plan: LaunchWizardDispatchPlan): Promise<LaunchWizardRunResult>;
+   *  → create. Reusing the same unchanged plan resumes after acknowledged
+   *  writes; progress callbacks retain partial one-shot results. Refetches
+   *  the list after writes, including accepted departure. */
+  runLaunchWizard(plan: LaunchWizardDispatchPlan, options?: LaunchWizardRunOptions): Promise<LaunchWizardRunResult>;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -305,6 +319,7 @@ export const createReceptionPageShell = (
   let state: ReceptionPageShellState = {
     page: null,
     detail: null,
+    detail_endpoint_id: null,
     abuse_inbox: null,
     view_as_visitor: null,
     status: deps.initialStatus,
@@ -322,10 +337,12 @@ export const createReceptionPageShell = (
    *  each `refetchDetail` + by `closeDetail`; a refetch writes only while its
    *  token is still current. */
   let detailRequestSeq = 0;
+  let detailLog: { endpoint_id: string; entries: ReadonlyArray<import('@recued/contracts').AccessLogEntry> } | null = null;
   /** Captured one-shot share URLs keyed by endpoint id — the share URL
    *  is never re-readable, so `openDetail` can only surface Share Cards
    *  when the renderer registered one via `setEndpointShare`. */
   const shareById = new Map<string, ShareCardsInput>();
+  const wizardProgress = new WeakMap<LaunchWizardDispatchPlan, { signature: string; page_upserted: boolean; created: Array<LaunchWizardRunResult['created'][number]> }>();
   /** Last `loadAbuseInbox` options — replayed after a ban/unban so the
    *  refetched subview keeps the operator's window / threshold. */
   let lastAbuseOpts: { since?: number; limit?: number; cluster_threshold?: number } = {};
@@ -392,7 +409,21 @@ export const createReceptionPageShell = (
   const refetchEndpoints = async (): Promise<void> => {
     const result = await deps.call('reception.endpoints.list');
     endpoints = result.endpoints;
-    setState({ page: computePage() });
+    const id = state.detail_endpoint_id;
+    const summary = endpoints.find(row => row.endpoint_id === id);
+    // Re-project lifecycle changes without another access-log read. A failed
+    // log retry still retains its existing request/intent boundary.
+    if (state.detail && id && detailLog?.endpoint_id === id) {
+      if (summary) {
+        const share = shareById.get(id);
+        setState({ page: computePage(), detail: buildReceptionEndpointDetailModel({
+          summary, access_log: detailLog.entries, ...(share ? { share } : {}), now: deps.now(),
+        }) });
+      } else {
+        detailRequestSeq++; detailLog = null;
+        setState({ page: computePage(), detail: null, detail_endpoint_id: null });
+      }
+    } else setState({ page: computePage() });
   };
 
   const refetchDetail = async (endpoint_id: string): Promise<void> => {
@@ -407,18 +438,21 @@ export const createReceptionPageShell = (
       // Endpoint not in the list (revoked + filtered out, or a stale id)
       // — clear the detail rather than throw; the renderer shows the
       // "not found" empty state. Skip if a newer request superseded us.
-      if (seq === detailRequestSeq) setState({ detail: null });
+      if (seq === detailRequestSeq) setState({ detail: null, detail_endpoint_id: null });
       return;
     }
     const log = await deps.call('reception.endpoint.access_log', { endpoint_id });
     // A newer openDetail/closeDetail superseded this in-flight refetch (the
     // spine re-mounted over the shared long-lived shell) — drop the stale
     // write so it can't repopulate `detail` on the now-current view.
-    if (seq !== detailRequestSeq) return;
+    if (disposed || seq !== detailRequestSeq) return;
+    const currentSummary = endpoints?.find(row => row.endpoint_id === endpoint_id);
+    if (!currentSummary) { detailLog = null; setState({ detail: null, detail_endpoint_id: null }); return; }
+    detailLog = { endpoint_id, entries: log.entries };
     const share = shareById.get(endpoint_id);
     setState({
       detail: buildReceptionEndpointDetailModel({
-        summary,
+        summary: currentSummary,
         access_log: log.entries,
         ...(share !== undefined ? { share } : {}),
         now: deps.now(),
@@ -445,12 +479,11 @@ export const createReceptionPageShell = (
 
   const runPreviewDraft = async (
     dispatch: ReceptionEndpointPreviewDispatch,
+    publish = true,
   ): Promise<ReceptionEndpointPreviewResult> => {
     const { op, ...payload } = dispatch;
     const result = await deps.call(op, payload);
-    setState({
-      view_as_visitor: buildViewAsVisitorModel({ result, now: deps.now() }),
-    });
+    if (publish) setState({ view_as_visitor: buildViewAsVisitorModel({ result, now: deps.now() }) });
     return result;
   };
 
@@ -512,6 +545,7 @@ export const createReceptionPageShell = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      detailLog = null;
       for (const off of unsubscribers) {
         try {
           off();
@@ -602,28 +636,35 @@ export const createReceptionPageShell = (
       }),
 
     // ── Spine: per-endpoint detail ────────────────────────────────
-    openDetail: (endpoint_id) => run(() => refetchDetail(endpoint_id)),
+    openDetail: (endpoint_id) => {
+      setState({ detail_endpoint_id: endpoint_id });
+      return run(() => refetchDetail(endpoint_id));
+    },
 
     closeDetail: () => {
       // Bump the detail token so an in-flight `refetchDetail` (started before
       // this close) drops its trailing write instead of repopulating `detail`
       // after the close — the R19 Slice 4 re-mount race over the shared shell.
       detailRequestSeq += 1;
-      setState({ detail: null });
+      detailLog = null;
+      setState({ detail: null, detail_endpoint_id: null });
     },
 
     setEndpointShare: (endpoint_id, share) => {
-      // Store only — the detail model holds projected access-log rows,
-      // not raw `AccessLogEntry`s, so it cannot be rebuilt in place
-      // without a refetch. The next `openDetail(endpoint_id)` reads this
-      // map + surfaces the § A.20.4 Share Cards; if the detail is already
-      // open the renderer re-opens it to pick the share up.
       shareById.set(endpoint_id, share);
+      // The URL cannot be read again. Publish its cards into an already
+      // open detail without relying on a broadcast or another network read.
+      const detail = state.detail;
+      if (detail?.row.endpoint_id === endpoint_id && isReceptionEndpointKindAvailable(detail.row.kind)) {
+        setState({ detail: { ...detail, share_cards: buildShareCards(share), share_url_available: true } });
+      }
     },
 
     // ── Satellite: authoring (preview → create) + page upsert ─────
     approvalTargets: () => run(() => deps.call('reception.approval.targets', undefined)),
-    runPreview: (dispatch) => run(() => runPreviewDraft(dispatch)),
+    // Authoring owns its preview. Publishing it as the inventory's current
+    // view would replace the just-created endpoint detail and its share URL.
+    runPreview: (dispatch) => run(() => runPreviewDraft(dispatch, false)),
 
     createEndpoint: (dispatch) =>
       run(async () => {
@@ -692,40 +733,45 @@ export const createReceptionPageShell = (
       }),
 
     // ── Satellite: Launch Wizard orchestration ────────────────────
-    runLaunchWizard: (plan) =>
-      run(async () => {
-        // 1. The `reception_page` singleton front door first.
-        const { op: pageOp, ...pagePayload } = plan.page_upsert;
-        await deps.call(pageOp, pagePayload);
-        // 2. Per draft, in the planner's canonical order: preview →
-        //    create. Each create gates on the preceding preview's
-        //    `preview_hash` (the launch-wizard satellite pre-paired each
-        //    preview dispatch with its draft so no re-correlation is
-        //    needed here).
-        const created: Array<{
-          kind: ReceptionEndpointKind;
-          result: ReceptionEndpointCreateResult;
-        }> = [];
-        for (const { draft, preview } of plan.drafts) {
-          const previewResult = await runPreviewDraft(preview);
-          const createDispatch = buildEndpointCreateDispatch({
-            kind: draft.kind,
-            packet_declaration: draft.packet_declaration,
-            metadata: draft.metadata,
-            preview_hash: previewResult.preview_hash,
-            ...(draft.expires_at !== undefined
-              ? { expires_at: draft.expires_at }
-              : {}),
-          });
-          const { op: createOp, ...createPayload } = createDispatch;
-          const result = await deps.call(createOp, createPayload);
-          created.push({ kind: draft.kind, result });
+    runLaunchWizard: (plan, options = {}) => {
+      const release = deps.beginWizardWork?.();
+      return run(async () => {
+        let progress = wizardProgress.get(plan);
+        const signature = JSON.stringify(plan);
+        if (progress && progress.signature !== signature)
+          throw new Error('Setup has already started. Return to Endpoints to change these settings.');
+        if (!progress) {
+          progress = { signature, page_upserted: false, created: [] };
+          wizardProgress.set(plan, progress);
         }
-        // Best-effort — every `created` result carries a one-shot
-        // `share_url_once`; a final list-refetch failure must not reject
-        // before the caller receives them.
-        await refetchEndpoints().catch(captureError);
-        return { page_upserted: true, created };
-      }),
+        const snapshot = (): LaunchWizardRunResult => ({ page_upserted: progress.page_upserted, created: [...progress.created] });
+        const stopped = () => options.shouldContinue?.() === false;
+        const finish = async (cancelled: boolean): Promise<LaunchWizardRunResult> => {
+          if (!disposed && progress.page_upserted) await refetchEndpoints().catch(captureError);
+          return { ...snapshot(), ...(cancelled ? { cancelled: true } : {}) };
+        };
+        if (stopped()) return finish(true);
+        if (!progress.page_upserted) {
+          const { op, ...payload } = plan.page_upsert;
+          await deps.call(op, payload);
+          progress.page_upserted = true;
+          options.onProgress?.(snapshot());
+        }
+        for (const { draft, preview } of plan.drafts.slice(progress.created.length)) {
+          if (stopped()) return finish(true);
+          const previewResult = await runPreviewDraft(preview, false);
+          if (stopped()) return finish(true);
+          const { op, ...payload } = buildEndpointCreateDispatch({
+            kind: draft.kind, packet_declaration: draft.packet_declaration,
+            metadata: draft.metadata, preview_hash: previewResult.preview_hash,
+            ...(draft.expires_at !== undefined ? { expires_at: draft.expires_at } : {}),
+          });
+          const result = await deps.call(op, payload);
+          progress.created.push({ kind: draft.kind, result });
+          options.onProgress?.(snapshot());
+        }
+        return finish(stopped());
+      }).finally(() => release?.());
+    },
   };
 };

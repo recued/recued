@@ -3,7 +3,7 @@
  *  closes, a browser that opens a tab without saying which. What happens in
  *  real Chrome is pinned by `backend/server/src/__tests__/bridge-page-inspect-browser.test.ts`. */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BRIDGE_TABS_MAX } from '@recued/contracts';
 import { pageChallenge } from '../actions/page-challenge.js';
 import { PAGE_MESSAGE_RULES, pageProblem } from '../actions/page-problems.js';
@@ -31,6 +31,24 @@ const bind = (overrides: Partial<PageTabsChrome> = {}) => {
 };
 
 describe('the tab list', () => {
+  it('asks for metadata immediately, preserving loading and a real document handle', async () => {
+    const scripted: number[] = [];
+    const tabs: PageTabsChrome = { query: async () => [1, 2, 3, 4].map(id => ({ id })),
+      create: async () => ({}), get: async () => ({}), remove: async () => undefined };
+    const scripting: DocumentScripting = { executeScript: async request => {
+      expect(request.injectImmediately).toBe(true);
+      expect(request.args).toEqual([false, true]);
+      scripted.push(request.target.tabId);
+      return [{ ...(request.target.tabId === 3 ? {} : { documentId: `DOC${request.target.tabId}` }),
+        result: request.target.tabId === 2 ? { blocked: true } : { url: request.target.tabId === 4 ? 'https://other.example/' : URL_OF(1),
+          title: 'Still loading', loading: true } }];
+    } };
+    expect(await chromePageTabs(tabs, scripting).listPages(PATTERN)).toEqual({ tabs: [
+      { page: '1:DOC1', url: URL_OF(1), title: 'Still loading', loading: true },
+    ], truncated: false });
+    expect(scripted).toEqual([1, 2, 3, 4]);
+  });
+
   it(`lists at most ${BRIDGE_TABS_MAX} tabs, and says when there were more`, async () => {
     const { listPages } = bind({ query: async () => Array.from({ length: BRIDGE_TABS_MAX + 1 }, (_, i) => ({ id: i + 1 })) });
     const listed = await listPages(PATTERN);
@@ -80,9 +98,11 @@ describe('a newly opened tab, once the address has been asked for', () => {
     expect(removed).toEqual([9]);
   });
 
-  it('a browser that would not open the tab opened nothing', async () => {
-    expect(await bind({ create: async () => { throw new Error('quota'); } }).openPage(URL_OF(1), PATTERN, 5_000))
-      .toMatchObject({ status: 'error', error: { code: 'unknown' } });
+  it('a rejected tab creation stays uncertain without retrying', async () => {
+    const create = vi.fn(async () => { throw new Error('quota'); });
+    expect(await bind({ create }).openPage(URL_OF(1), PATTERN, 5_000))
+      .toMatchObject({ status: 'error', error: { code: 'delivery_uncertain' } });
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -126,6 +146,11 @@ describe('a site on the owner\'s list', () => {
 });
 
 describe('2026-11-04 — the page a tab shows once a click on it settles', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(0);
+  });
+  afterEach(() => { vi.useRealTimers(); });
   const WAITS = { settleMs: 5, loadMs: 50 };
   /** A tab whose answers to chrome.tabs.get follow `states`, the last one repeating. A page asked
    *  whether it shows a CAPTCHA answers `captcha` (slice J) for the document `captchaOn` names; one
@@ -163,8 +188,30 @@ describe('2026-11-04 — the page a tab shows once a click on it settles', () =>
         return [{ documentId, result: url.includes('owner') ? { blocked: true } : { url, title } }];
       },
     };
-    return { reads, asked, pageAfterClick: chromePageTabs(tabs, scripting, async () => undefined).pageAfterClick };
+    const sleep = async (ms: number) => { vi.setSystemTime(Date.now() + ms); };
+    return { reads, asked, pageAfterClick: chromePageTabs(tabs, scripting, sleep).pageAfterClick };
   };
+
+  it.each(['spa', 'pending-navigation', 'same-url', 'identity-url-mismatch', 'blocked'] as const)(
+    'DOM-ready completion retains the current document only for a committed same-document route: %s', async mode => {
+      const destination = mode === 'same-url' ? URL_OF(1) : URL_OF(2);
+      const scripts: Array<{ immediate?: boolean; args?: readonly unknown[] }> = [];
+      const tabs: PageTabsChrome = { query: async () => [], create: async () => { throw new Error('must not open'); },
+        get: async () => ({ id: 1, status: 'loading', url: destination,
+          ...(mode === 'pending-navigation' ? { pendingUrl: URL_OF(3) } : {}) }),
+        remove: async () => { throw new Error('must not close'); } };
+      const scripting: DocumentScripting = { executeScript: async request => {
+        scripts.push({ immediate: request.injectImmediately, args: request.args });
+        return [{ documentId: 'DOC1', result: { url: mode === 'identity-url-mismatch' ? URL_OF(1) : destination,
+          title: 'Signed in', loading: true } }];
+      } };
+      const t = chromePageTabs(tabs, scripting, async () => undefined);
+      const output = await t.pageAfterClick(1, { page: '1:DOC1', url: URL_OF(1) }, PATTERN,
+        { settleMs: 0, loadMs: 0 }, mode === 'blocked' ? () => true : undefined, { domReady: true });
+      expect(output).toEqual(mode === 'spa' ? { moved: true, page: '1:DOC1', url: URL_OF(2), title: 'Signed in', loading: true }
+        : { moved: true });
+      if (mode === 'spa') expect(scripts[0]).toEqual({ immediate: true, args: [true] });
+    });
 
   it('a click that loads a page answers that page, by its new handle', async () => {
     const t = after([{ status: 'loading', url: URL_OF(1) }, { status: 'loading', url: URL_OF(2) },
@@ -231,7 +278,7 @@ describe('2026-11-04 — the page a tab shows once a click on it settles', () =>
     expect(await t.pageAfterClick(1, { url: URL_OF(1), page: '1:DOC1' }, PATTERN, { settleMs: 8_000, loadMs: 50 },
       undefined, { problems: PAGE_MESSAGE_RULES }))
       .toEqual({ moved: false, page: '1:DOC1', url: URL_OF(1), title: 'Sign in', problem: 'Your password is invalid!' });
-    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(Date.now() - started).toBe(500);
     expect(t.asked).toEqual(['problem:DOC1']);
   });
 
@@ -242,6 +289,39 @@ describe('2026-11-04 — the page a tab shows once a click on it settles', () =>
       .toEqual({ moved: false, page: '1:DOC1', url: URL_OF(1), title: 'Sign in', failed: true });
     // The CAPTCHA was asked, the failure was, and nothing asked for error messages.
     expect(t.asked).toEqual(['DOC1', 'fail:DOC1']);
+  });
+
+  it('slice K — a message that shows between the two asks: the step\'s own failure is asked once more, and both are reported', async () => {
+    // A sign-in answers "Wrong password. Try again." just after the step's failure was asked: the first ask
+    // finds nothing, the page's message is seen, and the failure asked again holds (it is the same words).
+    // Asked once, this was reported as the message alone, the step's own `fail_when` lost (a real-Chrome
+    // test that went red in sweeps now and then).
+    let shown = false;
+    const asked: string[] = [];
+    const tabs: PageTabsChrome = { query: async () => [], create: async () => ({ id: 9 }), remove: async () => undefined,
+      get: async (id) => ({ id, status: 'complete', url: URL_OF(1) }) };
+    const scripting: DocumentScripting = {
+      executeScript: async ({ target, func }) => {
+        const document = target.documentIds?.[0] ?? 'DOC1';
+        if (func === checkPageElement) {
+          asked.push('fail');
+          const met = shown;
+          shown = true;
+          return [{ documentId: document, result: { outputs: { url: URL_OF(1), title: 'Sign in', met } } }];
+        }
+        if (func === pageProblem) {
+          asked.push('problem');
+          return [{ documentId: document, result: shown ? 'Wrong password. Try again.' : null }];
+        }
+        return [{ documentId: 'DOC1', result: { url: URL_OF(1), title: 'Sign in' } }];
+      },
+    };
+    const sleep = async (ms: number) => { vi.setSystemTime(Date.now() + ms); };
+    const { pageAfterClick } = chromePageTabs(tabs, scripting, sleep);
+    expect(await pageAfterClick(1, { url: URL_OF(1), page: '1:DOC1' }, PATTERN, { settleMs: 8_000, loadMs: 50 }, undefined,
+      { fail: { selector: 'body', text: 'wrong password', until: 'shown' }, problems: PAGE_MESSAGE_RULES }))
+      .toEqual({ moved: false, page: '1:DOC1', url: URL_OF(1), title: 'Sign in', failed: true, problem: 'Wrong password. Try again.' });
+    expect(asked).toEqual(['fail', 'problem', 'fail']);
   });
 
   it('slice K — on a page the click loaded, the checks look once, there', async () => {
@@ -356,7 +436,7 @@ describe('a tab moved and closed by a batch step', () => {
           moved = true;
           return [{ documentId: `DOC${target.tabId}`, result: { going: true } }];
         }
-        return [{ documentId: `DOC${target.tabId}b`, result: { url: moved ? landed : start, title: moved ? 'Landed' : 'Start' } }];
+        return [{ documentId: `DOC${target.tabId}${moved ? 'b' : ''}`, result: { url: moved ? landed : start, title: moved ? 'Landed' : 'Start' } }];
       },
     };
     return { asked, removed, ...chromePageTabs(tabs, scripting, async () => undefined) };
@@ -402,7 +482,8 @@ describe('a tab moved and closed by a batch step', () => {
     // The page's own `navigation.canGoBack` says there is none: nothing is asked of its history.
     const { movePage } = chromePageTabs({ query: async () => [], create: async () => ({ id: 9 }),
       get: async id => ({ id, status: 'complete', url: URL_OF(5) }), remove: async () => undefined },
-    { executeScript: async () => [{ documentId: 'DOC5', result: { nowhere: true } }] }, async () => undefined);
+    { executeScript: async ({ func }) => [{ documentId: 'DOC5', result: func === pageGoBack
+      ? { nowhere: true } : { url: URL_OF(5), title: 'Start' } }] }, async () => undefined);
     expect(await movePage(5, { to: 'back' }, PATTERN, 5_000)).toEqual({ status: 'error',
       error: { code: 'unknown', message: 'The tab has no page to go back to.' } });
     const slow = moving(URL_OF(6), Number.POSITIVE_INFINITY);

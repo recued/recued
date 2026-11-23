@@ -158,7 +158,7 @@ for (const width of [390, 1280]) {
 
 test('Enter saves the labeled zone and preserves its selection after failure before showing the confirmed canonical zone', async ({ page }) => {
   await open(page);
-  await expect(page.getByRole('textbox', { name: 'Server timezone', exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Server timezone', exact: true })).toBeVisible();
   await zone(page).fill('PST'); await zone(page).evaluate((input: HTMLInputElement) => input.setSelectionRange(1, 2, 'backward'));
   await page.keyboard.press('Enter'); await expect(pending(page)).toBeFocused();
   await release(page, 'set', 0, 'error'); await expect(zone(page)).toBeFocused();
@@ -355,7 +355,8 @@ declare global { interface Window {
 } }
 for (const width of [390, 1280]) {
   for (const outcome of ['success', 'error'] as const) {
-    test(`timezone recovery keeps native composition through a check ${outcome} at ${width}px`, async ({ page }) => {
+    test(`timezone recovery keeps native composition through a check ${outcome} at ${width}px`, async ({ page, browserName }) => {
+      test.skip(browserName !== 'chromium', 'Trusted composition injection uses Chromium CDP.');
       await page.setViewportSize({ width, height: 900 }); await open(page); await uncertainSave(page); await checkSaved(page).press('Enter');
       await zone(page).fill('Pacific/'); await zone(page).focus();
       await zone(page).evaluate(input => {

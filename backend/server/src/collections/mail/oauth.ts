@@ -111,7 +111,13 @@ export type HttpFetcher = (
   /** `signal`: a sync loop's stop, which aborts the request in flight
    *  (`stop-signal.ts`). The bounded default fetcher honours it; a fetcher that
    *  ignores it only makes the stop wait out its own grace. */
-  init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+  init?: {
+    method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal;
+    /** A longer deadline for this one request: a message with files takes
+     *  longer to send. The bounded default fetcher only ever lengthens its own
+     *  by it; a fetcher that ignores it keeps its own deadline. */
+    timeoutMs?: number;
+  },
 ) => Promise<{
   status: number;
   ok: boolean;

@@ -795,6 +795,7 @@ type ConnectionsEnrollAction =
   | 'connections-cancel-authentication-switch'
   | 'connections-open-add'
   | 'connections-retry-pack-context'
+  | 'connections-retry-inventory'
   | 'connections-pick-kind'
   | 'connections-pick-vendor'
   | 'connections-pick-subtype'
@@ -8987,6 +8988,18 @@ export const mountConnectionsEnrollPanel = (
 
   // ── Action handlers ───────────────────────────────────────────
   const handlers: ActionHandlers<ConnectionsEnrollAction> = {
+    'connections-retry-inventory': (_dataset, _event, element) => {
+      if (disposed || state.loading || !state.error || state.dialog.stage !== 'closed' || hasInFlightWork()) return;
+      const reclaim = doc.activeElement === element;
+      const pending = doRefresh(); const gen = loadGeneration;
+      void pending.then(() => {
+        const active = doc.activeElement as HTMLElement | null;
+        if (disposed || gen !== loadGeneration || state.dialog.stage !== 'closed' || !reclaim
+          || active !== doc.body && active?.dataset.action !== 'connections-retry-inventory') return;
+        (host.querySelector<HTMLElement>('[data-action="connections-retry-inventory"]')
+          ?? host.querySelector<HTMLElement>('[data-action="connections-open-add"]'))?.focus({ preventScroll: true });
+      });
+    },
     'connections-retry-pack-context': (_dataset, _event, element) => {
       if (
         state.packInventoryRecovery?.phase !== 'error'

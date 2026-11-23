@@ -7,7 +7,7 @@
 
 import { totalRecord } from '@recued/contracts';
 import { AI_MODELS_WORKSPACE_STYLES } from './ai-models-workspace-styles.js';
-import type { ServerLlmUsageResponse } from '@recued/contracts';
+import type { ServerLlmSourceLastCall, ServerLlmUsageResponse } from '@recued/contracts';
 import {
   resolveFreePoolDataUse, freePoolDataUseNotice, suggestFreePoolEntryId,
 } from '@recued/contracts';
@@ -29,6 +29,7 @@ import {
 } from '@recued/contracts';
 import {
   formatClientDateTime,
+  timeAgo,
   wireFocusTrap,
   type FocusTrapHandle,
 } from '@recued/ui-shared';
@@ -42,7 +43,6 @@ import {
 } from './chat-model-default.js';
 import {
   buildChatBehaviourModel,
-  CHAT_CATALOG_MODE_LABELS,
   type ChatBehaviourRenderModel,
 } from './chat-behaviour.js';
 import {
@@ -77,15 +77,13 @@ export const AI_MODELS_POOL_REMOVE_CONFIRM_ATTR =
   'data-recued-ai-models-pool-remove-confirm';
 export const AI_MODELS_MODEL_PREF_BUTTON_ATTR =
   'data-recued-ai-models-model-pref';
-/** Global chat behaviour — the rolling-brief toggle and the projected global
- *  catalog mode. Both are SERVER-WIDE, which is why they live in their own
- *  section rather than beside a slot. */
+/** Global chat behaviour — the rolling-brief toggle. SERVER-WIDE, which is
+ *  why it lives in its own section rather than beside a slot. (The tool
+ *  catalog is per-AI and lives on each slot's card: see `chat-behaviour.ts`.) */
 export const AI_MODELS_ROLLING_BRIEF_ATTR =
   'data-recued-ai-models-rolling-brief';
 /** D-323 — the owner's switch for chat's install offers (`on` / `off`). */
 export const AI_MODELS_INSTALL_OFFERS_ATTR = 'data-recued-ai-models-install-offers';
-export const AI_MODELS_CATALOG_GLOBAL_ATTR =
-  'data-recued-ai-models-catalog-global';
 /** D-174 R28 Slice A — the empty-state "add a source" jump button (Preference
  *  tab with zero configured sources → Providers). */
 export const AI_MODELS_MODEL_PREF_EMPTY_JUMP_ATTR =
@@ -126,6 +124,8 @@ export const AI_MODELS_TRANSCRIPTION_FIELD_ATTR =
   'data-recued-ai-models-transcription-field';
 /** D-262 follow-on — today's spend, rendered beside the cap that governs it. */
 export const AI_MODELS_USAGE_ATTR = 'data-recued-ai-models-usage';
+/** How a source's last call ended, beside its spend. Value is the source id. */
+export const AI_MODELS_LAST_CALL_ATTR = 'data-recued-ai-models-last-call';
 /** Per-source model context-window input. Values are `slot_1`, `slot_2`,
  *  `free_pool:new` for the pool form adding an entry, or `free_pool:<id>`
  *  while it edits one. */
@@ -202,6 +202,8 @@ export const AI_MODELS_CHAT_SETUP_STATUS_ATTR =
   'data-recued-ai-models-chat-setup-status';
 export const AI_MODELS_CHAT_SETUP_ERROR_ATTR =
   'data-recued-ai-models-chat-setup-error';
+export const AI_MODELS_CHAT_SETUP_RETRY_ATTR =
+  'data-recued-ai-models-chat-setup-retry';
 /** The quick setup's pointer to slot 1 and slot 2, for a provider it does not
  *  name or for two models. */
 export const AI_MODELS_CHAT_SETUP_SLOTS_LINK_ATTR =
@@ -337,6 +339,20 @@ const savedSlotSource = (slot: LlmSlotRecord): string => {
 export const SLOT_KEY_NOT_CARRIED_COPY =
   'You changed where this key goes, so enter it again. A saved key is never sent to a new address.';
 
+/** A model on the owner's own machine (Ollama, LM Studio…) answers without a
+ *  key, but the server stores a slot only with one: its `loadSlot` reads a
+ *  slot with no key as not set up. Any word stands in, so both forms that
+ *  take a key say so in the same words. The first-run form once demanded a
+ *  key with no hint, so an owner with only a local model was stuck there. */
+const LOCAL_MODEL_KEY_COPY =
+  'A local model that needs none takes any word, such as "none".';
+
+const CHAT_SETUP_KEY_KEPT_COPY =
+  'The key is kept on your server. Recued never sends it back to this browser.';
+
+const CHAT_SETUP_SUGGESTED_MODEL_HINT =
+  'You can change this if your provider gave you a different name.';
+
 type ChatSetupProvider =
   | 'openai'
   | 'anthropic'
@@ -346,35 +362,57 @@ type ChatSetupProvider =
 const CHAT_SETUP_PROVIDERS: ReadonlyArray<{
   id: ChatSetupProvider;
   label: string;
+  /** ⚠ A model the owner has not changed is SAVED as typed, so a retired
+   *  name here breaks every new owner who keeps it. Google answers a retired
+   *  one with HTTP 404 ("no longer available to new users") before its
+   *  announced shutdown date: `gemini-2.5-flash` did, checked live 2026-11-16.
+   *  ⚠ A newer name is not safe by being newer: check it against the adapter
+   *  that will call it. OpenAI shuts `gpt-4.1-mini` down on 2027-01-14 and
+   *  names `gpt-6-luna`, a reasoning model, to replace it. The OpenAI adapter
+   *  speaks to those since 2026-11-16 (`max_completion_tokens`, "off" as low
+   *  as the model goes) but has not been run against OpenAI itself. The
+   *  Claude 5.x models refuse the Anthropic adapter's thinking switch
+   *  (`budget_tokens`). */
   suggestedModel: string;
   keyPlaceholder: string;
+  modelHint: string;
+  keyHint: string;
 }> = [
   {
     id: 'openai',
     label: 'OpenAI',
     suggestedModel: 'gpt-4.1-mini',
     keyPlaceholder: 'sk-…',
+    modelHint: CHAT_SETUP_SUGGESTED_MODEL_HINT,
+    keyHint: CHAT_SETUP_KEY_KEPT_COPY,
   },
   {
     id: 'anthropic',
     label: 'Anthropic',
     suggestedModel: 'claude-sonnet-4-6',
     keyPlaceholder: 'sk-ant-…',
+    modelHint: CHAT_SETUP_SUGGESTED_MODEL_HINT,
+    keyHint: CHAT_SETUP_KEY_KEPT_COPY,
   },
   {
     id: 'google',
     label: 'Google',
-    suggestedModel: 'gemini-2.5-flash',
+    suggestedModel: 'gemini-3.8-flash',
     keyPlaceholder: 'API key',
+    modelHint: CHAT_SETUP_SUGGESTED_MODEL_HINT,
+    keyHint: CHAT_SETUP_KEY_KEPT_COPY,
   },
   {
     id: 'openai-compatible',
     // Named by what it covers: "an address that works like OpenAI's" read as
     // "not for me" to an owner on Groq or OpenRouter, which is exactly who it
-    // is for.
-    label: 'Another provider (OpenAI-compatible: Groq, OpenRouter, Mistral…)',
+    // is for. The same goes for an owner running a model on their own
+    // machine, who looks for the app that runs it.
+    label: 'Another provider or a local model (OpenAI-compatible: Groq, OpenRouter, Mistral, Ollama, LM Studio…)',
     suggestedModel: '',
     keyPlaceholder: 'API key',
+    modelHint: 'Type the name exactly as your provider lists it. For a local model, use the name Ollama or LM Studio shows.',
+    keyHint: `${LOCAL_MODEL_KEY_COPY} ${CHAT_SETUP_KEY_KEPT_COPY}`,
   },
 ];
 
@@ -1155,7 +1193,7 @@ const sourceDraftProblem = (
   }
   if (draft.apiKey.trim().length > 0) return null;
   if (saved === null || saved === undefined || saved.has_key !== true) {
-    return 'Enter the API key. A local model that needs none takes any word, such as "none".';
+    return `Enter the API key. ${LOCAL_MODEL_KEY_COPY}`;
   }
   // ⛔ The saved key is bound to the protocol and base URL it was saved with.
   // A blank field keeps it only while both are unchanged; otherwise the server
@@ -1164,8 +1202,77 @@ const sourceDraftProblem = (
   return endpointUnchanged ? null : SLOT_KEY_NOT_CARRIED_COPY;
 };
 
+/** A source's last call in the owner's words (`ServerLlmSourceLastCall`): when, and how it ended. A
+ *  failure says what to do where the owner can do it, on this card. */
+export const lastCallText = (last: ServerLlmSourceLastCall, now: number): string => {
+  const when = `Last call ${timeAgo(last.at, now)}`;
+  switch (last.result) {
+    case 'answered':
+      // The card names the model chosen; a provider that answered with another says which.
+      return last.answered_by !== undefined ? `${when}: answered by ${last.answered_by}.` : `${when}: answered.`;
+    case 'model_missing':
+      return `${when}: the provider does not have this model. It may have been retired or renamed. Choose another model here.`;
+    case 'output_limit':
+      return `${when}: the model used its whole output allowance before it answered, most likely on thinking. If this keeps happening, turn its thinking off here.`;
+    case 'auth':
+      return `${when}: the key was refused.`;
+    case 'rate_limited':
+      return `${when}: they asked Recued to slow down.`;
+    case 'provider_error':
+      return `${when}: they had trouble at their end.`;
+    case 'unreachable':
+      return `${when}: Recued could not reach it.`;
+    case 'rejected':
+      return `${when}: they refused the request.`;
+  }
+};
+
 const markControl = (el: HTMLElement, id: string): void => {
   el.setAttribute(AI_MODELS_CONTROL_ATTR, id);
+};
+
+/** First-run setup asks the provider before it saves: Test connection on the typed draft, one real
+ *  call with the typed key. Only a definite answer about a field stops it, shown at that field: a
+ *  model the provider does not have (a typo, or one it retired) or a key it refuses. Anything else
+ *  (no answer in time, a rate limit, their outage, another refusal, or no way to ask) saves as
+ *  before: a slow local model is still a working one, and a chat that fails later says why.
+ *
+ *  ⚠ The suggested names here go stale on the provider's schedule, not Recued's
+ *  (`gemini-2.5-flash` was refused to new users two weeks before its shutdown date). This is what
+ *  catches that, without Recued keeping a list of models. */
+const checkNewChatSource = async (
+  probe: AiModelsProbeSourceCaller,
+  provider: ChatSetupProvider,
+  model: string,
+  apiKey: string,
+  baseUrl: string,
+): Promise<{ field: 'model' | 'key'; message: string } | null> => {
+  let result: ServerLlmProbeResult;
+  try {
+    result = await probe({
+      target: { kind: 'slot', slot_key: 'slot_1' },
+      draft: {
+        provider,
+        model,
+        api_key: apiKey,
+        // As the save sends it: an address only for "another provider".
+        ...(provider === 'openai-compatible' ? { base_url: baseUrl } : {}),
+      },
+    });
+  } catch {
+    return null;
+  }
+  if (result.diagnosis === 'model_missing') {
+    const name = provider === 'openai-compatible'
+      ? 'The provider'
+      : CHAT_SETUP_PROVIDERS.find((candidate) => candidate.id === provider)?.label ?? 'The provider';
+    return {
+      field: 'model',
+      message: `${name} does not have a model called "${model}". It may have been retired or renamed, or the name may be mistyped.`,
+    };
+  }
+  if (result.diagnosis === 'auth') return { field: 'key', message: PROBE_VERDICT.auth };
+  return null;
 };
 
 export const mountAiModelsPage = (
@@ -1223,17 +1330,14 @@ export const mountAiModelsPage = (
   const recomputeModelPreference = (): void => {
     modelPreference = buildChatModelDefaultModel(modelPrefSnapshot, llmConfig);
   };
-  // Global chat behaviour. The brief snapshot is its own read; the catalog
-  // half is PROJECTED from `llmConfig`, so both recompute together whenever
-  // either input moves.
+  // Global chat behaviour, projected from the rolling-brief snapshot alone.
   let rollingBriefSnapshot: { enabled: boolean } | null = null;
   let rollingBriefVersion = 0;
   let chatBehaviour: ChatBehaviourRenderModel = buildChatBehaviourModel(
     rollingBriefSnapshot,
-    llmConfig,
   );
   const recomputeChatBehaviour = (): void => {
-    chatBehaviour = buildChatBehaviourModel(rollingBriefSnapshot, llmConfig);
+    chatBehaviour = buildChatBehaviourModel(rollingBriefSnapshot);
   };
   /** D-323 — the install-offers switch, its own read: a server from before
    *  D-323 answers nothing here, and the control stays away. */
@@ -1419,10 +1523,16 @@ export const mountAiModelsPage = (
   let embeddingsSlotSavePending = false;
   let transcriptionSlotSavePending = false;
   let chatSetupError: string | null = null;
+  /** The provider's refusal of the new source when it was tested, shown at the field it is about
+   *  (`checkNewChatSource`). */
+  let chatSetupFieldError: { field: 'model' | 'key'; message: string } | null = null;
+  /** True while that test runs, before anything is saved. */
+  let chatSetupChecking = false;
   let chatSetupSubmitting = false;
   let chatSetupCompleted = false;
   let chatSetupExistingSourceId: ChatModelSourceId | null = null;
   let chatSetupFocusOwner: { attr: string; value: string } | null = null;
+  let chatSetupReadRetryFocusOwner: HTMLElement | null = null;
   const chatSetupDraft: {
     provider: ChatSetupProvider;
     model: string;
@@ -1748,7 +1858,9 @@ export const mountAiModelsPage = (
   };
 
   /** D-323 — the install-offers switch, in the chat behaviour section. Its own
-   *  read, so it shows whatever the rolling brief's read is doing. */
+   *  read, so it shows whatever the rolling brief's read is doing.
+   *  ⛔ D-405 slice 2 (ruling P3): it also holds chat's "Connect your mail" hints, so
+   *  its words say so. Off, those stop too, and the owner must be able to read why. */
   const renderInstallOffers = (section: HTMLElement): void => {
     if (installOffersSnapshot === null) return;
     const on = installOffersSnapshot.enabled;
@@ -1756,8 +1868,10 @@ export const mountAiModelsPage = (
       doc,
       section,
       on
-        ? ' When nothing you have installed can do what you ask, chat names packs from the marketplace that could. You install them yourself.'
-        : ' Chat does not suggest packs from the marketplace.',
+        ? ' When nothing you have installed can do what you ask, chat names packs from the marketplace that could.'
+          + ' When you ask about mail, a calendar or files with none connected, it says where to connect one.'
+          + ' You install and connect them yourself.'
+        : ' Chat does not suggest packs from the marketplace, or where to connect mail, a calendar or files.',
     );
     const button = appendButton(
       doc,
@@ -1777,10 +1891,11 @@ export const mountAiModelsPage = (
     }
   };
 
-  /** Global chat behaviour. ⛔ ITS OWN SECTION, NOT A PER-SLOT CONTROL. Both
-   *  settings change what EVERY turn carries on EVERY model, including turns
-   *  with no paired client at all; rendering them beside one slot invites an
-   *  owner to set one and believe they have set all. */
+  /** Global chat behaviour. ⛔ ITS OWN SECTION, NOT A PER-SLOT CONTROL. What it
+   *  holds changes what EVERY turn carries on EVERY model, including turns with
+   *  no paired client at all, so it must not sit beside one slot. ⛔ The
+   *  reverse holds too: a per-AI setting (the tool catalog) must not sit HERE,
+   *  under copy that says "whichever AI it uses". */
   const renderChatBehaviour = (parent: HTMLElement): void => {
     const section = doc.createElement('section');
     markControl(section, 'chat_behaviour');
@@ -1825,22 +1940,6 @@ export const mountAiModelsPage = (
       briefButton.setAttribute('aria-disabled', 'true');
     }
     renderInstallOffers(section);
-
-    const catalog = doc.createElement('p');
-    catalog.setAttribute(AI_MODELS_CATALOG_GLOBAL_ATTR, chatBehaviour.catalog_mode);
-    catalog.textContent = `Tool catalog: ${CHAT_CATALOG_MODE_LABELS[chatBehaviour.catalog_mode]}`;
-    section.appendChild(catalog);
-    if (chatBehaviour.catalog_mode === 'mixed') {
-      // A 'mixed' value is not an error, but it IS the one state an owner
-      // cannot act on without knowing which source differs.
-      appendText(
-        doc,
-        section,
-        ` Per-model overrides differ: ${chatBehaviour.catalog_by_source
-          .map((b) => `${b.source_id} → ${b.mode}`)
-          .join(', ')}. Clear them on Providers to return to one setting.`,
-      );
-    }
     parent.appendChild(section);
   };
 
@@ -1916,6 +2015,9 @@ export const mountAiModelsPage = (
   // resolver reads, so the two can't drift); it says "uses", not "always",
   // because an operator CAN override it server-side (`=0` opt-out or an
   // env-global mode), which the webclient can't read.
+  // ⛔ THE ONLY PLACE THE CATALOG MODE SHOWS. The server resolves it from the
+  // AI a turn runs on, so it is per-source; a global summary under Chat
+  // behaviour contradicted these selects and was removed (`chat-behaviour.ts`).
   const renderCatalogModeControl = (
     parent: HTMLElement,
     source: ChatModelSourceId,
@@ -2893,12 +2995,24 @@ export const mountAiModelsPage = (
     }
     if (row.over_limit) parts.push('you have hit the limit. It starts again at midnight UTC');
     if (row.in_cooldown) parts.push('they are asking you to slow down right now');
-    if (parts.length === 0) return;
-    const line = doc.createElement('p');
-    line.className = 'ai-models-usage';
-    line.setAttribute(AI_MODELS_USAGE_ATTR, sourceId);
-    line.textContent = ` ${parts.join(' · ')}`;
-    parent.appendChild(line);
+    if (parts.length > 0) {
+      const line = doc.createElement('p');
+      line.className = 'ai-models-usage';
+      line.setAttribute(AI_MODELS_USAGE_ATTR, sourceId);
+      line.textContent = ` ${parts.join(' · ')}`;
+      parent.appendChild(line);
+    }
+    // ⛔ How its last call ended, which is the one place a BACKGROUND call's failure shows: a recipe's
+    // AI step or an enrichment that met a retired model used to leave a run-log line and nothing
+    // else (2026-11-16). The server sends it only while the source has the model the call was for.
+    if (row.last_call !== undefined) {
+      const last = doc.createElement('p');
+      last.className = 'ai-models-usage';
+      last.setAttribute(AI_MODELS_LAST_CALL_ATTR, sourceId);
+      last.setAttribute('data-last-call-result', row.last_call.result);
+      last.textContent = lastCallText(row.last_call, opts.now?.() ?? Date.now());
+      parent.appendChild(last);
+    }
   };
 
   const renderByok = (parent: HTMLElement): void => {
@@ -4122,6 +4236,7 @@ export const mountAiModelsPage = (
     chatSetupSubmitting = false;
     chatSetupCompleted = true;
     chatSetupError = null;
+    chatSetupFieldError = null;
     chatSetupDraft.apiKey = '';
     render();
     opts.onChatSetupComplete?.();
@@ -4160,7 +4275,9 @@ export const mountAiModelsPage = (
       return;
     }
     if (apiKey.length === 0) {
-      chatSetupError = 'Type a key to connect this AI.';
+      chatSetupError = provider === 'openai-compatible'
+        ? `Type a key to connect this AI. ${LOCAL_MODEL_KEY_COPY}`
+        : 'Type a key to connect this AI.';
       render();
       return;
     }
@@ -4181,6 +4298,25 @@ export const mountAiModelsPage = (
 
     chatSetupSubmitting = true;
     chatSetupError = null;
+    chatSetupFieldError = null;
+    // No await without a caller to test with: the save then starts in the same turn, as it always did.
+    if (opts.runProbeLlmSource !== undefined) {
+      chatSetupChecking = true;
+      render();
+      const refused = await checkNewChatSource(opts.runProbeLlmSource, provider, model, apiKey, baseUrl);
+      if (disposed) return;
+      chatSetupChecking = false;
+      if (refused !== null) {
+        chatSetupSubmitting = false;
+        chatSetupFieldError = refused;
+        chatSetupFocusOwner = {
+          attr: refused.field === 'model' ? AI_MODELS_CHAT_SETUP_MODEL_ATTR : AI_MODELS_CHAT_SETUP_KEY_ATTR,
+          value: '',
+        };
+        render();
+        return;
+      }
+    }
     render();
     try {
       await api.saveByokSlot('slot_1', {
@@ -4273,6 +4409,7 @@ export const mountAiModelsPage = (
       const status = doc.createElement('div');
       status.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'loading');
       status.setAttribute('role', 'status');
+      status.setAttribute('tabindex', '-1');
       status.textContent = 'Checking how Chat is set up…';
       section.appendChild(status);
       parent.appendChild(section);
@@ -4313,8 +4450,12 @@ export const mountAiModelsPage = (
           section,
           'Try again',
           () => {
+            if (state === 'loading') return;
+            chatSetupFocusOwner = null;
+            chatSetupReadRetryFocusOwner = (doc as Partial<Document>).activeElement === retry ? retry : null;
             void api.refresh();
           },
+          [[AI_MODELS_CHAT_SETUP_RETRY_ATTR, '']],
         );
         retry.className = 'rx-btn rx-btn-primary ai-models-chat-setup-submit';
       }
@@ -4452,6 +4593,9 @@ export const mountAiModelsPage = (
     );
     section.appendChild(slotsPointer);
 
+    const chosenProvider = CHAT_SETUP_PROVIDERS.find(
+      (candidate) => candidate.id === chatSetupDraft.provider,
+    )!;
     const modelInput = appendInput(
       doc,
       section,
@@ -4469,8 +4613,21 @@ export const mountAiModelsPage = (
     if (chatSetupSubmitting) modelInput.readOnly = true;
     const modelHint = doc.createElement('span');
     modelHint.className = 'ai-models-chat-setup-helper';
-    modelHint.textContent = 'You can change this if your provider gave you a different name.';
+    modelHint.textContent = chosenProvider.modelHint;
     section.appendChild(modelHint);
+    /** The provider's refusal of this field when the setup was tested, under the field. */
+    const appendFieldError = (field: 'model' | 'key', input: HTMLElement): void => {
+      if (chatSetupFieldError?.field !== field) return;
+      const alert = doc.createElement('div');
+      alert.id = `recued-chat-setup-${field}-error`;
+      alert.setAttribute(AI_MODELS_CHAT_SETUP_ERROR_ATTR, field);
+      alert.setAttribute('role', 'alert');
+      alert.textContent = chatSetupFieldError.message;
+      section.appendChild(alert);
+      input.setAttribute('aria-invalid', 'true');
+      input.setAttribute('aria-describedby', alert.id);
+    };
+    appendFieldError('model', modelInput);
 
     const keyInput = appendInput(
       doc,
@@ -4489,9 +4646,9 @@ export const mountAiModelsPage = (
     if (chatSetupSubmitting) keyInput.readOnly = true;
     const keyHint = doc.createElement('span');
     keyHint.className = 'ai-models-chat-setup-helper';
-    keyHint.textContent =
-      'The key is kept on your server. Recued never sends it back to this browser.';
+    keyHint.textContent = chosenProvider.keyHint;
     section.appendChild(keyHint);
+    appendFieldError('key', keyInput);
 
     const baseUrlWrap = doc.createElement('div');
     baseUrlWrap.className = 'ai-models-chat-setup-custom';
@@ -4547,20 +4704,23 @@ export const mountAiModelsPage = (
         modelInput.value = next.suggestedModel;
       }
       keyInput.setAttribute('placeholder', next.keyPlaceholder);
+      // The form is not rebuilt on a provider change, so the hints follow it
+      // here: a local model's "any word" must not reach an OpenAI owner.
+      modelHint.textContent = next.modelHint;
+      keyHint.textContent = next.keyHint;
       baseUrlWrap.setAttribute(
         'data-active',
         next.id === 'openai-compatible' ? 'true' : 'false',
       );
     });
-    const provider = CHAT_SETUP_PROVIDERS.find(
-      (candidate) => candidate.id === chatSetupDraft.provider,
-    )!;
-    keyInput.setAttribute('placeholder', provider.keyPlaceholder);
+    keyInput.setAttribute('placeholder', chosenProvider.keyPlaceholder);
 
     const save = appendButton(
       doc,
       section,
-      chatSetupSubmitting ? 'Saving setup…' : 'Save and start chatting',
+      chatSetupChecking
+        ? 'Checking the AI…'
+        : chatSetupSubmitting ? 'Saving setup…' : 'Save and start chatting',
       () => {
         void saveNewChatSource();
       },
@@ -4720,6 +4880,11 @@ export const mountAiModelsPage = (
 
   const render = (): void => {
     if (disposed) return;
+    // A read follows its current retry/status owner. Moving elsewhere retires
+    // that request for focus before this render replaces the old nodes.
+    const readRetryOwned = chatSetupReadRetryFocusOwner !== null
+      && (doc as Partial<Document>).activeElement === chatSetupReadRetryFocusOwner;
+    if (!readRetryOwned) chatSetupReadRetryFocusOwner = null;
     const ownedFocus = captureOwnedFocus();
     probeOutputElements.clear();
     poolRemoveFocusTrap?.release();
@@ -4744,6 +4909,16 @@ export const mountAiModelsPage = (
     removeChildren(dynamicHost);
     if (chatSetupMode) {
       renderChatSetup(dynamicHost);
+      if (readRetryOwned) {
+        const target = dynamicHost.querySelector?.<HTMLElement>(
+          `[${AI_MODELS_CHAT_SETUP_STATUS_ATTR}="loading"], [${AI_MODELS_CHAT_SETUP_RETRY_ATTR}], `
+          + `[${AI_MODELS_CHAT_SETUP_PROVIDER_ATTR}], [${AI_MODELS_CHAT_SETUP_SOURCE_ATTR}], `
+          + `[${AI_MODELS_CHAT_SETUP_SUBMIT_ATTR}], [${AI_MODELS_CHAT_SETUP_STATUS_ATTR}="ready"]`,
+        );
+        target?.focus?.({ preventScroll: true });
+        chatSetupReadRetryFocusOwner = state === 'loading' || target?.getAttribute(AI_MODELS_CHAT_SETUP_RETRY_ATTR) != null
+          ? target ?? null : null;
+      }
       return;
     }
     // The settings route already renders the section's "AI / Models"
@@ -5089,8 +5264,7 @@ export const mountAiModelsPage = (
     // Both the default snapshot + the LLM config have settled — derive the
     // picker model from BOTH (the options are the configured sources).
     recomputeModelPreference();
-    // Same for global chat behaviour: the brief snapshot AND the LLM config
-    // (whose `catalog_modes` is the catalog half) have both landed by here.
+    // Global chat behaviour: the brief snapshot has landed (or failed) by here.
     recomputeChatBehaviour();
     state = loadErrors.length > 0 ? 'error' : 'ready';
     render();
@@ -5107,7 +5281,6 @@ export const mountAiModelsPage = (
     llmConfigWriteVersion += 1;
     llmConfig = cloneConfig(next);
     recomputeModelPreference();
-    recomputeChatBehaviour();
     render();
   };
 
@@ -5702,6 +5875,7 @@ export const mountAiModelsPage = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      chatSetupReadRetryFocusOwner = null;
       probeOutputElements.clear();
       sourceProbeVersions.clear();
       for (const unsubscribe of unsubscribers) unsubscribe();
@@ -5770,11 +5944,11 @@ export const AI_MODELS_PAGE_STYLES = `
   display: grid;
   gap: 14px;
 }
-[${AI_MODELS_CHAT_SETUP_ATTR}] {
+[${AI_MODELS_PAGE_ATTR}] [${AI_MODELS_CHAT_SETUP_ATTR}] {
   width: min(100%, 680px);
   box-sizing: border-box;
-  padding: clamp(18px, 4vw, 30px) !important;
-  border-radius: 12px !important;
+  padding: clamp(18px, 4vw, 30px);
+  border-radius: 12px;
   background: var(--surface);
 }
 [${AI_MODELS_CHAT_SETUP_ATTR}] .ai-models-chat-setup-eyebrow {

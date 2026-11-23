@@ -14,6 +14,16 @@ describe('D-344 — RECUED_LLM_THINKING and RECUED_LLM_SLOT2_THINKING', () => {
     expect(config?.slot_2?.thinking).toBe('on');
   });
 
+  // 2026-11-20 — and each slot's context window, as Settings → AI models takes it.
+  it('RECUED_LLM_CONTEXT_WINDOW_TOKENS and its slot 2 twin set each slot\'s window, and nothing else is a window', () => {
+    const config = resolveLLMConfigFromEnv({ ...base, RECUED_LLM_CONTEXT_WINDOW_TOKENS: '128000', RECUED_LLM_SLOT2_CONTEXT_WINDOW_TOKENS: ' 200000 ' });
+    expect(config?.slot_1?.context_window_tokens).toBe(128_000);
+    expect(config?.slot_2?.context_window_tokens).toBe(200_000);
+    for (const value of ['', '0', '-5', '128k', '1.5', '12345678901']) {
+      expect(resolveLLMConfigFromEnv({ ...base, RECUED_LLM_CONTEXT_WINDOW_TOKENS: value })?.slot_1, value).not.toHaveProperty('context_window_tokens');
+    }
+  });
+
   it('leave the provider\'s default when unset, and take nothing else for a setting', () => {
     expect(resolveLLMConfigFromEnv(base)?.slot_1).not.toHaveProperty('thinking');
     expect(resolveLLMConfigFromEnv({ ...base, RECUED_LLM_THINKING: 'false' })?.slot_1).not.toHaveProperty('thinking');

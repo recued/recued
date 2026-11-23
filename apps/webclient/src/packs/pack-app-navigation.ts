@@ -5,7 +5,7 @@ import {
   hierarchicalLevel,
   type HierarchicalAddress,
 } from '../shell/hierarchical-navigation.js';
-import type { ShellRoute } from '../shell/route.js';
+import type { ChatAnswerAddress, ShellRoute } from '../shell/route.js';
 import type { PackAppSurface } from './pack-app-model.js';
 
 export type PacksAddress =
@@ -14,6 +14,9 @@ export type PacksAddress =
       readonly kind: 'pack';
       readonly packSlug: string;
       readonly viewId: string | null;
+      /** D-404 slice B2 (D-323's P6) — the chat answer whose install offer opened the page
+       *  (`#packs/<slug>/return/chat/<session>/<message>`): the page offers "Back to chat". */
+      readonly returnToChat?: ChatAnswerAddress;
       /** D-282 B5 — the record a LOOKUP was opened on, when the tail carries
        *  one. Null for a plain view address.
        *
@@ -91,7 +94,12 @@ export const parsePacksAddress = (route: ShellRoute): PacksAddress | null => {
     && route.segments[3]!.trim().length > 0
       ? route.segments[3]!
       : null;
-  return { kind: 'pack', packSlug, viewId, target };
+  // D-404 slice B2 — an install offer's link carries its answer after the slug, and only there.
+  const returnToChat = route.segments[1] === 'return' && route.segments[2] === 'chat'
+    && (route.segments[3] ?? '').length > 0 && (route.segments[4] ?? '').length > 0 && route.segments.length === 5
+    ? { sessionId: route.segments[3]!, messageId: route.segments[4]! }
+    : undefined;
+  return { kind: 'pack', packSlug, viewId, target, ...(returnToChat !== undefined ? { returnToChat } : {}) };
 };
 
 export interface PackAppNavigationNode {

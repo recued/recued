@@ -23,13 +23,21 @@ export {
 } from './dialog.js';
 export {
   renderWorkEntityPage,
+  renderWorkEntityPageHeader,
   type WorkEntityPageProps,
+  type TaskListLayout,
 } from './page.js';
 export {
-  renderBookingDetail,
+  renderBookingDetail, bookingTimeLabel, bookingReaderWarning,
   type BookingDetailProps,
 } from './booking-detail.js';
 export { WORK_ENTITY_PAGE_STYLES } from './styles.js';
-export { commitmentCounterpartyLabel, type WorkEntityCommitmentView } from './commitment-reader.js';
+export { commitmentCounterpartyLabel, commitmentDeadlineLabel, commitmentDirectionLabel, commitmentReaderWarning, commitmentStatusLabel, type WorkEntityCommitmentView } from './commitment-reader.js';
 export { renderProjectOverview, PROJECT_OVERVIEW_STYLES, type ProjectOverviewProps, type ProjectWorkSection } from './project-overview.js';
 export { renderProjectLinkReview, type ProjectLinkReviewProps } from './project-link-review.js';
+export type { NoteRelatedRecordView } from './note-reader.js';
+export { renderTaskReader, taskDeadlineLabel, taskReaderWarning, type WorkEntityTaskView } from './task-reader.js';
+export type { WorkReaderCopyView } from './reader-copy.js';
+
+export { renderProjectCommunication, type ProjectCommunicationView } from './project-communication.js';
+export { renderProjectAttention, projectAttentionIssueText, PROJECT_ATTENTION_LABELS, PROJECT_ATTENTION_STYLES, type ProjectAttentionView } from './project-attention.js';

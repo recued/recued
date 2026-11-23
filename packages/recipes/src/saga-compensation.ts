@@ -214,7 +214,7 @@ export const deriveCompensation = (
         type: 'connection',
         connection_kind: 'api',
         default: '',
-      } as unknown as RecipeDefinition['variables'][string],
+      } as unknown as NonNullable<RecipeDefinition['variables']>[string],
     },
     prefetch_steps: [],
     steps: [

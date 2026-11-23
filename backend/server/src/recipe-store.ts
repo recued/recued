@@ -557,7 +557,8 @@ export const createRecipeStore = (
         //
         // ⛔⛔ THE GUARD IS HERE AND NOT IN THE HANDLERS BECAUSE THIS PAIR HAS
         // ALREADY DIVERGED TWICE. `recipe.save` refuses a pack-owned WEBHOOK
-        // recipe; the MCP `recued_saveRecipe` tool has no ownership check at all;
+        // recipe; the MCP `recued_saveRecipe` tool had no ownership check at all (since 2026-11-22 it changes only
+        // the owner's own recipe, by publisher, which is not pack ownership);
         // `recipe.installBySlug` is a THIRD writer mirroring neither.
         // `form-contract-gate.ts` records the last divergence in this exact pair.
         // A fourth handler-level guard is the fifth divergence, already scheduled.

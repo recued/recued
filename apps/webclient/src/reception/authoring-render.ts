@@ -85,6 +85,9 @@ import {
   isReceptionEndpointKindAvailable,
 } from './spine.js';
 import { INTAKE_FORM_FIELD_TYPE_COPY } from './authoring.js';
+import { renderViewAsVisitorView } from './page-render.js';
+import type { ViewAsVisitorModel } from './view-as-visitor.js';
+import { RECEPTION_AUTHORING_WORKSPACE_STYLES } from './authoring-workspace-styles.js';
 import type {
   ApprovalLinkFormModel,
   ApprovalLinkOptionRow,
@@ -122,6 +125,8 @@ export const AUTHORING_FORM_ACTIONS = [
   'reception-form-preview',
   'reception-form-submit',
   'reception-form-cancel',
+  'reception-form-close-preview',
+  'reception-form-retry-targets',
 ] as const;
 
 export type AuthoringFormAction = (typeof AUTHORING_FORM_ACTIONS)[number];
@@ -1070,14 +1075,27 @@ const renderFormBody = (view: AuthoringFormView): { body: string; isNew: boolean
  *  `data-field-*` / `data-repeater-*` markup a working-config container
  *  binds value edits to; every discrete button carries a typed
  *  `data-action`. */
-export const renderAuthoringForm = (view: AuthoringFormView): string => {
+export interface AuthoringFeedback {
+  busy?: 'preview' | 'save' | null;
+  error?: string | null;
+  preview?: ViewAsVisitorModel | null;
+  targetsLoading?: boolean;
+  targetsError?: string | null;
+}
+
+export const renderAuthoringForm = (view: AuthoringFormView, feedback: AuthoringFeedback = {}): string => {
   const { body, isNew } = renderFormBody(view);
   return `
-    <div class="reception-form" ${dataAttrs({ kind: view.kind })}>
+    <div class="reception-form" ${dataAttrs({ kind: view.kind })} aria-busy="${Boolean(feedback.busy)}">
       ${renderFormHeader(view.kind, isNew)}
       ${renderValidationSummary(view.validation)}
+      ${feedback.error ? panel({ tone: 'danger', role: 'alert', body: `<p>${e(feedback.error)}</p>` }) : ''}
+      ${feedback.targetsLoading ? '<p class="reception-form-help" role="status">Loading linked work…</p>' : ''}
+      ${feedback.targetsError ? panel({ tone: 'danger', role: 'alert', body: `<p>${e(feedback.targetsError)}</p>${button({ label: 'Retry linked work', size: 'sm', action: 'reception-form-retry-targets' })}` }) : ''}
       <div class="reception-form-body">${body}</div>
       ${renderFormActions(view.kind, isNew, view.validation)}
+      ${feedback.busy ? `<p class="reception-form-help" role="status">${feedback.busy === 'preview' ? 'Preparing visitor preview…' : 'Saving…'}</p>` : ''}
+      ${feedback.preview ? `<section class="reception-form-preview-region" role="region" aria-label="Visitor preview" tabindex="-1">${renderViewAsVisitorView(feedback.preview, 'reception-form-close-preview', 'Back to settings')}</section>` : ''}
     </div>
   `;
 };
@@ -1310,4 +1328,5 @@ export const RECEPTION_AUTHORING_STYLES = `
   .reception-form-repeater-row { align-items: stretch; flex-direction: column; }
   .reception-form > .rx-action-bar .rx-btn { flex: 1 1 auto; }
 }
+${RECEPTION_AUTHORING_WORKSPACE_STYLES}
 `;

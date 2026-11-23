@@ -153,6 +153,13 @@ const safeNotifyLink = (value: unknown): string | undefined => {
   if (/^#settings\/seller\/offers\/detail\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
   if (/^#recipes\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
   if (value === '#reception/records') return value;
+  // D-402 slice E4b — a hand-off's notice: its run carried on in Chat.
+  if (/^#chat\/carry-on\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
+  // D-268 — an automation's failure notice: its rules (`automationRuleLink`, `#automation/<recipe-id>`),
+  // or (D-346 follow-up) the pack page where what the run needed is fixed (`#packs/<slug>`). Both were
+  // dropped here since they shipped, so a failure's toast showed no "Open". Each exact shape, never a prefix.
+  if (/^#automation\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
+  if (/^#packs\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
   try {
     const url = new URL(value);
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;

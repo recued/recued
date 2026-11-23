@@ -270,7 +270,9 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
     else if (action === 'usage') {
       if (draft()) return;
       const app = apps.find(app => key(app) === target.dataset.oauthAppId);
-      if (app) { clear(); void usagePanel?.open(app); } return;
+      if (app) { clear(); void usagePanel?.open(app, () => {
+        [...host.querySelectorAll<HTMLElement>('[data-oauth-app-action="usage"]')].find(n => n.dataset.oauthAppId === key(app))?.focus({ preventScroll: true });
+      }); } return;
     }
     else if (action === 'renewal') {
       if (draft()) return;

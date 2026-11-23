@@ -32,9 +32,20 @@ export const WEEKLY_SUGGESTIONS_KEY = 'situations.weekly_suggestions';
  *  4 — `head_start`: a stream's, which start ahead of it (§3.3). */
 type Agenda = Required<SituationAgendaSettings> & { names_private?: boolean; head_start?: boolean };
 
-/** D-340 slice 4 (§3.3, ruling 9) — a stream's suggestions start this long before it, and the stream
- *  still goes at its own time: finished by then, they go inside it; not yet, they follow on their own. */
-export const SUGGESTIONS_HEAD_START_MS = 10 * 60_000;
+/** D-340 slice 4 (§3.3, ruling 9) started a stream's suggestions 10 minutes before it, and sent them
+ *  on their own when they missed it. ⛔ The owner, 2026-11-15 (D-340 ruling 13): a second message that
+ *  changes a list already planned around is a second decision point. The stream's time is now when
+ *  Recued starts preparing the day: its suggestions start then, and the message waits for them and goes
+ *  once (`SUGGESTIONS_STALL_MS`, `SUGGESTIONS_BACKSTOP_MS`). No head start. */
+export const SUGGESTIONS_HEAD_START_MS = 0;
+/** D-340 ruling 13 — a suggestions run with no new step (a lookup started or ended, an answer) for this
+ *  long is taken as stuck, and the message goes without it, saying so. About three of the slowest model
+ *  replies measured (≈60 s), so a slow run that is working is not cut off. */
+export const SUGGESTIONS_STALL_MS = 3 * 60_000;
+/** D-340 ruling 13 — the longest the message waits for a run still making progress. ⚠ Out of reach while
+ *  the run has `SUGGESTIONS_TOOL_ROUNDS` rounds; raising them is the owner's cue to revisit this (a test
+ *  pins the pair, the owner 2026-11-15: "this 20min may need to go with it if that limit is increased"). */
+export const SUGGESTIONS_BACKSTOP_MS = 20 * 60_000;
 /** D-340 slice 4 (§3.3, ruling 9: "the model never checks item by item") — the suggestions' own run
  *  reads the day once and looks up a detail or two: its tool rounds, below the chat's own cap. On the
  *  last one it is told to answer with what it has. */
@@ -69,7 +80,7 @@ const spanWords = (agenda: Agenda): string => agenda.frequency === 'weekly'
 export const agendaSuggestionsPrompt = (agenda: Agenda): string => {
   const span = spanWords(agenda);
   // D-340 slice 4 — a stream's run starts ahead of it, which then carries the suggestions.
-  return `My agenda for ${span} goes to me ${agenda.head_start === true ? 'in a few minutes' : 'at this time'}. Read ${span} with situation.query, which lists `
+  return `My agenda for ${span} goes to me ${agenda.head_start === true ? 'with your suggestions as soon as you answer' : 'at this time'}. Read ${span} with situation.query, which lists `
     + `the same items my agenda does, and beside them what I am working toward (kind pursuit): give it ${span} as `
     + `${agenda.frequency === 'weekly' ? 'dates' : 'a date'}. `
     // D-340 slice 4 — bounded: the day once, then at most a detail or two (ruling 9).
@@ -78,9 +89,23 @@ export const agendaSuggestionsPrompt = (agenda: Agenda): string => {
     + 'Then suggest what would help: clashes, travel time between places, what '
     + 'to prepare or bring, anything that has to happen before an item, and, where the day has room, a step on one '
     + 'of my pursuits that fits it, from where I am with it and the days this week I recorded doing or skipping it '
-    + '(recorded; a day it does not list is unknown, not one I missed). Reply with the suggestions only, as '
-    + 'a short list of plain lines, without bold (my notifications show it as asterisks): I already have the agenda, '
-    + 'so do not repeat it. '
+    + '(recorded; a day it does not list is unknown, not one I missed). '
+    // D-343 (the owner, 2026-11-15: "suggest an hour, more proactive"; the live run's four suggestions
+    // named no time) — a time for what has none, in a stretch the day leaves free.
+    + `Where an item has no time, or for a step on a pursuit, propose one: a time in a free stretch of ${span}, not `
+    // D-343 (busy-day drive, 2026-11-15) — run 10 minutes ahead, "not already past" let through 16:30 in a
+    // message that reached the owner at 16:31.
+    + (agenda.head_start === true ? 'before this reaches me (allow 15 minutes from now) ' : 'one already past ')
+    + 'and not over a timed item, and say why it fits (for example "- Spanish lesson at 12:00: you are '
+    + 'free until the 17:00 call"). Give each its own time: two in one gap only if both fit in it, one after the other. '
+    // D-343 (busy-day drives, 2026-11-15) — "free between the 18:30 Team review and the 20:00 Dentist" for
+    // a gap that opened at 19:30, when the review ended.
+    + 'Name a gap by when the item before it ends ("free from 19:30, after the team review"), not when it starts. '
+    // D-343 (busy-day drive, 2026-11-15) — "it is unknown if you practiced this week" read the request's
+    // own rule back to the owner.
+    + 'Never tell me a day is unknown or unrecorded. Reply with the suggestions only, as a '
+    + 'short list of plain lines, each starting with "- ", without bold (my notifications show it as asterisks): I '
+    + 'already have the agenda, so do not repeat it. '
     + (agenda.names_private === true
       // D-340 slice 5 (§3.4) — Include private items: the owner chose to have them named in the
       // channels the stream goes to, so a private item or pursuit is suggested about like any other.
@@ -138,6 +163,9 @@ export const createAgendaSuggestions = (deps: {
   timeZone: () => string;
   /** The state of the Agenda's own run that went (or was skipped) at or after an instant, if any. */
   agendaRunSince: (at: number) => 'sent' | 'skipped' | 'pending' | undefined;
+  /** D-340 ruling 13 — whether these suggestions are a stream's: they then go inside its message or, when
+   *  it went without them, stay in Today and their conversation; never a notification of their own. */
+  streaming?: () => boolean;
   /** D-340 slice 2 — the setting that keeps its schedule's id: the Agenda's (the daily stream's,
    *  once the streams take over) by default, and the weekly stream's for its own. */
   key?: string;
@@ -201,6 +229,9 @@ export const createAgendaSuggestions = (deps: {
       // The Agenda goes at the same minute; quiet hours can carry it later. A day it sent nothing
       // gets no suggestions either.
       const state = deps.agendaRunSince(run.due_at - 5 * 60_000);
+      // D-340 ruling 13 — a stream's: inside its message, or quiet once it went without them. ⛔ Not
+      // skipped before it goes: a skip claims them, and the message would then find none to carry.
+      if (deps.streaming?.() === true) return state === 'sent' || state === 'skipped' ? 'skip' : 'wait';
       return state === 'sent' ? 'notify' : state === 'skipped' ? 'skip' : 'wait';
     },
   };

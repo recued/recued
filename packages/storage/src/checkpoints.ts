@@ -80,7 +80,10 @@ export interface CheckpointStore {
    *  `heldPlanEditableArgs` (`chat-plan-edits.ts`; the Tier-1 resume
    *  applies only those keys). The resume merge reads `arg_overrides`
    *  ONLY off the consumed checkpoint, never off caller input, so no other
-   *  path can inject overrides; this writer is the single seam that gets
+   *  path can inject overrides. Ask-backed inbox approvals now capture
+   *  validated edits with their winning notification answer; the gateway
+   *  replays that trusted, checkpoint-bound snapshot through this writer
+   *  before resume, including during boot recovery. This writer gets
    *  an override onto a checkpoint at all.
    *
    *  Deliberately NOT a general `update` — the only mutable fields are

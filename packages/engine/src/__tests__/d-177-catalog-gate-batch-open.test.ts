@@ -409,6 +409,8 @@ describe('D-177 catalog-gate batch and open modes', () => {
     expect(consume).toHaveBeenCalledWith('open-grant-1', {
       canonical_payload_hash: expectedHashes.canonical_payload_hash,
       pinned_projection_hash: 'h_open',
+      // D-177 N.15 — the op the match named, which a `'kind'` row re-verifies.
+      operation_id: 'pub/cat.x',
     });
     expect(mint).not.toHaveBeenCalled();
     expect(ingredientExecutor).toHaveBeenCalledTimes(1);

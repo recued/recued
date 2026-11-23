@@ -12,14 +12,11 @@
  *
  *  `reception.inbox.approve` is the editable-args gate driver (N.5): it
  *  validates the user's `edits` against the item's `ArgEditSchema`
- *  allowlist, writes them to `checkpoint.arg_overrides` THROUGH THE
- *  NARROW `CheckpointStore.setArgOverrides` WRITER (the N.5 security
- *  boundary — the ONLY write path for `arg_overrides`), recomputes
- *  `approved_target` from the merged args, audits the old→new diff via
- *  the exported `computeArgEditsDiff`, and releases the held op through
- *  the EXISTING preflight resume path (answers the `gateway.preflight`
- *  ask with `'approve'` — the engine then merges the overrides on
- *  resume; this module does NOT touch the engine or `preflight-resumer`).
+ *  allowlist and recomputes `approved_target` from the merged args. Ask-backed
+ *  approvals save the validated patch with the winning answer; its replay
+ *  applies the narrow checkpoint writer. Notify-only approvals pass an
+ *  isolated checkpoint value directly to the decorated resumer. The engine
+ *  reads overrides only from that trusted checkpoint, never channel input.
  *
  *  `reception.inbox.reject` answers the same ask with `'deny'` (the
  *  existing deny path frees the hold), records a subview row (D10), and
@@ -61,6 +58,11 @@ import {
 } from '@recued/contracts';
 import type { ActivityAction, AuditEntry, AuditLogStore } from '@recued/storage';
 import type { CheckpointStore } from '@recued/storage';
+import { PREPARED_PREFLIGHT_DENIAL_KIND, PREPARED_PREFLIGHT_EDITS_KIND } from '@recued/gateway';
+import type { SubmitAnswerOutcome } from '@recued/notification';
+import { runAsklessCheckpointDecision } from './checkpoint-decisions.js';
+import { createInboxRejectionRecovery } from './reception-inbox-rejection-recovery.js';
+import type { InboxRejectionJournal } from './storage/reception-inbox-rejection-journal.js';
 import { computeArgEditsDiff } from './preflight-resumer.js';
 import {
   COMMITMENT_EVIDENCE_CAPTURE_EVENT_KIND,
@@ -173,6 +175,8 @@ export type IsReceptionOriginAnchor = (anchor: AuditEntry) => boolean;
  *  concrete per-pair SQLite store lands at the integration step) so this
  *  lane stays in-fence. */
 export interface ReceptionInboxSubviewStore {
+  /** Durable metadata for completing accepted notify-only rejection history. */
+  readonly rejectionJournal?: InboxRejectionJournal;
   /** Record a dismissed / expired item in the subview (D10). `top_tier_kind`
    *  is the held item's real materialize target (task / calendar.event /
    *  commitment / …) so the subview labels it the same as the open list. */
@@ -285,6 +289,11 @@ export interface ReceptionInboxDeps {
    *  shape `history-handler.ts` wraps); absent in partially-composed boot
    *  so approve can fail closed instead of reporting a no-op release. */
   readonly submitAnswer?: (ask_id: string, option_id: string) => Promise<void>;
+  /** Ask-backed decisions stage validated JSON inside the block's winning
+   *  answer before changing checkpoints or projecting rejection history. */
+  readonly submitPreparedAnswer?: (ask_id: string, option_id: string,
+    prepare: () => Promise<Record<string, unknown>>) => Promise<SubmitAnswerOutcome>;
+
   /** D-210 Phase C — release a hold that carries NO durable ask, by
    *  driving the decorated `PreflightResumer` directly (see
    *  `reception-inbox-no-ask-release.ts`).
@@ -1328,7 +1337,7 @@ export const recomputeApprovedTarget = (
  *  hold + actor. Sealed-PII values follow N.6 reveal rules (the diff's
  *  raw old/new is recorded only for the operator's own audit, never
  *  surfaced to a visitor). */
-const auditApprovedWithEdits = async (
+const buildApprovedWithEdits = (
   deps: ReceptionInboxDeps,
   held: ReceptionInboxHeldOp,
   approver: ReceptionInboxApprover,
@@ -1336,7 +1345,7 @@ const auditApprovedWithEdits = async (
   /** The allow answer given, if any: the session's (N.14) or the form's standing pre-approval
    *  (D-341 B4). */
   allowedForForm?: typeof ASK_ALLOW_SESSION | typeof ASK_ALLOW_TRIGGER,
-): Promise<void> => {
+): import('@recued/storage').ActivityEntry => {
   const diff = computeArgEditsDiff(held.item.args, validatedEdits);
   const editedKeys = diff.map((d) => d.key);
   const auditDiff = held.item.top_tier_kind === 'form_response'
@@ -1358,14 +1367,18 @@ const auditApprovedWithEdits = async (
   // WHO, not just what — see `describeApprover`. `ActivityEntry` has no
   // actor column, so `detail` is where it can live at all.
   const detail = `${what} [by ${describeApprover(approver)}]`;
-  await deps.auditLog.logActivity({
+  return {
     activity_id: `reception.inbox.approved-${deps.now()}-${held.checkpoint.checkpoint_id}`,
     timestamp: deps.now(),
     action: ACTION_APPROVED,
     target: held.checkpoint.checkpoint_id,
     detail,
     reserve: true,
-  });
+  };
+};
+
+const auditApprovedWithEdits = async (...args: Parameters<typeof buildApprovedWithEdits>): Promise<void> => {
+  await args[0].auditLog.logActivity(buildApprovedWithEdits(...args));
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -1467,15 +1480,22 @@ export const handleReceptionInboxList = async (
  *    2. scan-gate the attachment (N.2 / D-172 Q2);
  *    3. VALIDATE `edits` against the item's `ArgEditSchema` allowlist
  *       (N.6) — reject any non-allowlisted key BEFORE any write;
- *    4. WRITE the validated overrides to `checkpoint.arg_overrides`
- *       through the NARROW `CheckpointStore.setArgOverrides` writer (the
- *       ONLY write path for `arg_overrides`), recomputing
- *       `approved_target` from the merged args (N.5 §3);
+ *    4. bind validated overrides + `approved_target` to the winning ask
+ *       answer, or to an isolated checkpoint value for a direct release;
  *    5. audit the old→new diff (N.5 §4);
  *    6. RELEASE through the EXISTING preflight resume path (answer the
  *       `gateway.preflight` ask with `'approve'`) — the engine merges the
  *       overrides on resume; this module never touches the engine. */
 export const handleReceptionInboxApprove = async (
+  deps: ReceptionInboxDeps,
+  args: ReceptionInboxApproveInput,
+  caller: ReceptionInboxCaller | undefined,
+): Promise<ReceptionInboxApproveResult> => {
+  resolveApprover(caller, 'reception.inbox.approve');
+  return runAsklessCheckpointDecision(deps, args?.hold_id, () => approveReceptionInbox(deps, args, caller));
+};
+
+const approveReceptionInbox = async (
   deps: ReceptionInboxDeps,
   args: ReceptionInboxApproveInput,
   caller: ReceptionInboxCaller | undefined,
@@ -1562,7 +1582,7 @@ export const handleReceptionInboxApprove = async (
     );
   }
   const hasAsk = typeof ask_id === 'string' && ask_id.length > 0;
-  const canAnswerAsk = typeof deps.submitAnswer === 'function' && hasAsk;
+  const canAnswerAsk = typeof deps.submitPreparedAnswer === 'function' && hasAsk;
   const canReleaseWithoutAsk =
     !hasAsk && typeof deps.releaseWithoutAsk === 'function';
   if (!canAnswerAsk && !canReleaseWithoutAsk) {
@@ -1618,17 +1638,45 @@ export const handleReceptionInboxApprove = async (
     }
   }
 
-  // (4) write to checkpoint.arg_overrides through the NARROW writer
-  //     (BOUNDARY MUST, step 2) + recompute approved_target from the
-  //     merged args (N.5 §3). The writer is the ONLY arg_overrides write
-  //     path; the engine resume merge reads it ONLY off the consumed
-  //     checkpoint, never off caller input.
+  if (canAnswerAsk) {
+    const outcome = await deps.submitPreparedAnswer!(ask_id as string, releaseOption, async () => {
+      // A queued request revalidates its hold and values only if it wins
+      // reply admission. This callback must not write the checkpoint/audit.
+      const current = await findHeldOp(deps, args.hold_id);
+      if (!current || current.anchor.ask_id !== ask_id) {
+        throw rpcError('hold_not_found', `${method}: this request is no longer waiting for approval`, 404);
+      }
+      if (deps.isServerPaused?.() === true) throw rpcError('server_paused', PAUSED_APPROVAL_REFUSAL, 409);
+      enforceAttachmentScanGate(current.item, args, method);
+      const edits = validateEditsAgainstSchema(args.edits, current.item.arg_schema, method);
+      if (wantsAllow && Object.keys(edits).length > 0) {
+        throw rpcError('bad_request', `${method}: an edited approval cannot earn standing trust`, 400);
+      }
+      const target = recomputeApprovedTarget(current.checkpoint.approved_target, edits, current.item.arg_schema);
+      const audit = buildApprovedWithEdits(deps, current, approver, edits,
+        releaseOption === ASK_ALLOW_SESSION || releaseOption === ASK_ALLOW_TRIGGER ? releaseOption : undefined);
+      return { kind: PREPARED_PREFLIGHT_EDITS_KIND, checkpoint_id: current.checkpoint.checkpoint_id,
+        arg_overrides: edits, ...(target !== undefined ? { approved_target: target } : {}),
+        inbox_audit: { detail: audit.detail } };
+    });
+    if (outcome !== 'answered') return { hold_id: held.checkpoint.checkpoint_id, released: false, edited_keys: [] };
+    deps.broadcast({ kind: 'reception_inbox', op: 'approved', hold_id: held.checkpoint.checkpoint_id });
+    return { hold_id: held.checkpoint.checkpoint_id, released: true, edited_keys: Object.keys(validatedEdits) };
+  }
+
+  // No durable answer exists on this path. Bind the validated edits to this
+  // invocation's checkpoint value, leaving the stored hold unchanged. A
+  // failed audit/release or a process exit must not leave edits for a later
+  // plain approval (including a boot-recovered ask) to inherit. Clone before
+  // awaiting the audit so mutable request/store objects cannot change what
+  // this approval runs. Persisted ask-backed edits retain their answer replay.
   const recomputedTarget = recomputeApprovedTarget(
     held.checkpoint.approved_target,
     validatedEdits,
     held.item.arg_schema,
   );
-  await deps.checkpointStore.setArgOverrides(held.checkpoint.checkpoint_id, {
+  const approvedCheckpoint: Checkpoint = structuredClone({
+    ...held.checkpoint,
     arg_overrides: validatedEdits,
     ...(recomputedTarget !== undefined ? { approved_target: recomputedTarget } : {}),
   });
@@ -1638,30 +1686,10 @@ export const handleReceptionInboxApprove = async (
   await auditApprovedWithEdits(deps, held, approver, validatedEdits,
     releaseOption === ASK_ALLOW_SESSION || releaseOption === ASK_ALLOW_TRIGGER ? releaseOption : undefined);
 
-  // (6) release through the EXISTING preflight resume path. Answer the
-  //     held op's `gateway.preflight` ask with `'approve'` — or, N.14, with
-  //     `'allow_session'` (the existing answer path threads the session-
-  //     grant marker; the resume's commit-gate mint stamps the door
-  //     binding), or, D-341 B4, with `'allow_trigger'` (the answer grants
-  //     the form's standing pre-approval). The existing on_answer → resumer.resumeRun reads the
-  //     checkpoint (now carrying `arg_overrides`) and the engine merges
-  //     them on resume. This module never touches the engine /
-  //     preflight-resumer.
-  //
-  //     D-210 Phase C — an ask-less hold takes the direct leg instead. It
-  //     runs the SAME decorated resumer (so the intake acceptance hook and
-  //     every other pre-resume effect fire identically), and it stamps the
-  //     approval moment off this handler's own clock — the same `now()` the
-  //     audit row above used, so the durable record and the promotion
-  //     hook's `accepted_at` cannot disagree.
-  if (canAnswerAsk) {
-    await deps.submitAnswer!(ask_id as string, releaseOption);
-  } else {
-    await deps.releaseWithoutAsk!(held.checkpoint, {
-      kind: 'approve',
-      approved_at: deps.now(),
-    });
-  }
+  // The decorated resumer consumes this trusted value, including the owner's
+  // edits and target. Its existing dispatch claim/run outcome governs retries
+  // after execution starts; this handler never replays an uncertain effect.
+  await deps.releaseWithoutAsk!(approvedCheckpoint, { kind: 'approve', approved_at: deps.now() });
 
   deps.broadcast({ kind: 'reception_inbox', op: 'approved', hold_id: held.checkpoint.checkpoint_id });
 
@@ -1682,6 +1710,15 @@ export const handleReceptionInboxReject = async (
   args: ReceptionInboxRejectInput,
   caller: { instance_id: string | null | undefined } | undefined,
 ): Promise<ReceptionInboxRejectResult> => {
+  requireAdmin(caller, 'reception.inbox.reject');
+  return runAsklessCheckpointDecision(deps, args?.hold_id, () => rejectReceptionInbox(deps, args, caller));
+};
+
+const rejectReceptionInbox = async (
+  deps: ReceptionInboxDeps,
+  args: ReceptionInboxRejectInput,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<ReceptionInboxRejectResult> => {
   const method = 'reception.inbox.reject';
   requireAdmin(caller, method);
   if (!args || typeof args.hold_id !== 'string' || args.hold_id.length === 0) {
@@ -1690,6 +1727,12 @@ export const handleReceptionInboxReject = async (
   const reason =
     typeof args.reason === 'string' && args.reason.length > 0 ? args.reason : undefined;
 
+  const recovery = createInboxRejectionRecovery(deps);
+  if (recovery && await recovery.retry(args.hold_id)) {
+    deps.broadcast({ kind: 'reception_inbox', op: 'rejected', hold_id: args.hold_id });
+    return { hold_id: args.hold_id, status: 'dismissed' };
+  }
+
   const held = await findHeldOp(deps, args.hold_id);
   if (held === null) {
     throw rpcError(
@@ -1697,6 +1740,32 @@ export const handleReceptionInboxReject = async (
       `${method}: hold '${args.hold_id}' is not an open reception-incoming hold (consumed / unknown / not reception-origin)`,
       404,
     );
+  }
+
+  const pendingAskId = held.anchor.ask_id;
+  if (typeof pendingAskId === 'string' && pendingAskId.length > 0) {
+    if (deps.submitPreparedAnswer === undefined) {
+      throw rpcError('decision_not_recorded', `${method}: rejection is not configured; no decision was recorded`, 503);
+    }
+    const outcome = await deps.submitPreparedAnswer(pendingAskId, ASK_DENY, async () => {
+      const current = await findHeldOp(deps, args.hold_id);
+      if (!current || current.anchor.ask_id !== pendingAskId) {
+        throw rpcError('hold_not_found', `${method}: this request is no longer waiting for review`, 409);
+      }
+      const source = current.anchor.execution_source;
+      const doorId = source === undefined ? undefined : executionSourceContractId(source);
+      return { kind: PREPARED_PREFLIGHT_DENIAL_KIND, checkpoint_id: current.checkpoint.checkpoint_id,
+        inbox_rejection: { top_tier_kind: current.item.top_tier_kind, source_record_ref: current.item.source.record_ref,
+          ...(reason !== undefined ? { reason } : {}),
+          ...(typeof doorId === 'string' && doorId.length > 0 ? { door_contract_id: doorId } : {}),
+        } };
+    });
+    if (outcome !== 'answered') {
+      throw rpcError(outcome === 'closed' ? 'hold_not_found' : 'decision_not_recorded',
+        `${method}: rejection was not recorded; the request may already have been answered or needs a response note`, 409);
+    }
+    deps.broadcast({ kind: 'reception_inbox', op: 'rejected', hold_id: held.checkpoint.checkpoint_id });
+    return { hold_id: held.checkpoint.checkpoint_id, status: 'dismissed' };
   }
 
   // NOTE (2026-07-16): a `freeSlotHold` seam used to be called here, to release
@@ -1731,6 +1800,15 @@ export const handleReceptionInboxReject = async (
   const rejectedSource = held.anchor.execution_source;
   const rejectedDoorId =
     rejectedSource !== undefined ? executionSourceContractId(rejectedSource) : undefined;
+  if (deps.releaseWithoutAsk !== undefined) {
+    if (!recovery) throw rpcError('decision_not_recorded', `${method}: durable rejection history is not configured`, 503);
+    await recovery.reject(held.checkpoint, { top_tier_kind: held.item.top_tier_kind,
+      source_record_ref: held.item.source.record_ref, ...(reason !== undefined ? { reason } : {}),
+      ...(typeof rejectedDoorId === 'string' && rejectedDoorId.length > 0 ? { door_contract_id: rejectedDoorId } : {}),
+    });
+    deps.broadcast({ kind: 'reception_inbox', op: 'rejected', hold_id: held.checkpoint.checkpoint_id });
+    return { hold_id: held.checkpoint.checkpoint_id, status: 'dismissed' };
+  }
   deps.subviewStore.record({
     hold_id: held.checkpoint.checkpoint_id,
     status: 'dismissed',
@@ -1756,28 +1834,15 @@ export const handleReceptionInboxReject = async (
     reserve: true,
   });
 
-  // Release the hold via the EXISTING deny path — answer `'deny'`.
-  // D-210 Phase C — an ask-less hold denies through the resumer directly
-  // (`denyRun` writes the policy-deny audit row + moves the paused anchor
-  // to `failed`, exactly as the answer path's deny leg does). Without this
-  // a notify-mode reject would record the dismissal in the subview while
-  // leaving the run awaiting approval forever.
-  const ask_id = held.anchor.ask_id;
-  const hasAsk = typeof ask_id === 'string' && ask_id.length > 0;
-  if (typeof deps.submitAnswer === 'function' && hasAsk) {
-    await deps.submitAnswer(ask_id as string, ASK_DENY);
-  } else if (!hasAsk && typeof deps.releaseWithoutAsk === 'function') {
-    await deps.releaseWithoutAsk(held.checkpoint, { kind: 'deny' });
-  } else {
-    await deps.auditLog.logActivity({
+  // Preserve the explicit local-only dismissal when no deny adapter is wired.
+  await deps.auditLog.logActivity({
       activity_id: `reception.inbox.rejected-not-configured-${deps.now()}-${held.checkpoint.checkpoint_id}`,
       timestamp: deps.now(),
       action: ACTION_REJECTED,
       target: held.checkpoint.checkpoint_id,
       detail: 'rejected locally; deny not delivered: not_configured',
       reserve: true,
-    });
-  }
+  });
 
   deps.broadcast({ kind: 'reception_inbox', op: 'rejected', hold_id: held.checkpoint.checkpoint_id });
 

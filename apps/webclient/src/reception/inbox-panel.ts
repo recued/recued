@@ -66,6 +66,8 @@ const RECEPTION_INBOX_FIELD_ATTR =
   'data-recued-reception-inbox-field';
 const RECEPTION_INBOX_REASON_ATTR =
   'data-recued-reception-inbox-reason';
+const RECEPTION_INBOX_ACKNOWLEDGE_ATTR =
+  'data-recued-reception-inbox-acknowledge';
 /** D-177 N.14 — allow never combines with edits (the server refuses; the
  *  client explains instead of silently dropping the edits). */
 export const RECEPTION_INBOX_ALLOW_WITH_EDITS_COPY =
@@ -771,6 +773,12 @@ export const mountReceptionInboxPanel = (
   const decisionDrafts = new Map<string, ReceptionInboxDecisionDraft>();
   let renderedDraftHoldId: string | null = null;
 
+  const decisionOwnsFocus = (decision: ReceptionInboxDecisionFocus): boolean =>
+    renderedDraftHoldId === decision.hold_id
+    && (doc.activeElement as HTMLElement | null | undefined)?.getAttribute?.(
+      RECEPTION_INBOX_DECISION_ATTR,
+    ) === decision.action;
+
   const visibleHoldIds = (): string[] =>
     currentModel.groups.flatMap((group) =>
       group.rows.map((row) => row.hold_id),
@@ -983,9 +991,12 @@ export const mountReceptionInboxPanel = (
     if (renderedDraftHoldId === holdId) renderedDraftHoldId = null;
   };
 
-  const render = (): void => {
+  const render = (focusDecision = false): void => {
     if (disposed) return;
     const activeBeforeRender = doc.activeElement as HTMLElement | null | undefined;
+    const decisionBeforeRender = pendingDecisionFocus ?? pendingDecisionRetryFocus;
+    const decisionWasFocused = decisionBeforeRender !== null && decisionOwnsFocus(decisionBeforeRender);
+    const acknowledgedHoldBeforeRender = activeBeforeRender?.getAttribute?.(RECEPTION_INBOX_ACKNOWLEDGE_ATTR) ?? null;
     const focusedDestinationRetryField = activeBeforeRender?.getAttribute?.(
       RECEPTION_INBOX_DESTINATION_RETRY_ATTR,
     ) ?? null;
@@ -1204,6 +1215,9 @@ export const mountReceptionInboxPanel = (
       shell.appendChild(error);
     }
 
+    // A failed read has not established an empty inbox.
+    if (state.error !== null && state.items.length === 0) return;
+
     if (state.loading && state.items.length === 0) {
       const loading = doc.createElement('div');
       loading.className = 'reception-inbox-empty';
@@ -1379,15 +1393,14 @@ export const mountReceptionInboxPanel = (
     if (
       decisionFocus !== null
       && decisionFocus.hold_id === state.selected_hold_id
+      && (focusDecision || decisionWasFocused)
     ) {
       const decision = root.querySelector(
         `[${RECEPTION_INBOX_DECISION_ATTR}="${decisionFocus.action}"]`,
       ) as HTMLElement | null;
       decision?.focus({ preventScroll: true });
-      if (decisionFocus === pendingDecisionRetryFocus) {
-        pendingDecisionRetryFocus = null;
-      }
     }
+    pendingDecisionRetryFocus = null;
     if (
       draftFocus !== null
       && draftFocus.hold_id === state.selected_hold_id
@@ -1414,9 +1427,13 @@ export const mountReceptionInboxPanel = (
         }
       }
     }
+    if (acknowledgedHoldBeforeRender !== null && acknowledgedHoldBeforeRender === state.selected_hold_id) {
+      root.querySelector<HTMLInputElement>(`[${RECEPTION_INBOX_ACKNOWLEDGE_ATTR}]`)?.focus({ preventScroll: true });
+    }
   };
 
   const setError = (err: unknown): void => {
+    if (disposed) return;
     pendingDecisionSettlement = null;
     if (pendingDecisionFocus !== null) {
       pendingDecisionRetryFocus =
@@ -1450,7 +1467,7 @@ export const mountReceptionInboxPanel = (
           && nextItems.some((item) => item.hold_id === priorSelectedHoldId)
         ? priorSelectedHoldId
         : nextItems[0]?.hold_id ?? null;
-    if (settledSelected) {
+    if (settledSelected && decisionOwnsFocus(decision)) {
       pendingDetailFocusHoldId = selectedHoldId;
       pendingInboxHeadingFocus = selectedHoldId === null;
     }
@@ -1472,6 +1489,7 @@ export const mountReceptionInboxPanel = (
   };
 
   const refresh = async (view: ReceptionInboxView = state.view): Promise<void> => {
+    if (disposed) return;
     const gen = ++loadGeneration;
     state = { ...state, view, loading: true, error: null };
     render();
@@ -1514,7 +1532,8 @@ export const mountReceptionInboxPanel = (
         && priorSelectedHoldId !== null
         && (
           (settledDecision
-            && decisionToSettle.hold_id === priorSelectedHoldId)
+            && decisionToSettle.hold_id === priorSelectedHoldId
+            && decisionOwnsFocus(decisionToSettle))
           || focusedDetailHoldId === priorSelectedHoldId
         );
       if (shouldAdvanceFocus) {
@@ -1525,6 +1544,7 @@ export const mountReceptionInboxPanel = (
         if (
           stillSelected
           && decisionToSettle.hold_id === priorSelectedHoldId
+          && decisionOwnsFocus(decisionToSettle)
         ) {
           pendingDetailFocusHoldId = priorSelectedHoldId;
         }
@@ -1594,7 +1614,7 @@ export const mountReceptionInboxPanel = (
     detail: ReceptionInboxDetailModel,
     submitOpts: { allow?: boolean } = {},
   ): Promise<void> => {
-    if (state.in_flight || pendingDecisionFocus !== null) return;
+    if (disposed || detail !== currentModel.selected || state.in_flight || pendingDecisionFocus !== null) return;
     // Mirror the Approve button's disabled predicate so an Enter-key form
     // submit can't bypass the scan-gate UX (the server re-checks regardless —
     // no security gap — but this keeps the client honest): a `pending` hold
@@ -1627,7 +1647,7 @@ export const mountReceptionInboxPanel = (
       action: submitOpts.allow === true ? 'approve-allow' : 'approve',
     };
     state = { ...state, in_flight: true, error: null };
-    render();
+    render(true);
     try {
       const dispatch = buildReceptionInboxApproveDispatch({
         hold_id: detail.item.hold_id,
@@ -1637,6 +1657,7 @@ export const mountReceptionInboxPanel = (
       });
       const { op, ...payload } = dispatch;
       const result = await opts.conn(op, payload);
+      if (disposed) return;
       const approveError = resolveReceptionInboxApproveResultCopy(result);
       if (approveError !== null) {
         pendingDecisionSettlement = null;
@@ -1654,7 +1675,7 @@ export const mountReceptionInboxPanel = (
   };
 
   const rejectSelected = async (detail: ReceptionInboxDetailModel): Promise<void> => {
-    if (state.in_flight || pendingDecisionFocus !== null) return;
+    if (disposed || detail !== currentModel.selected || state.in_flight || pendingDecisionFocus !== null) return;
     const reasonEl = root.querySelector(
       `[${RECEPTION_INBOX_REASON_ATTR}]`,
     ) as HTMLTextAreaElement | null;
@@ -1666,7 +1687,7 @@ export const mountReceptionInboxPanel = (
       action: 'reject',
     };
     state = { ...state, in_flight: true, error: null };
-    render();
+    render(true);
     try {
       const dispatch = buildReceptionInboxRejectDispatch({
         hold_id: detail.item.hold_id,
@@ -1674,6 +1695,7 @@ export const mountReceptionInboxPanel = (
       });
       const { op, ...payload } = dispatch;
       await opts.conn(op, payload);
+      if (disposed) return;
       pendingDecisionSettlement = pendingDecisionFocus;
       await refresh();
     } catch (err) {
@@ -1792,6 +1814,7 @@ export const mountReceptionInboxPanel = (
         label.style.marginTop = '8px';
         const checkbox = doc.createElement('input');
         checkbox.type = 'checkbox';
+        checkbox.setAttribute(RECEPTION_INBOX_ACKNOWLEDGE_ATTR, detail.item.hold_id);
         checkbox.checked = state.acknowledge_risk;
         checkbox.disabled = state.in_flight;
         checkbox.addEventListener('change', () => {
@@ -1873,7 +1896,10 @@ export const mountReceptionInboxPanel = (
         }
         control.disabled = state.in_flight || field.picker_stubbed;
         applyPrivacyMask(control, field);
-        wrap.appendChild(control);
+        if (field.type === 'boolean') {
+          label.className = 'reception-inbox-check-field';
+          label.appendChild(control);
+        } else wrap.appendChild(control);
       }
       const helpParts: string[] = [];
       if (field.privacy !== null) helpParts.push(`privacy: ${field.privacy}`);
@@ -2018,7 +2044,7 @@ export const mountReceptionInboxPanel = (
       error: state.error,
     }),
     refresh,
-    hasInFlightWork: () => state.in_flight,
+    hasInFlightWork: () => !disposed && state.in_flight,
     select: (holdId) => {
       if (!state.items.some((item) => item.hold_id === holdId)) return;
       targetToSelect = undefined;state = { ...state, selected_hold_id: holdId, error: null, acknowledge_risk: false };

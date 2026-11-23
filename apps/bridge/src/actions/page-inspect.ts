@@ -27,6 +27,8 @@ import {
 import type { SelectorRules } from '../picker/selector-engine.js';
 import type { ActionExecutorOutcome } from '../queue/dispatcher.js';
 import type { DocumentScripting } from './reviewed-document.js';
+import type { PageWaitCheck } from './page-wait.js';
+import type { PageMessageRules } from './page-problems.js';
 
 /** What to read: the whole page, one element inspect marked, or one by CSS. */
 export interface PageInspectScope {
@@ -46,7 +48,9 @@ export const PAGE_INSPECT_LIMITS: PageInspectLimits = {
 
 /** Exactly one key, as the field functions answer (`page-fields.ts`). */
 export type PageInspectAnswer =
-  | { outputs: { url: string; title: string; html: string; truncated: boolean } }
+  | { waiting: { url: string; title: string } }
+  | { outputs: { url: string; title: string; html: string; truncated: boolean; loading?: boolean; selector_matches?: number; selected_index?: number;
+      structure_complete?: boolean; structure_root?: string; structure_scoped?: boolean } }
   /** No element matches the selector. */
   | { missing: true }
   /** The selector is not valid CSS. */
@@ -78,16 +82,132 @@ export type PageInspectAnswer =
  *    `max_value_chars`, then an ellipsis.
  *  `expectedUrl` is a reviewed document's address, checked in the same
  *  injection as the read. Slice T: `keepGone` is how many refs of elements the page removed a
- *  `reread` keeps ({@link PAGE_REREAD_KEPT_GONE}); an inspection keeps none. */
+ *  `reread` keeps ({@link PAGE_REREAD_KEPT_GONE}); an inspection keeps none.
+ *  `preserveStructure` is a whole-page collection read: omitted roots retain
+ *  only their original tag and an internal marker, with sibling-fidelity metadata. */
 export const inspectPage = (
   scope: PageInspectScope,
   limits: PageInspectLimits,
   expectedUrl?: string | null,
   keepGone = 0,
+  domReady = false,
+  when?: PageWaitCheck | null,
+  preserveStructure = false,
+  scopedStructure = false,
 ): PageInspectAnswer => {
   // Chrome passes arguments as JSON, so an absent one can arrive as null.
-  if (document.documentElement.hasAttribute('data-recued-owner-surface')
+  if (document.documentElement?.hasAttribute('data-recued-owner-surface')
     || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
+  if (preserveStructure && (scope.ref !== undefined || scope.selector !== undefined)) return { invalid: true };
+  if (scopedStructure && !preserveStructure) return { invalid: true };
+
+  /** What holds an element as a person sees it: the slot showing it, its parent, else the web
+   *  component whose shadow root it is in. */
+  const above = (at: Element): Element | null =>
+    at.assignedSlot ?? at.parentElement ?? (at.getRootNode() as ShadowRoot).host ?? null;
+  /** Slice R — a web component's shadow root, open or closed: what it draws. `chrome.dom` reaches a
+   *  closed one, which a page's own scripts cannot. */
+  const shadowOf = (element: Element): ShadowRoot | null => {
+    try {
+      const dom = (globalThis as typeof globalThis & {
+        chrome?: { dom?: { openOrClosedShadowRoot?: (host: Element) => ShadowRoot | null | undefined } } }).chrome?.dom;
+      return dom?.openOrClosedShadowRoot?.(element) ?? element.shadowRoot;
+    } catch {
+      return element.shadowRoot;
+    }
+  };
+
+  // 2026-11-22 — a dialog the page marks hidden (`aria-hidden="true"` on it or around it) while a person
+  // sees it on top of the page. cnn.com's "Legal Terms and Privacy" sits in a `div aria-hidden="true"`,
+  // in a see-through layer over the whole page: a person's click anywhere lands on it, yet a read leaving
+  // out what is aria-hidden showed the page as if it were not there, with nothing to answer it by. Such a
+  // dialog is read like any other: found where a click at the screen's centre, or at the centre of one of
+  // its quarters, would land (into web components, as a click's own test looks, `clickPageElement`), the
+  // outermost dialog marked hidden around what is there. What it marks hidden inside it stays out, and so
+  // does what is around it: the wrappers on the way to it are walked through, writing nothing of their own
+  // (`leadsTo`). Not in a structural read.
+  // 2026-11-22 (the owner: "build the 'show the blocker' version") — and what covers the page at the
+  // screen's centre that the page marks hidden, though it is no dialog: the outermost element fixed on the
+  // screen around what a click there lands on, such as an ad's full-screen layer over a page whose body is
+  // marked hidden (Google's vignette, a link shortener's ad). Before, the read was empty, and a countdown
+  // or a Close button in it never reached the model. It is marked `data-recued-cover`, so the outline says
+  // something covers the page. Not while the page has a modal dialog open that it does not hide: what it
+  // hides then is what is behind that dialog, on purpose.
+  const DIALOG = 'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+  const onTop = new Set<Element>();
+  const leadsTo = new Set<Element>();
+  const covers = new Set<Element>();
+  if (!preserveStructure) {
+    try {
+      const marked = (element: Element) => {
+        for (let at: Element | null = element; at; at = above(at)) if (at.getAttribute('aria-hidden') === 'true') return true;
+        return false;
+      };
+      const lead = (root: Element) => { for (let at = above(root); at; at = above(at)) leadsTo.add(at); };
+      const openModal = [...document.querySelectorAll(DIALOG)].some((element) => !marked(element)
+        && (element.matches(':modal') || element.getAttribute('aria-modal') === 'true')
+        && element.checkVisibility({ checkVisibilityCSS: true }));
+      for (const [x, y] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as const) {
+        const px = innerWidth * x;
+        const py = innerHeight * y;
+        let hit = document.elementFromPoint(px, py);
+        for (let depth = 0; hit !== null && depth < 32; depth += 1) {
+          const inner = shadowOf(hit)?.elementFromPoint(px, py) ?? null;
+          if (inner === null || inner === hit) break;
+          hit = inner;
+        }
+        let dialog: Element | null = null;
+        for (let at: Element | null = hit; at; at = above(at)) if (at.matches(DIALOG) && marked(at)) dialog = at;
+        if (dialog !== null && !onTop.has(dialog)) {
+          onTop.add(dialog);
+          lead(dialog);
+        }
+        if (x !== 0.5 || y !== 0.5 || openModal) continue;
+        let cover: Element | null = null;
+        for (let at: Element | null = hit; at; at = above(at)) {
+          if (marked(at) && getComputedStyle(at).position === 'fixed') cover = at;
+        }
+        if (cover !== null && !onTop.has(cover)) {
+          onTop.add(cover);
+          lead(cover);
+          if (!cover.matches(DIALOG)) covers.add(cover);
+        }
+      }
+    } catch {
+      // A document that cannot say where a click lands reads as before.
+      onTop.clear();
+      leadsTo.clear();
+      covers.clear();
+    }
+  }
+
+  // A scoped root can inherit exclusion without carrying the flag itself. A dialog on top is read
+  // whatever is marked on it or around it; what is marked inside it stays out.
+  const ariaExcluded = (element: Element): boolean => {
+    for (let at: Element | null = element; at; at = above(at)) {
+      if (onTop.has(at)) return false;
+      if (at.getAttribute('aria-hidden') === 'true') return true;
+    }
+    return false;
+  };
+
+  // The worker owns polling/deadlines. This one synchronous injection tests
+  // readiness and reads the chosen region from the same document state.
+  let readyRoot: Element | undefined;
+  let selectorMatches: Element[] | undefined;
+  if (when != null) {
+    if (when.until !== 'shown' || when.selector !== scope.selector || scope.ref !== undefined) return { invalid: true };
+    const normal = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+    let matches: Element[];
+    try { matches = [...document.querySelectorAll(when.selector)]; } catch { return { invalid: true }; }
+    selectorMatches = matches;
+    const wanted = when.text == null ? '' : normal(when.text);
+    readyRoot = matches.find(element => !ariaExcluded(element)
+      && (element.checkVisibility({ checkVisibilityCSS: true }) || getComputedStyle(element).display === 'contents')
+      && (wanted === '' || normal((element as HTMLElement).innerText ?? element.textContent ?? '').includes(wanted)));
+    if (!readyRoot) return { waiting: { url: location.href, title: document.title.slice(0, 200) } };
+  }
+  if (!document.documentElement) return { missing: true };
 
   // The ref map, kept in this document's isolated world for the next command.
   // D-347 follow-up 17 — and what each element with a ref showed at the read that last wrote it (`seen`),
@@ -95,7 +215,8 @@ export const inspectPage = (
   // something else into it (`page-rebind.ts`).
   type Print = Record<string, string>;
   type RefMap = { next: number; byRef: Map<string, Element>; byElement: WeakMap<Element, string>;
-    seen?: WeakMap<Element, Print>; print?: (element: Element) => Print };
+    seen?: WeakMap<Element, Print>; print?: (element: Element) => Print;
+    fieldContexts?: WeakMap<Element, number>; nextFieldContext?: number };
   const world = globalThis as typeof globalThis & { recuedPageRefs?: RefMap };
   const refs: RefMap = world.recuedPageRefs ??= { next: 1, byRef: new Map(), byElement: new WeakMap() };
   // An element the page removed loses its ref, here and in the HTML to come. Slice T: a re-read the
@@ -113,7 +234,8 @@ export const inspectPage = (
     if (!root) return { stale: true };
   } else if (scope.selector !== undefined) {
     try {
-      root = document.querySelector(scope.selector);
+      selectorMatches ??= [...document.querySelectorAll(scope.selector)];
+      root = readyRoot ?? selectorMatches[0] ?? null;
     } catch {
       return { invalid: true };
     }
@@ -123,11 +245,13 @@ export const inspectPage = (
   }
 
   const SKIPPED = new Set(['script', 'style', 'noscript', 'template', 'object', 'embed', 'link', 'meta', 'base', 'head']);
-  const VOID = new Set(['area', 'br', 'col', 'embed', 'hr', 'img', 'input', 'source', 'track', 'wbr']);
+  const VOID = new Set(['area', 'br', 'col', 'embed', 'hr', 'img', 'input', 'source', 'track', 'wbr', 'link', 'meta', 'base']);
+  let structureComplete = true;
   // `value`, `checked`, `selected` and `disabled` are written from the live element below.
   // Slice U — and `aria-modal`, so the server can say a dialog that blocks the page is open.
   const KEPT = ['id', 'name', 'type', 'role', 'href', 'alt', 'title', 'placeholder', 'for', 'aria-label',
-    'data-testid', 'contenteditable', 'aria-expanded', 'aria-checked', 'aria-selected', 'aria-modal'];
+    'data-testid', 'contenteditable', 'aria-expanded', 'aria-checked', 'aria-selected', 'aria-modal',
+    'aria-controls', 'aria-owns', 'aria-labelledby', 'aria-disabled'];
   const ACTIONABLE_ROLES = new Set(['button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'menuitem',
     'menuitemcheckbox', 'menuitemradio', 'option', 'textbox', 'searchbox', 'combobox', 'slider',
     'spinbutton', 'treeitem']);
@@ -138,22 +262,11 @@ export const inspectPage = (
   const escapeText = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const attribute = (name: string, value: string) => ` ${name}="${escapeText(cut(value)).replace(/"/g, '&quot;')}"`;
 
-  const shown = (element: Element) => element.getAttribute('aria-hidden') !== 'true'
+  const shown = (element: Element) => !ariaExcluded(element)
     && (element.checkVisibility({ checkVisibilityCSS: true })
       // `display: contents` draws no box of its own, though its children are drawn. A frame's
       // element is styled by its own window.
       || (element.ownerDocument.defaultView ?? window).getComputedStyle(element).display === 'contents');
-  /** Slice R — a web component's shadow root, open or closed: what it draws. `chrome.dom` reaches a
-   *  closed one, which a page's own scripts cannot. */
-  const shadowOf = (element: Element): ShadowRoot | null => {
-    try {
-      const dom = (globalThis as typeof globalThis & {
-        chrome?: { dom?: { openOrClosedShadowRoot?: (host: Element) => ShadowRoot | null | undefined } } }).chrome?.dom;
-      return dom?.openOrClosedShadowRoot?.(element) ?? element.shadowRoot;
-    } catch {
-      return element.shadowRoot;
-    }
-  };
   /** What a person sees inside an element, in order: a component's shadow root in place of its
    *  own children, and in a slot the page's content it shows, else the slot's own. */
   const childrenOf = (element: Element): Node[] => {
@@ -161,7 +274,9 @@ export const inspectPage = (
       const assigned = (element as HTMLSlotElement).assignedNodes({ flatten: true });
       return assigned.length > 0 ? assigned : [...element.childNodes];
     }
-    return [...(shadowOf(element) ?? element).childNodes];
+    const shadow = shadowOf(element);
+    if (shadow) structureComplete = false;
+    return [...(shadow ?? element).childNodes];
   };
   /** Frames from another site, numbered in the order they are met. */
   let otherSiteFrames = 0;
@@ -195,6 +310,7 @@ export const inspectPage = (
     const rowText = row === null ? '' : said(row.textContent).slice(0, 300);
     return {
       tag: element.localName, type: said(element.getAttribute('type')).toLowerCase(), name: element.getAttribute('name') ?? '',
+      accesskey: element.getAttribute('accesskey') ?? '',
       role: said(element.getAttribute('role')).toLowerCase(), label: label.toLowerCase(), placeholder: placeholder.toLowerCase(),
       title: title.toLowerCase(), text: text.toLowerCase(),
       value: element.matches('input[type="submit" i], input[type="button" i], input[type="reset" i]')
@@ -219,12 +335,55 @@ export const inspectPage = (
     }
     return ref;
   };
+  // Separate node identities keep non-actionable forms out of the public eN
+  // sequence, while detecting a replaced owner even with identical attributes.
+  const contextOf = (element: Element): number => {
+    refs.fieldContexts ??= new WeakMap();
+    const old = refs.fieldContexts.get(element);
+    if (old !== undefined) return old;
+    const next = refs.nextFieldContext = (refs.nextFieldContext ?? 0) + 1;
+    refs.fieldContexts.set(element, next);
+    return next;
+  };
   const openTag = (element: Element) => {
     const tag = element.localName;
     let text = `<${tag}`;
+    const role = (element.getAttribute('role') ?? '').trim().split(/\s+/)[0];
+    if (tag === 'table' || ['table', 'grid', 'treegrid'].includes(role ?? '')) {
+      // A cleaned capture cannot align omitted cells or flattened shadow/slot
+      // structure with the native table reader. Keep header texts in that case,
+      // but do not advertise them as complete column keys. Bound the extra walk.
+      const pending: Element[] = [element];
+      let known = true, visited = 0;
+      while (pending.length) {
+        const node = pending.pop()!;
+        if (++visited > 1_000 || shadowOf(node) || node.localName === 'slot'
+          || node.matches('th,td,[role="columnheader"],[role="rowheader"],[role="cell"],[role="gridcell"]') && !shown(node)) { known = false; break; }
+        pending.push(...node.children);
+      }
+      text += ` data-recued-table-layout="${known ? '1' : '0'}"`;
+    }
+    if (['th', 'td'].includes(tag) || ['columnheader', 'rowheader', 'cell', 'gridcell'].includes(role ?? '')) {
+      for (const name of ['colspan', 'rowspan', 'aria-colspan', 'aria-rowspan']) {
+        const value = element.getAttribute(name);
+        if (value !== null) text += attribute(name, value);
+      }
+    }
+    if (tag === 'a' && element.hasAttribute('download')) text += ' data-recued-download';
+    // Only the Bridge writes this marker. A transformed branch does not
+    // disqualify sibling-preserving fields in an unrelated native subtree.
+    // Slots are flattened into their parent; mark that parent before walking.
+    if (scopedStructure && (shadowOf(element) !== null
+      || [...element.children].some(child => child.localName === 'slot')
+      || tag === 'select' && element.querySelector('optgroup') !== null
+      || tag === 'svg' && element.childElementCount > 0 || tag === 'iframe' || tag === 'frame')) {
+      text += ' data-recued-structure-incomplete';
+      structureComplete = false;
+    }
     if (actionable(element)) {
       text += ` ref="${refOf(element)}"`;
       refs.seen!.set(element, printOf(element));
+
     }
     for (const name of KEPT) {
       const value = element.getAttribute(name);
@@ -232,16 +391,43 @@ export const inspectPage = (
     }
     const names = [...element.classList].filter(name => name.length >= 3 && !/[\d:[]/.test(name)).slice(0, 3);
     if (names.length > 0) text += attribute('class', names.join(' '));
-    if (element.hasAttribute('disabled')) text += ' disabled';
+    if (element.matches(':disabled')) text += ' disabled';
+    if (tag === 'select' && (element as HTMLSelectElement).multiple) text += ' multiple';
     // Slice U — a dialog shown as a modal one: nothing behind it can be used until it closes.
     if (tag === 'dialog' && element.matches(':modal')) text += ' modal';
+    // 2026-11-22 — what covers the page though the page marks it hidden (`covers`): only the Bridge writes it.
+    if (covers.has(element)) text += ' data-recued-cover';
     if (tag === 'input') {
       const field = element as HTMLInputElement;
       if (field.type === 'checkbox' || field.type === 'radio') {
         if (field.checked) text += ' checked';
+        if (field.type === 'checkbox' && field.indeterminate) text += ' aria-checked="mixed"';
+        // D-402 slice G — what the box sends, as the page wrote it, which tells boxes of one name apart
+        // (`checkboxes[]`, `cb1` to `cb3`) for a selector that finds one alone. Never `.value`, which
+        // reads "on" for a box the page gave no value.
+        const sent = element.getAttribute('value');
+        if (sent !== null && sent.length <= 200) text += attribute('value', sent);
       } else if (field.type !== 'file' && !isProtected(element) && field.value !== '') {
         text += attribute('value', field.value);
       }
+    }
+    // A loading form can remain usable while unrelated ads/text change.
+    // Keep its ownership/context separately, with no entered values. The
+    // server still compares the field itself and the document/URL twice.
+    if (actionable(element) && (['input', 'select', 'textarea'].includes(tag) || (element as HTMLElement).isContentEditable)) {
+      const form = (element as HTMLInputElement).form ?? element.closest('form');
+      const ancestors: unknown[] = [];
+      for (let at = element.parentElement; at; at = at.parentElement) {
+        if (at.matches('form, fieldset, dialog, [role="dialog"], [aria-modal="true"]')) {
+          ancestors.push([contextOf(at), at.localName, at.id, at.getAttribute('role'), at.getAttribute('aria-modal'),
+            at.hasAttribute('disabled'), at.getAttribute('aria-disabled')]);
+        }
+      }
+      const context = JSON.stringify([form ? [contextOf(form), form.id, form.action, form.method, form.enctype, form.target] : null,
+        element.getAttribute('form'), element.hasAttribute('readonly'), ancestors]);
+      // Never turn a cut context into positive stability evidence. A Bridge
+      // without this marker keeps the previous whole-page comparison.
+      if (context.length <= limits.max_value_chars) text += attribute('data-recued-field-context', context);
     }
     return `${text}>`;
   };
@@ -268,15 +454,23 @@ export const inspectPage = (
     } catch {
       inner = null;
     }
-    let open = '<iframe';
+    const tag = preserveStructure ? element.localName : 'iframe';
+    let open = preserveStructure ? openTag(element).slice(0, -1) : '<iframe';
     const src = typeof element.src === 'string' ? element.src : '';
     if (/^https?:/i.test(src)) open += attribute('src', src);
     const title = element.getAttribute('title') ?? element.getAttribute('name');
-    if (title) open += attribute('title', title);
+    if (title && !preserveStructure) open += attribute('title', title);
     if (inner !== null) {
-      if (inner.documentElement?.hasAttribute('data-recued-owner-surface')) return;
+      if (inner.documentElement?.hasAttribute('data-recued-owner-surface')) {
+        // Keep its sibling slot without any owner-client content or identity.
+        if (preserveStructure) {
+          const placeholder = `<${tag} data-recued-structural-only data-recued-structure-incomplete></${tag}>`;
+          if (fits(placeholder)) write(placeholder); else truncated = true;
+        }
+        return;
+      }
       const body = inner.body ?? inner.documentElement;
-      const close = '</iframe>';
+      const close = `</${tag}>`;
       if (!fits(`${open}>${close}`)) {
         truncated = true;
         return;
@@ -295,7 +489,7 @@ export const inspectPage = (
       return;
     }
     otherSiteFrames += 1;
-    const named = `${open}${attribute('data-recued-frame', String(otherSiteFrames))}></iframe>`;
+    const named = `${open}${attribute('data-recued-frame', String(otherSiteFrames))}></${tag}>`;
     if (fits(named)) write(named);
     else truncated = true;
   };
@@ -313,13 +507,30 @@ export const inspectPage = (
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const element = node as Element;
     const tag = element.localName;
+    if (preserveStructure && (SKIPPED.has(tag) || !shown(element))) {
+      // Internal marker, never copied from page attributes. Keep only the
+      // original root tag: no hidden text, values, attributes, refs or subtree.
+      const placeholder = `<${tag} data-recued-structural-only>${VOID.has(tag) ? '' : `</${tag}>`}`;
+      if (fits(placeholder)) write(placeholder); else truncated = true;
+      return;
+    }
+    // A wrapper the page marks hidden (or draws nothing of) around a dialog on top: walked through to
+    // it alone, writing nothing of its own and nothing else it holds.
+    if (leadsTo.has(element) && !shown(element)) {
+      for (const child of childrenOf(element)) {
+        if (child.nodeType === Node.ELEMENT_NODE && (leadsTo.has(child as Element) || onTop.has(child as Element))) walk(child);
+      }
+      return;
+    }
     // A slot is where a component shows the page's content: what it shows is read in its place.
     if (tag === 'slot') {
+      structureComplete = false;
       if (shown(element)) for (const child of childrenOf(element)) walk(child);
       return;
     }
     if (SKIPPED.has(tag) || !shown(element)) return;
     if (tag === 'iframe' || tag === 'frame') {
+      structureComplete = false;
       frame(element as HTMLIFrameElement);
       return;
     }
@@ -337,11 +548,22 @@ export const inspectPage = (
       if (fits(value)) write(value);
       else truncated = true;
     } else if (tag === 'select') {
+      if (element.querySelector('optgroup')) structureComplete = false;
       // A closed list draws no options, but they are what a person can choose.
       for (const option of [...(element as HTMLSelectElement).options]) {
+        if ([option, ...(option.parentElement?.localName === 'optgroup' ? [option.parentElement] : [])]
+          .some(node => node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true'
+            || getComputedStyle(node).display === 'none' || ['hidden', 'collapse'].includes(getComputedStyle(node).visibility))) {
+          if (preserveStructure) {
+            const placeholder = '<option data-recued-structural-only></option>';
+            if (fits(placeholder)) write(placeholder); else { truncated = true; break; }
+          }
+          continue;
+        }
         const label = option.text.trim();
         let piece = '<option';
         if (option.value !== label) piece += attribute('value', option.value);
+        if (option.disabled || option.parentElement?.matches('optgroup:disabled')) piece += ' disabled';
         if (option.selected && !isProtected(element)) piece += ' selected';
         piece += `>${escapeText(cut(label))}</option>`;
         if (!fits(piece)) {
@@ -367,12 +589,21 @@ export const inspectPage = (
   };
   walk(root);
 
-  return { outputs: { url: location.href, title: cut(document.title), html: out.join(''), truncated } };
+  const siblings = preserveStructure ? [...(root.parentNode?.children ?? [root])] : [];
+  const typed = siblings.filter(element => element.localName === root.localName);
+  const rootPosition = `${siblings.indexOf(root) + 1},${siblings.length},${typed.indexOf(root) + 1},${typed.length}`;
+
+  return { outputs: { url: location.href, title: cut(document.title), html: out.join(''), truncated,
+    ...(selectorMatches ? { selector_matches: selectorMatches.length, selected_index: selectorMatches.indexOf(root) + 1 } : {}),
+    ...(preserveStructure ? { structure_complete: structureComplete && !truncated, structure_root: rootPosition } : {}),
+    ...(scopedStructure ? { structure_scoped: true } : {}),
+    ...(domReady ? { loading: document.readyState !== 'complete' } : {}) } };
 };
 
 /** Exactly one key, as `inspectPage` answers. */
 export type PageDescribeAnswer =
-  | { outputs: { url: string; title: string; role: string; label: string; protected: boolean; stable_selector?: string } }
+  | { outputs: { url: string; title: string; role: string; label: string; protected: boolean; stable_selector?: string;
+    prepared_sends?: boolean; prepared_unsent?: string } }
   | { missing: true }
   | { invalid: true }
   | { stale: true }
@@ -385,7 +616,7 @@ export type PageDescribeAnswer =
  *  there before anything is typed or clicked. `protected` marks a password,
  *  sign-in code or card field. Injected, so self-contained. */
 export const describePageElement = (target: PageInspectScope, expectedUrl?: string | null,
-  rules?: SelectorRules | null): PageDescribeAnswer => {
+  rules?: SelectorRules | null, messages?: PageMessageRules | null): PageDescribeAnswer => {
   // Chrome passes arguments as JSON, so an absent one can arrive as null.
   if (document.documentElement.hasAttribute('data-recued-owner-surface')
     || (expectedUrl != null && location.href !== expectedUrl)) return { blocked: true };
@@ -445,6 +676,12 @@ export const describePageElement = (target: PageInspectScope, expectedUrl?: stri
   const type = tag === 'input' ? field.type : '';
   const isProtected = type === 'password' || type === 'hidden'
     || /(^|\s)(current-password|new-password|one-time-code|cc-\S+)(\s|$)/i.test(element.getAttribute('autocomplete') ?? '');
+  // D-402 slice G (§3.1) — which kind of secret a protected field takes, as the page says it: a sign-in
+  // code (`one-time-code`), a card (`cc-*`), else a password. None for a hidden field, which takes none.
+  const autocomplete = element.getAttribute('autocomplete') ?? '';
+  const protectedKind = !isProtected || type === 'hidden' ? undefined
+    : /(^|\s)one-time-code(\s|$)/i.test(autocomplete) ? 'sign-in code'
+      : /(^|\s)cc-\S+(\s|$)/i.test(autocomplete) ? 'card' : 'password';
   const cut = (text: string) => text.length > 200 ? `${text.slice(0, 200)}…` : text;
   // D-335 slice W — what finds the element again another day, by the picker's rules
   // (`selector-engine.ts`, passed in as `rules`): its own id or attribute when that alone matches
@@ -504,8 +741,37 @@ export const describePageElement = (target: PageInspectScope, expectedUrl?: stri
       }
     }
   }
+  // Ordinary actions can prepare their error baseline and form-send facts in
+  // the same injection that described this exact element. No page code runs.
+  let preparation: { prepared_sends: boolean; prepared_unsent?: string } | undefined;
+  if (messages != null) {
+    // Keep message visibility identical to pageProblem's post-action read.
+    const shown = (item: Element) => item.getAttribute('aria-hidden') !== 'true'
+      && (item.checkVisibility({ checkVisibilityCSS: true }) || getComputedStyle(item).display === 'contents');
+    const seen = (item: Element) => `${shown(item)
+      ? ((item as HTMLElement).innerText ?? item.textContent ?? '').replace(/\s+/g, ' ').trim() : '∅'}`
+      + `|${item.getAttribute('aria-invalid') ?? ''}`;
+    const notes = new Map<Element, string>();
+    for (const item of document.querySelectorAll(messages.candidates)) notes.set(item, seen(item));
+    (globalThis as typeof globalThis & { recuedMessageNotes?: Map<Element, string> }).recuedMessageNotes = notes;
+    const form = (element as HTMLButtonElement).form ?? element.closest('form');
+    const sends = element.isConnected && form !== null
+      && element.matches('button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]')
+      && !element.matches(':disabled');
+    preparation = { prepared_sends: sends };
+    // :invalid reads native validity without firing the page's invalid handler.
+    if (sends && form !== null && !form.noValidate && !element.hasAttribute('formnovalidate')) {
+      const invalid = [...form.elements].find(item => item.matches(':invalid')) as HTMLInputElement | undefined;
+      if (invalid !== undefined) {
+        const name = invalid.getAttribute('aria-label') || invalid.getAttribute('name') || invalid.id || 'a field';
+        preparation = { prepared_sends: false,
+          prepared_unsent: `The form was not sent: ${name}: ${invalid.validationMessage || 'is not valid'}` };
+      }
+    }
+  }
   return { outputs: { url: location.href, title: cut(document.title), role, label: cut(label), protected: isProtected,
-    ...(stable !== undefined ? { stable_selector: stable } : {}) } };
+    ...(protectedKind !== undefined ? { protected_kind: protectedKind } : {}),
+    ...(stable !== undefined ? { stable_selector: stable } : {}), ...preparation } };
 };
 
 /** Why a ref no longer reads: its element has gone from a page still open. In
@@ -547,6 +813,14 @@ export const readInspectRequest = (args: Record<string, unknown>):
   | { scope: PageInspectScope; page?: { tab_id: number; document_id: string }; limits: PageInspectLimits }
   | { error: string } => {
   const { page, ref, selector, max_chars, max_value_chars } = args;
+  if (args.preserve_structure !== undefined && typeof args.preserve_structure !== 'boolean'
+    || args.preserve_structure === true && (ref !== undefined || selector !== undefined)) {
+    return { error: 'preserve_structure is a boolean for a whole-page read.' };
+  }
+  if (args.structure_scoped !== undefined && typeof args.structure_scoped !== 'boolean'
+    || args.structure_scoped === true && args.preserve_structure !== true) {
+    return { error: 'structure_scoped is a boolean for a sibling-preserving read.' };
+  }
   const handle = page === undefined ? undefined : parsePageHandle(page);
   if (handle === null) return { error: 'The page handle is not one an inspect answered.' };
   if (ref !== undefined && (typeof ref !== 'string' || !/^e[1-9]\d{0,8}$/.test(ref))) {
@@ -593,9 +867,9 @@ const pageReadOutcome = (
   answer: unknown,
   document: { tab_id: number; document_id: string },
   options: { pattern?: string; blockedMessage: string },
-  shape: Record<string, 'string' | 'boolean'>,
+  shape: Record<string, 'string' | 'boolean' | 'number'>,
   /** Keys an answer may hold beside the shape's, of these types. */
-  optional: Record<string, 'string'> = {},
+  optional: Record<string, 'string' | 'boolean' | 'number'> = {},
 ): ActionExecutorOutcome => {
   const error = (code: BridgeErrorCode, message: string): ActionExecutorOutcome =>
     ({ status: 'error', error: { code, message } });
@@ -622,8 +896,16 @@ export const inspectOutcome = (
   answer: unknown,
   document: { tab_id: number; document_id: string },
   options: { pattern?: string; blockedMessage: string },
-): ActionExecutorOutcome => pageReadOutcome(answer, document, options,
-  { url: 'string', title: 'string', html: 'string', truncated: 'boolean' });
+): ActionExecutorOutcome => {
+  const outcome = pageReadOutcome(answer, document, options,
+    { url: 'string', title: 'string', html: 'string', truncated: 'boolean' },
+    { loading: 'boolean', structure_complete: 'boolean', structure_root: 'string', structure_scoped: 'boolean', selector_matches: 'number', selected_index: 'number' });
+  if (outcome.status === 'ok' && outcome.outputs && (outcome.outputs.selector_matches !== undefined || outcome.outputs.selected_index !== undefined)
+    && (!Number.isSafeInteger(outcome.outputs.selector_matches) || Number(outcome.outputs.selector_matches) < 1
+      || !Number.isSafeInteger(outcome.outputs.selected_index) || Number(outcome.outputs.selected_index) < 1
+      || Number(outcome.outputs.selected_index) > Number(outcome.outputs.selector_matches))) return { status: 'error', error: { code: 'unknown', message: 'bridge: invalid selector selection evidence' } };
+  return outcome;
+};
 
 /** `describePageElement`'s answer from one document (see `pageReadOutcome`). */
 export const describeOutcome = (
@@ -633,7 +915,7 @@ export const describeOutcome = (
 ): ActionExecutorOutcome => pageReadOutcome(answer, document, options,
   { url: 'string', title: 'string', role: 'string', label: 'string', protected: 'boolean' },
   // Slice W — when the executor asked for it.
-  { stable_selector: 'string' });
+  { stable_selector: 'string', prepared_sends: 'boolean', prepared_unsent: 'string', protected_kind: 'string' });
 
 /** The `executeInDocument` of `BridgeBrowserApi` over chrome.scripting, which
  *  the extension and the real-Chrome fixture both use. Chrome refuses a
@@ -643,9 +925,11 @@ export const executeInChromeDocument = (scripting: DocumentScripting) => async (
   target: { tab_id: number; document_id?: string },
   func: (...args: any[]) => unknown,
   args: readonly unknown[],
+  options?: { immediate?: boolean },
 ): Promise<{ document_id: string; result: unknown; frame_id?: number } | null> => {
   const results = await scripting.executeScript({
     target: { tabId: target.tab_id, ...(target.document_id !== undefined ? { documentIds: [target.document_id] } : {}) },
+    ...(options?.immediate ? { injectImmediately: true } : {}),
     func,
     args,
   });

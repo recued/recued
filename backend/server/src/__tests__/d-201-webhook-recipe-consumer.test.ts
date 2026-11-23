@@ -27,12 +27,19 @@ import {
 } from '../storage/webhook-ingress-store.js';
 import {
   WebhookEventAccessError,
+  WebhookRunNotRestartedError,
   createScopedWebhookEventReader,
   createWebhookRecipeOutboxSink,
+  runClaimedWebhookDispatch,
+  type WebhookRecipeRunner,
   type WebhookRecipeRunRequest,
 } from '../webhook-recipe-consumer.js';
 import { reconcileWebhookAwaitingApprovalDispatches } from '../webhook-recipe-runner.js';
 import { dispatchWebhookOutboxOnce } from '../webhook-outbox-dispatcher.js';
+import {
+  createWebhookRecipeDispatchRuntime,
+  type WebhookRecipeDispatchWorkerOptions,
+} from '../webhook-recipe-dispatch-worker.js';
 
 const SECRET_KEY = new Uint8Array(32).fill(71);
 const PAYLOAD_KEY = new Uint8Array(32).fill(83);
@@ -253,6 +260,35 @@ const auditAnchor = (
   instance_id: 'server',
 });
 
+/** A worker claim's policy, for the tests that drive the store by hand. */
+const CLAIM = { lease_ms: 30_000, max_attempts: 8 } as const;
+
+/** D-201 Slice 10A — the recipe-dispatch worker, drained until nothing is
+ *  runnable now. */
+const runTargets = (
+  harness: Harness,
+  runner: WebhookRecipeRunner,
+  options: WebhookRecipeDispatchWorkerOptions = {},
+) => createWebhookRecipeDispatchRuntime({
+  consumerStore: harness.consumerStore,
+  deliveryStore: harness.deliveryStore,
+  runner,
+}, options).drain();
+
+/** The production path in its two halves: one outbox pass hands the claimed
+ *  events off (their target rows), then the worker runs the targets. */
+const deliver = async (
+  harness: Harness,
+  runner: WebhookRecipeRunner,
+  options: WebhookRecipeDispatchWorkerOptions = {},
+) => ({
+  outbox: await dispatchWebhookOutboxOnce(
+    harness.deliveryStore,
+    createWebhookRecipeOutboxSink(harness.consumerStore),
+  ),
+  worker: await runTargets(harness, runner, options),
+});
+
 describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
   it('keeps a local recipe disarmed and excludes pre-arm deliveries', async () => {
     const harness = await makeHarness();
@@ -292,13 +328,12 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     })]);
 
     const calls: Array<{ recipe_id: string; event_id: string }> = [];
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    await deliver(harness, {
       async run(run) {
         calls.push({ recipe_id: run.recipe_id, event_id: run.context.webhook.event_id });
         return 'completed';
       },
     });
-    await dispatchWebhookOutboxOnce(harness.deliveryStore, sink);
     expect(calls).toEqual([{
       recipe_id: 'consumer-recipe-a',
       event_id: beforeArm.fresh_events[0]!.event_id,
@@ -320,6 +355,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       dispatch_id: local!.dispatch_id,
       event: afterArm.fresh_events[0]!,
       delivery: afterArm.delivery,
+      ...CLAIM,
     });
     expect(claim).not.toBeNull();
 
@@ -497,7 +533,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     );
     const runs: WebhookRecipeRunRequest[] = [];
     const payloads: unknown[] = [];
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    await expect(deliver(harness, {
       async run(run) {
         runs.push(run);
         payloads.push(await reader.read({
@@ -507,9 +543,10 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
         }));
         return 'completed';
       },
+    })).resolves.toMatchObject({
+      outbox: { dispatched: 1 },
+      worker: { claimed: 2, completed: 2 },
     });
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink))
-      .resolves.toMatchObject({ dispatched: 1 });
 
     expect(runs.map((run) => run.recipe_id)).toEqual([
       'consumer-recipe-a',
@@ -562,14 +599,12 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     await harness.deliveryStore.accept(acceptedInput(harness));
 
     const runs: WebhookRecipeRunRequest[] = [];
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    await expect(deliver(harness, {
       async run(run) {
         runs.push(run);
         return 'completed';
       },
-    });
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink))
-      .resolves.toMatchObject({ dispatched: 1 });
+    })).resolves.toMatchObject({ outbox: { dispatched: 1 } });
 
     expect(runs.map((run) => run.recipe_id)).toEqual([
       'consumer-recipe-a',
@@ -590,24 +625,31 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     const seenRunIds: string[] = [];
     const sideEffects = new Set<string>();
     let crashAfterEffect = true;
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    const runner: WebhookRecipeRunner = {
       async run(run) {
         seenRunIds.push(run.run_id);
         sideEffects.add(run.run_id);
         if (crashAfterEffect) throw new Error('simulated post-run crash');
         return 'completed';
       },
-    });
+    };
 
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink, {
-      base_retry_ms: 0,
-      max_retry_ms: 0,
-    })).resolves.toMatchObject({ retried: 1 });
+    // The event is handed off once; the failure retries the TARGET, after
+    // its backoff, and the outer row stays dispatched.
+    await expect(deliver(harness, runner, { base_retry_ms: 1_000 }))
+      .resolves.toMatchObject({
+        outbox: { dispatched: 1 },
+        worker: { claimed: 1, retried: 1 },
+      });
     crashAfterEffect = false;
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink, {
-      base_retry_ms: 0,
-      max_retry_ms: 0,
-    })).resolves.toMatchObject({ dispatched: 1 });
+    await expect(runTargets(harness, runner, { base_retry_ms: 1_000 }))
+      .resolves.toMatchObject({ claimed: 0 });
+    harness.setNow(2_100_000_001_000);
+    await expect(runTargets(harness, runner, { base_retry_ms: 1_000 }))
+      .resolves.toMatchObject({ claimed: 1, completed: 1 });
+    expect(harness.deliveryStore.listOutbox()).toEqual([
+      expect.objectContaining({ state: 'dispatched', attempt_count: 1 }),
+    ]);
     expect(seenRunIds).toHaveLength(2);
     expect(new Set(seenRunIds).size).toBe(1);
     expect(sideEffects.size).toBe(1);
@@ -623,29 +665,52 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       await harness.deliveryStore.accept(acceptedInput(harness, 'b2')),
     ];
     const runs: WebhookRecipeRunRequest[] = [];
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    const runner: WebhookRecipeRunner = {
       async run(run) {
         runs.push(run);
         return 'awaiting_approval';
       },
-    });
+    };
+    const handoff = createWebhookRecipeOutboxSink(harness.consumerStore);
 
-    // Simulate a process crash after the sink durably hands both runs to owner
-    // approval but before the delivery outbox rows are acknowledged.
+    // Simulate a process crash after the outbox durably handed both events off
+    // (their targets exist and pin the payload) but before it marked the outer
+    // rows. ⛔ No target runs until its outer row is marked: a run started now
+    // would run behind a row that may yet be retried into a dead letter.
     for (const item of accepted) {
-      await sink.dispatch({
+      await handoff.dispatch({
         idempotency_key: item.fresh_events[0]!.event_id,
         event: item.fresh_events[0]!,
         delivery: item.delivery,
       });
     }
-    expect(runs).toHaveLength(2);
+    await expect(runTargets(harness, runner)).resolves.toMatchObject({ claimed: 0 });
+    expect(runs).toHaveLength(0);
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM webhook_payload_pins
+    `).get()).toEqual({ count: 2 });
+
+    // The replay finds the same targets (no second row, no second run id).
+    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, handoff))
+      .resolves.toMatchObject({ claimed: 2, dispatched: 2 });
     expect(harness.db.prepare(`
       SELECT state, attempt_count FROM webhook_recipe_dispatches
       ORDER BY dispatch_id ASC
     `).all()).toEqual([
-      { state: 'running', attempt_count: 1 },
-      { state: 'running', attempt_count: 1 },
+      { state: 'pending', attempt_count: 0 },
+      { state: 'pending', attempt_count: 0 },
+    ]);
+    // One recipe: its two deliveries run one after the other, and a hold does
+    // not keep the next one waiting.
+    await expect(runTargets(harness, runner))
+      .resolves.toMatchObject({ claimed: 2, awaiting_approval: 2 });
+    expect(runs).toHaveLength(2);
+    expect(harness.db.prepare(`
+      SELECT state, attempt_count, lease_expires_at FROM webhook_recipe_dispatches
+      ORDER BY dispatch_id ASC
+    `).all()).toEqual([
+      { state: 'running', attempt_count: 1, lease_expires_at: null },
+      { state: 'running', attempt_count: 1, lease_expires_at: null },
     ]);
     expect(harness.db.prepare(`
       SELECT COUNT(*) AS count FROM webhook_waiting_dispatches
@@ -654,8 +719,8 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       SELECT COUNT(*) AS count FROM webhook_payload_pins
     `).get()).toEqual({ count: 2 });
 
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink))
-      .resolves.toMatchObject({ claimed: 2, dispatched: 2 });
+    // A held run is the owner's: later passes neither re-run nor re-claim it.
+    await expect(runTargets(harness, runner)).resolves.toMatchObject({ claimed: 0 });
     expect(runs).toHaveLength(2);
     expect(harness.db.prepare(`
       SELECT attempt_count FROM webhook_recipe_dispatches
@@ -689,14 +754,14 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     await expect(reconcileWebhookAwaitingApprovalDispatches(
       harness.consumerStore,
       auditLog,
-    )).resolves.toEqual({ scanned: 2, waiting: 2, succeeded: 0, failed: 0 });
+    )).resolves.toEqual({ scanned: 2, waiting: 2, succeeded: 0, failed: 0, interrupted: 0, in_doubt: 0 });
 
     statuses.set(runs[0]!.run_id, 'succeeded');
     statuses.set(runs[1]!.run_id, 'failed');
     await expect(reconcileWebhookAwaitingApprovalDispatches(
       harness.consumerStore,
       auditLog,
-    )).resolves.toEqual({ scanned: 2, waiting: 0, succeeded: 1, failed: 1 });
+    )).resolves.toEqual({ scanned: 2, waiting: 0, succeeded: 1, failed: 1, interrupted: 0, in_doubt: 0 });
     expect(harness.consumerStore.prepareDispatches({
       event: accepted[0]!.fresh_events[0]!,
       delivery: accepted[0]!.delivery,
@@ -718,22 +783,21 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     const harness = await makeHarness();
     const accepted = await harness.deliveryStore.accept(acceptedInput(harness));
     let runCalls = 0;
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    const runner: WebhookRecipeRunner = {
       async run() {
         runCalls += 1;
         return 'awaiting_approval';
       },
-    });
-    await sink.dispatch({
-      idempotency_key: accepted.fresh_events[0]!.event_id,
-      event: accepted.fresh_events[0]!,
-      delivery: accepted.delivery,
+    };
+    await expect(deliver(harness, runner)).resolves.toMatchObject({
+      outbox: { dispatched: 1 },
+      worker: { awaiting_approval: 1 },
     });
 
     await expect(reconcileWebhookAwaitingApprovalDispatches(
       harness.consumerStore,
       { get: async () => null },
-    )).resolves.toEqual({ scanned: 1, waiting: 0, succeeded: 0, failed: 1 });
+    )).resolves.toEqual({ scanned: 1, waiting: 0, succeeded: 0, failed: 1, interrupted: 0, in_doubt: 0 });
     expect(harness.consumerStore.prepareDispatches({
       event: accepted.fresh_events[0]!,
       delivery: accepted.delivery,
@@ -742,29 +806,31 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       SELECT COUNT(*) AS count FROM webhook_payload_pins
     `).get()).toEqual({ count: 0 });
 
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink))
-      .resolves.toMatchObject({ dispatched: 1 });
+    await expect(deliver(harness, runner)).resolves.toMatchObject({
+      outbox: { claimed: 0 },
+      worker: { claimed: 0 },
+    });
     expect(runCalls).toBe(1);
   });
 
   it('bounds and fairly rotates approval reconciliation backlog', async () => {
     const harness = await makeHarness();
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
-      async run() {
-        return 'awaiting_approval';
-      },
-    });
     for (let index = 0; index < 26; index += 1) {
-      const accepted = await harness.deliveryStore.accept(acceptedInput(
+      await harness.deliveryStore.accept(acceptedInput(
         harness,
         index.toString(16).padStart(2, '0'),
       ));
-      await sink.dispatch({
-        idempotency_key: accepted.fresh_events[0]!.event_id,
-        event: accepted.fresh_events[0]!,
-        delivery: accepted.delivery,
-      });
     }
+    await expect(dispatchWebhookOutboxOnce(
+      harness.deliveryStore,
+      createWebhookRecipeOutboxSink(harness.consumerStore),
+      { batch_size: 100 },
+    )).resolves.toMatchObject({ dispatched: 26 });
+    await expect(runTargets(harness, {
+      async run() {
+        return 'awaiting_approval';
+      },
+    })).resolves.toMatchObject({ claimed: 26, awaiting_approval: 26 });
 
     const observed = new Set<string>();
     const auditLog = {
@@ -776,11 +842,11 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     await expect(reconcileWebhookAwaitingApprovalDispatches(
       harness.consumerStore,
       auditLog,
-    )).resolves.toEqual({ scanned: 25, waiting: 25, succeeded: 0, failed: 0 });
+    )).resolves.toEqual({ scanned: 25, waiting: 25, succeeded: 0, failed: 0, interrupted: 0, in_doubt: 0 });
     await expect(reconcileWebhookAwaitingApprovalDispatches(
       harness.consumerStore,
       auditLog,
-    )).resolves.toEqual({ scanned: 25, waiting: 25, succeeded: 0, failed: 0 });
+    )).resolves.toEqual({ scanned: 25, waiting: 25, succeeded: 0, failed: 0, interrupted: 0, in_doubt: 0 });
     expect(observed.size).toBe(26);
     expect(harness.consumerStore.listAwaitingApprovalDispatches()).toHaveLength(26);
   });
@@ -789,15 +855,15 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     const harness = await makeHarness();
     const accepted = await harness.deliveryStore.accept(acceptedInput(harness));
     let runCalls = 0;
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    await expect(deliver(harness, {
       async run() {
         runCalls += 1;
         return 'terminal_non_success';
       },
+    })).resolves.toMatchObject({
+      outbox: { dispatched: 1, retried: 0 },
+      worker: { cancelled: 1, retried: 0 },
     });
-
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink))
-      .resolves.toMatchObject({ dispatched: 1, retried: 0 });
     expect(harness.consumerStore.prepareDispatches({
       event: accepted.fresh_events[0]!,
       delivery: accepted.delivery,
@@ -812,16 +878,13 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     const harness = await makeHarness();
     const accepted = await harness.deliveryStore.accept(acceptedInput(harness));
     const event = accepted.fresh_events[0]!;
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    const runner: WebhookRecipeRunner = {
       async run() {
         return 'awaiting_approval';
       },
-    });
-    await sink.dispatch({
-      idempotency_key: event.event_id,
-      event,
-      delivery: accepted.delivery,
-    });
+    };
+    const handoff = createWebhookRecipeOutboxSink(harness.consumerStore);
+    await deliver(harness, runner);
     const [held] = harness.consumerStore.listAwaitingApprovalDispatches();
     expect(held).toBeDefined();
 
@@ -853,11 +916,13 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
         webhook_triggers: recipe('consumer-recipe-a').webhook_triggers!,
       }],
     });
-    await expect(sink.dispatch({
+    await expect(handoff.dispatch({
       idempotency_key: event.event_id,
       event,
       delivery: accepted.delivery,
     })).rejects.toThrow(/replacement is still in progress/);
+    // Nor does the worker touch a target whose trigger the save detached.
+    await expect(runTargets(harness, runner)).resolves.toMatchObject({ claimed: 0 });
 
     releaseAudit(auditAnchor(held!.run_id, held!.recipe_id, 'succeeded'));
     await expect(reconciling).resolves.toEqual({
@@ -865,6 +930,8 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       waiting: 1,
       succeeded: 0,
       failed: 0,
+      interrupted: 0,
+      in_doubt: 0,
     });
     expect(harness.db.prepare(`
       SELECT COUNT(*) AS count FROM webhook_waiting_dispatches
@@ -879,7 +946,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     await expect(reconcileWebhookAwaitingApprovalDispatches(
       harness.consumerStore,
       { get: async () => auditAnchor(restored!.run_id, restored!.recipe_id, 'succeeded') },
-    )).resolves.toEqual({ scanned: 1, waiting: 0, succeeded: 1, failed: 0 });
+    )).resolves.toEqual({ scanned: 1, waiting: 0, succeeded: 1, failed: 0, interrupted: 0, in_doubt: 0 });
   });
 
   it('does not rerun a completed sibling when a later fan-out target retries', async () => {
@@ -889,7 +956,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     await harness.deliveryStore.accept(acceptedInput(harness));
     const calls: Array<{ recipe_id: string; run_id: string }> = [];
     let failSecondTarget = true;
-    const sink = createWebhookRecipeOutboxSink(harness.consumerStore, {
+    const runner: WebhookRecipeRunner = {
       async run(run) {
         calls.push({ recipe_id: run.recipe_id, run_id: run.run_id });
         if (run.recipe_id === 'consumer-recipe-b' && failSecondTarget) {
@@ -897,17 +964,17 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
         }
         return 'completed';
       },
-    });
+    };
 
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink, {
-      base_retry_ms: 0,
-      max_retry_ms: 0,
-    })).resolves.toMatchObject({ retried: 1 });
+    await expect(deliver(harness, runner, { base_retry_ms: 1_000 }))
+      .resolves.toMatchObject({
+        outbox: { dispatched: 1 },
+        worker: { completed: 1, retried: 1 },
+      });
     failSecondTarget = false;
-    await expect(dispatchWebhookOutboxOnce(harness.deliveryStore, sink, {
-      base_retry_ms: 0,
-      max_retry_ms: 0,
-    })).resolves.toMatchObject({ dispatched: 1 });
+    harness.setNow(2_100_000_001_000);
+    await expect(runTargets(harness, runner, { base_retry_ms: 1_000 }))
+      .resolves.toMatchObject({ claimed: 1, completed: 1 });
 
     expect(calls.filter((entry) => entry.recipe_id === 'consumer-recipe-a'))
       .toHaveLength(1);
@@ -947,15 +1014,12 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     });
 
     const invoked: string[] = [];
-    await dispatchWebhookOutboxOnce(
-      harness.deliveryStore,
-      createWebhookRecipeOutboxSink(harness.consumerStore, {
-        async run(run) {
-          invoked.push(run.recipe_id);
-          return 'completed';
-        },
-      }),
-    );
+    await deliver(harness, {
+      async run(run) {
+        invoked.push(run.recipe_id);
+        return 'completed';
+      },
+    });
     expect(invoked).toEqual(['consumer-recipe-a']);
   });
 
@@ -993,15 +1057,12 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     // item available; the late binding keeps its logical post-delivery stamp.
     harness.setNow(accepted.delivery.received_at);
     const invoked: string[] = [];
-    await dispatchWebhookOutboxOnce(
-      harness.deliveryStore,
-      createWebhookRecipeOutboxSink(harness.consumerStore, {
-        async run(run) {
-          invoked.push(run.recipe_id);
-          return 'completed';
-        },
-      }),
-    );
+    await deliver(harness, {
+      async run(run) {
+        invoked.push(run.recipe_id);
+        return 'completed';
+      },
+    });
     expect(invoked).toEqual(['consumer-recipe-a']);
   });
 
@@ -1020,6 +1081,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       dispatch_id: prepared[0]!.dispatch_id,
       event,
       delivery: accepted.delivery,
+      ...CLAIM,
     });
     expect(runClaim).not.toBeNull();
 
@@ -1063,6 +1125,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       dispatch_id: prepared!.dispatch_id,
       event,
       delivery: accepted.delivery,
+      ...CLAIM,
     });
     expect(claim).not.toBeNull();
 
@@ -1106,6 +1169,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       dispatch_id: prepared!.dispatch_id,
       event,
       delivery: accepted.delivery,
+      ...CLAIM,
     });
     expect(claim).not.toBeNull();
     harness.consumerStore.markDispatchAwaitingApproval(
@@ -1148,6 +1212,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       dispatch_id: prepared!.dispatch_id,
       event,
       delivery: accepted.delivery,
+      ...CLAIM,
     });
     expect(claim).not.toBeNull();
     harness.consumerStore.markDispatchAwaitingApproval(
@@ -1196,7 +1261,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       metadataOnly.deliveryStore,
     );
     const failures: string[] = [];
-    const sink = createWebhookRecipeOutboxSink(metadataOnly.consumerStore, {
+    await deliver(metadataOnly, {
       async run(run) {
         for (const attempt of [
           { recipe_id: run.recipe_id, run_id: run.run_id },
@@ -1215,7 +1280,6 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
         return 'completed';
       },
     });
-    await dispatchWebhookOutboxOnce(metadataOnly.deliveryStore, sink);
     expect(failures).toEqual([
       'not_authorized',
       'not_authorized',
@@ -1225,24 +1289,23 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     const scoped = await makeHarness();
     const accepted = await scoped.deliveryStore.accept(acceptedInput(scoped));
     let completedRun: WebhookRecipeRunRequest | null = null;
-    await dispatchWebhookOutboxOnce(
-      scoped.deliveryStore,
-      createWebhookRecipeOutboxSink(scoped.consumerStore, {
-        async run(run) {
-          completedRun = run;
-          scoped.consumerStore.removeConsumer('pack_install', PACK_SLUG);
-          await expect(createScopedWebhookEventReader(
-            scoped.consumerStore,
-            scoped.deliveryStore,
-          ).read({
-            event_ref: run.context.webhook.event_ref,
-            recipe_id: run.recipe_id,
-            run_id: run.run_id,
-          })).rejects.toMatchObject({ code: 'not_authorized' });
-          return 'completed';
-        },
-      }),
-    );
+    // The uninstall cancels the claim under the running run: its result then
+    // finds the claim gone, and nothing reopens the target.
+    await expect(deliver(scoped, {
+      async run(run) {
+        completedRun = run;
+        scoped.consumerStore.removeConsumer('pack_install', PACK_SLUG);
+        await expect(createScopedWebhookEventReader(
+          scoped.consumerStore,
+          scoped.deliveryStore,
+        ).read({
+          event_ref: run.context.webhook.event_ref,
+          recipe_id: run.recipe_id,
+          run_id: run.run_id,
+        })).rejects.toMatchObject({ code: 'not_authorized' });
+        return 'completed';
+      },
+    })).resolves.toMatchObject({ worker: { claimed: 1, completed: 0, lost: 1 } });
     expect(completedRun).not.toBeNull();
     await expect(createScopedWebhookEventReader(
       scoped.consumerStore,
@@ -1265,6 +1328,7 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
       dispatch_id: prepared!.dispatch_id,
       event: accepted.fresh_events[0]!,
       delivery: accepted.delivery,
+      ...CLAIM,
     });
     expect(claim).not.toBeNull();
     const prior = harness.consumerStore.replaceConsumer({
@@ -1297,6 +1361,11 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
 
   it('uninstall removes the binding and installed recipe but retains the shared ingress', async () => {
     const harness = await makeHarness();
+    // D-201 Slice 10AC — a door kept for a later version goes with the pack.
+    harness.consumerStore.rememberRecipeDoor({
+      consumer_kind: 'pack_install', consumer_id: PACK_SLUG, recipe_id: 'consumer-recipe-a',
+      publisher_id: PUBLISHER, contract_id: 'door-kept',
+    });
     const { result } = await handlePacksUninstall(
       {
         recipeStore: harness.recipeStore,
@@ -1314,5 +1383,87 @@ describe('D-201 Slices 4/5B2A binding-aware webhook recipe consumption', () => {
     })).toEqual([]);
     expect(harness.recipeStore.get('consumer-recipe-a')).toBeNull();
     expect(harness.ingressStore.get(harness.ingressId)).not.toBeNull();
+    expect(harness.consumerStore.lastRecipeDoor('pack_install', PACK_SLUG, 'consumer-recipe-a', PUBLISHER)).toBeNull();
+  });
+
+  // D-201 Slice 10AX (10AS finding 12) — they go in the removal's own
+  // transaction. The uninstall forgot them after it, best effort, and a fault
+  // there left an answer that closed the reinstalled pack's door without asking.
+  it("uninstall forgets the doors kept and the owner's answers with the binding, though a forget after it would fail", async () => {
+    const harness = await makeHarness();
+    harness.consumerStore.rememberRecipeDoor({
+      consumer_kind: 'pack_install', consumer_id: PACK_SLUG, recipe_id: 'consumer-recipe-a',
+      publisher_id: PUBLISHER, contract_id: 'door-kept',
+    });
+    harness.consumerStore.keepOwnerDoorDecision('pack_install', PACK_SLUG, 'consumer-recipe-a', PUBLISHER, 'closed');
+    expect(harness.consumerStore.doorAnswerFor('pack_install', PACK_SLUG, 'consumer-recipe-a')).toBe('closed');
+    const forgetFails = {
+      ...harness.consumerStore,
+      forgetRecipeDoors: () => { throw new Error('database is locked'); },
+    };
+    const { result } = await handlePacksUninstall(
+      {
+        recipeStore: harness.recipeStore,
+        webhookConsumerStore: forgetFails,
+        packDir: '/path/that/does/not/exist',
+      },
+      { pack_slug: PACK_SLUG },
+    );
+    expect(result.ok).toBe(true);
+    expect(harness.consumerStore.doorAnswerFor('pack_install', PACK_SLUG, 'consumer-recipe-a')).toBeNull();
+    expect(harness.consumerStore.lastRecipeDoor('pack_install', PACK_SLUG, 'consumer-recipe-a', PUBLISHER)).toBeNull();
+  });
+
+  // D-201 Slice 10BE (10AY finding 3) — an undo's fallback passes the answers
+  // that stood before the update it undid, and they stand; 10AX forgot those
+  // too, and this test wrote that rule down as the expected one.
+  it("removing a consumer forgets the owner's answers but the ones it is given, and the doors kept only when asked", async () => {
+    const before = { recipe_id: 'consumer-recipe-a', publisher_id: PUBLISHER, door: 'closed' as const, answered_at: 5 };
+    for (const removal of ['plain', 'an uninstall', "an undo's fallback"] as const) {
+      const harness = await makeHarness();
+      harness.consumerStore.rememberRecipeDoor({
+        consumer_kind: 'pack_install', consumer_id: PACK_SLUG, recipe_id: 'consumer-recipe-a',
+        publisher_id: PUBLISHER, contract_id: 'door-kept',
+      });
+      harness.consumerStore.keepOwnerDoorDecision('pack_install', PACK_SLUG, 'consumer-recipe-a', PUBLISHER, 'open');
+      harness.consumerStore.removeConsumer('pack_install', PACK_SLUG, removal === 'an uninstall'
+        ? { forget_last_doors: true }
+        : removal === "an undo's fallback" ? { door_answers: [before] } : undefined);
+      expect(harness.consumerStore.doorAnswerFor('pack_install', PACK_SLUG, 'consumer-recipe-a'), removal)
+        .toBe(removal === "an undo's fallback" ? 'closed' : null);
+      expect(harness.consumerStore.lastRecipeDoor('pack_install', PACK_SLUG, 'consumer-recipe-a', PUBLISHER), removal)
+        .toBe(removal === 'an uninstall' ? null : 'door-kept');
+    }
+  });
+});
+
+describe('D-201 Slice 10N — a delivery whose profile is gone (10L finding 10)', () => {
+  const ran: WebhookRecipeRunRequest[] = [];
+  const runner: WebhookRecipeRunner = { run: async (run) => { ran.push(run); return 'completed'; } };
+  const gone = { profile_id: 'gone.profile.v1' } as unknown as Parameters<typeof runClaimedWebhookDispatch>[2]['delivery'];
+
+  it("fails before any run, and says so under a restart's mark, so the worker keeps the mark", async () => {
+    const marked = { run_id: 'run-1', resume_interrupted_run: true } as unknown as Parameters<typeof runClaimedWebhookDispatch>[1];
+    const error = await runClaimedWebhookDispatch(runner, marked, { event: {} as never, delivery: gone })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(WebhookRunNotRestartedError);
+    expect(String((error as Error).message)).toMatch(/profile is no longer registered/);
+    expect(ran).toEqual([]);
+  });
+
+  it("says so too under the owner's try again of an in-doubt run", async () => {
+    const reviewed = { run_id: 'run-3', rerun_in_doubt: true } as unknown as Parameters<typeof runClaimedWebhookDispatch>[1];
+    await expect(runClaimedWebhookDispatch(runner, reviewed, { event: {} as never, delivery: gone }))
+      .rejects.toBeInstanceOf(WebhookRunNotRestartedError);
+    expect(ran).toEqual([]);
+  });
+
+  it('without the mark it is a plain failure, as before', async () => {
+    const plain = { run_id: 'run-2' } as unknown as Parameters<typeof runClaimedWebhookDispatch>[1];
+    const error = await runClaimedWebhookDispatch(runner, plain, { event: {} as never, delivery: gone })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(WebhookRunNotRestartedError);
+    expect(ran).toEqual([]);
   });
 });

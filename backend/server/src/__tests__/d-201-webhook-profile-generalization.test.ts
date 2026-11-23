@@ -54,6 +54,9 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
       'backend/server/src/webhook-ingress-handler.ts',
       'backend/server/src/webhook-registration-reconciler.ts',
       'apps/webclient/src/connections/webhooks-panel.ts',
+      // D-201 Slice 10BT (10BS finding 16) — read too: its comments named three
+      // vendors, unread by this test since July.
+      'backend/server/src/webhook-registration-runtime.ts',
     ]) {
       const text = source(path).toLowerCase();
       for (const vendor of VENDOR_NAMES) {
@@ -219,9 +222,12 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     expect(sharedParserPresets)
       .toContain("kind: 'fixed_prefix_positive_decimal_id.v1'");
     expect(sharedParserPresets).toContain("prefix: 'telegram_bot_'");
+    // D-201 Slice 10G — Telegram's event names moved to the lowercase grammar.
     expect(sharedParserPresets)
-      .toContain('webhookAsciiIdentifierEventTypeProfilePreset');
-    expect(sharedParserPresets).toContain("kind: 'ascii_identifier.v1'");
+      .toContain('webhookLowercaseIdentifierEventTypeProfilePreset');
+    expect(sharedParserPresets)
+      .toContain("lowercaseIdentifierEventTypePreset('telegram.bot-webhook.v1'");
+    expect(sharedParserPresets).not.toContain("kind: 'ascii_identifier.v1'");
     expect(sharedParserPresets)
       .toContain('webhookAsciiEventTypeProfilePreset');
     expect(sharedParserPresets)
@@ -317,9 +323,9 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
       .toContain('createWebhookPrefixedPositiveDecimalIdCodec');
     expect(registrationPresets)
       .toContain('webhookPrefixedPositiveDecimalRegistrationRemoteIdProfilePreset');
-    expect(registrationPresets).toContain('createWebhookAsciiIdentifierParser');
+    expect(registrationPresets).not.toContain('createWebhookAsciiIdentifierParser');
     expect(registrationPresets)
-      .toContain('webhookAsciiIdentifierEventTypeProfilePreset');
+      .toContain('createWebhookLowercaseIdentifierEventTypeParser(telegramEventTypePreset.parser)');
     expect(registrationPresets).toContain('createWebhookAsciiEventTypeParser');
     expect(registrationPresets)
       .toContain('webhookAsciiEventTypeProfilePreset');
@@ -1099,7 +1105,9 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     expect(githubRegistration).toContain('secretParser.parse');
     expect(githubRegistration).toContain('WebhookBoundedHttpUrlParser');
     expect(githubRegistration).toContain('remoteUrlParser.parse');
-    expect(githubRegistration.match(/remoteUrlParser\.parse/g)).toHaveLength(3);
+    // D-201 Slice 10AU — a fourth: the address in the answer to a set of the
+    // hook's secret alone (`setSecret`).
+    expect(githubRegistration.match(/remoteUrlParser\.parse/g)).toHaveLength(4);
     expect(githubRegistration)
       .toContain('canonicalDesiredEndpoint(endpoint, deps.remoteUrlParser)');
     expect(githubRegistration).not.toContain('const boundedRemoteUrl');
@@ -1186,7 +1194,7 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     expect(telegramRegistration).not.toContain('TELEGRAM_BOT_ID_RE');
     expect(telegramRegistration).not.toContain('telegramManagedWebhookRemoteId');
     expect(telegramRegistration).not.toContain('telegram_bot_');
-    expect(telegramRegistration).toContain('WebhookAsciiIdentifierParser');
+    expect(telegramRegistration).toContain('WebhookLowercaseIdentifierEventTypeParser');
     expect(telegramRegistration).toContain('eventTypeParser.parse');
     expect(telegramRegistration).not.toContain('TELEGRAM_EVENT_TYPE_RE');
     expect(telegramRegistration).toContain('WebhookBoundedAsciiTokenParser');
@@ -1205,6 +1213,8 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
       .not.toContain('connection.bot_token.length > 512');
     expect(singleMemberEventNormalizer)
       .toContain('createWebhookAsciiIdentifierParser');
+    expect(singleMemberEventNormalizer)
+      .toContain('createWebhookLowercaseIdentifierEventTypeParser');
     expect(singleMemberEventNormalizer).not.toContain('EVENT_TYPE_RE');
     expect(telegramProfile).not.toContain('decodeTelegramBotUpdate');
     expect(telegramProfile).not.toContain('update.update_id');
@@ -1299,7 +1309,9 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     expect(stripeRegistration).toContain('remoteIdParser.parse');
     expect(stripeRegistration).not.toContain('REMOTE_ID_RE');
     expect(stripeRegistration).toContain('WebhookAsciiEventTypeParser');
-    expect(stripeRegistration).toContain('eventTypeParser.parse');
+    // D-201 Slice 10G — checked where the names are sent, by the shared check.
+    expect(stripeRegistration)
+      .toContain("assertDesiredEventTypesAdmitted(context, deps.eventTypeParser, 'Stripe')");
     expect(stripeRegistration).not.toContain('ASCII_EVENT_TYPE_RE');
     expect(stripeRegistration).not.toContain('A-Za-z0-9._:/-');
     expect(stripeRegistration)
@@ -1474,8 +1486,7 @@ describe('D-201 Slices 8J-9BK profile-generalization boundary', () => {
     expect(registrationPresets)
       .toContain('createWebhookLowercaseIdentifierEventTypeParser');
     expect(registrationPresets)
-      .toContain('webhookAsciiIdentifierEventTypeProfilePreset');
-    expect(registrationPresets).toContain('createWebhookAsciiIdentifierParser');
+      .not.toContain('webhookAsciiIdentifierEventTypeProfilePreset');
     expect(registrationPresets)
       .toContain('webhook-shared-profile-parser-presets');
     expect(registrationPresets)
